@@ -964,6 +964,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `driver_log` once, then wait again or report. `--until any` with several ids ends
   at the first. Then read `list_activity` with `since` set to the `as_of` of your
   last read, which lists only the requests and attempts that changed after it.
+- A long CLI command you run in the background, such as `mosaic scan` or a conversion,
+  sends its progress and errors to stderr. Redirect both streams,
+  `mosaic scan -m dataset.yaml > scan.log 2>&1`, and `tail` the log.
 - A failed step ends only the branch below it. The steps below it are recorded
   failed with error type `ParentFailed`, whose `parent` names the failed step. The
   other steps still run. Answer the failed step. An ended request is not run again.

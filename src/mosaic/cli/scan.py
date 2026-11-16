@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 import typer
 
 from mosaic.cli._context import load_dataset
-from mosaic.cli._io import emit_json, fail, stdout_to_stderr
+from mosaic.cli._io import emit_json, fail, log, stdout_to_stderr
 
 ScanKind = Literal["media", "tracks", "labels"]
 ALL_KINDS: tuple[ScanKind, ...] = ("media", "tracks", "labels")
@@ -133,6 +133,10 @@ def scan_command(
         if not dataset.scan_sources(one):
             continue
         try:
+            names = ", ".join(
+                source.id for source in dataset.scan_sources(one, only=restrict)
+            )
+            log(f"scanning {one}: sources {names}")
             with stdout_to_stderr():
                 if one == "media":
                     scanned = dataset.scan_media(

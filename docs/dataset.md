@@ -280,6 +280,14 @@ once. One call per kind, and each raises if that kind declares no source; the CL
 dispatches over whatever the manifest holds. Rescanning is safe to repeat, because a
 scan replaces only what its own sources claim.
 
+A scan of a large source takes a while. It writes a `scanning <kind>: sources <ids>`
+line to stderr as each kind starts, and its progress and errors go to stderr too, so a
+scan run in the background redirects both streams:
+
+```bash
+mosaic scan -m ~/dataset/dataset.yaml > scan.log 2>&1
+```
+
 A source path may also be relative to the dataset, so `--path media_raw` declares the
 files you placed there as a source and brings them under `mosaic scan` too.
 

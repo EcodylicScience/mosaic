@@ -32,6 +32,20 @@ def indexed(manifest: Path) -> set[str]:
     }
 
 
+def declare_missing_sources(manifest: Path, kind: str, *ids: str) -> None:
+    """Declare one source per id whose path does not exist, so a scan reads no file."""
+    for source_id in ids:
+        added = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", kind,
+             "--path", str(manifest.parent / "unmounted" / source_id),
+             "--id", source_id]
+            + (["--patterns", "*.npy", "--src-format", "calms21_npy"]
+               if kind == "tracks" else []),
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+
+
 class TestSources:
     def test_add_then_list(self, tmp_path: Path) -> None:
         manifest = make_dataset(tmp_path)
@@ -504,6 +518,52 @@ class TestScan:
         assert finding["problem"] == "path_missing"
         assert finding["path"] == str(gone)
         assert str(gone) in result.stderr
+
+    def test_a_scan_writes_a_start_line_to_stderr_for_each_kind(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        declare_missing_sources(manifest, "media", "m1", "m2")
+        declare_missing_sources(manifest, "tracks", "raw", "extra")
+
+        result = runner.invoke(app, ["scan", "-m", str(manifest)])
+
+        assert result.exit_code == 0, result.output
+        starts = [
+            line for line in result.stderr.splitlines() if line.startswith("scanning ")
+        ]
+        assert starts == [
+            "scanning media: sources m1, m2",
+            "scanning tracks: sources raw, extra",
+        ]
+
+    def test_a_scan_restricted_by_only_names_just_the_sources_it_reads(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        declare_missing_sources(manifest, "media", "m1", "m2")
+        declare_missing_sources(manifest, "tracks", "raw", "extra")
+
+        result = runner.invoke(app, ["scan", "-m", str(manifest), "--only", "m1"])
+
+        assert result.exit_code == 0, result.output
+        starts = [
+            line for line in result.stderr.splitlines() if line.startswith("scanning ")
+        ]
+        assert starts == ["scanning media: sources m1"]
+
+    def test_json_keeps_stdout_one_value_and_puts_the_start_lines_on_stderr(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        declare_missing_sources(manifest, "tracks", "raw", "extra")
+
+        result = runner.invoke(app, ["scan", "-m", str(manifest), "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert "indexes" in json.loads(result.stdout)
+        assert "scanning tracks: sources raw, extra" in result.stderr
+        assert "scanning" not in result.stdout
 
     def test_json_lists_no_findings_for_a_clean_scan(
         self, tmp_path: Path, write_cfr_mp4: VideoWriter
