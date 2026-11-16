@@ -467,3 +467,8 @@ def test_a_frame_aggregate_without_duration_still_validates() -> None:
     feature = FrameAggregate(params={"columns": ["value"], "aggs": ["sum", "count"]})
 
     assert feature.params.aggs == ["sum", "count"]
+
+
+def test_bin_s_is_refused_because_a_frames_rows_are_one_frame_each():
+    with pytest.raises(ValueError, match="frame-aggregate does not take bin_s"):
+        _ = FrameAggregate(params={"columns": ["value"], "bin_s": 60})

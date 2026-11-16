@@ -851,3 +851,225 @@ def test_categories_that_are_empty_repeated_or_unsafe_are_refused(
         _ = IndividualAggregate(
             params={"columns": ["roi"], "aggs": ["share"], "categories": categories}
         )
+
+
+# --- bin_s ----------------------------------------------------------------------------
+
+
+def _binned(
+    times: Sequence[float], identity: int = 0, **columns: object
+) -> pd.DataFrame:
+    """One individual's rows at *times*, one frame each, with *columns*."""
+    return pd.DataFrame(
+        {
+            "frame": range(len(times)),
+            "time": list(times),
+            "id": identity,
+            "group": "G",
+            "sequence": "S1",
+            **columns,
+        }
+    )
+
+
+def test_bins_are_anchored_at_time_zero_and_not_at_the_entrys_first_time() -> None:
+    table = _binned([130, 170, 185, 190, 239, 241], value=[1.0, 2, 3, 4, 5, 6])
+
+    out = _apply({"columns": ["value"], "aggs": ["mean", "count"], "bin_s": 60}, table)
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "id",
+        "bin_start",
+        "bin_end",
+        "value_mean",
+        "value_count",
+    ]
+    assert out["bin_start"].tolist() == [120.0, 180.0, 240.0]
+    assert out["bin_end"].tolist() == [180.0, 240.0, 300.0]
+    assert out["value_mean"].tolist() == [1.5, 4.0, 6.0]
+    assert out["value_count"].tolist() == [2, 3, 1]
+
+
+def test_two_divisions_of_one_recording_share_their_bin_edges() -> None:
+    first = _binned([0, 50, 110], value=1.0)
+    second = _binned([120, 170, 230], value=1.0)
+    params: dict[str, object] = {"columns": ["value"], "aggs": ["count"], "bin_s": 60}
+
+    out_first = _apply(params, first)
+    out_second = _apply(params, second)
+
+    assert out_first["bin_start"].tolist() == [0.0, 60.0]
+    assert out_second["bin_start"].tolist() == [120.0, 180.0]
+    assert out_second["bin_end"].tolist() == [180.0, 240.0]
+
+
+def test_a_bin_that_no_row_starts_in_is_not_written() -> None:
+    table = _binned([10, 200], value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["count"], "bin_s": 60}, table)
+
+    assert out["bin_start"].tolist() == [0.0, 180.0]
+
+
+def test_each_individual_gets_a_row_per_bin_after_the_split_keys() -> None:
+    table = pd.concat(
+        [
+            _binned([0, 70], identity=0, value=[1.0, 3.0], tag="x"),
+            _binned([5, 10, 65], identity=1, value=[2.0, 4.0, 8.0], tag="x"),
+        ],
+        ignore_index=True,
+    )
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean", "count"],
+            "bin_s": 60,
+            "subgroup_col": "tag",
+        },
+        table,
+    )
+
+    assert list(out.columns)[:6] == [
+        "group",
+        "sequence",
+        "id",
+        "tag",
+        "bin_start",
+        "bin_end",
+    ]
+    assert out["id"].tolist() == [0, 0, 1, 1]
+    assert out["bin_start"].tolist() == [0.0, 60.0, 0.0, 60.0]
+    assert out["value_mean"].tolist() == [1.0, 3.0, 3.0, 8.0]
+    assert out["value_count"].tolist() == [1, 1, 2, 1]
+
+
+def test_duration_splits_a_row_that_crosses_a_bin_edge_between_its_bins() -> None:
+    # The row at 50 lasts to 100 and crosses the edge at 60. The last row
+    # repeats the 50 s before it, to 150, and the 30 s past 120 fall in a bin
+    # no row starts in.
+    table = _binned([0, 50, 100], value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["duration"], "bin_s": 60}, table)
+
+    assert out["bin_start"].tolist() == [0.0, 60.0]
+    assert out["value_duration"].tolist() == pytest.approx([60.0, 60.0])
+
+
+def test_duration_drops_the_seconds_that_fall_in_a_bin_no_row_starts_in() -> None:
+    # The row at 0 lasts 130 s: 60 in bin 0, 60 in bin 1 that no row starts
+    # in, and 10 in bin 2, where the last two rows start.
+    table = _binned([0, 130, 140], value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["duration"], "bin_s": 60}, table)
+
+    assert out["bin_start"].tolist() == [0.0, 120.0]
+    assert out["value_duration"].tolist() == pytest.approx([60.0, 30.0])
+
+
+def test_duration_of_a_threshold_counts_only_the_seconds_that_pass() -> None:
+    table = _binned([0, 50, 100], value=[1.0, 0.0, 1.0])
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["duration"], "threshold": 0.5, "bin_s": 60},
+        table,
+    )
+
+    # The row at 50 does not pass: only the 50 s of the row at 0 count in
+    # bin 0.
+    assert out["value_duration"].tolist() == pytest.approx([50.0, 20.0])
+
+
+def test_share_splits_a_row_that_crosses_a_bin_edge_between_its_bins() -> None:
+    table = _binned([0, 50, 100], roi=["a", "b", "a"])
+
+    out = _apply({"columns": ["roi"], "aggs": ["share"], "bin_s": 60}, table)
+
+    assert out["bin_start"].tolist() == [0.0, 60.0]
+    assert out["roi_share_a"].tolist() == pytest.approx([50 / 60, 20 / 60])
+    assert out["roi_share_b"].tolist() == pytest.approx([10 / 60, 40 / 60])
+
+
+def test_a_row_without_a_time_belongs_to_no_bin() -> None:
+    table = _binned([0, np.nan, 10], value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["count"], "bin_s": 60}, table)
+
+    assert out["value_count"].tolist() == [2]
+
+
+def test_bin_s_over_input_without_time_names_the_column_and_what_to_do() -> None:
+    table = _binned([0, 10], value=1.0).drop(columns="time")
+
+    with pytest.raises(ValueError, match="bins rows by the 'time' column") as raised:
+        _ = _apply({"columns": ["value"], "bin_s": 60}, table)
+
+    message = str(raised.value)
+    assert message.startswith("individual-aggregate bins rows by the 'time' column")
+    assert message.endswith(
+        "give the step an input with a time column, such as tracks."
+    )
+
+
+def test_a_run_over_an_input_without_time_fails_the_entry_before_apply_for_bin_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    applied = record_applied_sequences(monkeypatch, IndividualAggregate)
+    feature = IndividualAggregate(params={"columns": ["frame"], "bin_s": 60})
+
+    run = run_over_edited_tracks(tmp_path, feature, without_time_in_mixed)
+
+    assert run.result.failed_entries == (make_entry_key(*MIXED),)
+    assert applied == [STEADY[1]]
+    (error,) = run.errors
+    assert error["error_type"] == "MissingInputColumns"
+    assert "'time'" in error["message"]
+
+
+def test_a_run_over_tracks_with_bin_s_writes_every_entry(tmp_path: Path) -> None:
+    feature = IndividualAggregate(params={"columns": ["X"], "bin_s": 60})
+
+    run = run_over_edited_tracks(tmp_path, feature, lambda entry, table: table)
+
+    assert run.result.failed_entries == ()
+    assert run.written == sorted(make_entry_key(*entry) for entry in (STEADY, MIXED))
+
+
+@pytest.mark.parametrize("bin_s", [0, -1.0])
+def test_a_bin_of_no_length_is_refused(bin_s: float) -> None:
+    with pytest.raises(ValueError, match="bin_s"):
+        _ = IndividualAggregate(params={"columns": ["value"], "bin_s": bin_s})
+
+
+@pytest.mark.parametrize("name", ["bin_start", "bin_end"])
+def test_a_kept_or_split_name_the_bins_write_is_refused_with_bin_s(name: str) -> None:
+    with pytest.raises(ValueError, match=f"{name}.*writes itself"):
+        _ = IndividualAggregate(
+            params={"columns": ["value"], "bin_s": 60, "keep_columns": [name]}
+        )
+    with pytest.raises(ValueError, match=f"subgroup_col.*{name}"):
+        _ = IndividualAggregate(
+            params={"columns": ["value"], "bin_s": 60, "subgroup_col": name}
+        )
+
+
+def test_a_split_by_bin_start_is_allowed_without_bin_s() -> None:
+    feature = IndividualAggregate(
+        params={"columns": ["value"], "subgroup_col": "bin_start"}
+    )
+
+    assert feature.params.subgroup_col == "bin_start"
+
+
+def test_an_unset_bin_s_leaves_the_identity_dump_and_a_set_one_changes_it() -> None:
+    plain = IndividualAggregate(params={"columns": ["value"]}).params
+    binned = IndividualAggregate(params={"columns": ["value"], "bin_s": 60}).params
+    other = IndividualAggregate(params={"columns": ["value"], "bin_s": 30}).params
+
+    assert plain.bin_s is None
+    assert "bin_s" not in plain.identity_dump()
+    assert binned.identity_dump()["bin_s"] == 60.0
+    assert binned.identity_dump() != plain.identity_dump()
+    assert binned.identity_dump() != other.identity_dump()

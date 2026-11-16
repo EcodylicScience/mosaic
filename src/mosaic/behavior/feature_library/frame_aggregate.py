@@ -148,6 +148,18 @@ class FrameAggregate:
                     )
             return self
 
+        @model_validator(mode="after")
+        def _refuse_time_bins(self) -> Self:
+            """Refuse ``bin_s``: a frame's rows are one frame each."""
+            if not has_fields(self, "bin_s"):
+                return self
+            if self.bin_s is not None:
+                raise ValueError(
+                    "frame-aggregate does not take bin_s: its rows are already "
+                    "one frame each. Use sequence-aggregate or individual-aggregate."
+                )
+            return self
+
     def __init__(
         self,
         inputs: FrameAggregate.Inputs = Inputs(("tracks",)),

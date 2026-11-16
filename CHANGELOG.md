@@ -8,7 +8,19 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the aggregates compare with `threshold_op`, and a missing value stays missing under a threshold
+## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, and a missing value stays missing under a threshold
+
+`sequence-aggregate` and `individual-aggregate` take `bin_s`, the length in seconds of
+time bins. Each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the
+recording's axis, so the bins of two entries, or of two divisions of one recording, share
+their edges. The output gains `bin_start` and `bin_end` in seconds after the other keys,
+one row per entry (or individual) and bin, and a bin that no row starts in is not written.
+`duration` and `share` split a row's seconds among the bins its interval covers, crediting
+each bin with its overlap, and drop the seconds that fall in a bin where the group has no
+row starting. The other aggregations read each row in the bin it starts in. An entry whose
+`filter_expr` keeps no row still writes its blank row, with `bin_start` and `bin_end` NaN.
+`bin_s` needs a `time` column, is refused by `frame-aggregate`, and leaves the run
+identity as it was when unset.
 
 `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` take `threshold_op`,
 one of `>` (the default), `>=`, `<` and `<=`, the comparison of each value with

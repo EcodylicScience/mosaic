@@ -11,6 +11,8 @@ in ``aggs`` for the fraction of an individual's rows that exceed it.
 the seconds that a column holds each of its values. Both read the input's
 ``time`` column. An input with an ``arena`` column keys each row by its arena
 too, and ``subgroup_col`` splits an individual's rows by that column's value.
+``bin_s`` gives one row per individual and time bin of that many seconds,
+anchored at time 0.
 
 Individual input is grouped by ``id``, and pair input by the focal ``id1``,
 which the output names ``id``. The class docstring states why pair input reads
@@ -25,6 +27,7 @@ from typing import ClassVar, final
 import pandas as pd
 
 from mosaic.core.pipeline.column_contract import (
+    Conditional,
     AnyOf,
     Column,
     ParamColumn,
@@ -48,7 +51,13 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
-from .aggregate_common import AggregateParams, reduce_column, split_keys
+from .aggregate_common import (
+    BIN_END,
+    BIN_START,
+    AggregateParams,
+    reduce_column,
+    split_keys,
+)
 from .registry import register_feature
 
 _FOCAL_ID = "id1"
@@ -60,11 +69,12 @@ class IndividualAggregate:
     """
     Per-sequence feature reducing the rows of each individual to one row.
 
-    Output columns (one row per individual and subgroup):
+    Output columns (one row per individual, subgroup and bin):
       - group, sequence: the entry, copied from the frame
       - id: the individual, or the focal ``id1`` of pair input
       - arena: when the input has it
       - <subgroup_col>: when set
+      - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
       - <column>_share_<value>: for ``share``, in place of ``<column>_share``,
@@ -108,6 +118,7 @@ class IndividualAggregate:
         Column(C.seq_col),
         When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
         When(Column(C.time_col), (ParamIs("aggs", equals="share"),)),
+        When(Column(C.time_col), (ParamIs("bin_s"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -120,7 +131,11 @@ class IndividualAggregate:
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),
         ),
-        conditional=kept(ARENA_COLUMN),
+        conditional=(
+            *kept(ARENA_COLUMN),
+            Conditional(Column(BIN_START), when_param="bin_s"),
+            Conditional(Column(BIN_END), when_param="bin_s"),
+        ),
     )
 
     class Inputs(Inputs[TrackInput | Result]):

@@ -374,7 +374,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   comparison) and `share` (the fraction of the seconds in which a column holds each
   value, one `<column>_share_<value>` column per value; `categories` fixes the columns,
   so set it before summarizing across entries). Both weigh a row by its `time`. `pairs`
-  governs `duration` as it governs `sum` and `count`.
+  governs `duration` as it governs `sum` and `count`. For a summary per time window, set
+  `bin_s` (seconds) on `sequence-aggregate` or `individual-aggregate`: a row goes to the
+  bin `floor(time / bin_s)`, anchored at time 0, and the output has a row per entry or
+  individual and bin with `bin_start` and `bin_end`. A bin that no row starts in is not
+  written, and `duration` and `share` split a row that crosses a bin edge by its seconds.
+  `frame-aggregate` refuses `bin_s`.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

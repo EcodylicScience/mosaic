@@ -10,7 +10,8 @@ ids. The optional pre-aggregation steps of ``frame-aggregate`` apply here too:
 of the rows, and ``share`` gives the fraction of the seconds that a column holds
 each of its values. Both read the input's ``time`` column. An input with an
 ``arena`` column gives one row per arena, and ``subgroup_col`` one row per value
-of that column.
+of that column. ``bin_s`` gives one row per entry and time bin of that many
+seconds, anchored at time 0.
 
 The class docstring states which rows of a pair table sum, count and duration read.
 """
@@ -23,6 +24,7 @@ from typing import ClassVar, final
 import pandas as pd
 
 from mosaic.core.pipeline.column_contract import (
+    Conditional,
     Column,
     ParamColumn,
     ParamIs,
@@ -46,6 +48,8 @@ from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .aggregate_common import (
+    BIN_END,
+    BIN_START,
     PairAggregateParams,
     blank_reduction,
     reduce_column,
@@ -60,10 +64,11 @@ class SequenceAggregate:
     """
     Per-sequence feature reducing the rows of an entry to one row per group.
 
-    Output columns (one row per entry, arena and subgroup):
+    Output columns (one row per entry, arena, subgroup and bin):
       - group, sequence: the entry, copied from the frame
       - arena: when the input has it
       - <subgroup_col>: when set
+      - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
       - <column>_share_<value>: for ``share``, in place of ``<column>_share``,
@@ -88,7 +93,9 @@ class SequenceAggregate:
     An entry whose ``filter_expr`` keeps no row still writes its row, with 0 for
     ``sum``, ``count`` and ``duration`` and NaN for every other aggregation, so
     that every entry of a run has the same columns. ``share`` is NaN in each
-    column of ``categories``, and writes none when that is unset.
+    column of ``categories``, and writes none when that is unset. With ``bin_s``
+    that row has NaN ``bin_start`` and ``bin_end``, since no row of the entry
+    starts in a bin.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
@@ -117,6 +124,7 @@ class SequenceAggregate:
         Column(C.seq_col),
         When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
         When(Column(C.time_col), (ParamIs("aggs", equals="share"),)),
+        When(Column(C.time_col), (ParamIs("bin_s"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -128,7 +136,11 @@ class SequenceAggregate:
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),
         ),
-        conditional=kept(ARENA_COLUMN),
+        conditional=(
+            *kept(ARENA_COLUMN),
+            Conditional(Column(BIN_START), when_param="bin_s"),
+            Conditional(Column(BIN_END), when_param="bin_s"),
+        ),
     )
 
     class Inputs(Inputs[TrackInput | Result]):

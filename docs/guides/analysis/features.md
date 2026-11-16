@@ -88,6 +88,11 @@ missing, so `mean`, `count` and `duration` leave it out. `sequence-aggregate` an
 or passes the `threshold` comparison, and `share`, the fraction of the seconds in which a
 column holds each of its values, written as `<column>_share_<value>`. Both weigh a row by
 its `time`, so a table that dropped frames is measured in the seconds it covers.
+For a summary per window, set `bin_s` on `sequence-aggregate` or `individual-aggregate`:
+each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the recording, and
+the output has one row per entry or individual and bin, with `bin_start` and `bin_end` in
+seconds. A bin that no row starts in is not written, and `duration` and `share` credit a
+row that crosses a bin edge to each bin by the seconds it overlaps.
 
 **Responses to events.** `event-response` measures a value, by default the speed of
 `speed-angvel`, around each onset, one row per individual and event: the baseline mean

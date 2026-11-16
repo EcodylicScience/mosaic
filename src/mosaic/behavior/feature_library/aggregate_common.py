@@ -21,6 +21,11 @@ the sum is a time and not a count of rows at a frame rate that varies. ``share``
 weighs the rows the same way: it writes, for each value of a text, categorical,
 boolean or integer column, the fraction of the group's seconds that the column
 holds it.
+
+``bin_s`` splits the reduction by time: each row goes to the bin
+``floor(time / bin_s)``, anchored at time 0 of the recording's axis, and
+``bin_start`` and ``bin_end`` join the reduction keys (:func:`bin_columns`). A
+row's seconds, for ``duration`` and ``share``, divide among the bins it spans.
 """
 
 from __future__ import annotations
@@ -107,7 +112,25 @@ _KEEP_COLUMNS_DESCRIPTION = (
     "the input must have it. A group whose rows disagree, or an input without "
     "the column, fails the entry. The names the reduction writes itself "
     "(group, sequence, frame, time, id, id1, id2, perspective and arena), a "
-    "name in columns and subgroup_col are refused."
+    "name in columns and subgroup_col are refused, and with bin_s set, so "
+    "are bin_start and bin_end."
+)
+
+_BIN_S_DESCRIPTION = (
+    "The length in seconds of the time bins. Unset, an entry is reduced "
+    "whole. Set, each row goes to the bin floor(time / bin_s), anchored at "
+    "time 0 of the recording's axis, so the bins of two entries or two "
+    "divisions of one recording line up. The output gains bin_start and "
+    "bin_end, in seconds, after the keys, and has one row per reduced group "
+    "and bin. A bin that no row starts in is not written. duration and share "
+    "weigh a row by the seconds of the interval from its time to the next "
+    "frame of its individual: a row that crosses a bin edge gives each bin the "
+    "seconds it overlaps, and seconds that fall in a bin where the group has "
+    "no row starting are dropped. The other aggregations read each row in the "
+    "bin it starts in. A row without a time is in no bin. Needs a time column, "
+    "so give the step an input with one, such as tracks. Refused by "
+    "frame-aggregate, whose rows are one frame each. keep_columns and "
+    "subgroup_col may not be bin_start or bin_end."
 )
 
 _FILTER_EXPR_DESCRIPTION = (
@@ -152,6 +175,11 @@ _TIME_SENTENCE = (
     "give the step an input with a time column, such as tracks."
 )
 
+_BIN_TIME_SENTENCE = "give the step an input with a time column, such as tracks."
+
+BIN_START = "bin_start"
+BIN_END = "bin_end"
+
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]+")
 _PERSPECTIVE_COLUMN = "perspective"
 _FOCAL_COLUMNS = ("id1", "id2")
@@ -165,9 +193,9 @@ class AggregateParams(Params):
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
     ``threshold`` turns each column into whether it passes the comparison
     ``threshold_op`` against a value, with a null staying null.
-    ``subgroup_col`` splits the rows reduced together. ``keep_columns`` are
-    written to the output beside the keys. ``categories`` fixes the columns that
-    ``share`` writes.
+    ``subgroup_col`` splits the rows reduced together, and ``bin_s`` splits
+    them again by time bin. ``keep_columns`` are written to the output beside
+    the keys. ``categories`` fixes the columns that ``share`` writes.
     :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
     whose groups hold both rows of a pair.
     """
@@ -183,6 +211,9 @@ class AggregateParams(Params):
         "none"
     )
     subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+    bin_s: Annotated[
+        float | None, Declared(_BIN_S_DESCRIPTION, unit="s"), Field(gt=0)
+    ] = None
     keep_columns: Annotated[list[str], Declared(_KEEP_COLUMNS_DESCRIPTION)] = Field(
         default_factory=list
     )
@@ -257,11 +288,19 @@ class AggregateParams(Params):
     def _refuse_a_kept_name_the_output_has_already(self) -> Self:
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
-        A subclass without the three fields leaves the verdict to the full model.
+        With ``bin_s`` set, ``bin_start`` and ``bin_end`` are reduction keys and
+        neither a kept column nor ``subgroup_col`` may take them. A subclass
+        without the four fields leaves the verdict to the full model.
         """
-        if not has_fields(self, "keep_columns", "columns", "subgroup_col"):
+        if not has_fields(self, "keep_columns", "columns", "subgroup_col", "bin_s"):
             return self
         owned = _reduction_columns()
+        if self.bin_s is not None:
+            owned = owned | {BIN_START, BIN_END}
+            if self.subgroup_col in (BIN_START, BIN_END):
+                raise ValueError(
+                    f"subgroup_col is {self.subgroup_col}, which bin_s writes itself"
+                )
         for name in self.keep_columns:
             if name in self.columns:
                 raise ValueError(f"keep_columns lists {name}, which is also in columns")
@@ -277,9 +316,9 @@ class AggregateParams(Params):
     def identity_dump(self) -> dict[str, object]:
         """The hashed params, less each field left at its output-preserving value.
 
-        ``keep_columns`` empty, ``categories`` unset and ``threshold_op`` ``>``
-        write the output a run wrote before the fields existed, so leaving them
-        out keeps every such run's identifier. A kept column or a category adds
+        ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset and
+        ``threshold_op`` ``>`` write the output a run wrote before the fields
+        existed, so leaving them out keeps every such run's identifier. A kept column or a category adds
         output columns and enters the hash as any field does.
 
         A set ``threshold`` adds ``threshold_missing``: a null value stays null
@@ -293,6 +332,8 @@ class AggregateParams(Params):
             del dumped["keep_columns"]
         if self.categories is None:
             del dumped["categories"]
+        if self.bin_s is None:
+            del dumped["bin_s"]
         if self.threshold_op == ">":
             del dumped["threshold_op"]
         if self.threshold is not None:
@@ -647,6 +688,70 @@ def _share_fractions(
     return by_value.div(total, axis=0)
 
 
+def _bin_index(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
+    """The bin ``floor(time / bin_s)`` of each time, NaN if not finite."""
+    with np.errstate(invalid="ignore"):
+        index = np.floor(times / bin_s)
+    return np.where(np.isfinite(index), index, np.nan)
+
+
+def _bin_edges(
+    index: NDArray[np.float64], bin_s: float
+) -> dict[str, NDArray[np.float64]]:
+    """The ``bin_start`` and ``bin_end`` seconds of each bin index."""
+    return {BIN_START: index * bin_s, BIN_END: (index + 1) * bin_s}
+
+
+@dataclass(frozen=True)
+class _BinnedSeconds:
+    """The seconds of rows divided among the bins their intervals cover.
+
+    Attributes:
+        rows: The position of the row that each piece comes from.
+        seconds: The seconds of each piece, the overlap of the row's interval
+            with its bin.
+        index: The bin of each piece, NaN for a row with no bin.
+    """
+
+    rows: NDArray[np.intp]
+    seconds: NDArray[np.float64]
+    index: NDArray[np.float64]
+
+
+def _spread_over_bins(
+    times: NDArray[np.float64],
+    seconds: NDArray[np.float64],
+    first: NDArray[np.float64],
+    bin_s: float,
+) -> _BinnedSeconds:
+    """Divide each row's seconds among the bins of ``[time, time + seconds)``.
+
+    Args:
+        times: The time of each row.
+        seconds: The seconds each row lasts, by position.
+        first: The bin each row starts in (:func:`_bin_index`), NaN for none.
+        bin_s: The length of a bin in seconds.
+
+    Returns:
+        One piece per row and bin it covers, each crediting the bin with the
+        overlap. A row with no bin is one piece with no bin.
+    """
+    ends = times + seconds
+    finite = np.isfinite(first)
+    with np.errstate(invalid="ignore"):
+        last = np.where(finite, np.maximum(first, np.ceil(ends / bin_s) - 1), first)
+        spans = np.where(finite, last - first, 0).astype(np.intp) + 1
+    rows = np.repeat(np.arange(times.size, dtype=np.intp), spans)
+    offset = np.arange(rows.size) - np.repeat(np.cumsum(spans) - spans, spans)
+    index = first[rows] + offset
+    with np.errstate(invalid="ignore"):
+        overlap = np.minimum(ends[rows], (index + 1) * bin_s) - np.maximum(
+            times[rows], index * bin_s
+        )
+    credited = np.where(np.isfinite(index), np.maximum(overlap, 0.0), seconds[rows])
+    return _BinnedSeconds(rows=rows, seconds=credited, index=index)
+
+
 def reduce_column(
     df: pd.DataFrame,
     params: AggregateParams,
@@ -660,7 +765,8 @@ def reduce_column(
 
     Applies ``filter_expr``, ``transform`` and ``threshold``, then groups by
     ``keys`` and aggregates each column with each of ``aggs``. The result holds
-    ``keys``, then each column of ``first`` (its first value in the group), then
+    ``keys``, then ``bin_start`` and ``bin_end`` when ``params.bin_s`` is set,
+    then each column of ``first`` (its first value in the group), then
     each of ``params.keep_columns`` (its one value in the group), then
     ``<column>_<agg>`` for each column and, within it, each aggregation, sorted
     by ``keys``. A row whose key is null belongs to no group. The result is
@@ -698,6 +804,14 @@ def reduce_column(
     ``aggs``, within each column. Only a call with ``duration`` or ``share``
     reads ``time``.
 
+    With ``params.bin_s`` the groups split by bin as well, and the result has a
+    row per group and bin in which a row of the group starts. A row starts in
+    the bin ``floor(time / bin_s)``, and a row with no finite ``time`` belongs
+    to no group. Every aggregation but ``duration`` and ``share`` reads a row
+    in the bin it starts in. ``duration`` and ``share`` credit each bin with the
+    overlap of the row's interval, from its time for its seconds, and drop what
+    falls in a bin of the group where no row starts.
+
     Args:
         df: The rows to reduce.
         params: The columns, aggregations and pre-aggregation steps.
@@ -713,7 +827,8 @@ def reduce_column(
 
     Raises:
         ValueError: A kept column is not in ``df``, or takes more than one value
-            in a group of the rows left after ``filter_expr``, or ``duration``
+            in a group of the rows left after ``filter_expr``, or ``bin_s`` is
+            set and ``time`` is missing, or ``duration``
             or ``share`` is asked of an input whose ``time`` is missing or does
             not advance, or ``share`` is asked of a column of an unaccepted
             kind, of a value that cannot name a column or that is not among
@@ -723,6 +838,12 @@ def reduce_column(
     for column in kept:
         if column not in df.columns:
             raise ValueError(f"keep_columns column {column!r} is not in the input")
+    bin_s = params.bin_s
+    if bin_s is not None and C.time_col not in df.columns:
+        raise ValueError(
+            f"{who} bins rows by the {C.time_col!r} column, which the table "
+            f"lacks: it has {sorted(map(str, df.columns))}. {_BIN_TIME_SENTENCE}"
+        )
     seconds: NDArray[np.float64] | None = None
     if "duration" in params.aggs or "share" in params.aggs:
         df = df.reset_index(drop=True)
@@ -731,22 +852,55 @@ def reduce_column(
         df = df.query(params.filter_expr)
     if df.empty:
         return pd.DataFrame()
-    _refuse_a_varying_column(df, keys, kept)
+    group_keys = list(keys)
+    times = np.empty(0, dtype=np.float64)
+    first_bin = np.empty(0, dtype=np.float64)
+    edges: dict[str, NDArray[np.float64]] = {}
+    if bin_s is not None:
+        times = df[C.time_col].to_numpy(dtype=np.float64)
+        first_bin = _bin_index(times, bin_s)
+        edges = _bin_edges(first_bin, bin_s)
+        group_keys += list(edges)
+    _refuse_a_varying_column(df.assign(**edges) if edges else df, group_keys, kept)
 
     carried = (*first, *kept)
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
+    for name, edge in edges.items():
+        work[name] = edge
     kept_seconds = seconds[df.index.to_numpy()] if seconds is not None else None
-    reduced = _carried_by_group(work, keys, carried)
+    # Each piece of a row's seconds, by the row it comes from and the bin it
+    # falls in. Without bins a row is one piece.
+    pieces = np.arange(len(work), dtype=np.intp)
+    piece_seconds = kept_seconds
+    piece_keys = work[group_keys].reset_index(drop=True)
+    if kept_seconds is not None and bin_s is not None:
+        spread = _spread_over_bins(times, kept_seconds, first_bin, bin_s)
+        pieces = spread.rows
+        piece_seconds = spread.seconds
+        piece_keys = work[keys].iloc[pieces].reset_index(drop=True)
+        for name, edge in _bin_edges(spread.index, bin_s).items():
+            piece_keys[name] = edge
+    reduced = _carried_by_group(work, group_keys, carried)
     fractions: dict[str, pd.DataFrame] = {}
-    if kept_seconds is not None and "share" in params.aggs:
-        readable = work[list(keys)].notna().all(axis=1).to_numpy()
+    if piece_seconds is not None and "share" in params.aggs:
+        readable = work[group_keys].notna().all(axis=1).to_numpy()
         shares = {
             column: _share_column(df[column], column, readable, params.categories)
             for column in params.columns
         }
-        _refuse_a_repeated_output_name(params, keys, carried, shares)
+        _refuse_a_repeated_output_name(params, group_keys, carried, shares)
         fractions = {
-            column: _share_fractions(work, keys, share, kept_seconds, reduced.index)
+            column: _share_fractions(
+                piece_keys,
+                group_keys,
+                _ShareColumn(
+                    texts=share.texts[pieces],
+                    readable=share.readable[pieces],
+                    names=share.names,
+                ),
+                piece_seconds,
+                reduced.index,
+            )
             for column, share in shares.items()
         }
     for index, column in enumerate(params.columns):
@@ -756,17 +910,22 @@ def reduce_column(
         if params.threshold is not None:
             values = _passes_threshold(values, params.threshold, params.threshold_op)
         work[f"_v{index}"] = _plain_values(values)
-        if kept_seconds is not None and "duration" in params.aggs:
+        if piece_seconds is not None and "duration" in params.aggs:
             counted = (
                 work[f"_v{index}"].to_numpy() == 1.0
                 if params.threshold is not None
                 else values.notna().to_numpy()
             )
-            work[f"_s{index}"] = np.where(counted, kept_seconds, 0.0)
+            piece_keys[f"_s{index}"] = np.where(counted[pieces], piece_seconds, 0.0)
 
     once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
-    halved = work[(df[_PERSPECTIVE_COLUMN] == 0).to_numpy()] if once else work
-    group_keys = list(keys)
+    perspective_zero = (df[_PERSPECTIVE_COLUMN] == 0).to_numpy() if once else None
+    halved = work[perspective_zero] if perspective_zero is not None else work
+    halved_pieces = (
+        piece_keys[perspective_zero[pieces]]
+        if perspective_zero is not None
+        else piece_keys
+    )
     for index, column in enumerate(params.columns):
         for agg in params.aggs:
             if agg == "share":
@@ -774,10 +933,11 @@ def reduce_column(
                     reduced[f"{column}_share_{value}"] = fraction
                 continue
             counting = agg in PAIR_COUNTING_AGGS
-            source = halved if once and counting else work
             if agg == "duration":
+                source = halved_pieces if once else piece_keys
                 result = source.groupby(group_keys, sort=True)[f"_s{index}"].sum()
             else:
+                source = halved if once and counting else work
                 result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
             # A group whose rows are all of the other perspective sums no row.
             reduced[f"{column}_{agg}"] = (
@@ -803,7 +963,10 @@ def blank_reduction(
     every other aggregation is NaN. ``share`` is NaN in the column of each of
     ``params.categories``, in their order, and writes no column when that is
     unset, since the entry has no value to name one. A row whose key is null
-    belongs to no group.
+    belongs to no group. With ``params.bin_s`` the row of each group has NaN
+    ``bin_start`` and ``bin_end`` after the keys: no row of the entry starts in
+    a bin, and the row keeps the entry, its kept labels and the columns that an
+    entry with rows writes.
 
     Args:
         df: The rows before the filter, which hold the keys and the kept columns.
@@ -820,6 +983,9 @@ def blank_reduction(
     _refuse_a_varying_column(df, keys, kept)
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *kept)})
     blank = _carried_by_group(work, keys, kept).reset_index()
+    if params.bin_s is not None:
+        blank.insert(len(keys), BIN_START, np.nan)
+        blank.insert(len(keys) + 1, BIN_END, np.nan)
     for column in params.columns:
         for agg in params.aggs:
             if agg == "share":
