@@ -122,9 +122,9 @@ _RECOVER_FRACTION_DESCRIPTION = (
     "whose value is at or above that level. A response whose minimum is at or "
     "above the level recovers at latency 0. One that does not return has a NaN "
     "latency and recovered false, and one with no baseline or no response rows has "
-    "a NaN latency and a null recovered. recovery_time_s holds the censored time "
-    "that the NaN latency leaves out: the latency when recovered is true, and the "
-    "time observed without recovering when it is false."
+    "a NaN latency and a null recovered. recovery_time_s is the latency when "
+    "recovered is true and the time observed without recovering, the censored "
+    "time, when it is false."
 )
 
 
@@ -171,7 +171,7 @@ class EventResponse:
     last row with a value, less the onset. A row without a value observes
     nothing, so it does not extend the time. ``recovered`` is the event flag
     and ``recovery_time_s`` the time of a survival analysis, and the mean of
-    the time is the latency capped at the window.
+    the time is the latency capped at the time observed.
 
     An individual with no row inside an explicit onset's windows still has a row
     for it, with counts of 0. Under ``onset_column`` and ``labels``, ``event``
