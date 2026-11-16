@@ -11,12 +11,15 @@ step fitted.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from mosaic.agent.mcp.spec import ScopeSelector, StepEntries
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
@@ -33,6 +36,7 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     submit_request,
 )
+from mosaic.core.pipeline.graph.plan import MAX_SCOPE_SUGGESTION_CHARS
 from mosaic.core.pipeline.graph.step_preflight import refuse_shortfall
 from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.pipeline.inventory import FeatureRunRef, inventory
@@ -61,6 +65,19 @@ KMEANS: dict[str, JsonValue] = {
     "feature": "global-kmeans",
     "inputs": [{"step": "speed"}],
     "params": {"templates": {"step": "templates"}, "k": 2},
+}
+SCALED: dict[str, JsonValue] = {
+    "id": "scaled",
+    "type": "feature",
+    "feature": "scale-to-cm",
+    "inputs": [{"step": "speed"}],
+}
+RESCALED: dict[str, JsonValue] = {
+    "id": "rescaled",
+    "type": "feature",
+    "feature": "scale-to-cm",
+    "inputs": [{"step": "scaled"}],
+    "params": {"suffix": "_cm2"},
 }
 
 
@@ -192,13 +209,369 @@ def test_a_step_scope_selecting_nothing_is_a_problem(split: Dataset) -> None:
 
 def test_an_input_narrower_than_its_reader_is_a_problem(split: Dataset) -> None:
     plan = plan_pipeline(
-        split, _recipe(SPEED, TEMPLATES), step_scopes={"speed": TRAIN}, refuse=False
+        split,
+        _recipe(SPEED, TEMPLATES, KMEANS),
+        step_scopes={"speed": TRAIN},
+        refuse=False,
+    )
+
+    assert _where(plan) == [("templates", "inputs[0]"), ("kmeans", "inputs[0]")]
+    templates, kmeans = plan.problems
+    assert plan.step("templates").scope_dependent
+    assert "1 entries of 'templates' are outside what 'speed'" in templates.message
+    assert "1 entries of 'kmeans' are outside what 'speed'" in kmeans.message
+    assert "('test', 's3')" in templates.message
+    for problem in plan.problems:
+        assert (
+            'is asked for (its step scope is {"groups":["train"]}): '
+        ) in problem.message
+        assert "Narrow each step that reads entries outside 'speed': 'templates'" in (
+            problem.message
+        )
+        assert "'kmeans'" in problem.message
+        assert "'templates' is scope-dependent: narrowing one fits it" in (
+            problem.message
+        )
+        assert "a new run id" in problem.message
+    assert "step_entries=" in templates.message
+    assert "see 'templates'" in kmeans.message
+    assert "step_entries=" not in kmeans.message
+    assert "--step-scope" not in kmeans.message
+
+
+def _pasted(message: str) -> tuple[str, list[str]]:
+    """The ``step_entries`` value and the ``--step-scope`` tokens a message carries."""
+    value = re.search(r"step_entries=(\{.*\}) to plan_recipe", message)
+    tokens = re.search(r"or pass (.*) to mosaic pipeline plan", message)
+    assert value is not None
+    assert tokens is not None
+    words = shlex.split(tokens.group(1))
+    assert words[::2] == ["--step-scope"] * (len(words) // 2)
+    return value.group(1), words[1::2]
+
+
+def _scopes_of(value: str) -> dict[str, Scope]:
+    """The step scopes a ``step_entries`` value names, as ``plan_recipe`` reads it."""
+    parsed = TypeAdapter(StepEntries).validate_json(value)
+    assert parsed is not None
+    scopes: dict[str, Scope] = {}
+    for step_id, chosen in parsed.items():
+        assert isinstance(chosen, ScopeSelector)
+        scopes[step_id] = Scope(
+            entries=None if chosen.entries is None else list(chosen.entries),
+            groups=chosen.groups,
+            sequences=chosen.sequences,
+        )
+    return scopes
+
+
+def test_the_step_entries_in_a_refusal_plan_without_problems(split: Dataset) -> None:
+    recipe = _recipe(SPEED, TEMPLATES, KMEANS)
+    refused = plan_pipeline(split, recipe, step_scopes={"speed": TRAIN}, refuse=False)
+
+    value, tokens = _pasted(refused.problems[0].message)
+    plan = plan_pipeline(split, recipe, step_scopes=_scopes_of(value))
+
+    assert value == json.dumps(
+        {name: {"groups": ["train"]} for name in ("kmeans", "speed", "templates")},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert tokens == [
+        'kmeans={"groups":["train"]}',
+        'speed={"groups":["train"]}',
+        'templates={"groups":["train"]}',
+    ]
+    assert plan.problems == ()
+    assert plan.step("templates").coverage.target == {("train", "s1"), ("train", "s2")}
+
+
+def test_a_reader_below_a_refused_one_is_named_and_has_no_problem_of_its_own(
+    split: Dataset,
+) -> None:
+    recipe = _recipe(SPEED, TEMPLATES, KMEANS, SCALED, RESCALED)
+
+    refused = plan_pipeline(split, recipe, step_scopes={"speed": TRAIN}, refuse=False)
+
+    assert _where(refused) == [
+        ("templates", "inputs[0]"),
+        ("scaled", "inputs[0]"),
+        ("kmeans", "inputs[0]"),
+    ]
+    message = refused.problems[0].message
+    assert (
+        "Narrow each step that reads entries outside 'speed': 'templates', "
+        "'scaled', 'kmeans' and 'rescaled', or widen 'speed'."
+    ) in message
+    value, _ = _pasted(message)
+    assert set(_scopes_of(value)) == {
+        "speed",
+        "templates",
+        "kmeans",
+        "scaled",
+        "rescaled",
+    }
+    assert plan_pipeline(split, recipe, step_scopes=_scopes_of(value)).problems == ()
+
+
+def test_a_reader_within_the_parent_a_bound_step_and_a_stacking_reader_are_not_named(
+    split: Dataset,
+) -> None:
+    inside: dict[str, JsonValue] = {**TEMPLATES, "id": "inside"}
+    other: dict[str, JsonValue] = {
+        **SCALED,
+        "id": "other",
+        "params": {"suffix": "_cm2"},
+    }
+    stacked: dict[str, JsonValue] = {
+        "id": "stacked",
+        "type": "feature",
+        "feature": "evaluate-labels",
+        "inputs": [{"step": "scaled"}, {"step": "other"}],
+        "params": {"labels": {"kind": "behavior"}, "prediction_column": "speed"},
+    }
+    recipe = _recipe(SPEED, TEMPLATES, inside, SCALED, other, stacked)
+    request = Request(
+        request_id="r",
+        recipe_digest="d",
+        bind={"other": BoundRef(feature="scale-to-cm", run_id="0.1-0123456789")},
+        step_scopes={"speed": TRAIN, "inside": TRAIN},
+    )
+
+    plan = plan_pipeline(split, recipe, request=request, refuse=False)
+
+    refused = [problem for problem in plan.problems if problem.step != "stacked"]
+    assert [(problem.step, problem.where) for problem in refused][:2] == [
+        ("templates", "inputs[0]"),
+        ("scaled", "inputs[0]"),
+    ]
+    assert (
+        "Narrow each step that reads entries outside 'speed': 'templates' and "
+        "'scaled', or widen 'speed'."
+    ) in refused[0].message
+
+
+def test_a_reader_with_a_scope_of_its_own_is_given_its_intersection_with_the_parent(
+    split: Dataset,
+) -> None:
+    recipe = _recipe(SPEED, TEMPLATES, KMEANS)
+    own = Scope(sequences=["s1", "s3"])
+    scopes = {"speed": TRAIN, "templates": own}
+
+    refused = plan_pipeline(split, recipe, step_scopes=scopes, refuse=False)
+
+    assert _where(refused) == [("templates", "inputs[0]"), ("kmeans", "inputs[0]")]
+    value, tokens = _pasted(refused.problems[0].message)
+    pasted = _scopes_of(value)
+    assert pasted["templates"] == Scope(groups=["train"], sequences=["s1", "s3"])
+    assert pasted["kmeans"] == TRAIN
+    assert pasted["speed"] == TRAIN
+    assert 'templates={"groups":["train"],"sequences":["s1","s3"]}' in tokens
+    plan = plan_pipeline(split, recipe, step_scopes=pasted)
+    assert plan.problems == ()
+    before = refused.step("templates").coverage.target
+    after = plan.step("templates").coverage.target
+    assert after == {("train", "s1")}
+    assert after < before
+
+
+def test_a_reader_under_two_narrowed_parents_is_given_both_intersected(
+    split: Dataset,
+) -> None:
+    other: dict[str, JsonValue] = {**SPEED, "id": "other", "params": {"step_size": 2}}
+    both: dict[str, JsonValue] = {
+        **TEMPLATES,
+        "id": "both",
+        "inputs": [{"step": "speed"}, {"step": "other"}],
+    }
+    recipe = _recipe(SPEED, other, both)
+    scopes = {"speed": TRAIN, "other": Scope(sequences=["s1", "s3"])}
+
+    refused = plan_pipeline(split, recipe, step_scopes=scopes, refuse=False)
+
+    assert _where(refused) == [("both", "inputs[0]"), ("both", "inputs[1]")]
+    values = [_pasted(problem.message)[0] for problem in refused.problems]
+    assert values[0] == values[1]
+    pasted = _scopes_of(values[0])
+    assert pasted["both"] == Scope(groups=["train"], sequences=["s1", "s3"])
+    plan = plan_pipeline(split, recipe, step_scopes=pasted)
+    assert plan.problems == ()
+    assert plan.step("both").coverage.target == {("train", "s1")}
+
+
+@pytest.mark.parametrize(
+    "own",
+    [
+        Scope(entries=[("train", "s1"), ("test", "s3")]),
+        Scope(groups=["test"]),
+    ],
+    ids=["names-entries", "empty-intersection"],
+)
+def test_a_reader_scope_that_cannot_be_intersected_leaves_the_values_out(
+    split: Dataset, own: Scope
+) -> None:
+    refused = plan_pipeline(
+        split,
+        _recipe(SPEED, TEMPLATES, KMEANS),
+        step_scopes={"speed": TRAIN, "templates": own},
+        refuse=False,
+    )
+
+    assert _where(refused) == [("templates", "inputs[0]"), ("kmeans", "inputs[0]")]
+    for problem in refused.problems:
+        assert "step_entries=" not in problem.message
+        assert "--step-scope" not in problem.message
+    assert "Narrow each to the same scope as 'speed'." in refused.problems[0].message
+
+
+def test_the_values_are_carried_by_a_reader_that_can_be_narrowed_not_a_bound_one(
+    split: Dataset,
+) -> None:
+    other: dict[str, JsonValue] = {
+        **SCALED,
+        "id": "other",
+        "params": {"suffix": "_cm2"},
+    }
+    request = Request(
+        request_id="r",
+        recipe_digest="d",
+        bind={"other": BoundRef(feature="scale-to-cm", run_id="0.1-0123456789")},
+        step_scopes={"speed": TRAIN},
+    )
+
+    plan = plan_pipeline(
+        split, _recipe(SPEED, other, TEMPLATES), request=request, refuse=False
+    )
+
+    refused = {p.step: p.message for p in plan.problems if p.where == "inputs[0]"}
+    assert list(refused) == ["other", "templates"]
+    assert "step_entries=" in refused["templates"]
+    assert "see " not in refused["templates"]
+    assert (
+        "Narrow each step that reads entries outside 'speed': 'templates', or"
+        in (refused["templates"])
+    )
+    assert "The bind of 'other' takes no scope, so widen 'speed'" in refused["other"]
+    assert "step_entries=" not in refused["other"]
+
+
+def test_a_parent_narrowed_by_many_entries_gives_a_message_without_values(
+    split: Dataset,
+) -> None:
+    padded = Scope(
+        entries=[("train", "s1"), ("train", "s2")]
+        + [("pad", f"p{index}") for index in range(1500)]
+    )
+
+    plan = plan_pipeline(
+        split,
+        _recipe(SPEED, TEMPLATES, KMEANS),
+        step_scopes={"speed": padded},
+        refuse=False,
+    )
+
+    assert _where(plan) == [("templates", "inputs[0]"), ("kmeans", "inputs[0]")]
+    for problem in plan.problems:
+        assert len(problem.message) < MAX_SCOPE_SUGGESTION_CHARS
+        assert "step_entries=" not in problem.message
+        assert "--step-scope" not in problem.message
+        assert "1502 named entries" in problem.message
+    assert "narrow each to the same scope as 'speed'" in (
+        plan.problems[0].message.replace("Narrow", "narrow")
+    )
+    assert "see 'templates'" in plan.problems[1].message
+
+
+def test_values_longer_than_the_suggestion_budget_are_left_out(split: Dataset) -> None:
+    groups = [f"g{index:03d}" for index in range(300)]
+    scope = Scope(groups=["train", *groups])
+
+    plan = plan_pipeline(
+        split, _recipe(SPEED, TEMPLATES), step_scopes={"speed": scope}, refuse=False
     )
 
     (problem,) = plan.problems
-    assert (problem.step, problem.where) == ("templates", "inputs[0]")
-    assert "1 entries of 'templates' are outside what 'speed'" in problem.message
-    assert "('test', 's3')" in problem.message
+    assert "step_entries=" not in problem.message
+    assert "same scope as 'speed'" in problem.message
+    assert "301 groups and 0 sequences" in problem.message
+
+
+# What the planner refused, and where, before a refusal named the readers to
+# narrow: the set of refused plans and each problem's step and place are the
+# contract of the editors that mark problems by step.
+_BASE_PROBLEMS = [
+    pytest.param(
+        (SPEED, TEMPLATES),
+        {"speed": TRAIN},
+        [("templates", "inputs[0]")],
+        id="one-reader",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS),
+        {"speed": TRAIN},
+        [("templates", "inputs[0]"), ("kmeans", "inputs[0]")],
+        id="two-readers",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS),
+        {"speed": TEST, "templates": TEST},
+        [("kmeans", "inputs[0]")],
+        id="one-of-two-readers-narrowed",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS),
+        {"speed": TRAIN, "kmeans": TRAIN},
+        [("templates", "inputs[0]")],
+        id="the-other-reader-narrowed",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS),
+        {"speed": TRAIN, "templates": TRAIN, "kmeans": TRAIN},
+        [],
+        id="every-reader-narrowed",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS),
+        {"templates": TRAIN, "kmeans": TEST},
+        [],
+        id="a-params-reference-carries-no-rule",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES),
+        {"speed": Scope(entries=[("train", "s1")])},
+        [("templates", "inputs[0]")],
+        id="entries-scope",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS, SCALED, RESCALED),
+        {"speed": TRAIN},
+        [("templates", "inputs[0]"), ("scaled", "inputs[0]"), ("kmeans", "inputs[0]")],
+        id="readers-below-a-refused-one-have-no-problem-of-their-own",
+    ),
+    pytest.param(
+        (SPEED, TEMPLATES, KMEANS, SCALED, RESCALED),
+        {"speed": TRAIN, "templates": TRAIN, "kmeans": TRAIN, "scaled": TRAIN},
+        [("rescaled", "inputs[0]")],
+        id="a-reader-below-a-narrowed-one",
+    ),
+]
+
+
+@pytest.mark.parametrize(("steps", "scopes", "expected"), _BASE_PROBLEMS)
+def test_the_plans_refused_and_their_problems_are_those_of_a_plain_refusal(
+    split: Dataset,
+    steps: tuple[dict[str, JsonValue], ...],
+    scopes: dict[str, Scope],
+    expected: list[tuple[str, str]],
+) -> None:
+    recipe = _recipe(*steps)
+
+    plan = plan_pipeline(split, recipe, step_scopes=scopes, refuse=False)
+
+    assert _where(plan) == expected
+    if expected:
+        with pytest.raises(RecipeRefused):
+            _ = plan_pipeline(split, recipe, step_scopes=scopes)
 
 
 def test_a_params_reference_to_a_narrower_step_is_allowed(split: Dataset) -> None:

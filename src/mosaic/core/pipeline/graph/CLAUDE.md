@@ -255,6 +255,16 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   to be complete. A step that stacks its inputs (`ConsumerDecl.stacks_inputs`) is asked
   for the union of its `inputs` parents (`PlannedStep.stacked_parents`), because each
   entry comes from one of them (`test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more`).
+  A problem for each refused reader stays at that reader. When its parent has a step
+  scope, the message of every one of them names every step that reads entries outside
+  it, found by a walk down `inputs` and `tracks` that skips bound steps and stacking
+  readers. The first one that a bind does not hold, in topological order, carries the
+  `step_entries` value and the `--step-scope` tokens: one mapping for the whole
+  recipe, where each reader keeps its own scope intersected with the scope of every
+  narrowed parent above it. They are left out when a scope names `entries`, an
+  intersection is empty or they pass `MAX_SCOPE_SUGGESTION_CHARS`
+  (`test_pipeline_step_scopes.py`). `core` builds both forms and the tests check they
+  parse.
 - `plan_pipeline` refuses a step that is `scope_dependent` and `fits`, both read off the
   built feature, when its target holds a group the manifest's `splits` gives the role
   `test` or `sealed` (`held_out_fit_problem`, `heldout.py`). It does so with no step scope

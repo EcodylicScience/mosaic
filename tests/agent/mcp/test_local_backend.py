@@ -1224,6 +1224,30 @@ def test_plan_recipe_step_entries_fingerprint_matches_submit(split: Dataset) -> 
     assert starter.started == [submitted.request_id]
 
 
+def test_plan_recipe_of_a_parent_narrowed_by_many_entries_stays_within_the_result_budget(
+    split: Dataset,
+) -> None:
+    backend = LocalBackend([split.manifest_path], warm=False)
+    padded = [["train", "s1"], ["train", "s2"]] + [
+        ["pad", f"p{index}"] for index in range(1500)
+    ]
+
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        step_entries={"speed": padded},
+    )
+
+    (problem,) = plan.problems
+    assert (problem.step, problem.where) == ("templates", "inputs[0]")
+    assert "1502 named entries" in problem.message
+    assert "step_entries=" not in problem.message
+    assert len(plan.model_dump_json()) < MAX_RESULT_CHARS
+
+
 def test_submit_pipeline_records_step_scopes(split: Dataset) -> None:
     from mosaic.core.pipeline.graph import load_request
 

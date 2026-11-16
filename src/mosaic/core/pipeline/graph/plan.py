@@ -49,6 +49,8 @@ each such problem at the place in the recipe that would change, and
 
 from __future__ import annotations
 
+import json
+import shlex
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
@@ -164,6 +166,7 @@ __all__ = [
     "DepsIncomplete",
     "HeldOnParents",
     "IdentityUnresolved",
+    "MAX_SCOPE_SUGGESTION_CHARS",
     "MISSING_SAMPLE",
     "Plan",
     "PlannedStep",
@@ -185,6 +188,14 @@ MISSING_SAMPLE: Final = 5
 A shortfall is acted on by a person deciding whether to proceed, and a list of
 several hundred entry names is not read. Naming a few and counting the rest is
 what makes the count mean something.
+"""
+
+MAX_SCOPE_SUGGESTION_CHARS: Final = 1_500
+"""The most characters a coverage refusal spends on the scopes to paste.
+
+The ``step_entries`` value and the ``--step-scope`` tokens count together. A
+refusal that would exceed it says to narrow each reader to its parent's scope
+and writes neither.
 """
 
 # --- why a step is not simply running ------------------------------------------
@@ -1481,19 +1492,17 @@ def _step_scope_problems(
                 "whole dataset, and name entries or groups the dataset holds"
             )
             found.append(Problem(step_id, where, message))
-    for step in recipe.steps:
-        found.extend(
-            _input_coverage_problems(step, planned[step.id].coverage.target, planned)
-        )
+    found.extend(_input_coverage_problems(recipe, planned, step_scopes, bind))
     return found
 
 
 def _input_coverage_problems(
-    step: Step,
-    target: frozenset[Entry],
+    recipe: Recipe,
     planned: Mapping[str, PlannedStep],
+    step_scopes: Mapping[str, Scope],
+    bind: Mapping[str, BoundRef],
 ) -> list[Problem]:
-    """A problem at each data input of *step* planned over fewer entries than it.
+    """A problem at each data input of a step planned over fewer entries than it.
 
     A step that stacks its inputs reads each entry from one of them, so its
     entries must lie within the **union** of what its inputs are asked for, and
@@ -1502,7 +1511,80 @@ def _input_coverage_problems(
     two of them hold. The planner sees what each is asked for, not what a
     scope-free run already holds from an earlier request, so that case is
     still refused only when the step runs.
+
+    A problem at a reader of a parent that has a step scope names every step
+    that reads entries outside that scope, so one refusal says all that
+    narrowing the parent asks of the recipe (:class:`_Narrowing`).
     """
+    findings: list[Problem | _Refusal] = []
+    for step in recipe.steps:
+        findings.extend(
+            _coverage_findings(step, planned[step.id].coverage.target, planned)
+        )
+    refusals = [found for found in findings if isinstance(found, _Refusal)]
+    narrowings: dict[str, _Narrowing] = {}
+    for parent in sorted({refusal.parent for refusal in refusals}):
+        if parent not in step_scopes:
+            continue
+        narrowing = _narrowing_for(recipe, parent, refusals, planned, step_scopes, bind)
+        if narrowing is not None:
+            narrowings[parent] = narrowing
+    values = _scope_values(narrowings, step_scopes)
+    return [
+        found
+        if isinstance(found, Problem)
+        else Problem(
+            found.step,
+            found.where,
+            _refusal_message(
+                found, narrowings.get(found.parent), values, found.step in bind
+            ),
+        )
+        for found in findings
+    ]
+
+
+@dataclass(frozen=True)
+class _Refusal:
+    """A reader of *parent* planned over entries *parent* is not asked for.
+
+    Attributes:
+        step: The reader.
+        parent: The step it reads through ``inputs`` or ``tracks``.
+        where: Where it reads it.
+        outside: The entries of the reader outside the parent, sorted.
+    """
+
+    step: str
+    parent: str
+    where: str
+    outside: tuple[Entry, ...]
+
+
+@dataclass(frozen=True)
+class _Narrowing:
+    """What narrowing one parent asks of the readers below it.
+
+    Attributes:
+        scope: The parent's step scope.
+        readers: The steps to narrow to it, in topological order.
+        carrier: The reader whose message holds the values to paste, the first
+            refused one in topological order that a bind does not hold.
+        dependent: The ``readers`` whose identity covers their entries.
+    """
+
+    scope: Scope
+    readers: tuple[str, ...]
+    carrier: str
+    dependent: tuple[str, ...]
+
+
+def _coverage_findings(
+    step: Step,
+    target: frozenset[Entry],
+    planned: Mapping[str, PlannedStep],
+) -> list[Problem | _Refusal]:
+    """The stacking problems of *step*, then each read of a narrower parent."""
     if not isinstance(step, FeatureStepSpec):
         return []
     reads: list[tuple[str, str]] = [
@@ -1512,7 +1594,7 @@ def _input_coverage_problems(
     ]
     if step.tracks is not None:
         reads.append((step.tracks.step, "tracks"))
-    found: list[Problem] = []
+    found: list[Problem | _Refusal] = []
     stacked = planned[step.id].stacked_parents
     if stacked:
         covered = frozenset(
@@ -1553,16 +1635,222 @@ def _input_coverage_problems(
         if above is None:
             continue
         outside = sorted(target - above.coverage.target)
-        if not outside:
-            continue
-        sample = ", ".join(str(entry) for entry in outside[:MISSING_SAMPLE])
-        message = (
-            f"{len(outside)} entries of {step.id!r} are outside what {parent!r} "
-            f"is asked for: {sample}. Narrow {step.id!r} to entries of "
-            f"{parent!r}, or widen {parent!r}"
-        )
-        found.append(Problem(step.id, where, message))
+        if outside:
+            found.append(_Refusal(step.id, parent, where, tuple(outside)))
     return found
+
+
+def _narrowing_for(
+    recipe: Recipe,
+    parent: str,
+    refusals: Sequence[_Refusal],
+    planned: Mapping[str, PlannedStep],
+    step_scopes: Mapping[str, Scope],
+    bind: Mapping[str, BoundRef],
+) -> _Narrowing | None:
+    """What to narrow so that no reader of *parent* is asked for more than it.
+
+    The walk starts at each refused reader of *parent* and goes down through
+    ``inputs`` and ``tracks`` references alone: a params reference and ``after``
+    carry no entry rule, which is also why ``topo.descendants_of`` is not used.
+    A step is listed when its target is not within the parent's, and the walk
+    goes on only below a listed step, because a step within the parent's target
+    keeps what reads it within the parent's too. A bound step takes no scope
+    and a step that stacks its inputs holds the union of them, so the walk does
+    not enter either.
+
+    Returns:
+        The narrowing, or ``None`` when no step can be narrowed.
+    """
+    within = planned[parent].coverage.target
+    children: dict[str, list[str]] = {}
+    for step in recipe.steps:
+        if not isinstance(step, FeatureStepSpec) or planned[step.id].stacked_parents:
+            continue
+        reads = {item.step for item in step.inputs if isinstance(item, StepRef)}
+        if step.tracks is not None:
+            reads.add(step.tracks.step)
+        for read in sorted(reads):
+            children.setdefault(read, []).append(step.id)
+    refused = [refusal for refusal in refusals if refusal.parent == parent]
+    listed: set[str] = set()
+    seen: set[str] = set()
+    pending = [refusal.step for refusal in refused]
+    while pending:
+        step_id = pending.pop()
+        if step_id in seen:
+            continue
+        seen.add(step_id)
+        if step_id in bind or planned[step_id].coverage.target <= within:
+            continue
+        listed.add(step_id)
+        pending.extend(children.get(step_id, ()))
+    if not listed:
+        return None
+    order = {step.id: index for index, step in enumerate(topological_order(recipe))}
+    readers = tuple(sorted(listed, key=order.__getitem__))
+    carrier = min(
+        (refusal.step for refusal in refused if refusal.step in listed),
+        key=order.__getitem__,
+    )
+    return _Narrowing(
+        scope=step_scopes[parent],
+        readers=readers,
+        carrier=carrier,
+        dependent=tuple(
+            step_id for step_id in readers if planned[step_id].scope_dependent
+        ),
+    )
+
+
+def _selector_json(scope: Scope) -> str:
+    """*scope* as the compact JSON selector the MCP and the CLI parse."""
+    return json.dumps(
+        scope.model_dump(mode="json", exclude_none=True),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _both(first: list[str] | None, second: list[str] | None) -> list[str] | None:
+    """The names in both lists, ``None`` standing for every name."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return [name for name in dict.fromkeys(first) if name in set(second)]
+
+
+def _intersection(current: Scope | None, narrowing: Scope) -> Scope | None:
+    """The selector of what *current* and *narrowing* both select, if one writes it.
+
+    Groups and sequences are intersected field by field, ``None`` standing for
+    all of them, so the result selects the cross product of the two
+    intersections. A scope naming entries, or an intersection that selects
+    nothing, has no selector, and the result is ``None``.
+    """
+    if narrowing.entries is not None or (current and current.entries is not None):
+        return None
+    if current is None:
+        return narrowing
+    groups = _both(current.groups, narrowing.groups)
+    sequences = _both(current.sequences, narrowing.sequences)
+    if groups == [] or sequences == [] or (groups is None and sequences is None):
+        return None
+    return Scope(groups=groups, sequences=sequences)
+
+
+def _scope_values(
+    narrowings: Mapping[str, _Narrowing], step_scopes: Mapping[str, Scope]
+) -> tuple[str, str] | None:
+    """The ``step_entries`` value and the ``--step-scope`` tokens that narrow every reader.
+
+    Both are one mapping, the same for every refusal: the step scopes the
+    request has, with each reader to narrow given what it already selects
+    intersected with the scope of each narrowed parent it reads below. The
+    readers then fit over fewer entries and read within every parent. They are
+    left out when a scope involved names entries or an intersection selects
+    nothing, and when the two take more than :data:`MAX_SCOPE_SUGGESTION_CHARS`.
+    """
+    merged: dict[str, Scope] = dict(step_scopes)
+    for parent in sorted(narrowings):
+        narrowing = narrowings[parent]
+        for reader in narrowing.readers:
+            narrowed = _intersection(merged.get(reader), narrowing.scope)
+            if narrowed is None:
+                return None
+            merged[reader] = narrowed
+    value = json.dumps(
+        {
+            step_id: narrowed.model_dump(mode="json", exclude_none=True)
+            for step_id, narrowed in merged.items()
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    tokens = " ".join(
+        "--step-scope " + shlex.quote(f"{step_id}={_selector_json(narrowed)}")
+        for step_id, narrowed in sorted(merged.items())
+    )
+    if len(value) + len(tokens) > MAX_SCOPE_SUGGESTION_CHARS:
+        return None
+    return value, tokens
+
+
+def _scope_summary(scope: Scope) -> str:
+    """A step scope as its selector, or its size when the selector is long."""
+    if scope.entries is not None:
+        return f"{len(scope.entries)} named entries"
+    text = _selector_json(scope)
+    if len(text) <= MAX_SCOPE_SUGGESTION_CHARS // 10:
+        return text
+    return (
+        f"{len(scope.groups or ())} groups and {len(scope.sequences or ())} sequences"
+    )
+
+
+def _quoted(names: Sequence[str]) -> str:
+    """*names* quoted and joined as prose."""
+    quoted = [repr(name) for name in names]
+    if len(quoted) < 3:
+        return " and ".join(quoted)
+    return f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _refusal_message(
+    refusal: _Refusal,
+    narrowing: _Narrowing | None,
+    values: tuple[str, str] | None,
+    bound: bool,
+) -> str:
+    """Why *refusal*'s reader is asked for more than its parent, and the way out.
+
+    *values* are the ``step_entries`` value and the ``--step-scope`` tokens, or
+    ``None`` to leave them out. *bound* is whether a bind holds the reader.
+    """
+    step, parent = refusal.step, refusal.parent
+    sample = ", ".join(str(entry) for entry in refusal.outside[:MISSING_SAMPLE])
+    head = (
+        f"{len(refusal.outside)} entries of {step!r} are outside what {parent!r} "
+        f"is asked for"
+    )
+    if bound:
+        return (
+            f"{head}: {sample}. The bind of {step!r} takes no scope, so widen "
+            f"{parent!r} or drop the bind"
+        )
+    if narrowing is None:
+        return (
+            f"{head}: {sample}. Narrow {step!r} to entries of {parent!r}, or widen "
+            f"{parent!r}"
+        )
+    parts = [
+        f"{head} (its step scope is {_scope_summary(narrowing.scope)}): {sample}.",
+        f"Narrow each step that reads entries outside {parent!r}: "
+        f"{_quoted(narrowing.readers)}, or widen {parent!r}.",
+    ]
+    if narrowing.dependent:
+        subject = (
+            f"{narrowing.dependent[0]!r} is"
+            if len(narrowing.dependent) == 1
+            else f"{_quoted(narrowing.dependent)} are"
+        )
+        parts.append(
+            f"{subject} scope-dependent: narrowing one fits it over fewer entries "
+            "and gives it a new run id."
+        )
+    if step != narrowing.carrier:
+        parts.append(f"For the values to send, see {narrowing.carrier!r}.")
+    elif values is None:
+        parts.append(f"Narrow each to the same scope as {parent!r}.")
+    else:
+        value, tokens = values
+        parts.append(
+            f"To narrow them all, send step_entries={value} to plan_recipe and "
+            f"submit_pipeline, or pass {tokens} to mosaic pipeline plan, submit "
+            "and run."
+        )
+    return " ".join(parts)
 
 
 def _deferring_converter(

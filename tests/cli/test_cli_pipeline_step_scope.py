@@ -7,6 +7,8 @@ request to whole groups, as the MCP ``{"groups": [...]}`` selector does.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -90,6 +92,46 @@ def test_plan_with_step_scope_narrows_the_step(split: Dataset, tmp_path: Path) -
 
     assert _targets(plan) == {"speed": 3, "templates": 2}
     assert tree_snapshot(split.base_dir) == before
+
+
+def test_the_tokens_a_refusal_gives_plan_without_problems(
+    split: Dataset, tmp_path: Path
+) -> None:
+    from mosaic.core.pipeline.graph import PlanWire
+
+    recipe = _recipe_file(tmp_path)
+    refused = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            recipe,
+            "--manifest",
+            str(split.manifest_path),
+            "--step-scope",
+            'speed={"groups": ["train"]}',
+            "--json",
+        ],
+    )
+
+    assert refused.exit_code == 1
+    problems = PlanWire.model_validate_json(refused.stdout).problems
+    assert [(problem.step, problem.where) for problem in problems] == [
+        ("templates", "inputs[0]")
+    ]
+    pasted = re.search(r"or pass (.*) to mosaic pipeline plan", problems[0].message)
+    assert pasted is not None
+    tokens = shlex.split(pasted.group(1))
+    assert tokens == [
+        "--step-scope",
+        'speed={"groups":["train"]}',
+        "--step-scope",
+        'templates={"groups":["train"]}',
+    ]
+    plan = _plan(split, recipe, *tokens)
+    assert plan["problems"] == []
+    assert _targets(plan) == {"speed": 2, "templates": 2}
 
 
 @pytest.mark.parametrize(
