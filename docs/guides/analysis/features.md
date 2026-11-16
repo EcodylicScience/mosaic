@@ -99,7 +99,9 @@ row that crosses a bin edge to each bin by the seconds it overlaps.
 over `baseline_s` before it, the minimum and mean over `response_s` after it, and the
 latency from the onset to the first value at or above `recover_fraction` times its
 baseline after the response window's minimum (NaN, with `recovered` false, when it does
-not; `recovered` is null when the baseline or the response has no value). A single low
+not; `recovered` is null when the baseline or the response has no value).
+`recovery_time_s` is the survival time that goes with `recovered`: the latency when it
+recovered, the time observed without recovering when not. A single low
 sample sets the minimum, so filter a noisy value first: `speed-angvel` writes
 `speed_smooth` when `smooth_window` is set (use it as `value_column`), and
 `trajectory-smooth` smooths the positions before `speed-angvel`. `event` counts an

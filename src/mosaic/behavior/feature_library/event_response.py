@@ -4,9 +4,10 @@ EventResponse -- one row per individual and event, measuring a value around its 
 Each event has an onset time. For every individual and event the feature takes
 the mean of the value over ``baseline_s`` seconds before the onset, the minimum
 and the mean over ``response_s`` seconds from it, and the latency until the
-value recovers to ``recover_fraction`` times its baseline. It measures a
-response that lowers the value, such as the freezing that a looming stimulus
-causes in ``speed``.
+value recovers to ``recover_fraction`` times its baseline, and the time it was
+observed, ``recovery_time_s``, for a survival analysis of the recovery. It
+measures a response that lowers the value, such as the freezing that a looming
+stimulus causes in ``speed``.
 
 Onsets come from one of three sources:
 
@@ -121,7 +122,9 @@ _RECOVER_FRACTION_DESCRIPTION = (
     "whose value is at or above that level. A response whose minimum is at or "
     "above the level recovers at latency 0. One that does not return has a NaN "
     "latency and recovered false, and one with no baseline or no response rows has "
-    "a NaN latency and a null recovered."
+    "a NaN latency and a null recovered. recovery_time_s holds the censored time "
+    "that the NaN latency leaves out: the latency when recovered is true, and the "
+    "time observed without recovering when it is false."
 )
 
 
@@ -144,6 +147,9 @@ class EventResponse:
         ``recover_fraction`` times the baseline, NaN when it does not
       - recovered: whether it did, a nullable boolean that is null when the
         baseline or the response has no value to measure
+      - recovery_time_s: the survival time that goes with ``recovered`` as its
+        event flag: the latency when it recovered, the time observed without
+        recovering when not, and NaN when ``recovered`` is null
       - n_baseline, n_response: the rows with a value in each window
 
     Field documentation is on
@@ -158,6 +164,14 @@ class EventResponse:
     trough reaches it. It is NaN with ``recovered`` null, not false, when there is
     nothing to measure: the baseline is NaN, or the response window holds no
     value. A column of nulls does not say the value failed to recover.
+
+    ``recovery_time_s`` is the latency when the value recovered. When it did
+    not, it is ``response_s`` if a row with a value lies at or after
+    ``onset_time + response_s``, and otherwise the time of the individual's
+    last row with a value, less the onset. A row without a value observes
+    nothing, so it does not extend the time. ``recovered`` is the event flag
+    and ``recovery_time_s`` the time of a survival analysis, and the mean of
+    the time is the latency capped at the window.
 
     An individual with no row inside an explicit onset's windows still has a row
     for it, with counts of 0. Under ``onset_column`` and ``labels``, ``event``
@@ -178,7 +192,7 @@ class EventResponse:
 
     category = "summary"
     name = "event-response"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -209,6 +223,7 @@ class EventResponse:
             Column("response_mean"),
             Column("recovery_latency_s"),
             Column("recovered"),
+            Column("recovery_time_s"),
             Column("n_baseline"),
             Column("n_response"),
         ),
@@ -381,6 +396,7 @@ _MEASURE_COLUMNS: Final = (
     "response_mean",
     "recovery_latency_s",
     "recovered",
+    "recovery_time_s",
     "n_baseline",
     "n_response",
 )
@@ -437,6 +453,9 @@ def _measure(
     )
     measured["recovery_latency_s"] = latency
     measured["recovered"] = recovered
+    measured["recovery_time_s"] = _recovery_time(
+        time[known], onset, latency, recovered, params.response_s
+    )
     return {name: measured[name] for name in _MEASURE_COLUMNS}
 
 
@@ -460,3 +479,26 @@ def _recovery(
     if back.size == 0:
         return math.nan, False
     return float(time[trough + 1 + back[0]] - onset), True
+
+
+def _recovery_time(
+    observed: np.ndarray,
+    onset: float,
+    latency: float,
+    recovered: bool | None,
+    response_s: float,
+) -> float:
+    """The time from *onset* that a response was observed, with its event flag.
+
+    It is *latency* when *recovered*, and NaN when *recovered* is ``None``.
+    Otherwise it is *response_s* when *observed*, the ascending times of the
+    rows with a value, reach ``onset + response_s``, and else the last of them
+    at or after *onset*, less *onset*.
+    """
+    if recovered is None:
+        return math.nan
+    if recovered:
+        return latency
+    if observed[-1] >= onset + response_s:
+        return response_s
+    return float(observed[-1] - onset)

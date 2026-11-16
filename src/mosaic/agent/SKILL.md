@@ -385,7 +385,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to
   the first value at or above `recover_fraction` times the baseline after the response
   window's minimum (NaN with `recovered` false when it does not return, and `recovered`
-  null when the baseline or the response has no value). `event` counts an individual's
+  null when the baseline or the response has no value). `recovery_time_s` is the
+  censored time for a survival analysis: the latency when it recovered, the time observed
+  without recovering when not, NaN when `recovered` is null. Aggregations skip a missing
+  value, so fill or cap a value in the feature that produces it, as `recovery_time_s`
+  does for the latency. `event` counts an individual's
   own onsets under `onset_column` and `labels`, so join one stimulus across individuals
   on `onset_time`. A single low sample sets the minimum, so filter a noisy value first:
   `speed-angvel` writes `speed_smooth` under `smooth_window` (set `value_column` to

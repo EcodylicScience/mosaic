@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, and a missing value stays missing under a threshold
+## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, and `event-response` writes `recovery_time_s`
 
 `sequence-aggregate` and `individual-aggregate` take `bin_s`, the length in seconds of
 time bins. Each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the
@@ -37,6 +37,15 @@ A set `threshold` adds the key `threshold_missing` to the run identity, so every
 thresholded run of the three features has a new run id and a plan computes its step
 again. At `>`, `threshold_op` leaves the run identity as it was, and a run without a
 `threshold` keeps its run id. No feature's `version` moves.
+
+`event-response` writes `recovery_time_s`, the survival time that goes with `recovered`:
+the latency when it recovered, the time the response was observed without recovering
+when it did not (`response_s`, or the last row with a value less the onset when the
+table ends inside the window), and NaN when `recovered` is null. `recovery_latency_s`
+and `recovered` are unchanged. The aggregations skip a missing value, so a latency that
+should count at its window's length is filled in the feature that writes it, and the
+`aggs` description says so. `event-response` moves from `0.1` to `0.2`, so its run ids
+change and a plan computes its steps again. No other run id moves.
 
 ## 0.22.0: features defined in a dataset, the admission gate counts the memory the kernel cannot reclaim, runs record their cost and a step can be probed, ROI occupancy, run summaries, features read `time`, and planning and conversion scale to thousands of entries
 

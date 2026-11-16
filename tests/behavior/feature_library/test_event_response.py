@@ -94,6 +94,7 @@ def test_a_known_recovery_latency_and_the_window_statistics() -> None:
         "response_mean",
         "recovery_latency_s",
         "recovered",
+        "recovery_time_s",
         "n_baseline",
         "n_response",
     ]
@@ -107,6 +108,7 @@ def test_a_known_recovery_latency_and_the_window_statistics() -> None:
     assert row["response_mean"] == pytest.approx(117.0 / 15.0)
     assert row["recovery_latency_s"] == 4.0
     assert out["recovered"].tolist() == [True]
+    assert row["recovery_time_s"] == 4.0
     assert (row["n_baseline"], row["n_response"]) == (10, 15)
 
 
@@ -120,6 +122,58 @@ def test_a_response_that_never_recovers_has_nan_latency_and_a_flag() -> None:
     assert row["response_min"] == 3.0
     assert math.isnan(row["recovery_latency_s"])
     assert out["recovered"].tolist() == [False]
+
+
+def test_a_recovered_response_has_its_latency_as_the_recovery_time() -> None:
+    out = _apply(_recovering(), onset_times=[20.0])
+
+    assert out.iloc[0]["recovery_time_s"] == out.iloc[0]["recovery_latency_s"] == 4.0
+
+
+def test_a_zero_latency_recovery_has_recovery_time_zero() -> None:
+    times = np.arange(40, dtype=float)
+
+    out = _apply(_table(times, np.full(40, 10.0)), onset_times=[20.0])
+
+    assert out.iloc[0]["recovery_time_s"] == 0.0
+
+
+def test_an_unrecovered_response_observed_through_its_window_is_censored_at_it() -> (
+    None
+):
+    times = np.arange(40, dtype=float)
+    values = np.where(times >= 20.0, 3.0, 10.0)
+
+    out = _apply(_table(times, values), onset_times=[20.0])
+
+    row = out.iloc[0]
+    assert out["recovered"].tolist() == [False]
+    assert math.isnan(row["recovery_latency_s"])
+    assert row["recovery_time_s"] == 15.0
+
+
+def test_an_unrecovered_response_ending_inside_its_window_is_censored_at_the_end() -> (
+    None
+):
+    times = np.arange(30, dtype=float)
+    values = np.where(times >= 20.0, 3.0, 10.0)
+
+    out = _apply(_table(times, values), onset_times=[20.0])
+
+    assert out["recovered"].tolist() == [False]
+    assert out.iloc[0]["recovery_time_s"] == 9.0
+
+
+def test_the_censored_time_ends_at_the_last_row_with_a_value() -> None:
+    """A null from t=27 observes nothing, so the response ends at t=26."""
+    times = np.arange(40, dtype=float)
+    values = np.where(times >= 20.0, 3.0, 10.0)
+    values[27:] = np.nan
+
+    out = _apply(_table(times, values), onset_times=[20.0])
+
+    assert out["recovered"].tolist() == [False]
+    assert out.iloc[0]["recovery_time_s"] == 6.0
 
 
 def test_a_value_that_never_falls_below_the_recovery_level_recovers_at_once() -> None:
@@ -245,6 +299,7 @@ def test_every_individual_has_a_row_for_every_explicit_time() -> None:
     assert math.isnan(beyond["baseline_mean"])
     assert math.isnan(beyond["recovery_latency_s"])
     assert beyond["recovered"] is pd.NA
+    assert math.isnan(beyond["recovery_time_s"])
 
 
 def test_a_window_without_a_baseline_has_no_recovery_to_report() -> None:
@@ -256,6 +311,7 @@ def test_a_window_without_a_baseline_has_no_recovery_to_report() -> None:
     assert row["response_min"] == 10.0
     assert math.isnan(row["recovery_latency_s"])
     assert row["recovered"] is pd.NA
+    assert math.isnan(row["recovery_time_s"])
 
 
 def test_a_window_without_a_response_has_no_recovery_to_report() -> None:
@@ -269,6 +325,7 @@ def test_a_window_without_a_response_has_no_recovery_to_report() -> None:
     assert math.isnan(row["response_min"])
     assert math.isnan(row["recovery_latency_s"])
     assert row["recovered"] is pd.NA
+    assert math.isnan(row["recovery_time_s"])
 
 
 def test_recovered_is_a_nullable_boolean_column() -> None:
