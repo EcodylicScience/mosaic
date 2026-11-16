@@ -8,6 +8,98 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: sequence tags as a label series
+
+### The tag table is a label series
+
+A dataset's sequence tags are the `tags` label series, with one key, `dataset`. A
+revision is the whole tag table, a `tags.mosaic.json` file under
+`labels_raw/tags/dataset/rev<N>/`, written once and never edited. Its file format is
+deterministic: one table gives one payload whatever the order of its inputs. Each
+revision has a row in the series index with the manifest uuid of the dataset that saved
+it, its `origin` (a project of the API, or the CSV import below) and the number of
+sequences it lists. A revision edited after it was indexed is refused. No existing path,
+index or run id moves.
+
+### A run records the tag table it read, and its identifier covers the tags it names
+
+A feature that reads the tag table declares what it reads. Its run id gains the term
+`_label_revisions`, the sorted `[origin_uuid, key, digest]` of each label series
+revision the run read. The digest covers the tags the feature names over every sequence
+of the table, so an edit of another tag leaves the identifier unchanged, and an edit of
+a tag it names, or a table that lists another sequence, moves it. The term is absent
+when no revision was read, so every existing run keeps its identifier, and no line of
+the identity goldens moves. `params.json` records each revision in its `_resolved` list
+as an entry `series[tags]` with its `series`, `key`, `origin_uuid`, `revision`, `digest`
+and `payload_digest`. The revision number and the payload digest are recorded and not
+hashed.
+
+`resolve_series_refs` (`mosaic.core.pipeline.label_series_index`) resolves references to
+revisions of any label series, and `LabelRevisionRef`
+(`mosaic.core.pipeline.label_series`) is a reference: a `key`, an `origin_uuid` for the
+case that several datasets index the key, and a `revision`. Keypoint sets resolve
+through them now. A reference that matches the revisions of several datasets and names
+none is a `KeyError`.
+
+### One request, one tag table
+
+`Request.tag_revision` records the revision that a submission planned with, and is
+written only when it is set, so a request file without tags is unchanged. Planning and
+`mosaic run --graph-request` read that revision, so an import between the plan and a
+step does not give one request two tables. `plan_pipeline` takes `series_payloads`, a
+mapping from `(series, key)` to the bytes of a revision that is not written yet, of
+which only `("tags", "dataset")` is read, to plan against a table the caller has built.
+Several indexed datasets' revisions without an `origin_uuid` in `tag_revision` are
+reported as a problem of each reading step, and nothing is raised.
+
+`mosaic pipeline verify` has no request, so it plans the recipe against the latest
+revision. After an import that changed a tag a step names, the step of a finished
+request reads as having no complete run until the recipe is submitted again.
+
+A keypoint set revision whose file was edited in place is now refused when a pipeline is
+planned. Until now only the scan refused it, and a plan carried on with the identifier
+of the state the revision used to hold.
+
+### `sequence-tag-columns` 0.1
+
+The feature attaches the sequence tags that `fields` names to every row of its input,
+the same value on every row of a sequence. It reads tracks with or without tracklets. A
+tag's type decides its column: `label` is a boolean that is false where unassigned,
+`bool` is `boolean`, `int` is `Int64`, `float` is `float64`, and `text` and
+`categorical` are text. `field_renames` names the output column of a tag. The plan
+refuses a field that no tag of the table is, a field or a rename that gives a column the
+name of one the step writes (`group`, `sequence`, `id`, `frame`, `time`), and two fields
+that would write one column. The feature joins the `tag` category beside
+`id-tag-columns`.
+
+### `mosaic sequence-tags`
+
+`mosaic sequence-tags import <csv> -m dataset.yaml` writes a CSV of sequence tags as the
+next revision of the tag table, with `origin`
+`{"system": "mosaic-csv", "file": <name>, "sha256": <digest>}`.
+`--key NAME=entry|sequence|recording` names the column that holds the entries,
+`--type NAME=TYPE` declares a type (a new tag's type is otherwise inferred), `--replace`
+removes the tags the CSV does not name, `--dry-run` writes nothing and takes no lock,
+and `--json` prints the report. A tag the CSV names takes its values on every entry, and
+an import that changes nothing writes no revision. `mosaic sequence-tags list` shows
+each tag with its type, values and entry counts, and writes nothing.
+
+The import is refused on a dataset the API manages, when the latest revision came from
+an API project, when it was saved by another dataset (as in a copy with a new uuid), and
+when several datasets' revisions are indexed. It is refused too when another revision
+appeared between its read and its write.
+
+A row that names no entry is a `ScanFinding` with `kind` `labels`, `problem`
+`row_unmatched` and, in the new field `ScanFinding.line`, the CSV line (the header is
+line 1). The CLI prints it as `mosaic scan` prints findings, and the matched rows are
+written.
+
+The MCP tool `manage_dataset` gains the actions `import_sequence_tags` (`path`, `key`,
+`types`, `replace`, `dry_run`) and `list_sequence_tags`, and the confirmation condition
+`replace_sequence_tags`. A refusal of the library answers `conflict` with the reason
+`sequence_tags_refused`, `sequence_tags_moved` or `sequence_tags_unavailable`, or
+`invalid` with `sequence_tags_invalid` for a CSV or a key that cannot be read.
+
 ## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns; the catalog search reads keywords and filters by track space, a parallel knob needs no `--workers`, a coverage refusal names every step to narrow, runs record the size covariates of their entries, the machine and their load by number in flight, and a probe of up to 5 entries measures threads and processes
 
 `index_lock` warns with `CachingMountWarning`, once per mount, when a dataset is on a

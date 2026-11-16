@@ -162,4 +162,7 @@ addressed by `run_id`. Resubmit one that is still running.
 constraints.
 
 These describe the *dataset*. The per-sequence tags that group sequences for analysis
-are a different thing, owned by the API that manages a project.
+are a different thing: one table, which `mosaic sequence-tags` writes from a CSV
+([Sequence tags](../../dataset.md#sequence-tags)) and the API that manages a project
+writes. Each save is a new revision, and a dataset with an API project takes its tags
+from the project, so the import is refused there.

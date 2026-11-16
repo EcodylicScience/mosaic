@@ -109,7 +109,8 @@ whole store. Every other dataset stays at version 3 and opens in an older mosaic
 ├── media_raw/
 ├── tracks_raw/
 ├── labels_raw/
-│   └── keypoints/          saved revisions of annotation sets
+│   ├── keypoints/          saved revisions of annotation sets
+│   └── tags/               saved revisions of the sequence tags
 ├── media/
 │   ├── frames/
 │   └── preprocess/         media variants, one directory per variant
@@ -175,17 +176,18 @@ Leave them in place. Deleting one while a process writes the index lets two writ
 erase each other's rows. A script that lists a dataset folder should expect them and
 skip them.
 
-**`labels_raw/keypoints/` is versioned, and the rest of `labels_raw/` is not.** An
-uploaded label file is the current truth about its sequence: change it, and whatever
-was computed from it is stale. A keypoint annotation set is saved whenever a training
-run or an export needs a fixed copy of it, so each changed save becomes a new folder,
-`<set>/rev1`, `<set>/rev2`, and nothing is ever rewritten. Each folder holds the
-set's full saved state, `annotations.mosaic.json`, and a COCO Keypoints export of it,
-`annotations.coco.json`, for other tools. A trained model names the revision it read,
-which is how it stays tied to exactly those annotations. Treat a revision folder as
-read-only: one that was edited afterwards is refused.
-`labels_raw/behavior/` is reserved for saved behavior scorings, which will work the
-same way.
+**`labels_raw/keypoints/` and `labels_raw/tags/` are versioned, and the rest of
+`labels_raw/` is not.** An uploaded label file is the current truth about its sequence:
+change it, and whatever was computed from it is stale. A keypoint annotation set is
+saved whenever a training run or an export needs a fixed copy of it, so each changed
+save becomes a new folder, `<set>/rev1`, `<set>/rev2`, and nothing is ever rewritten.
+Each folder holds the set's full saved state, `annotations.mosaic.json`, and a COCO
+Keypoints export of it, `annotations.coco.json`, for other tools. A trained model names
+the revision it read, which is how it stays tied to exactly those annotations. Treat a
+revision folder as read-only: one that was edited afterwards is refused.
+`labels_raw/behavior/` is reserved for saved behavior scorings, which will work the same
+way. `labels_raw/tags/dataset/` holds the [sequence tags](#sequence-tags) the same way,
+one table per `rev<N>` folder.
 
 ## Where a dataset can live
 
@@ -615,6 +617,76 @@ arena's region, exclude, capacity or name, or the frame, recomputes that recordi
 assigned tables at the next run, and the features that read them. Adding or changing a
 boundary or rois recomputes no assigned table, because the op assigns by region. Only a
 feature that reads them, such as `roi-occupancy`, recomputes.
+
+## Sequence tags
+
+A sequence tag is a value that belongs to one sequence, such as `genotype`, `sex`,
+`date` or `place`. A recipe attaches a sequence's tags to its rows with the
+[`sequence-tag-columns`](guides/analysis/features.md#what-the-library-holds) feature.
+Keep the design in a CSV with one row per recording or sequence and one column per tag,
+and write it into the dataset:
+
+```bash
+mosaic sequence-tags import design.csv -m dataset.yaml
+mosaic sequence-tags list -m dataset.yaml
+```
+
+`import` writes the whole table as the next revision under `labels_raw/tags/dataset/`,
+and `list` shows each tag with its type, its values and how many entries hold each. Edit
+the CSV and import it again to change the tags. At the next submit, a step recomputes
+when a tag it names changed or the table lists other sequences, and every other step
+keeps its run.
+
+**The key.** One column names each row's entries. Without `--key`, the header holds
+exactly one of these forms, and a header that holds two is refused, naming them:
+
+| Header                 | Names                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `entry`                | An entry token, `group:sequence`.                                                                                                           |
+| `group` and `sequence` | The two parts of an entry.                                                                                                                  |
+| `sequence`             | An entry by its sequence. A sequence that exists in two groups is refused, naming both.                                                     |
+| `recording`            | A recording, by the name of a continuous group or an undivided recording's entry token. The row applies to every sequence of the recording. |
+
+`--key NAME=entry|sequence|recording` names the column and how its values read, for a
+header that uses another name. The header must then hold none of the four forms. Two rows
+that name one entry are refused, with their line numbers.
+
+**Types.** Every other column is a tag. A tag already in the table keeps its type. A new
+tag's type is inferred from its non-empty cells: `bool` when every cell is `true` or
+`false` in lower case, `int` when every cell is a whole number without a leading zero
+(so `03` stays text), `float` when every cell is a finite number, `categorical` when the
+column has at most 1024 distinct values of at most 64 characters, and otherwise `text`.
+An empty cell assigns nothing, and a column of empty cells needs a declared type.
+`--type NAME=TYPE`, repeatable, declares a type, and is the one way to change the type
+of a tag that exists. A value that its type refuses stops the import before anything is
+written, and the message names the line and the column. A column named `group`,
+`sequence`, `id`, `frame`, `time`, `individual` or `uid` is refused, because a feature
+writes those.
+
+**What an import changes.** A tag the CSV names takes the CSV's values on every entry,
+so an entry with an empty cell loses the value it had. A tag the CSV does not name keeps
+its values, unless `--replace` removes it. An import that changes nothing writes no new
+revision.
+
+**Rows that name no entry.** Each is a warning that gives the CSV's line, and the import
+still writes the rows that matched. An entry that no row names has no value.
+
+**Check before writing.** `--dry-run` prints which tags the import would add, change or
+remove, writes nothing and takes no lock. `--json` prints the report as JSON.
+
+**Where tags are edited.** Tags have one writer at a time. The import is refused on a
+dataset that a service such as mosaic-api manages, and on a dataset whose latest
+revision came from a project of that service, because the service's next save replaces
+the whole table. Edit the tags there. The import is also refused when the latest
+revision was saved by another dataset, as in a copy of a dataset that has its own
+`uuid`, and when revisions saved by several datasets are indexed. An import is also
+refused when another import wrote a revision after it read the table: import again.
+
+A pipeline request records the revision it planned with, so every step of a request
+reads the same table, whatever is imported meanwhile. `mosaic pipeline verify` plans the
+recipe without the request, so it compares each tag-reading step with the latest table:
+after an import that changed a tag the step names, the step of a finished request reads
+as having no complete run. Submit the recipe again to compute it.
 
 ## Hold groups out of training
 

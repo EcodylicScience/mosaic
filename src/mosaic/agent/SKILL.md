@@ -232,6 +232,21 @@ A dataset is a directory with `dataset.yaml` and named roots
   circle or polygon) and named `rois`: `--rois FILE`, a JSON list, gives every arena of a
   grid or circle the same ones, and `mosaic arenas show` lists each arena's boundary and
   region names.
+- Per-sequence tags such as a genotype, sex or date live in one table of the dataset. A
+  user keeps them in a CSV with one row per recording or sequence, and
+  `mosaic sequence-tags import design.csv -m dataset.yaml` (`manage_dataset` action
+  `import_sequence_tags`) writes it as the next revision of the table, while
+  `mosaic sequence-tags list` (`list_sequence_tags`) shows each tag's type, values and
+  entry counts. Use `--dry-run` to see the changes first, `--type NAME=TYPE` for a type
+  that inference gets wrong and `--key NAME=entry|sequence|recording` when no header
+  column is named `entry`, `sequence`, `group` with `sequence`, or `recording`. A row
+  that names no entry is a warning with its line, and the other rows are written.
+  `--replace` also removes the tags that the CSV does not name, and asks the user
+  through MCP. A dataset that mosaic-api manages, or whose tags came from one of its
+  projects or from another dataset, refuses the import: edit the tags there. After an
+  import, `mosaic pipeline verify` reports the tag-reading step of a finished request as
+  having no complete run, because it checks the latest table. Submit the recipe again.
+  https://ecodylicscience.github.io/mosaic/dataset/#sequence-tags
 - Time in a region of an arena: run `roi-occupancy` with `rois` naming regions
   stored on the arenas or defined inline. Each row gains `in_<roi>`, `dist_<roi>`
   in pixels and `roi`, the first region holding it. Read pixel tracks, not a
@@ -838,15 +853,19 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - To compare groups, such as strains or sexes, reduce the run to one row per entry or
   individual with `sequence-aggregate` or `individual-aggregate`. Keep the labels with
   `keep_columns`, and list `"tracks"` after the feature's output among the inputs for a
-  label of the tracks table (a pair-level feature cannot take it). Then call
-  `summarize_run` in Python, `mosaic summarize --json`, or `preview_output` with
-  `mode: "summary"`, with `by`, `where` and `tests`. It refuses a run of one row per
-  frame. Individuals of one recording are not independent replicates of a
+  label of the tracks table (a pair-level feature cannot take it). A tag of the
+  dataset's sequence tags reaches the rows through a `sequence-tag-columns` step whose
+  `fields` name it, listed among the inputs. A later step then splits by it with
+  `subgroup_col`, or keeps it with `keep_columns`
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
+  Then call `summarize_run` in Python, `mosaic summarize --json`, or `preview_output`
+  with `mode: "summary"`, with `by`, `where` and `tests`. It refuses a run of one row
+  per frame. Individuals of one recording are not independent replicates of a
   recording-level key such as a strain, so read `n_entries` beside `n_rows`. A `where`
   string, on the command line or in the MCP call, also matches an integer, float or
   boolean key where its text reads as one (`"1"`, `"true"`). A JSON number matches an
-  integer or float key, and a JSON boolean a boolean key. A design of hundreds of
-  groups exceeds an MCP result, so read it through the CLI or Python. Mixed models and
+  integer or float key, and a JSON boolean a boolean key. A design of hundreds of groups
+  exceeds an MCP result, so read it through the CLI or Python. Mixed models and
   factorial designs are not in mosaic: do them in your own code over `load_run_matrix`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#summaries-across-entries).
 
@@ -865,11 +884,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
   server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
   server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside
-  its source roots, and for tracks `patterns` and `src_format`), indexes them
-  (`scan`) and sets tags (`set_tags`). Creating and changing sources ask the user.
-  Then plan a recipe that begins with `convert-tracks` (and `convert-labels`). A
-  refusal with `roots_not_configured` means the user runs `mosaic init`,
-  `mosaic sources add` and `mosaic scan` instead. Never try to change `splits`.
+  its source roots, and for tracks `patterns` and `src_format`), indexes them (`scan`),
+  sets tags (`set_tags`) and imports or lists the sequence tags (`import_sequence_tags`,
+  `list_sequence_tags`). Creating and changing sources, and an import with `replace`,
+  ask the user. Then plan a recipe that begins with `convert-tracks` (and
+  `convert-labels`). A refusal with `roots_not_configured` means the user runs
+  `mosaic init`, `mosaic sources add` and `mosaic scan` instead. Never try to change
+  `splits`.
 - Where the operator started the server with `--allow-feature-definitions` (or
   `allow_feature_definitions` in its configuration), `manage_dataset` with
   `define_feature` (`dataset`, `name`, and `source`, the file's text) stores a feature

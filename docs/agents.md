@@ -160,7 +160,7 @@ by that first `create`.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, listed by category or found by words in their name, summary or keywords and kept to one track space, and the ones named with their params as a table. A search that matches nothing returns a hint to write a [feature definition](#feature-definitions). With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. Reports the dataset's `next_steps` |
+| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, imports or lists its [sequence tags](dataset.md#sequence-tags), inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document. Its validation report lists only the cautions the edits added, and counts the ones the base recipe already held (`cautions_unchanged`). `validate_recipe` gives the full list, with a caution that several steps share said once |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. Its `recipe_digest` names the recipe by digest only once the dataset has saved it, which an inline `submit_pipeline` or a `patch_recipe` call with no `ops` does; planning saves nothing. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Plans a recipe, or checks it against a reviewed plan's fingerprint, submits it and starts it in the background. Its result counts the steps by status and lists the first few to compute. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
@@ -255,10 +255,23 @@ lets the agent start from a folder of raw files: create a dataset inside a datas
   or hold `..`. Keep held-out and sealed data outside the source roots: the agent can
   declare anything inside them.
 - Creating a dataset (`create_dataset`) and declaring or removing a source
-  (`add_source`) ask you to confirm. Scanning and setting tags do not. A removed
-  source's indexed rows stay, as `mosaic sources remove` keeps them.
+  (`add_source`) ask you to confirm. Scanning and setting tags do not, and an import of
+  sequence tags asks only when it replaces tags (below). A removed source's indexed rows
+  stay, as `mosaic sources remove` keeps them.
 - `scan` reads and checksums every file, and a large folder takes minutes.
 - `set_tags` sets dataset tags; a tag not defined yet is typed by its first value.
+- `import_sequence_tags` writes the CSV at `path`, inside a source root, as the next
+  revision of the dataset's [sequence tags](dataset.md#sequence-tags). It takes `key`,
+  `types`, `replace` and `dry_run` as `mosaic sequence-tags import` takes `--key`,
+  `--type`, `--replace` and `--dry-run`. The answer lists the change to each tag, and
+  the rows that name no entry as findings with their CSV line, while the matched rows
+  are written. `list_sequence_tags` shows each sequence tag with its type, its values
+  and their entry counts, and writes nothing. It works on a managed dataset, and the
+  import is refused there whatever `allow_managed_writes` says, as it is on a dataset
+  whose tags came from a service's project or from another dataset. That refusal and a
+  table that several datasets index answer `conflict`, as does an import that another
+  import preceded, so the agent lists the tags and imports again. A CSV or key that
+  cannot be read answers `invalid` with what to change.
 - No action writes `splits`, and a managed dataset is refused.
 - `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
   not ready: a source to declare, sources to scan, raw files to convert.
@@ -378,8 +391,9 @@ refuses with `conflict`. The agent then plans again and shows you the new plan. 
 also submit without a fingerprint, which plans in the same call and asks about the same
 conditions.
 
-`manage_dataset` asks to confirm creating a dataset (`create_dataset`), and declaring
-or removing a source (`add_source`).
+`manage_dataset` asks to confirm creating a dataset (`create_dataset`), declaring
+or removing a source (`add_source`), and importing sequence tags with `replace`, which
+removes the tags that the CSV does not name (`replace_sequence_tags`).
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.

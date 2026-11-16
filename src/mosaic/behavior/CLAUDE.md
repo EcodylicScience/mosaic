@@ -78,8 +78,9 @@ own environments.
 
 - **`category` is an optional class attribute outside the protocol.** The values in use
   are `per-frame`, `global`, `summary` (per-sequence aggregations such as
-  `frame-aggregate`), `tag` (`id-tag-columns`) and `media`. It colors the pipeline
-  diagram (`core/pipeline/viz.py`) and fills a column of `mosaic features list`.
+  `frame-aggregate`), `tag` (`id-tag-columns`, `sequence-tag-columns`) and `media`. It
+  colors the pipeline diagram (`core/pipeline/viz.py`) and fills a column of
+  `mosaic features list`.
 - **It also places a run.** A feature with `resource_class = "gpu"` and category
   `global` is offered to the GPU training lane (`lane_for` in
   `core/pipeline/graph/lanes.py`). A GPU feature that fits a model declares `global`.

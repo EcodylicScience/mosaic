@@ -94,6 +94,29 @@ the output has one row per entry or individual and bin, with `bin_start` and `bi
 seconds. A bin that no row starts in is not written, and `duration` and `share` credit a
 row that crosses a bin edge to each bin by the seconds it overlaps.
 
+**Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
+the same value on every row of the sequence, whatever the row's id. It reads tracks with
+or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's
+[sequence tags](../../dataset.md#sequence-tags), and `field_renames` maps a tag's name
+to the column that carries it. A column takes its tag's type: a `label` is a boolean
+that is false where unassigned, and any other unassigned value, like every value of a
+sequence the tag table lacks, is null. A plan refuses a field that is not a tag of the
+table, a column named like one the step writes (`group`, `sequence`, `id`, `frame`,
+`time`), including by a rename, and two fields that would write one column. The step
+writes only those columns and the tags, so a later step that also needs positions takes
+`tracks` first and the tag step second:
+
+```json
+{"id": "sex", "type": "feature", "feature": "sequence-tag-columns",
+ "inputs": ["tracks"], "params": {"fields": ["sex"]}},
+{"id": "motion", "type": "feature", "feature": "collective-motion-metrics",
+ "inputs": ["tracks", {"step": "sex"}], "params": {"subgroup_col": "sex"}}
+```
+
+The motion metrics are then computed per frame for each value of `sex`.
+
+Changing a tag recomputes the steps that name it, and every other step keeps its run.
+
 **Responses to events.** `event-response` measures a value, by default the speed of
 `speed-angvel`, around each onset, one row per individual and event: the baseline mean
 over `baseline_s` before it, the minimum and mean over `response_s` after it, and the

@@ -2313,7 +2313,7 @@ Attach per-id label fields from labels/<label_kind> to each frame.
 
 ### `sequence-tag-columns`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_tag_columns.SequenceTagColumns`
+Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_tag_columns.SequenceTagColumns` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Attach the sequence tags that ``fields`` names to each row of the input.
 
