@@ -531,18 +531,18 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   https://ecodylicscience.github.io/mosaic/guides/analysis/write-your-own-feature/.
 - A feature that the CLI, a recipe or a queue worker must run, or a measure no step type
   computes, is a definition stored in the dataset: one Python file declaring the feature
-  class, whose `name` is the definition's name, stored with
-  `mosaic features define <name> <file.py> -m <manifest>` (from Python,
-  `define_feature(ds, name, source_bytes)` in `mosaic.core.pipeline.definitions.define`). A recipe step's `feature` and `mosaic run
-  --feature` then name `def:<name>`, or `def:<name>@<digest>` for one version (12 to 64
-  hex characters, which `mosaic features list --manifest <manifest>` shows). A bare
+  class, whose `name` is the definition's name, stored with `mosaic features define
+  <name> <file.py> -m <manifest>` (from Python, `define_feature(ds, name, source_bytes)`
+  in `mosaic.core.pipeline.definitions.define`). A recipe step's `feature` and `mosaic
+  run --feature` then name `def:<name>`, or `def:<name>@<digest>` for one version (12 to
+  64 hex characters, which `mosaic features list --manifest <manifest>` shows). A bare
   `def:<name>` is the current version when the recipe is planned, and the plan pins its
   digest. Defining the same source again reuses its version, other source adds one, and
   each version gives different run ids. `mosaic features list`, `mosaic features
   describe` and `mosaic pipeline validate` know the dataset's definitions only with
   `--manifest`. Do not edit `feature_definitions/` by hand. The rules for the code
-  follow. A check at definition tests them as far as it can and lists every finding in
-  a refusal. The author keeps the version bump, determinism in `apply` and the
+  follow. A check at definition tests them as far as it can and lists every finding in a
+  refusal. The author keeps the version bump, determinism in `apply` and the
   environments that other machines run in:
   - one file with absolute imports (`mosaic.behavior.feature_library.helpers`; a
     relative import fails), importing only what the environment has, without
@@ -862,8 +862,6 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   type computes the measure (the result's `hint` says so), write a feature definition:
   `manage_dataset` with `define_feature` where the server allows it, otherwise propose
   `mosaic features define` to the user.
-  `track_space` keeps the step types that compute in that space (`world_m` for a 3D
-  table), and each step type's `track_spaces` lists the spaces it computes in.
 - A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
   server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
   server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside
@@ -885,18 +883,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   plan moves its bare `def:` steps to the new version. A reviewed fingerprint then
   returns `conflict`. Plan again and show the user the new plan.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
-  user the plan and its `cautions` (a plan over the whole dataset, a step asked for
-  more than 100 entries) and wait for their approval (with no user present, see the
+  user the plan and its `cautions` (a plan over the whole dataset, a step asked for more
+  than 100 entries) and wait for their approval (with no user present, see the
   operator's hook below), then you may pass its fingerprint to `submit_pipeline`. Once
   the user approved a series of runs of a recipe, such as a sweep of one param, submit
   each change without `plan_fingerprint`: `submit_pipeline` then plans it in the same
-  call, and still refuses with `confirmation_required` when a condition applies. While another request runs or finishes a step that this plan
-  shares, such as another run of a sweep, a reviewed fingerprint goes stale and
-  `submit_pipeline` returns `conflict`. Plan again and show the user the new plan, or
-  submit without a fingerprint, which plans in the same call. A cleanup always needs
-  the reviewed plan's fingerprint. The result counts the steps by status and lists the
-  first three to compute (`first_steps`); `get_request_status` with `brief: false`
-  lists every step.
+  call, and still refuses with `confirmation_required` when a condition applies. While
+  another request runs or finishes a step that this plan shares, such as another run of
+  a sweep, a reviewed fingerprint goes stale and `submit_pipeline` returns `conflict`.
+  Plan again and show the user the new plan, or submit without a fingerprint, which
+  plans in the same call. A cleanup always needs the reviewed plan's fingerprint. The
+  result counts the steps by status and lists the first three to compute
+  (`first_steps`); `get_request_status` with `brief: false` lists every step.
 - A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;

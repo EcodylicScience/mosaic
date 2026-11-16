@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns
+## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns; the catalog search reads keywords and filters by track space, a parallel knob needs no `--workers`, and a coverage refusal names every step to narrow
 
 `index_lock` warns with `CachingMountWarning`, once per mount, when a dataset is on a
 Linux CIFS mount without `actimeo=0,closetimeo=0`. The lock excludes writers on other
@@ -52,6 +52,69 @@ and `recovered` are unchanged. The aggregations skip a missing value, so a laten
 should count at its window's length is filled in the feature that writes it, and the
 `aggs` description says so. `event-response` moves from `0.1` to `0.2`, so its run ids
 change and a plan computes its steps again. No other run id moves.
+
+### The catalog lists keywords and track spaces, and searches by them
+
+A feature or an op may declare `keywords`, a class attribute holding lowercase
+phrases a person may search for that its name and summary lack. `CatalogEntry` and
+`CatalogIndexEntry` (`mosaic.core.pipeline.graph.wire`) gain `keywords`, `()` when
+none are declared and for `tracks` and a feature definition. The catalog search reads
+the keywords as summary words, so a query matches a step type by its name, summary,
+keywords or category. The nn-delta features, for example, answer a query for a social
+force map.
+
+`CatalogIndexEntry` and `StepTypeDetail` gain `track_spaces`, the sorted track spaces
+a feature computes in, which are `image_px` and `plane_cm` for a feature that
+declares none. It is `()` for an op and for `tracks`, which compute in no space.
+
+`describe_step_types` takes `track_space` and keeps the feature step types that compute
+in that space, together with the ops. `mosaic features list` takes `--track-space`,
+refuses a value that is not a track space, and lists each feature's spaces in a
+`spaces` column. Under `--json` each row gains `keywords` and `track_spaces`.
+
+`describe_step_types` returns `hint` when a search matches no step type. It names
+`manage_dataset` with `define_feature` when the server allows feature definitions, and
+otherwise says to propose `mosaic features define` to the user. `hint` is `null`
+otherwise.
+
+Keywords and track spaces are catalog metadata. They enter no run id, version or op
+identity, and no golden moved.
+
+### A parallel knob takes one worker per physical core without `--workers`
+
+`mosaic run --feature`, `mosaic run --graph-request`, `mosaic pipeline run` and
+`mosaic pipeline score` take `--parallel-mode`, `--min-free-memory-fraction` or
+`--admission-margin` without `--workers` and run one worker per physical core, serial
+on a machine with one. Before, each of them was refused without `--workers` above 1.
+`--workers 1` with one of them is still refused. An invalid `--admission-margin` is
+refused on every machine, including one with one core. `--kind` refuses all four flags,
+`--workers` at any count, including 1, which `mosaic run --kind` used to accept. A run
+with none of the four still computes entries in turn.
+
+### A step-scope coverage refusal names every step to narrow and the scope to paste
+
+When a step with a step scope is read by steps planned over entries outside it,
+`plan_recipe`, `submit_pipeline` and `mosaic pipeline plan` refuse as before, at the
+same steps with the same `where`. Each refusal now names every step that reads entries
+outside the narrowed one, not only the step it is raised at, and says which of them are
+scope-dependent, whose run id changes when narrowed. One refusal holds the `step_entries`
+value for the MCP tools and the `--step-scope` tokens for the CLI that narrow every
+reader, and the others point to it. A reader that already has a scope gets the
+intersection of that scope and the parent's. The values are left out when a scope names
+entries, an intersection selects nothing, or they take more than
+`MAX_SCOPE_SUGGESTION_CHARS` (1,500) characters. The set of problems and the steps they
+come at do not change.
+
+### Smaller changes
+
+- `plan_recipe`'s description says that its `recipe_digest` names the recipe only once
+  the dataset has saved it, which an inline `submit_pipeline` or a `patch_recipe` call
+  with no `ops` does. Planning saves nothing, and its output schema is unchanged.
+- `mosaic scan` writes `scanning <kind>: sources <ids>` to stderr as each kind starts.
+- The `vame` step type's parameter descriptions are shorter, to keep its detail under
+  `MAX_STEP_TYPE_DETAIL_CHARS` once it lists its track spaces.
+
+No run id, version, storage name or file on disk moves.
 
 ## 0.22.0: features defined in a dataset, the admission gate counts the memory the kernel cannot reclaim, runs record their cost and a step can be probed, ROI occupancy, run summaries, features read `time`, and planning and conversion scale to thousands of entries
 

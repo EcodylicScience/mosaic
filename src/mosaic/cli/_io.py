@@ -203,14 +203,14 @@ def parallel_settings(
                 "entries in turn."
             )
         return None
+    if not valid_admission_margin(admission_margin):
+        fail(f"--admission-margin is 0 (off) or from 1 to 4, not {admission_margin}.")
     if workers is None:
         if not knob_named:
             return None
         workers = default_max_workers()
         if workers <= 1:
             return None
-    if not valid_admission_margin(admission_margin):
-        fail(f"--admission-margin is 0 (off) or from 1 to 4, not {admission_margin}.")
     return ParallelSettings(
         workers=workers,
         mode="thread" if mode is None else mode,

@@ -242,6 +242,29 @@ def test_a_margin_under_one_is_refused(dataset: Dataset) -> None:
     assert "from 1 to 4" in result.stderr
 
 
+def test_a_margin_under_one_is_refused_on_a_one_core_host(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli_io, "default_max_workers", lambda: 1)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--feature",
+            "speed-angvel",
+            "--admission-margin",
+            "0.5",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--admission-margin" in result.stderr
+    assert "from 1 to 4" in result.stderr
+
+
 def test_a_margin_over_four_is_refused_by_the_option(dataset: Dataset) -> None:
     result = runner.invoke(
         app,
