@@ -95,6 +95,8 @@ from tests.helpers import (
     defined_dataset,
     speed_recipe,
     speed_recipe_stepping,
+    tag_table,
+    write_tags,
     add_media_sequence,
     add_tracks_variant,
     assert_tree_unchanged,
@@ -143,6 +145,8 @@ class ReadDataset:
     definition_recipe_path: Path | None = None
     canary: Path | None = None
     """The file the dataset's definition writes when it is imported."""
+    tags_csv: Path | None = None
+    """A CSV of sequence tags, beside the dataset directory."""
 
     @property
     def root(self) -> Path:
@@ -264,12 +268,18 @@ def populated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReadDataset:
     _ = define_feature(dataset, CANARY_NAME, CANARY_SOURCE)
     canary = tmp_path / "canary.jsonl"
     monkeypatch.setenv(CANARY_VARIABLE, str(canary))
+    _ = write_tags(
+        dataset, tag_table({("", "seq_a"): {"site": "a"}}, {"site": "categorical"})
+    )
+    tags_csv = tmp_path / "sequence_tags.csv"
+    _ = tags_csv.write_text("entry,site,age\n:seq_a,b,3\n", encoding="utf-8")
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
         dataset=dataset,
         recipe_path=_recipe_file(tmp_path),
         definition_recipe_path=_definition_recipe_file(tmp_path),
         canary=canary,
+        tags_csv=tags_csv,
         request_id=done.request_id,
         execution_id=done.outcomes[0].execution_id,
         lossy_execution_id=LOSSY_EXECUTION_ID,
@@ -475,6 +485,13 @@ CLI_READS: dict[str, CliArguments] = {
     "runs": lambda _: ["runs"],
     "runs --limit": lambda _: ["runs", "--limit", "1"],
     "runs errors": lambda f: ["runs", "errors", f.lossy_execution_id],
+    "sequence-tags import --dry-run": lambda f: [
+        "sequence-tags",
+        "import",
+        str(f.tags_csv),
+        "--dry-run",
+    ],
+    "sequence-tags list": lambda _: ["sequence-tags", "list"],
     "sequences": lambda _: ["sequences"],
     "sources list": lambda _: ["sources", "list"],
     "splits list": lambda _: ["splits", "list"],
@@ -512,6 +529,7 @@ CLI_READS_OF_NOTHING = (
     "reindex --dry-run",
     "runs",
     "runs --limit",
+    "sequence-tags list",
     "sources list",
     "splits list",
     "sweep-tracking --dry-run",

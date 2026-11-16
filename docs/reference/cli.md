@@ -50,7 +50,8 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `agent`: Print or install the guide for an AI agent...
 * `sources`: Declare and inspect the directories and...
 * `notes`: Read and write the dataset's free-text notes.
-* `tags`: Declare and set the dataset's typed tags.
+* `tags`: The dataset's own tags: declare and set.
+* `sequence-tags`: Sequence tags: import a CSV, list them.
 * `splits`: Give groups a role in a held-out protocol:...
 * `arenas`: Declare and show the arena layout of each...
 * `libraries`: Link the datasets a trained model may be...
@@ -1897,7 +1898,7 @@ $ mosaic notes clear [OPTIONS]
 
 ## `mosaic tags`
 
-Declare and set the dataset's typed tags.
+The dataset's own tags: declare and set.
 
 **Usage**:
 
@@ -1996,6 +1997,73 @@ $ mosaic tags remove [OPTIONS] {name}
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--help`: Show this message and exit.
+
+## `mosaic sequence-tags`
+
+Sequence tags: import a CSV, list them.
+
+**Usage**:
+
+```console
+$ mosaic sequence-tags [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `import`: Write a CSV of sequence tags as the next...
+* `list`: Show each sequence tag of the latest...
+
+### `mosaic sequence-tags import`
+
+Write a CSV of sequence tags as the next revision of the tag table.
+
+One column names each row's entries. Every other column is a tag, and a
+tag that the CSV names takes the CSV's values on every entry. A tag it does
+not name keeps its values, unless --replace removes it. A row that names no
+entry is warned of on stderr, and the matched rows are written. A value that
+its tag's type refuses fails the import before anything is written. A
+dataset that a service manages is refused, since the service's next save
+replaces the table.
+
+**Usage**:
+
+```console
+$ mosaic sequence-tags import [OPTIONS] {csv}
+```
+
+**Arguments**:
+
+* `csv`: The CSV of sequence tags.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--key <str>`: NAME=FORM: the column that names each row's entries and how its values read, where FORM is entry, sequence or recording. Without it the header holds exactly one of entry, group with sequence, sequence, or recording.
+* `--type <str>`: NAME=TYPE (repeatable): declare a tag's type, where TYPE is label, text, int, float, bool or categorical. The one way to change a defined tag's type.
+* `--replace`: Remove the sequence tags that the CSV does not name.
+* `--dry-run`: Print the changes, write nothing and take no lock.
+* `--json`: Emit the import report as JSON.
+* `--help`: Show this message and exit.
+
+### `mosaic sequence-tags list`
+
+Show each sequence tag of the latest revision with its values and counts.
+
+**Usage**:
+
+```console
+$ mosaic sequence-tags list [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--json`: Emit the listing as JSON.
 * `--help`: Show this message and exit.
 
 ## `mosaic splits`

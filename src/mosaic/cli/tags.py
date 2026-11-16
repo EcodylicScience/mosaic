@@ -31,7 +31,7 @@ notes_app = typer.Typer(
 )
 tags_app = typer.Typer(
     name="tags",
-    help="Declare and set the dataset's typed tags.",
+    help="The dataset's own tags: declare and set.",
     no_args_is_help=True,
     add_completion=False,
 )
