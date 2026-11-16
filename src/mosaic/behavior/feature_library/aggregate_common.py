@@ -120,9 +120,10 @@ _BIN_S_DESCRIPTION = (
     "The length in seconds of the time bins. Unset, an entry is reduced "
     "whole. Set, each row goes to the bin floor(time / bin_s), anchored at "
     "time 0 of the recording's axis, so the bins of two entries or two "
-    "divisions of one recording line up. The output gains bin_start and "
-    "bin_end, in seconds, after the keys, and has one row per reduced group "
-    "and bin. A bin that no row starts in is not written. duration and share "
+    "divisions of one recording line up. A time within a billionth of a "
+    "bin's width of an edge counts as on the edge. The output gains "
+    "bin_start and bin_end, in seconds, after the keys, and has one row per "
+    "reduced group and bin. A bin that no row starts in is not written. duration and share "
     "weigh a row by the seconds of the interval from its time to the next "
     "frame of its individual: a row that crosses a bin edge gives each bin the "
     "seconds it overlaps, and seconds that fall in a bin where the group has "
@@ -314,18 +315,19 @@ class AggregateParams(Params):
 
     @override
     def identity_dump(self) -> dict[str, object]:
-        """The hashed params, less each field left at its output-preserving value.
+        """The hashed params, less each field that leaves the output as it was.
 
         ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset and
         ``threshold_op`` ``>`` write the output a run wrote before the fields
-        existed, so leaving them out keeps every such run's identifier. A kept column or a category adds
-        output columns and enters the hash as any field does.
+        existed, so leaving them out keeps every such run's identifier. A kept
+        column or a category adds output columns and enters the hash as any
+        field does.
 
         A set ``threshold`` adds ``threshold_missing``: a null value stays null
         under the comparison, where a NaN of a float column once counted as
         below it. A thresholded run's output differs on an input with missing
-        values, so its identifier moves, and a run without a threshold keeps its
-        own.
+        values, so its identifier moves, and a run without a threshold keeps
+        its own.
         """
         dumped = super().identity_dump()
         if not self.keep_columns:
@@ -688,10 +690,34 @@ def _share_fractions(
     return by_value.div(total, axis=0)
 
 
-def _bin_index(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
-    """The bin ``floor(time / bin_s)`` of each time, NaN if not finite."""
+_EDGE_TOLERANCE = 1e-9
+"""How near a whole number of bins a time counts as on the edge, in bins."""
+
+
+def _in_bins(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
+    """Each time in bins, snapped to a whole number within a billionth of it.
+
+    A time that is ``frame / rate`` in floating point can fall an ulp under the
+    edge it names: ``0.3 / 0.1`` is ``2.9999999999999996``. Within the tolerance
+    of the larger of 1 and the whole number, the time is on the edge.
+    """
     with np.errstate(invalid="ignore"):
-        index = np.floor(times / bin_s)
+        quotient = times / bin_s
+        whole = np.rint(quotient)
+        near = np.abs(quotient - whole) <= _EDGE_TOLERANCE * np.maximum(
+            1.0, np.abs(whole)
+        )
+    return np.where(near, whole, quotient)
+
+
+def _bin_index(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
+    """The bin ``floor(time / bin_s)`` of each time, NaN if not finite.
+
+    A time within a billionth of a bin's width of an edge is on the edge, so
+    it starts the later bin (:func:`_in_bins`).
+    """
+    with np.errstate(invalid="ignore"):
+        index = np.floor(_in_bins(times, bin_s))
     return np.where(np.isfinite(index), index, np.nan)
 
 
@@ -739,7 +765,8 @@ def _spread_over_bins(
     ends = times + seconds
     finite = np.isfinite(first)
     with np.errstate(invalid="ignore"):
-        last = np.where(finite, np.maximum(first, np.ceil(ends / bin_s) - 1), first)
+        covered = np.ceil(_in_bins(ends, bin_s)) - 1
+        last = np.where(finite, np.maximum(first, covered), first)
         spans = np.where(finite, last - first, 0).astype(np.intp) + 1
     rows = np.repeat(np.arange(times.size, dtype=np.intp), spans)
     offset = np.arange(rows.size) - np.repeat(np.cumsum(spans) - spans, spans)

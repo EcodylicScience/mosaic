@@ -1073,3 +1073,44 @@ def test_an_unset_bin_s_leaves_the_identity_dump_and_a_set_one_changes_it() -> N
     assert binned.identity_dump()["bin_s"] == 60.0
     assert binned.identity_dump() != plain.identity_dump()
     assert binned.identity_dump() != other.identity_dump()
+
+
+def test_a_frame_on_a_bin_edge_at_100_fps_starts_the_later_bin() -> None:
+    # 0.3 / 0.1 is 2.9999999999999996, so frame 30 would fall in the bin before.
+    frames = np.arange(100)
+    table = _binned((frames / 100.0).tolist(), value=1.0)
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["count", "duration"], "bin_s": 0.1}, table
+    )
+
+    assert out["value_count"].tolist() == [10] * 10
+    assert out["value_duration"].tolist() == pytest.approx([0.1] * 10)
+
+
+def test_a_time_built_from_two_parts_across_a_bin_edge_starts_the_later_bin() -> None:
+    # A division's first frame and a local frame, each over the rate, sum to
+    # 59.99999999999999 where the edge is at 60.
+    rate = 30.0
+    on_the_edge = 9 * (1 / rate) + 1791 * (1 / rate)
+    assert on_the_edge < 60.0
+    table = _binned([59.0, 59.5, on_the_edge, 61.0], value=1.0)
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["count", "duration"], "bin_s": 60}, table
+    )
+
+    assert out["bin_start"].tolist() == [0.0, 60.0]
+    assert out["value_count"].tolist() == [2, 2]
+    assert out["value_duration"].tolist() == pytest.approx([1.0, 1.0 + 1.0])
+
+
+def test_a_row_ending_on_a_bin_edge_credits_no_bin_after_it() -> None:
+    # The row at 0.2 lasts 0.1 s, to an edge that floating point puts an ulp
+    # off 0.3.
+    table = _binned([0.0, 0.1, 0.2, 0.3], value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["duration"], "bin_s": 0.1}, table)
+
+    assert out["bin_start"].tolist() == pytest.approx([0.0, 0.1, 0.2, 0.3])
+    assert out["value_duration"].tolist() == pytest.approx([0.1] * 4)

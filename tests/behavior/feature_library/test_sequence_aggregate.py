@@ -1641,3 +1641,11 @@ def test_an_unset_bin_s_leaves_the_identity_dump_and_a_set_one_changes_it() -> N
     assert "bin_s" not in plain.identity_dump()
     assert binned.identity_dump()["bin_s"] == 60.0
     assert binned.identity_dump() != plain.identity_dump()
+
+
+def test_frames_on_the_bin_edges_at_100_fps_fill_each_bin_with_ten_rows() -> None:
+    table = _binned((np.arange(100) / 100.0).tolist(), value=1.0)
+
+    out = _apply({"columns": ["value"], "aggs": ["count"], "bin_s": 0.1}, table)
+
+    assert out["value_count"].tolist() == [10] * 10
