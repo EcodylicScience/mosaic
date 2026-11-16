@@ -115,6 +115,7 @@ class SpeedAngvel:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("turning rate",)
     name = "speed-angvel"
     version = "0.3"
     parallelizable = True

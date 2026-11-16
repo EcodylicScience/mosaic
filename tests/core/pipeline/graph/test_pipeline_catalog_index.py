@@ -60,6 +60,7 @@ def test_each_row_summarizes_the_entry_that_describe_returns() -> None:
             entry.category,
             entry.summary,
         )
+        assert row.keywords == entry.keywords
         assert row.emits == entry.declaration.emits
         assert (row.unavailable, row.license_note) == (
             entry.unavailable,

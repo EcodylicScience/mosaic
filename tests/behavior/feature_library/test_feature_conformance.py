@@ -21,6 +21,7 @@ import pytest
 from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
+from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.pipeline.column_contract import Column, declared_provides
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
@@ -426,6 +427,20 @@ def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
     assert isinstance(declared, bool), (
         f"{cls.__name__} declares follows_ids = {declared!r}, not a bool."
     )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_declared_keywords_are_distinct_lowercase_stripped_phrases(cls: type) -> None:
+    """A feature's search keywords are a tuple of normalized, distinct phrases."""
+    declared: object = getattr(cls, "keywords", ())
+
+    assert is_object_tuple(declared), (
+        f"{cls.__name__} declares keywords = {declared!r}, not a tuple."
+    )
+    phrases = [phrase for phrase in declared if isinstance(phrase, str)]
+    assert len(phrases) == len(declared)
+    assert all(phrase and phrase == phrase.strip().lower() for phrase in phrases)
+    assert len(set(phrases)) == len(phrases)
 
 
 @pytest.mark.parametrize(

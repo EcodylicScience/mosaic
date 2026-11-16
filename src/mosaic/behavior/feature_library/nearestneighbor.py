@@ -47,6 +47,7 @@ class NearestNeighbor:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("distance to neighbor",)
     name = "nearest-neighbor"
     # 0.3: an individual missing from a frame is nobody's neighbor. Its NaN
     # distance used to win argmin, which blanked every row of that frame.

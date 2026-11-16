@@ -128,6 +128,7 @@ class TrackSubsample:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("downsample",)
     name = "track-subsample"
     # 0.3: drop_nan keeps rows with a non-finite required column out of the output.
     # 0.4: uniform strides over frames and keeps every row of a kept frame.

@@ -94,6 +94,7 @@ class HeadingFeature:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("orientation", "direction")
     name = "heading"
     version = "0.1"
     parallelizable = True

@@ -46,6 +46,7 @@ _STEP_TYPE_HEADER = (
     "version",
     "category",
     "summary",
+    "keywords",
     "lane",
     "emits",
     "consumes",

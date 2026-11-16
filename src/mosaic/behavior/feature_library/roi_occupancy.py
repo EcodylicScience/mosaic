@@ -167,6 +167,7 @@ class RoiOccupancy:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("time in zone",)
     name = "roi-occupancy"
     version = "0.1"
     parallelizable = True

@@ -50,6 +50,17 @@ def test_tracking_package_ops_declare_tracking_domain():
             assert op_cls.domain == "tracking", (kind, op_cls.__module__)
 
 
+def test_declared_op_keywords_are_distinct_lowercase_stripped_phrases():
+    from mosaic.core.pipeline.ops import OPS
+
+    for kind, op_cls in OPS.items():
+        declared = op_cls.keywords
+        assert isinstance(declared, tuple), (kind, declared)
+        assert all(isinstance(phrase, str) for phrase in declared), (kind, declared)
+        assert all(phrase and phrase == phrase.strip().lower() for phrase in declared)
+        assert len(set(declared)) == len(declared), (kind, declared)
+
+
 def test_list_ops_filters_by_domain_and_carries_domain():
     from mosaic.core.pipeline.ops import list_ops
 

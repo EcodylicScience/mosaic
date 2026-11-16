@@ -1117,10 +1117,19 @@ def _entry_of_class(
         provides=provides,
         unavailable=declared.unavailable,
         license_note=license_notes(prerequisites),
+        keywords=_keywords_of(cls),
         ground_truth_fields=ground_truth_fields,
         needs_ground_truth=fields_need_ground_truth(field_types),
         definition=definition,
     )
+
+
+def _keywords_of(cls: type | None) -> tuple[str, ...]:
+    """The search keywords a feature or op class declares, ``()`` when none."""
+    declared: object = getattr(cls, "keywords", ())
+    if not is_object_tuple(declared):
+        return ()
+    return tuple(phrase for phrase in declared if isinstance(phrase, str))
 
 
 def _field_forms(annotation: object) -> tuple[object, ...]:
@@ -1291,6 +1300,7 @@ def _index_entry(entry: CatalogEntry) -> CatalogIndexEntry:
         license_note=entry.license_note,
         parallelizable=_parallelizable(entry),
         definition=entry.definition,
+        keywords=entry.keywords,
     )
 
 

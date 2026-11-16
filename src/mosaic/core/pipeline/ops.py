@@ -365,6 +365,13 @@ class Op(Generic[P]):
     the machine and is no part of the op's identity.
     """
 
+    keywords: ClassVar[tuple[str, ...]] = ()
+    """Lowercase phrases a person may search for that the kind and summary lack.
+
+    The catalog search reads them as summary words. They are catalog metadata and
+    enter no run id, version or op identity.
+    """
+
     Params: ClassVar[type[Params]]
 
     def target(self, params: P, scope: "ResolvedScope") -> str:

@@ -222,6 +222,9 @@ class CatalogEntry(GraphModel):
         version: The version its producer declares, ``""`` for ``tracks``.
         category: Its feature or op category, for grouping.
         summary: The first line of its class docstring.
+        keywords: The phrases a person may search for that its name and summary
+            lack, as its class declares them. ``()`` for ``tracks`` and a
+            feature definition. They are catalog metadata and enter no run id.
         declaration: What it produces and consumes, as validation reads it.
         params_schema: Its params model as JSON Schema, ``None`` for ``tracks``.
         reference_fields: The top-level params fields that accept a step
@@ -265,6 +268,7 @@ class CatalogEntry(GraphModel):
     provides: ProvidedColumns | None
     unavailable: str | None
     license_note: str | None = None
+    keywords: tuple[str, ...] = ()
     ground_truth_fields: tuple[str, ...] = ()
     needs_ground_truth: bool = False
     definition: DefinitionWire | None = None
@@ -294,6 +298,8 @@ class CatalogIndexEntry(GraphModel):
         version: The version its producer declares, ``""`` for ``tracks``.
         category: Its feature or op category.
         summary: The first line of its class docstring.
+        keywords: The phrases a person may search for that its name and summary
+            lack, ``()`` when it declares none.
         lane: The queue its work is offered to, ``None`` for ``tracks``, which
             no job runs.
         emits: The entity level of its rows as declared, ``as-input`` for one
@@ -333,6 +339,7 @@ class CatalogIndexEntry(GraphModel):
     license_note: str | None
     parallelizable: bool = False
     definition: DefinitionWire | None = None
+    keywords: tuple[str, ...] = ()
 
 
 class ParamRow(GraphModel):

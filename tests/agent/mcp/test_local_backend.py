@@ -518,6 +518,18 @@ def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> No
     assert {*_listed(ops), *_listed(more)} <= op_names
 
 
+def test_step_types_are_searched_by_their_keywords(backend: LocalBackend) -> None:
+    found = _call(backend, "describe_step_types", StepTypes, query="social force")
+    detail = _call(
+        backend, "describe_step_types", StepTypes, names=["nn-delta-response"]
+    ).details[0]
+
+    assert {"nn-delta-response", "nn-delta-bins", "neighbor-delta-response"} <= set(
+        _listed(found)
+    )
+    assert "social force" in detail.keywords
+
+
 def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
     whole = _call(backend, "describe_step_types", StepTypes, query="speed", limit=100)
     paged: list[str] = []

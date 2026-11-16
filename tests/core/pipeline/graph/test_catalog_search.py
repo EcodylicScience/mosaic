@@ -19,9 +19,12 @@ from mosaic.core.pipeline.graph import (
 
 
 def _entry(
-    name: str, summary: str = "", category: str = "per-frame"
+    name: str,
+    summary: str = "",
+    category: str = "per-frame",
+    keywords: tuple[str, ...] = (),
 ) -> CatalogIndexEntry:
-    """An index row that differs from the others by its name, summary and category."""
+    """An index row that differs from the others by its name, summary and words."""
     return CatalogIndexEntry(
         name=name,
         type="feature",
@@ -36,6 +39,7 @@ def _entry(
         payload_families=False,
         unavailable=None,
         license_note=None,
+        keywords=keywords,
     )
 
 
@@ -88,6 +92,44 @@ def test_ties_go_to_the_shorter_name_then_the_name() -> None:
     entries = [_entry("speed-long"), _entry("speed-b"), _entry("speed-a")]
 
     assert _names(entries, "speed") == ["speed-a", "speed-b", "speed-long"]
+
+
+def test_a_word_found_only_in_the_keywords_matches_as_a_summary_word() -> None:
+    entries = [_entry("pairwise", keywords=("social force",)), _entry("heading")]
+
+    ranked = search_catalog(entries, "force")
+
+    assert [match.entry.name for match in ranked] == ["pairwise"]
+    assert ranked[0].key[0] == "000004"
+
+
+def test_a_name_word_and_a_keyword_word_match_at_tier_three() -> None:
+    entries = [_entry("nn-delta-bins", keywords=("social force",))]
+
+    ranked = search_catalog(entries, "delta force")
+
+    assert [match.key[0] for match in ranked] == ["000003"]
+
+
+def test_a_keyword_never_outranks_a_name_match() -> None:
+    entries = [
+        _entry("annotator", keywords=("force map",)),
+        _entry("force-map"),
+        _entry("force-field", summary="A map of forces."),
+    ]
+
+    assert _names(entries, "force map") == [
+        "force-map",
+        "force-field",
+        "annotator",
+    ]
+
+
+def test_a_keyword_listed_in_a_name_only_query_changes_nothing() -> None:
+    plain = [_entry("speed-angvel"), _entry("speed-b")]
+    keyed = [_entry("speed-angvel", keywords=("velocity",)), _entry("speed-b")]
+
+    assert _names(plain, "speed") == _names(keyed, "speed")
 
 
 @pytest.mark.parametrize(
@@ -158,6 +200,15 @@ def test_the_registered_catalog_ranks_the_named_step_first(
     ranked = _names(list(catalog_index().entries), query)
 
     assert ranked[0] == first
+
+
+@pytest.mark.parametrize(
+    "query", ["social force", "social force map", "force map", "Force_Map"]
+)
+def test_the_registered_catalog_finds_the_social_force_features(query: str) -> None:
+    found = set(_names(list(catalog_index().entries), query))
+
+    assert {"nn-delta-response", "nn-delta-bins", "neighbor-delta-response"} <= found
 
 
 def test_a_listing_groups_names_by_category_and_keeps_summaries_that_fit() -> None:

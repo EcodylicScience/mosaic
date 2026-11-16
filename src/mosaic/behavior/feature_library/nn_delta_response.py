@@ -212,6 +212,7 @@ class NearestNeighborDelta:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("social force", "force map")
     name = "nn-delta-response"
     version = "0.4"
     parallelizable = True

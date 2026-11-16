@@ -699,7 +699,7 @@ class DescribeStepTypesInput(ToolInput):
 
     query: str = Field(
         default="",
-        description="Words to find in a step type's name, summary or category.",
+        description="Words to find in a step type's name, summary, keywords or category.",
     )
     type: Literal["feature", "op", "tracks"] | None = Field(
         default=None, description="Return step types of this type only."
@@ -1846,7 +1846,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Describe step types",
         description=(
             "Find and describe the features and ops a recipe may run. A search "
-            "by words in their name, summary or category lists them by "
+            "by words in their name, summary, keywords or category lists them by "
             "category, name to summary, best match first; a long page shortens "
             "the summaries. names with detail 'summary' returns each one's lane, "
             "the columns it reads and writes, what this installation lacks to "

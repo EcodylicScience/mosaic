@@ -40,6 +40,13 @@ own environments.
   aggregates) declares all three (`TRACK_SPACES`). `refuse_unsupported_track_space` in
   `core/pipeline/track_space.py` checks it, and `test_feature_conformance.py` pins the
   declarations.
+- **A feature may declare `keywords`**, a tuple of lowercase phrases a person may search
+  for that its name and summary lack, a class attribute outside the protocol. The
+  catalog search reads them as summary words, and `CatalogEntry.keywords` carries
+  them. Declare a phrase only when a search for it does not already find the feature,
+  and keep the tuple short. They enter no run id or version, and a feature
+  definition's keywords are not read (its sidecar has no such field).
+  `test_declared_keywords_are_distinct_lowercase_stripped_phrases` pins the shape.
 - **A feature registers only when its module is imported.** `@register_feature` keys
   `FEATURES` by class name (`feature_library/registry.py`), and a recipe or the CLI
   finds it by its `name` slug. A new module joins the imports of

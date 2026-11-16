@@ -795,8 +795,9 @@ List the registered features with their lanes and columns.
 
 Without --query the list is sorted by slug. With --query it holds only the
 features that match, best match first: the name, then words of the name,
-then the summary or category. Under --json each row also names what the
-installation lacks to run the feature and any use its license forbids.
+then the summary, keywords or category. Under --json each row also lists its
+keywords and names what the installation lacks to run the feature and any
+use its license forbids.
 
 With --manifest the dataset's feature definitions are listed beside the
 built-in features as def:<name>, each with its version, the first 12
@@ -812,7 +813,7 @@ $ mosaic features list [OPTIONS]
 
 **Options**:
 
-* `--query <str>`: List only the features whose name, summary or category contains every word, best match first.
+* `--query <str>`: List only the features whose name, summary, keywords or category contain every word, best match first.
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Names the dataset whose feature definitions (def:<name>) are listed and resolved, which it opens read-only without importing any. Without it only the built-in features are known.
 * `--json`: Emit the list as a JSON array.
 * `--help`: Show this message and exit.

@@ -220,6 +220,7 @@ class NearestNeighborDeltaBins:
     """
 
     category = "summary"
+    keywords: ClassVar[tuple[str, ...]] = ("social force", "force map")
     name = "nn-delta-bins"
     # 0.2: the two-dimensional output gained the occupancy metric, so a
     # default-params run writes rows a 0.1 run did not.

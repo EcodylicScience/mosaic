@@ -298,6 +298,7 @@ class CollectiveMotionMetrics:
     """
 
     category = "summary"
+    keywords: ClassVar[tuple[str, ...]] = ("polarization", "order parameter", "milling")
     name = "collective-motion-metrics"
     version = "0.3"
     parallelizable = True

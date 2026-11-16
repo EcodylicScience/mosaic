@@ -78,6 +78,11 @@ class Feature(Protocol):
     in the two 2D spaces, ``image_px`` and ``plane_cm``, so it is refused a
     world-frame table with ``schema_family_mismatch``. A feature that reads no
     spatial column declares all three. The declaration enters no run id.
+
+    A feature may also declare ``keywords: ClassVar[tuple[str, ...]]``, lowercase
+    phrases a person may search for that its name and summary lack. The catalog
+    search reads them as summary words. They enter no run id or version, and a
+    feature definition's keywords are not read.
     """
 
     name: str

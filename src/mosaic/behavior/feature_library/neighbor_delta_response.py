@@ -131,6 +131,7 @@ class NeighborDeltaResponse:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("social force", "force map")
     name = _NAME
     version = "0.2"
     parallelizable = True

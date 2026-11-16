@@ -3,7 +3,7 @@
 A query and a step type's name are compared as words: lowercase, with spaces,
 hyphens and underscores alike, so ``speed_angvel``, ``speed angvel`` and
 ``Speed-Angvel`` name ``speed-angvel``. Every word of a query must occur in a
-step type's name, summary or category for it to match.
+step type's name, summary, keywords or category for it to match.
 
 :func:`catalog_listing` lists the matches by name within a character budget.
 
@@ -62,8 +62,11 @@ def search_catalog(
     0. The query's words are the name's words.
     1. Each word equals or begins a word of the name.
     2. Each word occurs in the name.
-    3. Some words occur in the name and the rest in the summary or category.
-    4. The words occur in the summary or category only.
+    3. Some words occur in the name and the rest in the summary, keywords or
+       category.
+    4. The words occur in the summary, keywords or category only.
+
+    The keywords count as summary text.
 
     Within a tier an entry ranks higher with more words that equal a word of the
     name or its singular, then with fewer words found only in the category,
@@ -83,7 +86,7 @@ def _match(entry: CatalogIndexEntry, words: Sequence[str]) -> CatalogMatch | Non
         return CatalogMatch(entry=entry, key=_key(entry, (0, 0, 0, 0)))
     tokens = _search_words(entry.name)
     name = " ".join(tokens)
-    summary = entry.summary.lower()
+    summary = " ".join((entry.summary, *entry.keywords)).lower()
     category = entry.category.lower()
     in_name = [word in name for word in words]
     in_summary = [word in summary for word in words]

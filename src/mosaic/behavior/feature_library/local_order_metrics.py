@@ -256,6 +256,7 @@ class LocalOrderMetrics:
     """
 
     category = "per-frame"
+    keywords: ClassVar[tuple[str, ...]] = ("local polarization",)
     name = "local-order-metrics"
     version = "0.1"
     parallelizable = True
