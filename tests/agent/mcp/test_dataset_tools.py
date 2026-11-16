@@ -15,6 +15,18 @@ import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import DatasetChange, DatasetList, call_tool
+from mosaic.core.annotations import sequence_tags
+from mosaic.core.annotations.sequence_tag_wire import (
+    SequenceTagImport,
+    SequenceTagListing,
+)
+from mosaic.core.annotations.sequence_tags import (
+    SequenceTagCsvInvalid,
+    SequenceTagImportRefused,
+    SequenceTagsMoved,
+    SequenceTagTableUnavailable,
+    list_sequence_tags,
+)
 from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import DatasetSummary
@@ -28,6 +40,7 @@ from tests.helpers import (
     SPEED_OF_CONVERTED_STEP,
     RecordingStarter,
     calms21_dataset,
+    invoke_json,
     write_calms21_npy,
 )
 
@@ -744,3 +757,370 @@ def test_a_dataset_root_that_does_not_exist_yet_holds_none_and_takes_the_first(
     assert before.items == ()
     assert [item.uuid for item in after.items] == [created.dataset]
     assert (later / "study" / "dataset.yaml").is_file()
+
+
+_TAG_ENTRIES = (("g1", "s1"), ("g1", "s2"), ("g2", "s3"))
+
+
+def _tagged_study(backend: LocalBackend, roots: tuple[Path, Path]) -> str:
+    """A served dataset of three entries, with a CSV of tags in the source root."""
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(dataset, *_TAG_ENTRIES)
+    return uuid
+
+
+def _tags_csv(roots: tuple[Path, Path], text: str, name: str = "tags.csv") -> str:
+    _ = (roots[1] / name).write_text(text, encoding="utf-8")
+    return name
+
+
+def _study(roots: tuple[Path, Path]) -> Dataset:
+    return open_dataset(roots[0] / "study" / "dataset.yaml")
+
+
+def test_importing_sequence_tags_writes_a_revision_and_moves_the_findings_up(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\ng1:s2,b\ng9:nope,c\n")
+
+    changed = _call(
+        backend,
+        DatasetChange,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+    )
+
+    assert changed.action == "import_sequence_tags"
+    assert changed.tag_import is not None
+    assert (changed.tag_import.revision, changed.tag_import.written) == (1, True)
+    assert [change.name for change in changed.tag_import.changes] == ["site"]
+    assert [finding.problem for finding in changed.findings] == ["row_unmatched"]
+    assert changed.tag_import.findings == ()
+    listing = list_sequence_tags(_study(roots))
+    assert [(tag.name, tag.entries) for tag in listing.tags] == [("site", 2)]
+
+
+def test_a_path_outside_the_source_roots_is_refused_and_a_server_without_roots_refuses(
+    backend: LocalBackend, roots: tuple[Path, Path], tmp_path: Path
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    outside = tmp_path / "elsewhere.csv"
+    _ = outside.write_text("entry,site\ng1:s1,a\n", encoding="utf-8")
+    ds = _study(roots)
+    unconfigured = LocalBackend([ds.manifest_path], warm=False)
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=str(outside),
+    )
+    without = _call(
+        unconfigured,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=str(outside),
+    )
+
+    assert refused.reason == "outside_roots"
+    assert without.reason == "roots_not_configured"
+    assert list_sequence_tags(_study(roots)).revision is None
+
+
+def test_replace_asks_to_confirm_and_an_import_without_it_asks_nothing(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\n")
+    other = _tags_csv(roots, "entry,age\ng1:s1,3\n", "age.csv")
+    _ = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=name
+    )
+
+    plain = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=other
+    )
+    asked = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+        replace=True,
+    )
+    confirmed = _call(
+        backend,
+        DatasetChange,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+        replace=True,
+        confirm=True,
+    )
+
+    assert plain.tag_import is not None and plain.tag_import.written
+    assert asked.reason == "confirmation_required"
+    assert asked.detail is not None
+    assert asked.detail["conditions"] == ["replace_sequence_tags"]
+    assert confirmed.tag_import is not None
+    assert [
+        (change.name, change.change) for change in confirmed.tag_import.changes
+    ] == [("age", "removed"), ("site", "unchanged")]
+
+
+def test_a_dry_run_reports_the_changes_and_writes_nothing(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\n")
+
+    dry = _call(
+        backend,
+        DatasetChange,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+        dry_run=True,
+    )
+
+    assert dry.tag_import is not None
+    assert (dry.tag_import.dry_run, dry.tag_import.written) == (True, False)
+    assert [change.change for change in dry.tag_import.changes] == ["added"]
+    assert list_sequence_tags(_study(roots)).revision is None
+
+
+def test_the_key_and_the_types_reach_the_import(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "name,code\ng1:s1,03\ng1:s2,04\n")
+
+    changed = _call(
+        backend,
+        DatasetChange,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+        key="name=entry",
+        types={"code": "text"},
+    )
+
+    assert changed.tag_import is not None
+    assert [(change.name, change.type) for change in changed.tag_import.changes] == [
+        ("code", "text")
+    ]
+
+
+def test_a_refusal_of_the_library_is_an_invalid_answer_with_its_message(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    broken = _tags_csv(roots, "entry,n\ng1:s1,1\ng1:s2,two\n")
+    missing = _tags_csv(roots, "entry,site\ng1:s1,a\n", "present.csv")
+    (roots[1] / missing).unlink()
+
+    typed = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=broken,
+        types={"n": "int"},
+    )
+    bad_key = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=broken,
+        key="n",
+    )
+    absent = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=missing,
+    )
+    no_path = _call(backend, ErrorEnvelope, action="import_sequence_tags", dataset=uuid)
+
+    assert (typed.kind, typed.reason) == ("invalid", "sequence_tags_invalid")
+    assert "line 3" in typed.message
+    assert (bad_key.kind, bad_key.reason) == ("invalid", "sequence_tags_invalid")
+    assert "NAME=" in bad_key.message
+    assert (absent.kind, absent.reason) == ("not_found", "csv_not_found")
+    assert "present.csv" in absent.message
+    assert (no_path.reason, no_path.detail) == (
+        "field_required",
+        {"action": "import_sequence_tags", "field": "path"},
+    )
+
+
+def test_a_managed_dataset_lists_its_tags_and_refuses_an_import_even_when_allowed(
+    roots: tuple[Path, Path],
+) -> None:
+    datasets, sources = roots
+    backend = LocalBackend(
+        [],
+        warm=False,
+        start_driver=RecordingStarter(),
+        dataset_roots=[datasets],
+        source_roots=[sources],
+        allow_managed=True,
+    )
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\n")
+    _ = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=name
+    )
+    with (datasets / "study" / "dataset.yaml").open("a", encoding="utf-8") as manifest:
+        _ = manifest.write("managed_by: mosaic-api\n")
+    stricter = LocalBackend(
+        [(datasets / "study" / "dataset.yaml")], warm=False, source_roots=[sources]
+    )
+
+    listed = _call(backend, DatasetChange, action="list_sequence_tags", dataset=uuid)
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+    )
+    listed_by_default = _call(
+        stricter, DatasetChange, action="list_sequence_tags", dataset=uuid
+    )
+    refused_by_default = _call(
+        stricter,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+    )
+
+    assert listed.sequence_tags is not None
+    assert [tag.name for tag in listed.sequence_tags.tags] == ["site"]
+    assert listed_by_default.sequence_tags == listed.sequence_tags
+    assert (refused.kind, refused.reason) == ("conflict", "sequence_tags_refused")
+    assert "managed" in refused.message
+    assert refused_by_default.reason == "dataset_managed"
+    assert list_sequence_tags(_study(roots)).revision == 1
+
+
+def test_the_listing_equals_the_command_line_json(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site,age\ng1:s1,a,3\ng1:s2,b,4\ng2:s3,a,5\n")
+    _ = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=name
+    )
+
+    listed = _call(backend, DatasetChange, action="list_sequence_tags", dataset=uuid)
+    printed = invoke_json(
+        [
+            "sequence-tags",
+            "list",
+            "-m",
+            str(roots[0] / "study" / "dataset.yaml"),
+            "--json",
+        ]
+    )
+
+    assert listed.sequence_tags == SequenceTagListing.model_validate(printed)
+    assert listed.sequence_tags is not None and listed.sequence_tags.tags
+    assert listed.tag_import is None
+
+
+def test_a_dry_run_with_replace_asks_nothing_and_leaves_the_revision(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\n")
+    other = _tags_csv(roots, "entry,age\ng1:s1,3\n", "age.csv")
+    _ = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=name
+    )
+    before = list_sequence_tags(_study(roots))
+
+    dry = _call(
+        backend,
+        DatasetChange,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=other,
+        replace=True,
+        dry_run=True,
+    )
+
+    assert dry.tag_import is not None
+    assert (dry.tag_import.dry_run, dry.tag_import.written) == (True, False)
+    assert [(c.name, c.change) for c in dry.tag_import.changes] == [
+        ("age", "added"),
+        ("site", "removed"),
+    ]
+    assert list_sequence_tags(_study(roots)) == before
+
+
+@pytest.mark.parametrize(
+    ("raised", "kind", "reason"),
+    [
+        (SequenceTagImportRefused("elsewhere"), "conflict", "sequence_tags_refused"),
+        (SequenceTagsMoved("moved"), "conflict", "sequence_tags_moved"),
+        (SequenceTagCsvInvalid("bad"), "invalid", "sequence_tags_invalid"),
+    ],
+)
+def test_an_import_refusal_is_answered_by_the_kind_of_its_cause(
+    backend: LocalBackend,
+    roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    raised: ValueError,
+    kind: str,
+    reason: str,
+) -> None:
+    uuid = _tagged_study(backend, roots)
+    name = _tags_csv(roots, "entry,site\ng1:s1,a\n")
+
+    def refuse(*_args: object, **_kwargs: object) -> SequenceTagImport:
+        raise raised
+
+    monkeypatch.setattr(sequence_tags, "import_sequence_tags", refuse)
+
+    answered = _call(
+        backend,
+        ErrorEnvelope,
+        action="import_sequence_tags",
+        dataset=uuid,
+        path=name,
+    )
+
+    assert (answered.kind, answered.reason) == (kind, reason)
+    assert answered.message == str(raised)
+
+
+def test_an_unreadable_tag_table_fails_the_listing_as_a_conflict(
+    backend: LocalBackend,
+    roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uuid = _tagged_study(backend, roots)
+
+    def unavailable(*_args: object, **_kwargs: object) -> SequenceTagListing:
+        msg = "several datasets are indexed"
+        raise SequenceTagTableUnavailable(msg)
+
+    monkeypatch.setattr(sequence_tags, "list_sequence_tags", unavailable)
+
+    answered = _call(
+        backend,
+        ErrorEnvelope,
+        action="list_sequence_tags",
+        dataset=uuid,
+    )
+
+    assert (answered.kind, answered.reason) == ("conflict", "sequence_tags_unavailable")

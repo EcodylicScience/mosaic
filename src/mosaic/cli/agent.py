@@ -494,8 +494,8 @@ def confirm_hook_command(
             help=(
                 "A confirmation condition to accept, such as gpu_lane, "
                 "training_op, tracking_op, allow_partial, bind, open_duplicate, "
-                "cleanup, score_sealed, hard_cancel, create_dataset or "
-                "add_source. Repeatable."
+                "cleanup, score_sealed, hard_cancel, create_dataset, add_source "
+                "or replace_sequence_tags. Repeatable."
             ),
         ),
     ] = None,

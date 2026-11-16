@@ -40,9 +40,10 @@ from pydantic import BaseModel, ValidationError
 
 from mosaic.core.media.division_wire import DivisionReportWire
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
-from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.parallelism import ParallelLimits, ParallelRefused
 from mosaic.core.scan_findings import ScanFinding, missing_path_finding
+from mosaic.core.strict_model import terse
 
 from .dataset_tools import missing_field
 from .spec import (
@@ -97,6 +98,7 @@ from .spec import (
 )
 
 if TYPE_CHECKING:
+    from mosaic.core.annotations.sequence_tag_wire import SequenceTagImport
     from mosaic.core.dataset import Dataset
     from mosaic.core.dataset_summary import DatasetSummary
     from mosaic.core.manifest import DatasetManifest
@@ -1161,10 +1163,13 @@ class LocalBackend:
             if args.dataset is None:
                 raise ToolFailure(missing_field(args.action, "dataset"))
             held = self._dataset(args.dataset)
+            if args.action == "list_sequence_tags":
+                return self._list_sequence_tags(args, held)
             dataset = self._changeable(held, "manage_dataset")
             scanned = _Scanned()
             orphaned: int | None = None
             defined: DefinitionRecord | None = None
+            imported: SequenceTagImport | None = None
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         try:
@@ -1193,6 +1198,9 @@ class LocalBackend:
                         f"definition {defined.name!r} at {defined.digest[:12]}; "
                         f"recipes name it def:{defined.name}"
                     )
+                case "import_sequence_tags":
+                    imported = self._import_sequence_tags(dataset, args)
+                    message = _tag_import_message(imported)
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         finally:
@@ -1205,9 +1213,18 @@ class LocalBackend:
                 "divisions": len(scanned.divisions.divisions),
                 "held_back": scanned.divisions.held_back,
                 "refused": scanned.divisions.refused,
-                "findings": scanned.findings,
+                "findings": (
+                    scanned.findings
+                    if imported is None
+                    else (*scanned.findings, *imported.findings)
+                ),
                 "orphaned_rows": orphaned,
                 "definition": defined,
+                "tag_import": (
+                    None
+                    if imported is None
+                    else imported.model_copy(update={"findings": ()})
+                ),
                 "next_steps": dataset_next_steps(held.dataset),
             }
         )
@@ -1299,6 +1316,72 @@ class LocalBackend:
         if missing is None:
             return declared
         return f"{declared}; warning: {missing.message}"
+
+    def _import_sequence_tags(
+        self, dataset: Dataset, args: ManageDatasetInput
+    ) -> SequenceTagImport:
+        """Write the CSV *args* name as the next tag table revision.
+
+        Raises:
+            ToolFailure: The call names no path, the path lies outside the
+                operator's roots or holds no file, a replacement is not
+                confirmed, or the library refuses the import.
+        """
+        from mosaic.core.annotations.sequence_tags import (
+            import_sequence_tags,
+            parse_key_option,
+        )
+
+        from .dataset_tools import confined_path, replace_findings
+
+        if args.path is None:
+            raise ToolFailure(missing_field("import_sequence_tags", "path"))
+        path = confined_path(args.path, self._source_roots, "source_roots")
+        if not path.is_file():
+            raise ToolFailure(
+                ErrorEnvelope(
+                    kind="not_found",
+                    reason="csv_not_found",
+                    message=f"no CSV file at {str(path)!r}",
+                    detail={"path": args.path},
+                )
+            )
+        if args.replace and not args.dry_run and not args.confirm:
+            raise ToolFailure(
+                confirmation_required("manage_dataset", replace_findings(path))
+            )
+        try:
+            key = None if args.key is None else parse_key_option(args.key)
+            return import_sequence_tags(
+                dataset,
+                path,
+                key=key,
+                types=args.types,
+                replace=args.replace,
+                dry_run=args.dry_run,
+            )
+        except ValueError as refused:
+            raise ToolFailure(_sequence_tags_refused(refused)) from refused
+
+    def _list_sequence_tags(
+        self, args: ManageDatasetInput, held: _Served
+    ) -> DatasetChange:
+        """List the sequence tags of *held*, which a managed dataset answers too."""
+        from mosaic.core.annotations.sequence_tags import list_sequence_tags
+        from mosaic.core.dataset import open_dataset
+
+        dataset = open_dataset(held.manifest, ensure_roots=False)
+        try:
+            listing = list_sequence_tags(dataset)
+        except ValueError as refused:
+            raise ToolFailure(_sequence_tags_refused(refused)) from refused
+        message = (
+            f"{len(listing.tags)} sequence tags at revision {listing.revision}"
+            if listing.revision is not None
+            else "the dataset has no sequence tags"
+        )
+        change = self._change(args, held, message)
+        return change.model_copy(update={"sequence_tags": listing})
 
     def _remove_source(self, dataset: Dataset, args: ManageDatasetInput) -> int:
         from .dataset_tools import source_findings
@@ -2012,6 +2095,43 @@ def _define_feature(dataset: Dataset, args: ManageDatasetInput) -> DefinitionRec
     if args.source is None:
         raise ToolFailure(missing_field("define_feature", "source"))
     return define_feature(dataset, args.name, args.source)
+
+
+def _sequence_tags_refused(refused: ValueError) -> ErrorEnvelope:
+    """The answer for a sequence-tag import or listing that the library refuses.
+
+    A CSV or key option that cannot be read is ``invalid``, which a changed request
+    answers. A table that is edited elsewhere, moved under the import or cannot be
+    read as one revision disagrees with the dataset's state, so it is a ``conflict``.
+    """
+    from mosaic.core.annotations.sequence_tags import (
+        SequenceTagImportRefused,
+        SequenceTagsMoved,
+        SequenceTagTableUnavailable,
+    )
+
+    kind: ErrorKind = "conflict"
+    if isinstance(refused, SequenceTagImportRefused):
+        reason = "sequence_tags_refused"
+    elif isinstance(refused, SequenceTagsMoved):
+        reason = "sequence_tags_moved"
+    elif isinstance(refused, SequenceTagTableUnavailable):
+        reason = "sequence_tags_unavailable"
+    else:
+        kind, reason = "invalid", "sequence_tags_invalid"
+    return ErrorEnvelope(kind=kind, reason=reason, message=terse(refused))
+
+
+def _tag_import_message(report: SequenceTagImport) -> str:
+    """Say in a sentence what a sequence-tag import did."""
+    if report.dry_run:
+        return f"dry run: {report.rows_matched} rows name entries, nothing written"
+    if report.written:
+        return (
+            f"wrote revision {report.revision} of the tag table; "
+            f"{report.rows_matched} rows name entries"
+        )
+    return f"nothing changed; the tag table stays at revision {report.revision}"
 
 
 def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:

@@ -35,6 +35,10 @@ from pydantic import (
     model_validator,
 )
 
+from mosaic.core.annotations.sequence_tag_wire import (
+    SequenceTagImport,
+    SequenceTagListing,
+)
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.division_wire import DivisionSpanWire
 from mosaic.core.media.store_division import RecordingIdentity
@@ -72,6 +76,7 @@ from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
 from mosaic.core.scan_findings import ScanFinding
 from mosaic.core.spaces import TrackSpace
 from mosaic.core.strict_model import StrictModel
+from mosaic.core.typed_attribute import TypedAttributeType
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
 if TYPE_CHECKING:
@@ -381,6 +386,7 @@ type ConfirmationCondition = Literal[
     "hard_cancel",
     "create_dataset",
     "add_source",
+    "replace_sequence_tags",
 ]
 """A condition under which a tool refuses until the user confirms the call."""
 
@@ -417,6 +423,9 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
     "add_source": (
         "the call declares or removes a source, which changes the files the "
         "dataset reads"
+    ),
+    "replace_sequence_tags": (
+        "the import removes the sequence tags that the CSV does not name"
     ),
 }
 """What each confirmation condition means, as a person reads it."""
@@ -1217,6 +1226,8 @@ type DatasetAction = Literal[
     "set_tags",
     "set_arenas",
     "define_feature",
+    "import_sequence_tags",
+    "list_sequence_tags",
 ]
 """What ``manage_dataset`` does to a dataset."""
 
@@ -1238,7 +1249,9 @@ class ManageDatasetInput(ToolInput):
             "source_id narrows it to one. set_tags: set tags, remove remove_tags. "
             "set_arenas: declare arena_layout as the arenas of recording, for "
             "camera or every camera. define_feature: store source as the feature "
-            "definition name, run as def:<name>."
+            "definition name, run as def:<name>. import_sequence_tags: write "
+            "the CSV at path as the next tag table revision. list_sequence_tags: "
+            "show each sequence tag with its value counts."
         )
     )
     dataset: str | None = Field(
@@ -1249,7 +1262,7 @@ class ManageDatasetInput(ToolInput):
         description=(
             "create: the new dataset's directory, inside the server's "
             "dataset_roots. add_source: where the files are, inside its "
-            "source_roots."
+            "source_roots. import_sequence_tags: the CSV, inside source_roots."
         ),
     )
     name: str | None = Field(
@@ -1343,6 +1356,25 @@ class ManageDatasetInput(ToolInput):
         ),
     )
     remove_tags: list[str] = Field(default_factory=list)
+    key: str | None = Field(
+        default=None,
+        description=(
+            "import_sequence_tags: NAME=entry|sequence|recording, the column "
+            "that names each row's entries. Default: the header's one key."
+        ),
+    )
+    types: dict[str, TypedAttributeType] | None = Field(
+        default=None,
+        description="import_sequence_tags: a type for each named tag column.",
+    )
+    replace: bool = Field(
+        default=False,
+        description="import_sequence_tags: remove the tags the CSV does not name.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="import_sequence_tags: report the changes and write nothing.",
+    )
     confirm: bool = Field(
         default=False,
         description=(
@@ -1374,6 +1406,10 @@ class DatasetChange(StrictModel):
         orphaned_rows: Under ``remove_source``, the index rows the source
             claimed, which stay.
         definition: Under ``define_feature``, the version defined or reused.
+        sequence_tags: Under ``list_sequence_tags``, the sequence tags of the
+            latest tag table revision.
+        tag_import: Under ``import_sequence_tags``, the revision written and the
+            change to each tag. Its rows that named no entry are in ``findings``.
         next_steps: What the dataset needs before a pipeline runs on it.
     """
 
@@ -1389,6 +1425,8 @@ class DatasetChange(StrictModel):
     findings: tuple[ScanFinding, ...] = ()
     orphaned_rows: int | None = None
     definition: DefinitionRecord | None = None
+    sequence_tags: SequenceTagListing | None = None
+    tag_import: SequenceTagImport | None = None
     next_steps: tuple[str, ...] = ()
 
 
@@ -2078,11 +2116,13 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Manage a dataset",
         description=(
             "Create a dataset, declare or remove a source of raw files, scan the "
-            "sources into the raw indexes, or set the dataset's tags. Paths must "
+            "sources into the raw indexes, set the dataset's tags, or import or "
+            "list its sequence tags from a CSV. Paths must "
             "lie inside the roots the server's operator allows. Converting is a "
             "recipe step (convert-tracks, convert-labels), and next_steps says "
             "what a dataset still needs. Creating a dataset or changing its "
-            "sources asks the user to confirm: a client that can ask the user "
+            "sources, or an import that replaces sequence tags, asks the user to "
+            "confirm: a client that can ask the user "
             "asks; otherwise the call is refused with reason "
             "confirmation_required: ask the user, then call again with confirm "
             "true. After confirmation_unanswered, confirmation_declined or "
@@ -2094,7 +2134,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         annotations=ToolAnnotations(
             read_only=False, destructive=False, idempotent=False
         ),
-        confirm_when=("create_dataset", "add_source"),
+        confirm_when=("create_dataset", "add_source", "replace_sequence_tags"),
     ),
 )
 """The shared tools, in the order a server lists them."""

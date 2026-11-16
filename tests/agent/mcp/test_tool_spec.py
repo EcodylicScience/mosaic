@@ -229,6 +229,20 @@ def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_c
     assert cancel.confirm_when == ("hard_cancel",)
 
 
+def test_managing_a_dataset_asks_for_a_creation_a_source_and_a_replaced_tag_set() -> (
+    None
+):
+    manage = tool_spec("manage_dataset")
+
+    assert manage is not None
+    assert manage.confirm_when == (
+        "create_dataset",
+        "add_source",
+        "replace_sequence_tags",
+    )
+    assert "replaces sequence tags" in manage.description
+
+
 def test_every_confirmation_condition_belongs_to_a_tool() -> None:
     asked = {condition for spec in TOOLS for condition in spec.confirm_when}
 

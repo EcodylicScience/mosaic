@@ -1687,7 +1687,7 @@ $ mosaic agent confirm-hook [OPTIONS]
 
 **Options**:
 
-* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed, hard_cancel, create_dataset or add_source. Repeatable.
+* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed, hard_cancel, create_dataset, add_source or replace_sequence_tags. Repeatable.
 * `--otherwise <ask|cancel|decline>`: What to answer a confirmation with a condition not approved: decline it, cancel it, or ask (print nothing and leave it to the dialog). decline keeps any other hook from accepting it.  [default: decline]
 * `--server <str>`: The name under which the client lists mosaic's server.  [default: mosaic]
 * `--help`: Show this message and exit.

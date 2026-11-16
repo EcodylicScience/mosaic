@@ -30,6 +30,7 @@ __all__ = [
     "create_findings",
     "missing_field",
     "refuse_escaping_globs",
+    "replace_findings",
     "source_fields_of",
     "source_findings",
 ]
@@ -42,7 +43,7 @@ ROOTS_NOT_CONFIGURED: Final = "roots_not_configured"
 
 _ROOTS_HELP: Final = {
     "dataset_roots": "create a dataset",
-    "source_roots": "declare a source",
+    "source_roots": "declare a source or read a tags file",
     "recipe_roots": "read a recipe file",
 }
 
@@ -182,3 +183,9 @@ def source_findings(
             "indexed"
         )
     return [ConfirmationFinding("add_source", message)]
+
+
+def replace_findings(path: Path) -> list[ConfirmationFinding]:
+    """What an ``import_sequence_tags`` call with ``replace`` asks the user to confirm."""
+    message = f"removes the sequence tags that {path.name!r} does not name"
+    return [ConfirmationFinding("replace_sequence_tags", message)]
