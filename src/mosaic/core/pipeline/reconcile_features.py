@@ -25,7 +25,11 @@ from typing import TYPE_CHECKING, TypeGuard
 from pydantic import ValidationError
 
 from mosaic.core.filter_bounds import TimeWindow
-from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
+from mosaic.core.pipeline._utils import (
+    LabelRevisionTerm,
+    ResolvedScope,
+    atomic_write,
+)
 from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.definitions.store import is_definition_slug
@@ -166,6 +170,7 @@ class _RunRead:
     compositions: dict[tuple[str, str], dict[str, str]]
     tracks_old: tuple[str, ...]
     labels_old: tuple[str, ...]
+    label_revisions: tuple[LabelRevisionTerm, ...]
     records_resolutions: bool
     upstream_feature_runs: tuple[str, ...]
     # Carried, never re-derived: a re-address moves an artifact somebody else
@@ -238,6 +243,7 @@ class FeatureReconciler:
             compositions=compositions,
             tracks_old=tracks_old,
             labels_old=labels_old,
+            label_revisions=params.label_revisions() if params else (),
             records_resolutions=params is not None and params.records_resolutions,
             upstream_feature_runs=upstream,
             execution_id=params.execution_id if params is not None else "",
@@ -371,6 +377,7 @@ class FeatureReconciler:
             frame_end=read.frame_end,
             tracks_variants=tracks_new,
             labels_variants=labels_new,
+            label_revisions=read.label_revisions,
             compositions=read.compositions,
         )
         read.scope = scope

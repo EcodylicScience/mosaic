@@ -6,6 +6,7 @@ from typing import Protocol, final, runtime_checkable
 
 import pandas as pd
 
+from mosaic.core.annotations.tag_table import TagRead
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.types.inputs import InputsLike
 from mosaic.core.params import Params
@@ -54,6 +55,7 @@ class Feature(Protocol):
     - ``set_scope(resolved)``: passes the run's chosen tracks variant to a
       feature that resolves tracks itself.
     - ``set_tracklets(by_entry)``: see :class:`SetsTracklets`.
+    - ``tag_read()``: see :class:`ReadsTags`.
     - ``progress_callback`` and ``cancel_token``: attributes that a trainer sets
       at construction. ``run_feature`` replaces each with the progress sink and
       cancel token of the attempt. A fit's epoch-level progress then enters the
@@ -234,6 +236,23 @@ class SetsTracklets(Protocol):
     """
 
     def set_tracklets(self, by_entry: Mapping[Entry, bool | None]) -> None: ...
+
+
+@runtime_checkable
+class ReadsTags(Protocol):
+    """Declares the ``tag_read`` hook of a feature that reads the dataset's tag table.
+
+    A feature that defines it reads the latest indexed revision of the ``tags``
+    series, or the one that ``run_feature`` is given, and its identifier covers
+    the part of the table that ``tag_read`` names. ``run_feature`` resolves the
+    revision once, before it computes the identifier, and hands the feature that
+    revision's file under the ``"_tags"`` key of the ``dependency_lookups`` that
+    ``load_state`` receives, one path for every entry. A run whose revision cannot
+    resolve, or whose ``tag_read`` the table refuses, fails before anything is
+    written.
+    """
+
+    def tag_read(self) -> TagRead: ...
 
 
 @runtime_checkable

@@ -28,6 +28,29 @@ from mosaic.runlog import (
 # --- Pipeline data types ---
 
 
+@dataclass(frozen=True, slots=True)
+class LabelRevisionTerm:
+    """One revision of a label series that a run read, as its identity records it.
+
+    Attributes:
+        series: Which label series.
+        origin_uuid: The manifest uuid of the dataset that saved the revision.
+        key: What the revision is a revision of.
+        digest: The digest of what the run read of the revision. Only this
+            enters the run identifier.
+        revision: The revision's number, recorded and never hashed.
+        payload_digest: The digest of the revision's whole payload, recorded
+            and never hashed.
+    """
+
+    series: str
+    origin_uuid: str
+    key: str
+    digest: str
+    revision: int
+    payload_digest: str
+
+
 @dataclass
 class ResolvedScope:
     """What a feature run resolved to, before it computes anything.
@@ -56,6 +79,12 @@ class ResolvedScope:
     deduplicated, empty when nothing said -- and enters the identifier through its
     own ``compute_run_id`` term for the same reason.
 
+    ``label_revisions`` is the label series revisions a run read, one term for
+    each. Like ``labels_variants`` it is collected before the narrowing and
+    enters the identifier through a term of its own, omitted when empty. Only
+    each term's ``digest`` is hashed, so a revision number or a payload digest
+    that changed with the same digest leaves the identifier where it was.
+
     ``compositions`` rides here for the same reason -- ``build_manifest`` is what
     reads them and ``compute_run_id`` already takes a ``ResolvedScope`` -- but
     under the **opposite** rule, and a reader who generalizes from
@@ -81,6 +110,7 @@ class ResolvedScope:
     frame_end: int | None = None
     tracks_variants: tuple[str, ...] = ()
     labels_variants: tuple[str, ...] = ()
+    label_revisions: tuple[LabelRevisionTerm, ...] = ()
     compositions: Mapping[tuple[str, str], Mapping[str, str]] = field(
         default_factory=dict
     )

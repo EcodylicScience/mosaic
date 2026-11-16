@@ -128,9 +128,11 @@ from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import SourceRoot, encode_entry_composition
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
+from .tag_reads import ResolvedTagTable, feature_tag_read
 from .tracks_index import tracklets_by_entry, tracks_compositions
 from .types.data_config import COLUMNS, META_COLS
-from .types.feature import SetsTracklets
+from .ops import IdentityDeferred
+from .types.feature import ReadsTags, SetsTracklets
 from mosaic.core.entry import Entry
 from .types import (
     ArtifactSpec,
@@ -147,6 +149,7 @@ from .types import (
     TracksColumn,
 )
 from .types.inputs import InputsLike
+from .types.labels import LabelRevisionRef
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
 from .memory_watch import (
@@ -264,7 +267,12 @@ def _optional_results(feature: Feature) -> frozenset[str]:
 
 
 def _resolve_dependencies(
-    ds: Dataset, feature: Feature, labels_run_id: str | None = None
+    ds: Dataset,
+    feature: Feature,
+    labels_run_id: str | None = None,
+    tags: ResolvedTagTable | None = None,
+    *,
+    entries: Iterable[Entry],
 ) -> tuple[dict[str, Path], dict[str, DependencyLookup]]:
     """Resolve upstream dependencies from params fields and feature inputs.
 
@@ -272,6 +280,15 @@ def _resolve_dependencies(
     - artifact_paths maps field name to resolved file/directory Path
     - dependency_lookups maps field name (or ``_input_<i>`` for Results
       referenced via ``feature.inputs``) to a (group, sequence) -> Path dict
+
+    *entries* are the entries the run covers. A feature that reads the tag table
+    also gets the ``"_tags"`` lookup, which maps each of them to the file of
+    *tags*. The table is the revision the caller resolved for the run's identity,
+    so this reads no series index and cannot meet a revision written since.
+
+    Raises:
+        IdentityDeferred: *feature* reads the tag table and *tags* is ``None``.
+        ValueError: *tags* has no file to read.
     """
     from .index import latest_feature_run_root as _latest_feature_run_root
     from .index import resolve_artifact_file
@@ -352,6 +369,18 @@ def _resolve_dependencies(
         lookup = _build_result_lookup(ds, result.feature, result.run_id)
         if lookup:  # an empty lookup adds no key
             dependency_lookups[f"_input_{idx}"] = lookup
+
+    if isinstance(feature, ReadsTags):
+        if tags is None:
+            raise IdentityDeferred(
+                feature.name,
+                "the tag table has not been resolved for this run, so there is no "
+                "revision of the tags series to read",
+            )
+        if tags.path is None:
+            msg = "a tag table that has not been written has no file to read"
+            raise ValueError(msg)
+        dependency_lookups["_tags"] = {entry: tags.path for entry in entries}
 
     return artifact_paths, dependency_lookups
 
@@ -1188,6 +1217,13 @@ def compute_run_id(
     on the ``time`` column and never reads a frame rate. It follows the
     omit-when-absent rule: a run with no window digests as it always has.
 
+    ``_label_revisions`` is the label series revisions a run read, as the sorted
+    ``[origin_uuid, key, digest]`` triples of ``scope.label_revisions``, under the
+    same omit-when-absent rule. The digest covers what the run reads of a revision,
+    so an edit elsewhere in the revision leaves the identifier unchanged. The
+    revision number and the payload digest are recorded in ``params.json`` and are
+    not hashed.
+
     ``_definition`` is the SHA-256 of the source of a feature definition, beside
     ``_tracks`` and under the same omit-when-absent rule. A built-in digests as
     it always has. It is added when the feature's class declares
@@ -1235,6 +1271,14 @@ def compute_run_id(
         # reads no labels -- almost all of them -- digests exactly as before and
         # the golden corpus moves only for the labels-consuming features.
         hashable["_labels"] = sorted(scope.labels_variants)
+    if scope.label_revisions:
+        # The label series revisions a run read, as the sorted
+        # ``[origin_uuid, key, digest]`` triples. The revision number and the
+        # payload digest are recorded and left out, so a revision written for
+        # something the run does not read keeps the identifier.
+        hashable["_label_revisions"] = sorted(
+            [term.origin_uuid, term.key, term.digest] for term in scope.label_revisions
+        )
     if overlap_frames:
         hashable["_overlap_frames"] = int(overlap_frames)
     if time_window.is_set:
@@ -1261,6 +1305,8 @@ def resolve_feature_identity(
     frame_end: int | None = None,
     overlap_frames: int = 0,
     time_window: TimeWindow = TimeWindow(),
+    tag_revision: LabelRevisionRef | None = None,
+    tag_payload: bytes | None = None,
 ) -> tuple[str, ResolvedScope]:
     """What a run of *feature* over *scope* will be called, without running it.
 
@@ -1296,6 +1342,11 @@ def resolve_feature_identity(
             near a sequence boundary and so enters the identity.
         time_window: The window of ``time`` in seconds, which enters the identity
             as written.
+        tag_revision: The revision of the tag table that a feature reading it
+            reads, or ``None`` for the latest indexed one. Ignored by a feature
+            that reads no tags.
+        tag_payload: A tag table that has not been written, read in place of the
+            latest revision when *tag_revision* names none.
 
     Returns:
         The ``run_id`` and the ``ResolvedScope`` it was computed from, so a
@@ -1303,7 +1354,10 @@ def resolve_feature_identity(
         only the digest.
 
     Raises:
-        ValueError: *scope* names groups or sequences instead of entries.
+        ValueError: *scope* names groups or sequences instead of entries, or a
+            feature reading the tag table is refused by the table it resolves.
+        IdentityDeferred: A feature reads the tag table and no revision is
+            indexed.
     """
     if scope.groups is not None or scope.sequences is not None:
         raise ValueError(
@@ -1343,6 +1397,9 @@ def resolve_feature_identity(
             compositions=compositions,
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
+    tags = feature_tag_read(ds, feature, tag_revision, tag_payload)
+    if tags is not None:
+        resolved.label_revisions = (tags[1],)
     run_id, _ = compute_run_id(
         feature,
         frame_start,
@@ -1480,6 +1537,31 @@ def build_run_params_payload(
     """
     from mosaic.core.pipeline.definitions.loader import definition_ref_of
 
+    resolved: list[dict[str, str | None]] = [
+        *feature_resolutions,
+        *(
+            {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
+            for variant in scope.tracks_variants
+        ),
+        *(
+            {"where": "inputs[labels]", "feature": "labels", "run_id": variant}
+            for variant in scope.labels_variants
+        ),
+    ]
+    series_revisions: list[dict[str, str | int | None]] = [
+        {
+            "where": f"series[{term.series}]",
+            "feature": "",
+            "run_id": None,
+            "series": term.series,
+            "key": term.key,
+            "origin_uuid": term.origin_uuid,
+            "revision": term.revision,
+            "digest": term.digest,
+            "payload_digest": term.payload_digest,
+        }
+        for term in scope.label_revisions
+    ]
     payload: dict[str, object] = {
         "_params": json_ready(feature.params),
         "_inputs": feature.inputs.model_dump(),
@@ -1503,15 +1585,7 @@ def build_run_params_payload(
                 for (group, sequence), per_root in sorted(scope.compositions.items())
             },
         },
-        "_resolved": list(feature_resolutions)
-        + [
-            {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
-            for variant in scope.tracks_variants
-        ]
-        + [
-            {"where": "inputs[labels]", "feature": "labels", "run_id": variant}
-            for variant in scope.labels_variants
-        ],
+        "_resolved": [*resolved, *series_revisions],
     }
     definition = definition_ref_of(type(feature))
     if definition is not None:
@@ -1955,6 +2029,7 @@ def run_feature(
     admission_margin: float = 0.0,
     probe: ProbeRecord | None = None,
     phases: Sequence[ApplyPhase] | None = None,
+    tag_revision: LabelRevisionRef | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -2051,6 +2126,11 @@ def run_feature(
         is raised only when every entry the run computed was lost, and an
         exception from a phase ends the attempt there, with the earlier phases'
         final events kept. ``None``, the default, is one phase over every entry.
+    tag_revision : LabelRevisionRef | None
+        For a feature that reads the tag table, the revision to read, naming the
+        key ``dataset``. ``None``, and a reference without a revision, read the
+        latest indexed revision, resolved once before the run id is computed. A
+        feature that reads no tags ignores it.
     overlap_frames : int, default 0
         Load this many frames of context from the sequences on either side, so a
         feature computing across frames -- a rolling window, a backward
@@ -2161,6 +2241,7 @@ def run_feature(
                     measure_worker_base=measure_worker_base,
                     admission_margin=admission_margin,
                     phases=phases,
+                    tag_revision=tag_revision,
                 )
             finally:
                 _close_feature(feature)
@@ -2189,6 +2270,7 @@ def _run_feature_impl(
     measure_worker_base: bool = False,
     admission_margin: float = 0.0,
     phases: Sequence[ApplyPhase] | None = None,
+    tag_revision: LabelRevisionRef | None = None,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
@@ -2323,6 +2405,13 @@ def _run_feature_impl(
     # the identity is built from is the variant the fit actually reads.
     resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
 
+    # The tag table a feature reads is resolved once, here, and the same revision
+    # feeds the identifier and the lookup handed to the feature below, so an
+    # import between the two cannot make the output disagree with the run id.
+    tags = feature_tag_read(ds, feature, tag_revision)
+    if tags is not None:
+        resolved.label_revisions = (tags[1],)
+
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
     # identity (execution_id, progress, cancel) is deliberately NOT part of it.
     run_id, params_hash = compute_run_id(
@@ -2430,7 +2519,11 @@ def _run_feature_impl(
 
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(
-        ds, feature, labels_run_id
+        ds,
+        feature,
+        labels_run_id,
+        tags[0] if tags is not None else None,
+        entries=resolved.entries,
     )
 
     # Resolve pair filter

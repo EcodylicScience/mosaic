@@ -21,6 +21,7 @@ import pytest
 from pydantic import Field
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline._utils import LabelRevisionTerm, ResolvedScope
 from mosaic.core.pipeline.appearance import appearance_path, read_appearance
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
@@ -35,7 +36,7 @@ from mosaic.core.pipeline.index import (
 )
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.reconcile_variants import TracksReconciler, relocated_cell
-from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.run import compute_run_id, run_feature
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
     convert_variant_payload,
@@ -840,3 +841,63 @@ def test_a_run_recording_the_withdrawn_labels_keys_reconciles_as_ok(
 
     _only_finding(report, "ok")
     assert report.findings[0].old_address == report.findings[0].new_address
+
+
+def test_a_run_recording_a_label_revision_reconciles_as_ok(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """A run named over a label revision term replays it from ``params.json``."""
+    del registered_feature
+    ds = scenario_dataset
+    plain_id = _run(ds)
+    term = LabelRevisionTerm(
+        series="tags",
+        origin_uuid="0b7c1d52-aaaa-bbbb-cccc-000000000001",
+        key="dataset",
+        digest="d" * 64,
+        revision=2,
+        payload_digest="p" * 64,
+    )
+    feature = _ReconcileFeature()
+    assert compute_run_id(feature, None, None, ResolvedScope())[0] == plain_id
+    termed_id = compute_run_id(
+        feature,
+        None,
+        None,
+        ResolvedScope(label_revisions=(term,)),
+    )[0]
+    assert termed_id != plain_id
+
+    storage = _storage(ds)
+    plain_root = feature_run_root(ds, storage, plain_id)
+    termed_root = feature_run_root(ds, storage, termed_id)
+    _ = shutil.move(str(plain_root), str(termed_root))
+    _ = feature_index(feature_index_path(ds, storage)).remap_run_id(
+        plain_id,
+        termed_id,
+        path_rewrite=lambda stored: ds.relative_to_root(
+            termed_root / Path(stored).name
+        ),
+    )
+    params_path = termed_root / "params.json"
+    recorded = json.loads(params_path.read_text())
+    recorded["_resolved"].append(
+        {
+            "where": "series[tags]",
+            "feature": "",
+            "run_id": None,
+            "series": term.series,
+            "key": term.key,
+            "origin_uuid": term.origin_uuid,
+            "revision": term.revision,
+            "digest": term.digest,
+            "payload_digest": term.payload_digest,
+        }
+    )
+    params_path.write_text(json.dumps(recorded))
+
+    report = ds.reconcile(apply=True)
+
+    _only_finding(report, "ok")
+    assert report.findings[0].new_address == termed_id
+    assert termed_root.exists()

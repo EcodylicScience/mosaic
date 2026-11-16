@@ -68,8 +68,10 @@ are in `graph/CLAUDE.md`.
 
 - `compute_run_id` (`run.py`) names a feature run `<version>-<10 hex>` over
   `_params` (`identity_dump()`), `_inputs` and `_frame_range`, plus `_scope_entries`,
-  `_tracks`, `_labels`, `_overlap_frames` and `_definition` (a feature definition's
-  source digest) only when present. A new term is omitted when absent, which leaves
+  `_tracks`, `_labels`, `_label_revisions` (the sorted `[origin_uuid, key, digest]`
+  of each label series revision read, never its number or payload digest),
+  `_overlap_frames` and `_definition` (a feature definition's source digest) only
+  when present. A new term is omitted when absent, which leaves
   existing identifiers unchanged
   (`tests/core/pipeline/test_feature_run_id_golden.py`). The neighbors an overlapped
   entry read are recorded on its row and left out of the identifier.

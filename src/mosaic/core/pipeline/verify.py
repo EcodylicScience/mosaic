@@ -658,7 +658,7 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
     if spec.overlap_frames > 0:
         verify_overlap_supported(manifest, spec.overlap_frames)
     artifact_paths, dependency_lookups = _resolve_dependencies(
-        ds, feature, spec.labels_run_id
+        ds, feature, spec.labels_run_id, entries=resolved.entries
     )
     filter_factory = _make_filter_factory(
         ds,

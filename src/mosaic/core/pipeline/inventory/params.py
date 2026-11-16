@@ -51,6 +51,7 @@ from pydantic import (
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.pipeline._utils import LabelRevisionTerm
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
@@ -103,6 +104,14 @@ class ResolvedRef(BaseModel):
     where: str = ""
     feature: str = ""
     run_id: str | None = None
+    series: str | None = None
+    key: str | None = None
+    origin_uuid: str | None = None
+    revision: int | None = None
+    digest: str | None = None
+    payload_digest: str | None = None
+    """The six fields from ``series`` on are set on the entry of a label series
+    revision the run read, and ``None`` on every other entry."""
 
 
 class ScopeBlock(BaseModel):
@@ -247,6 +256,34 @@ class RunParams(BaseModel):
             r.run_id for r in self.resolved if r.where == LABELS_EDGE and r.run_id
         ]
         return tuple(tracks), tuple(labels)
+
+    def label_revisions(self) -> tuple[LabelRevisionTerm, ...]:
+        """The label series revisions the run read, as its identity replays them.
+
+        An entry that lacks any of the six fields is not a term and is skipped.
+        """
+        terms: list[LabelRevisionTerm] = []
+        for ref in self.resolved:
+            if (
+                ref.series is None
+                or ref.key is None
+                or ref.origin_uuid is None
+                or ref.revision is None
+                or ref.digest is None
+                or ref.payload_digest is None
+            ):
+                continue
+            terms.append(
+                LabelRevisionTerm(
+                    series=ref.series,
+                    origin_uuid=ref.origin_uuid,
+                    key=ref.key,
+                    digest=ref.digest,
+                    revision=ref.revision,
+                    payload_digest=ref.payload_digest,
+                )
+            )
+        return tuple(terms)
 
     def consumed_variants(self, where: str = TRACKS_EDGE) -> frozenset[str]:
         """Named upstream variants on edge *where*.

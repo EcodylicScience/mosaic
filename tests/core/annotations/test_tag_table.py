@@ -604,6 +604,18 @@ def test_a_tag_read_names_the_tags_and_the_columns_a_step_writes() -> None:
 
     assert read.sequence_tags == ("condition",)
     assert read.writes == frozenset({"group"})
+    assert read.renames == ()
+
+
+def test_a_tag_read_holds_its_renames_as_pairs_and_stays_hashable() -> None:
+    read = TagRead(
+        sequence_tags=("condition",),
+        writes=frozenset({"group"}),
+        renames=(("condition", "Condition"),),
+    )
+
+    assert read.renames == (("condition", "Condition"),)
+    assert hash(read) == hash(read)
 
 
 def test_importing_the_payload_module_loads_neither_pandas_nor_the_pipeline() -> None:

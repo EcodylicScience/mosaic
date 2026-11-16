@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.cli._features import build_feature
-from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline._utils import LabelRevisionTerm, ResolvedScope
 from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.run import compute_run_id
 
@@ -69,6 +69,8 @@ class Case:
             ``scope_dependent`` feature that declares the matching root, and is
             omitted from the payload otherwise -- which is why every pre-existing
             case is unaffected by item 4.4.
+        label_revisions: The label series revisions a run read. Omitted from the
+            payload when empty, so no pre-existing case is affected.
         overlap_frames: The neighbour-context width an overlapped run read.
             Omitted from the payload when zero, which is what keeps every case
             written before it existed at the identifier it already has.
@@ -84,6 +86,7 @@ class Case:
     overlap_frames: int = 0
     tracks_variants: tuple[str, ...] = field(default_factory=tuple)
     labels_variants: tuple[str, ...] = field(default_factory=tuple)
+    label_revisions: tuple[LabelRevisionTerm, ...] = field(default_factory=tuple)
     compositions: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = field(
         default_factory=tuple
     )
@@ -1016,6 +1019,7 @@ def _identifier(case: Case) -> str:
         entries=set(case.scope),
         tracks_variants=case.tracks_variants,
         labels_variants=case.labels_variants,
+        label_revisions=case.label_revisions,
         compositions={
             (group, sequence): dict(pairs)
             for group, sequence, pairs in case.compositions

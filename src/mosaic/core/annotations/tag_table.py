@@ -175,10 +175,14 @@ class TagRead:
             on.
         writes: The identity columns that the feature writes, which a sequence tag
             may not be named after.
+        renames: The feature's renames of a tag to the name of its output column,
+            as ``(tag, column)`` pairs. A column may not be named after a column
+            the feature writes.
     """
 
     sequence_tags: tuple[str, ...]
     writes: frozenset[str]
+    renames: tuple[tuple[str, str], ...] = ()
 
 
 def check_tag_value(type_: TypedAttributeType, value: TypedAttributeValue) -> None:
