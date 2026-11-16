@@ -2063,6 +2063,15 @@ class _FeralBuildLoaders(Protocol):
     ) -> tuple[dict[str, Sized], dict[str, Sized]]: ...
 
 
+class _FeralReleaseLoaders(Protocol):
+    def __call__(
+        self,
+        loaders: dict[str, Sized],
+        datasets: dict[str, Sized],
+        *partitions: str,
+    ) -> None: ...
+
+
 class _FeralBuildModel(Protocol):
     def __call__(
         self,
@@ -2286,6 +2295,10 @@ def _feral_validate_labels() -> _FeralValidateLabels:
 
 def _feral_build_loaders() -> _FeralBuildLoaders:
     return importlib.import_module("feral.data").build_datasets_and_loaders
+
+
+def _feral_release_loaders() -> _FeralReleaseLoaders:
+    return importlib.import_module("feral.data").release_loaders
 
 
 def _feral_build_model() -> _FeralBuildModel:
@@ -3148,6 +3161,10 @@ def train_feral(
                 break
     finally:
         csv_progress.close()
+        # The train and val loaders keep persistent workers, and their pinned
+        # batch buffers stay in torch's host cache until released. The held-out
+        # evaluation and apply that can follow in this process need neither.
+        _feral_release_loaders()(loaders, datasets, "train", "val")
 
     checkpoint_path.unlink(missing_ok=True)
     if model_ema is not None:

@@ -185,10 +185,10 @@ lightning-action = ["lightning-action>=1.0"]
 # from PyPI.
 #
 # The narrow bound is load-bearing rather than cautious. Mosaic builds its own
-# training loop out of FERAL's pieces, so it imports twenty-two symbols from
+# training loop out of FERAL's pieces, so it imports twenty-three symbols from
 # `feral`, `feral.model`, `feral.backbones`, `feral.data`, `feral.modeling`,
 # `feral.loops`, `feral.metrics`, `feral.dataset` and `feral.utils`, and
-# eighteen of them are submodule internals that FERAL's `__all__` does not
+# nineteen of them are submodule internals that FERAL's `__all__` does not
 # carry. Their shape changed within 1.0.x: 1.0.4 moved frame normalization out of
 # `ClsDataset` into `normalize_frames`, and it is the release tested.
 #

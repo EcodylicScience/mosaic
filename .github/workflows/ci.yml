@@ -243,12 +243,12 @@ jobs:
         run: uv run --no-sync pytest -q -m tracker --durations=25
 
   # FERAL is a moving target mosaic reaches deep into: the feature builds its own
-  # training loop out of twenty-two symbols from `feral`, `feral.model`,
+  # training loop out of twenty-three symbols from `feral`, `feral.model`,
   # `feral.backbones`, `feral.data`, `feral.modeling`, `feral.loops`,
-  # `feral.metrics`, `feral.dataset` and `feral.utils`, and eighteen of those are
-  # submodule internals the package's `__all__` does not carry and its authors owe
-  # nobody. This job is what turns a release that moves one of them red here
-  # rather than on someone's GPU box mid-run.
+  # `feral.metrics`, `feral.dataset` and `feral.utils`, and nineteen of those
+  # are submodule internals the package's `__all__` does not carry and its
+  # authors owe nobody. This job is what turns a release that moves one of them
+  # red here rather than on someone's GPU box mid-run.
   #
   # It is deliberately the last job of its kind rather than a line added to
   # `test`: FERAL pins its dependencies exactly -- `opencv-python`, `pandas`,

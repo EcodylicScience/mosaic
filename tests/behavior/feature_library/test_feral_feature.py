@@ -2728,6 +2728,40 @@ class TestTrainFeral:
         assert [(e, n) for e, n, _ in progress.epochs] == [(0, 1)]
         assert progress.epochs[0][2] == metrics[0]
 
+    def test_the_train_and_val_loaders_are_released_when_training_ends(
+        self,
+        tmp_path: Path,
+        tiny_model: list[torch.nn.Module],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        data = _feral_module("data")
+        release = data.release_loaders
+        released: list[tuple[str, ...]] = []
+        left: list[set[str]] = []
+
+        def recorded(
+            loaders: dict[str, object], datasets: dict[str, object], *partitions: str
+        ) -> None:
+            released.append(partitions)
+            release(loaders, datasets, *partitions)
+            left.append(set(loaders) | set(datasets))
+
+        monkeypatch.setattr(data, "release_loaders", recorded)
+        built = _written_labels(tmp_path, train=["a", "b"], val=["c"])
+        run_root = tmp_path / "run"
+        run_root.mkdir()
+
+        train_feral(
+            _smoke_config(tmp_path),
+            built.labels_json,
+            class_values=built.class_values,
+            run_root=run_root,
+            progress_callback=None,
+        )
+
+        assert released == [("train", "val")]
+        assert left == [set()]
+
     def test_the_best_model_file_holds_the_returned_weights_and_the_classes(
         self, tmp_path: Path, tiny_model: list[torch.nn.Module]
     ) -> None:
