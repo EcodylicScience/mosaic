@@ -60,6 +60,7 @@ __all__ = [
     "finite_keypoints",
     "finite_rows",
     "gradient_along",
+    "identity_columns",
     "iter_series",
     "iter_series_positions",
     "label_individuals",
@@ -443,6 +444,34 @@ def entry_identity(df: pd.DataFrame) -> tuple[str, str]:
         if COLUMNS.seq_col in df.columns:
             sequence = str(df[COLUMNS.seq_col].iloc[0])
     return group, sequence
+
+
+def identity_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the identity columns of *df* as a new table with *df*'s index.
+
+    ``frame``, ``time``, ``group``, ``sequence`` and ``id`` are copied where *df*
+    has them. A missing ``group`` or ``sequence`` is filled from the entry
+    (:func:`entry_identity`), and a missing ``id`` is NaN. The base a feature
+    that attaches columns to each row of its input writes them onto.
+    """
+    group, sequence = entry_identity(df)
+    out = pd.DataFrame(index=df.index)
+    for column in (
+        COLUMNS.frame_col,
+        COLUMNS.time_col,
+        COLUMNS.group_col,
+        COLUMNS.seq_col,
+        COLUMNS.id_col,
+    ):
+        if column in df.columns:
+            out[column] = df[column]
+    if COLUMNS.group_col not in df.columns:
+        out[COLUMNS.group_col] = group
+    if COLUMNS.seq_col not in df.columns:
+        out[COLUMNS.seq_col] = sequence
+    if COLUMNS.id_col not in df.columns:
+        out[COLUMNS.id_col] = np.nan
+    return out
 
 
 def meta_columns(df: pd.DataFrame) -> list[str]:

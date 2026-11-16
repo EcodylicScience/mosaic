@@ -94,6 +94,7 @@ from . import (
     sequence_aggregate,
     sequence_classifier,
     sequence_heads,
+    sequence_tag_columns,
     sequence_training,
     smooth_probabilities,
     social_motion_summary,
@@ -157,6 +158,7 @@ from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .sequence_aggregate import SequenceAggregate
 from .sequence_classifier import SequenceClassifier
+from .sequence_tag_columns import SequenceTagColumns
 from .smooth_probabilities import SmoothProbabilitiesFeature
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
@@ -259,6 +261,7 @@ __all__ = [
     "ScaleToCm",
     "SequenceAggregate",
     "SequenceClassifier",
+    "SequenceTagColumns",
     "SmoothProbabilitiesFeature",
     "SocialMotionSummary",
     "SpeedAngvel",
@@ -330,6 +333,7 @@ __all__ = [
     "sequence_aggregate",
     "sequence_classifier",
     "sequence_heads",
+    "sequence_tag_columns",
     "sequence_training",
     "smooth_probabilities",
     "social_motion_summary",

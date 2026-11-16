@@ -457,6 +457,7 @@ def test_declared_keywords_are_distinct_lowercase_stripped_phrases(cls: type) ->
         ("feral", False),
         ("extract-labeled-templates", True),
         ("id-tag-columns", True),
+        ("sequence-tag-columns", False),
     ],
 )
 def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
@@ -476,6 +477,7 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "event-response": _EVERY_SPACE,
     "pair-series-correlation": _EVERY_SPACE,
     "id-tag-columns": _EVERY_SPACE,
+    "sequence-tag-columns": _EVERY_SPACE,
     "label-predictions": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
     "pair-world": frozenset({"world_m"}),

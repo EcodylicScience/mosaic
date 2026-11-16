@@ -312,6 +312,16 @@ def test_a_run_without_a_revision_raises_and_names_the_series(ds: Dataset) -> No
             {"treatment": "group"},
             "rename 'treatment' to 'group'",
         ),
+        (
+            ("treatment", "site"),
+            {"treatment": "x", "site": "x"},
+            "fields 'treatment' and 'site' both write the column 'x'",
+        ),
+        (
+            ("treatment", "site"),
+            {"treatment": "site"},
+            "fields 'treatment' and 'site' both write the column 'site'",
+        ),
     ],
 )
 def test_a_problem_with_the_fields_refuses_the_run(

@@ -958,6 +958,32 @@ CASES: tuple[Case, ...] = (
         },
         labels_variants=("convert-labels-boris_aggregated_csv.0.1-cccccccccc",),
     ),
+    # --- the tag table revision a run read ---
+    #
+    # sequence-tag-columns reads the sequence tags it names, so the term over them
+    # must move its identifier. The pair differs only in label_revisions, so a run
+    # that read a revision must differ from one that read none. The term is a
+    # literal, standing in for what a resolved table would give.
+    Case(
+        case_id="sequence-tag-columns/no-tag-revision",
+        feature="sequence-tag-columns",
+        params={"fields": ["condition"]},
+    ),
+    Case(
+        case_id="sequence-tag-columns/one-tag-revision",
+        feature="sequence-tag-columns",
+        params={"fields": ["condition"]},
+        label_revisions=(
+            LabelRevisionTerm(
+                series="tags",
+                origin_uuid="00000000-0000-0000-0000-000000000001",
+                key="dataset",
+                digest="a1b2c3d4e5f60718",
+                revision=1,
+                payload_digest="f0e1d2c3b4a59687",
+            ),
+        ),
+    ),
     # --- archived analyses: identifiers that must never move ---
     #
     # The delivery document owes a manual re-run of the guppies analysis once per

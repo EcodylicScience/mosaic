@@ -194,6 +194,7 @@ payload for other tools.
 | Series | One key names | Payload | Format | Exports |
 | --- | --- | --- | --- | --- |
 | `keypoints` | a set | `annotations.mosaic.json` | `mosaic-pose-annotations` | `annotations.coco.json` |
+| `tags` | a set | `tags.mosaic.json` | `mosaic-tags` | -- |
 
 ### `mosaic-pose-annotations`
 

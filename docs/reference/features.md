@@ -3,7 +3,7 @@
 
 # Features
 
-69 features are registered. Each one runs as
+70 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -2310,3 +2310,14 @@ Attach per-id label fields from labels/<label_kind> to each frame.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | _required_ |  | Which labels/<kind> subdirectory this dependency resolves to. |
+
+### `sequence-tag-columns`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_tag_columns.SequenceTagColumns`
+
+Attach the sequence tags that ``fields`` names to each row of the input.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `fields` | list of `string` | _constructed_ |  | The sequence tags to attach as columns, at least one. Each names a sequence tag of the dataset's tag table. |
+| `field_renames` | `object` \| `None` | `null` |  | A mapping from a sequence tag's name to its output column name. Unset, every column keeps its tag's name. |

@@ -26,7 +26,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 
-from .helpers import entry_identity
+from .helpers import entry_identity, identity_columns
 from .registry import register_feature
 
 _LABELS_DESCRIPTION = (
@@ -177,16 +177,7 @@ class IdTagColumns:
             fields = sorted(field_set)
         rename_map = self.params.field_renames or {}
 
-        out = pd.DataFrame(index=df.index)
-        for col in (C.frame_col, C.time_col, C.group_col, C.seq_col, C.id_col):
-            if col in df.columns:
-                out[col] = df[col]
-        if C.group_col not in df.columns:
-            out[C.group_col] = group_val
-        if C.seq_col not in df.columns:
-            out[C.seq_col] = sequence_val
-        if C.id_col not in df.columns:
-            out[C.id_col] = np.nan
+        out = identity_columns(df)
 
         ids_series = out[C.id_col]
         for field in fields:

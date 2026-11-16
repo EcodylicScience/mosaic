@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ResolvedTagTable",
     "feature_tag_read",
+    "refuse_tag_read",
     "resolve_tag_table",
     "tag_read_problems",
     "tag_term",
@@ -145,7 +146,42 @@ def tag_read_problems(table: TagTable, read: TagRead) -> list[tuple[str, str]]:
         for name, target in sorted(read.renames)
         if target in read.writes
     )
+    problems.extend(
+        ("params.field_renames", message) for message in _colliding_columns(read)
+    )
     return problems
+
+
+def _colliding_columns(read: TagRead) -> list[str]:
+    """One message for each output column that two or more of the fields write."""
+    renamed = dict(read.renames)
+    writers: dict[str, list[str]] = {}
+    for name in dict.fromkeys(read.sequence_tags):
+        writers.setdefault(renamed.get(name, name), []).append(name)
+    return [
+        f"fields {_joined(names)} both write the column '{column}'"
+        for column, names in sorted(writers.items())
+        if len(names) > 1
+    ]
+
+
+def _joined(names: list[str]) -> str:
+    quoted = [f"'{name}'" for name in names]
+    return f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def refuse_tag_read(feature_name: str, table: TagTable, read: TagRead) -> None:
+    """Raise the first of :func:`tag_read_problems` of *table* and *read*.
+
+    Raises:
+        ValueError: The table does not suit the declaration. The message names
+            the feature, the params path and the problem.
+    """
+    problems = tag_read_problems(table, read)
+    if problems:
+        where, message = problems[0]
+        msg = f"{feature_name}: {where}: {message}"
+        raise ValueError(msg)
 
 
 def tag_term(resolved: ResolvedTagTable, read: TagRead) -> LabelRevisionTerm:
@@ -188,7 +224,5 @@ def feature_tag_read(
         return None
     read = feature.tag_read()
     resolved = resolve_tag_table(ds, ref, payload=payload, kind=feature.name)
-    problems = tag_read_problems(resolved.table, read)
-    if problems:
-        raise ValueError(f"{feature.name}: {problems[0][0]}: {problems[0][1]}")
+    refuse_tag_read(feature.name, resolved.table, read)
     return resolved, tag_term(resolved, read)

@@ -34,6 +34,7 @@ import pytest
 from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
+from mosaic.core.annotations.tag_table import tag_table_payload
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
@@ -66,6 +67,8 @@ from mosaic.core.pipeline.track_space import (
     feature_track_spaces,
 )
 from mosaic.core.pipeline.tracks_index import write_tracks_row
+from mosaic.core.pipeline.types.feature import ReadsTags
+from mosaic.core.typed_attribute import TypedAttributeType
 from mosaic.core.pipeline.types import (
     ArtifactSpec,
     DependencyLookup,
@@ -78,6 +81,7 @@ from tests.helpers import (
     assert_writes_declared_columns,
     make_dataset,
     require_ffmpeg,
+    tag_table,
     write_h264_mp4,
     write_predictions,
 )
@@ -134,6 +138,10 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
     "sequence-aggregate": {"columns": ["X"]},
+    "sequence-tag-columns": {
+        "fields": ["condition"],
+        "field_renames": {"condition": "Condition"},
+    },
     "smooth-probabilities": {"default_class": 0},
     "tune-threshold": {"default_class": 0, "nested": False},
     "sequence-classifier": {
@@ -401,6 +409,18 @@ def _predictions(directory: Path) -> Path:
     )
 
 
+def _tag_revision(directory: Path) -> Path:
+    """A tag table payload with the tag ``condition`` on the harness entry."""
+    table = tag_table({(GROUP, SEQUENCE): {"condition": "treated"}}, TAG_TYPES)
+    path = directory / "tags.mosaic.json"
+    _ = path.write_bytes(tag_table_payload(table))
+    return path
+
+
+TAG_TYPES: dict[str, TypedAttributeType] = {"condition": "categorical"}
+"""The sequence tags of the table a feature that reads tags is given."""
+
+
 PREDICTIONS: dict[str, Callable[[Path], Path]] = {
     "label-predictions": _predictions,
 }
@@ -620,6 +640,8 @@ def _run(
             lookups["predictions"] = {(GROUP, SEQUENCE): predictions}
         if step.feature in FOLD_TABLES:
             lookups["_input_0"] = _fold_lookup(directory / step.id / "classifier")
+        if isinstance(feature, ReadsTags):
+            lookups["_tags"] = {(GROUP, SEQUENCE): _tag_revision(directory)}
         state = _state(directory, step.id)
         if not feature.load_state(state, _artifacts(feature, step, directory), lookups):
             feature.fit(_stream(merged))
