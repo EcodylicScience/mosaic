@@ -557,6 +557,59 @@ def test_step_types_are_filtered_by_the_track_space_they_compute_in(
     }
 
 
+NO_STEP_TYPE_WORDS: str = "zzzxqv"
+
+
+def test_a_search_no_step_type_matches_points_to_a_feature_definition(
+    dataset: Dataset,
+) -> None:
+    allowed = LocalBackend(
+        [dataset.manifest_path], warm=False, allow_feature_definitions=True
+    )
+    refused = LocalBackend([dataset.manifest_path], warm=False)
+
+    found_allowed = _call(
+        allowed, "describe_step_types", StepTypes, query=NO_STEP_TYPE_WORDS
+    )
+    found_refused = _call(
+        refused, "describe_step_types", StepTypes, query=NO_STEP_TYPE_WORDS
+    )
+
+    assert found_allowed.total == 0
+    assert found_allowed.hint is not None
+    assert "define_feature" in found_allowed.hint
+    assert found_refused.total == 0
+    assert found_refused.hint is not None
+    assert "mosaic features define" in found_refused.hint
+    assert "define_feature" not in found_refused.hint
+
+
+def test_a_search_a_filter_narrows_to_nothing_has_no_hint(
+    backend: LocalBackend,
+) -> None:
+    narrowed = _call(
+        backend, "describe_step_types", StepTypes, query="speed", type="tracks"
+    )
+    unfiltered = _call(backend, "describe_step_types", StepTypes, query="speed")
+
+    assert unfiltered.total > 0
+    assert narrowed.total == 0
+    assert narrowed.hint is None
+
+
+def test_a_search_with_matches_a_search_without_words_and_names_have_no_hint(
+    backend: LocalBackend,
+) -> None:
+    searched = _call(backend, "describe_step_types", StepTypes, query="speed")
+    unsearched = _call(backend, "describe_step_types", StepTypes)
+    named = _call(backend, "describe_step_types", StepTypes, names=["speed-angvel"])
+
+    assert searched.total > 0
+    assert searched.hint is None
+    assert unsearched.hint is None
+    assert named.hint is None
+
+
 def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
     whole = _call(backend, "describe_step_types", StepTypes, query="speed", limit=100)
     paged: list[str] = []

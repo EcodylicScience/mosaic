@@ -73,7 +73,9 @@ Build a mosaic pipeline on dataset {arguments["dataset"]} for this goal:
 
 1. Call describe_dataset and list_sequences to learn what the dataset holds.
 2. Call describe_step_types with a query for the features and ops that serve
-   the goal, then with names=[...] for the ones you choose.
+   the goal, then with names=[...] for the ones you choose. When none computes
+   a measure, write a feature definition: manage_dataset with define_feature
+   where the server allows it, otherwise propose mosaic features define.
 3. Draft a recipe. Call validate_recipe and fix every problem, and use
    suggest_steps where a step needs an input or a following step.
 4. Call plan_recipe. Show the user each step's status, run id, entries asked

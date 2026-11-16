@@ -529,11 +529,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
 - A custom feature must be deterministic, with typed Pydantic parameters:
   https://ecodylicscience.github.io/mosaic/guides/analysis/write-your-own-feature/.
-- A feature that the CLI, a recipe or a queue worker must run is a definition stored in
-  the dataset: one Python file declaring the feature class, whose `name` is the
-  definition's name, stored with `mosaic features define <name> <file.py> -m <manifest>`
-  (from Python, `define_feature(ds, name, source_bytes)` in
-  `mosaic.core.pipeline.definitions.define`). A recipe step's `feature` and `mosaic run
+- A feature that the CLI, a recipe or a queue worker must run, or a measure no step type
+  computes, is a definition stored in the dataset: one Python file declaring the feature
+  class, whose `name` is the definition's name, stored with
+  `mosaic features define <name> <file.py> -m <manifest>` (from Python,
+  `define_feature(ds, name, source_bytes)` in `mosaic.core.pipeline.definitions.define`). A recipe step's `feature` and `mosaic run
   --feature` then name `def:<name>`, or `def:<name>@<digest>` for one version (12 to 64
   hex characters, which `mosaic features list --manifest <manifest>` shows). A bare
   `def:<name>` is the current version when the recipe is planned, and the plan pins its
@@ -856,8 +856,12 @@ When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for 
 work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
 - Find step types with `describe_step_types`, which lists them by category with a
-  summary each, or with a query. Then call it with `names=[...]` for the params of
-  the ones you choose, and `detail: "summary"` for the columns they read and write.
+  summary each, or with a query. Search by the measure's common name first, since step
+  types carry keywords. Then call it with `names=[...]` for the params of the ones you
+  choose, and `detail: "summary"` for the columns they read and write. When no step
+  type computes the measure (the result's `hint` says so), write a feature definition:
+  `manage_dataset` with `define_feature` where the server allows it, otherwise propose
+  `mosaic features define` to the user.
   `track_space` keeps the step types that compute in that space (`world_m` for a 3D
   table), and each step type's `track_spaces` lists the spaces it computes in.
 - A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
@@ -882,11 +886,11 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   returns `conflict`. Plan again and show the user the new plan.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
-  more than 100 entries) and wait for their approval, then you may pass its fingerprint
-  to `submit_pipeline`. Once the user approved a series of runs of a recipe, such as a
-  sweep of one param, submit each change without `plan_fingerprint`: `submit_pipeline`
-  then plans it in the same call, and still refuses with `confirmation_required` when a
-  condition applies. While another request runs or finishes a step that this plan
+  more than 100 entries) and wait for their approval (with no user present, see the
+  operator's hook below), then you may pass its fingerprint to `submit_pipeline`. Once
+  the user approved a series of runs of a recipe, such as a sweep of one param, submit
+  each change without `plan_fingerprint`: `submit_pipeline` then plans it in the same
+  call, and still refuses with `confirmation_required` when a condition applies. While another request runs or finishes a step that this plan
   shares, such as another run of a sweep, a reviewed fingerprint goes stale and
   `submit_pipeline` returns `conflict`. Plan again and show the user the new plan, or
   submit without a fingerprint, which plans in the same call. A cleanup always needs
@@ -944,10 +948,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `confirmation_unavailable` (a server over HTTP that does not take `confirm` from you),
   the call did not run.
   Stop and report the plan and the conditions. Do not call it again, or run the same
-  work through the `mosaic` CLI, unless the user asks. An operator who runs you
-  unattended may approve conditions in advance with a hook
-  (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
-  declined or unanswered.
+  work through the `mosaic` CLI, unless the user asks.
+- Cancelling your own request asks nothing, unless a running step would lose its work: a
+  training op, or a feature that runs in a runner process (`kpms`, `vame`). When that
+  confirmation is declined or unanswered, stop and report; do not cancel another way.
+- An operator who runs you unattended may approve conditions in advance with a hook
+  (`mosaic agent confirm-hook`). With no user present, the hook is the approval. A
+  condition it does not approve comes back declined or unanswered, and is the stop above.
 - When the only condition is `open_duplicate`, the refusal names the open requests in
   its message and in `detail.duplicates`. Wait for them with
   `get_request_status(wait_seconds=45)` until each ends, then submit again. A request

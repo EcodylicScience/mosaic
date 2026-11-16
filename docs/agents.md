@@ -158,7 +158,7 @@ by that first `create`.
 | `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and recordings |
 | `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
-| `describe_step_types` | The features and ops a recipe may run, listed by category or found by words, and the ones named with their params as a table. With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |
+| `describe_step_types` | The features and ops a recipe may run, listed by category or found by words in their name, summary or keywords and kept to one track space, and the ones named with their params as a table. A search that matches nothing returns a hint to write a [feature definition](#feature-definitions). With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
 | `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document. Its validation report lists only the cautions the edits added, and counts the ones the base recipe already held (`cautions_unchanged`). `validate_recipe` gives the full list, with a caution that several steps share said once |
@@ -271,6 +271,9 @@ A dataset can contain a feature as Python source, which a recipe names as `def:<
 The server reads and runs a dataset's definitions only when you start it with
 `--allow-feature-definitions`, or set `allow_feature_definitions: true` in its
 configuration. The default is off. Only the operator's configuration turns it on.
+
+An agent that finds no step type for a measure writes a definition when the flag is
+on. When it is off, the agent proposes `mosaic features define` to you.
 
 **Turning it on lets the agent write and run arbitrary Python as the server's
 account**, which equals giving it a shell. A definition runs with every privilege of

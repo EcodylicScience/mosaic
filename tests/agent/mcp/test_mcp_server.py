@@ -285,10 +285,12 @@ def test_the_instructions_stay_short_and_name_the_workflow(
     assert "search_step_types" not in INSTRUCTIONS
 
 
-NAMED_OUTSIDE_THE_TOOLS: Final = frozenset({"frame_axis_mismatch", "frame_tail_short"})
+NAMED_OUTSIDE_THE_TOOLS: Final = frozenset(
+    {"frame_axis_mismatch", "frame_tail_short", "define_feature"}
+)
 """The snake_case words the instructions and prompts may name besides a tool's.
 
-Two inventory note codes.
+Two inventory note codes, and an action of ``manage_dataset``.
 """
 
 
@@ -316,6 +318,7 @@ def test_the_instructions_and_prompts_fit_and_name_only_shared_tools() -> None:
     assert len(INSTRUCTIONS) < 2048
     assert named - known == set()
     assert {"confirmation_declined", "confirmation_unanswered"} <= named
+    assert "define_feature" in INSTRUCTIONS
 
 
 def test_an_oversized_result_is_an_error_naming_its_narrowing(

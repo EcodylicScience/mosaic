@@ -46,6 +46,8 @@ class StepTypes(StrictModel):
         total: How many step types the search matches, or the names described.
         next_cursor: The cursor of the next page, ``None`` on the last and for
             names.
+        hint: Set when a search's words match no step type, before any filter:
+            the route to a measure no step type computes, a feature definition.
     """
 
     schema_version: int
@@ -57,6 +59,7 @@ class StepTypes(StrictModel):
     unknown: tuple[str, ...] = ()
     total: int
     next_cursor: str | None
+    hint: str | None = None
 
 
 class StepSuggestions(StrictModel):

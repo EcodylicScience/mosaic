@@ -670,9 +670,10 @@ class LocalBackend:
         level = args.level
         if args.names is not None:
             return self._named_step_types(args.names, level)
+        searched = search_catalog(index.entries, args.query)
         matched = [
             match
-            for match in search_catalog(index.entries, args.query)
+            for match in searched
             if (args.type is None or match.entry.type == args.type)
             and (args.category is None or match.entry.category == args.category)
             and not (args.available_only and match.entry.unavailable)
@@ -693,7 +694,18 @@ class LocalBackend:
             ),
             total=len(matched),
             next_cursor=next_cursor,
+            hint=None if searched else self._no_match_hint(),
         )
+
+    def _no_match_hint(self) -> str:
+        """Return the route to a measure that no step type computes."""
+        route = (
+            "manage_dataset with define_feature"
+            if self._allow_feature_definitions
+            else "propose mosaic features define to the user"
+        )
+        lead = "No step type matches these words. To compute the measure, "
+        return f"{lead}write a feature definition: {route}."
 
     def _named_step_types(
         self, names: list[str], level: StepTypeDetailLevel
