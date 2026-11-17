@@ -407,6 +407,14 @@ CLI_READS: dict[str, CliArguments] = {
         "--step-scope",
         'speed={"entries": [["", "seq_a"]]}',
     ],
+    "pipeline plan --tag": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--tag",
+        "site=a",
+    ],
     "pipeline plan --assume-added": lambda f: [
         "pipeline",
         "plan",
@@ -459,6 +467,13 @@ CLI_READS: dict[str, CliArguments] = {
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prerequisites": lambda _: ["prerequisites", "--kind", "trex"],
+    "prerequisites --scope": lambda _: [
+        "prerequisites",
+        "--kind",
+        "trex",
+        "--scope",
+        '{"sequence_tags": {"site": ["a"]}}',
+    ],
     "pipeline validate": lambda f: [
         "pipeline",
         "validate",
@@ -476,6 +491,14 @@ CLI_READS: dict[str, CliArguments] = {
         "verify",
         "--recipe",
         f"@{f.recipe_path}",
+    ],
+    "pipeline verify --tag": lambda f: [
+        "pipeline",
+        "verify",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--tag",
+        "site=a",
     ],
     "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],
     "prune-joined --dry-run": lambda _: ["prune-joined"],
@@ -565,7 +588,9 @@ CLI_READS_OF_A_FIT: dict[str, FitArguments] = {
 """Each read's arguments over a finished fit, without ``--manifest`` and ``--json``."""
 
 
-CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset({"pipeline verify"})
+CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset(
+    {"pipeline verify", "pipeline verify --tag"}
+)
 """Verbs whose fixture recipe holds nothing to compare, so they report it with exit 1."""
 
 

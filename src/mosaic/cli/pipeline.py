@@ -49,6 +49,7 @@ from mosaic.cli._io import (
     MinFreeMemoryOption,
     ParallelModeOption,
     StepScopeOption,
+    TagOption,
     WorkersOption,
     parallel_settings,
     parse_gpu_cards,
@@ -61,7 +62,7 @@ from mosaic.cli._io import (
     load_json_arg,
     log,
     parse_pins,
-    parse_step_scopes,
+    resolve_choices,
     stdout_to_stderr,
     with_command_line_scope,
 )
@@ -409,6 +410,7 @@ def plan_command(
     manifest: ManifestOption,
     entry: EntriesOption = None,
     group: GroupOption = None,
+    tag: TagOption = None,
     step_scope: StepScopeOption = None,
     cleanup: CleanupOption = "none",
     keep_newest: KeepNewestOption = 1,
@@ -432,7 +434,10 @@ def plan_command(
     fitted step from a finished run, and ``--applies-request`` reuses the fit of
     a finished request; the steps it locks are listed with the plan.
     ``--step-scope`` narrows one step, as a train/test split narrows the fit
-    to the training groups and the scoring to the test groups.
+    to the training groups and the scoring to the test groups. ``--tag
+    NAME=VALUE`` selects the entries holding a sequence tag, from the latest
+    revision of the dataset's tag table, and plans the same runs as naming
+    those entries with ``--entry``.
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
     feature storages, and the fingerprint then covers the ones removable. It
     also lists the saved recipes whose requests wrote runs, and ``--retire
@@ -453,8 +458,12 @@ def plan_command(
 
     ds = load_dataset(manifest, read_only=True)
     parsed = recipe_argument(recipe, as_json=as_json)
-    scope = entries_scope(entry, group)
-    step_scopes = parse_step_scopes(step_scope)
+    chosen = resolve_choices(
+        ds, entries_scope(entry, group, tags=tag), step_scope, as_json=as_json
+    )
+    scope = chosen.scope
+    step_scopes = chosen.step_scopes
+    tag_revision = chosen.tag_revision
     pins, applies_request_id = _pins_and_apply(pin, applies_request)
     with definition_scope(ds, load=False):
         try:
@@ -467,6 +476,7 @@ def plan_command(
                     step_scopes=step_scopes,
                     retire=retire or (),
                     tracks_run_id=tracks_run_id,
+                    tag_revision=tag_revision,
                     pins=pins or None,
                     applies_request_id=applies_request_id,
                 )
@@ -556,6 +566,7 @@ def verify_command(
     manifest: ManifestOption,
     entry: EntriesOption = None,
     group: GroupOption = None,
+    tag: TagOption = None,
     step_scope: StepScopeOption = None,
     atol: AtolOption = 1e-5,
     scratch: ScratchOption = None,
@@ -565,7 +576,7 @@ def verify_command(
 ) -> None:
     """Fit a finished recipe's fitting steps again and compare them with the stored runs.
 
-    Plans the recipe as 'pipeline plan' does (same --entry, --group and
+    Plans the recipe as 'pipeline plan' does (same --entry, --group, --tag and
     --step-scope). Each step whose feature fits and whose run is complete is
     fitted again into a scratch directory, never into the dataset, and then:
     its stored per-entry outputs are compared with the same entries applied
@@ -601,12 +612,21 @@ def verify_command(
 
     ds = load_dataset(manifest, read_only=True)
     parsed = recipe_argument(recipe, as_json=as_json)
-    scope = entries_scope(entry, group)
-    step_scopes = parse_step_scopes(step_scope)
+    chosen = resolve_choices(
+        ds, entries_scope(entry, group, tags=tag), step_scope, as_json=as_json
+    )
+    scope = chosen.scope
+    step_scopes = chosen.step_scopes
+    tag_revision = chosen.tag_revision
     try:
         with stdout_to_stderr():
             plan = plan_pipeline(
-                ds, parsed, scope=scope, step_scopes=step_scopes, refuse=True
+                ds,
+                parsed,
+                scope=scope,
+                step_scopes=step_scopes,
+                tag_revision=tag_revision,
+                refuse=True,
             )
     except RecipeRefused as refusal:
         if as_json:
@@ -830,6 +850,7 @@ def run_command(
     ] = False,
     entry: EntriesOption = None,
     group: GroupOption = None,
+    tag: TagOption = None,
     step_scope: StepScopeOption = None,
     allow_partial: Annotated[
         bool,
@@ -893,6 +914,10 @@ def run_command(
     recipe's requests wrote, in any storage, to what that plan reviewed.
     ``--request`` runs the cleanup its request recorded.
 
+    ``--tag NAME=VALUE`` runs over the entries holding a sequence tag, from the
+    latest revision of the dataset's tag table. The request records those
+    entries and the revision read.
+
     ``--workers`` computes several entries of each parallelizable step at once.
     It belongs to the machine and changes neither a run's identity nor its
     outputs, so ``--request`` accepts it where it rejects the options above.
@@ -923,6 +948,7 @@ def run_command(
         if (
             entry
             or group
+            or tag
             or step_scope
             or allow_partial
             or owner
@@ -934,7 +960,7 @@ def run_command(
             or expect_plan is not None
         ):
             fail(
-                "--entry, --group, --step-scope, --allow-partial, --owner, "
+                "--entry, --group, --tag, --step-scope, --allow-partial, --owner, "
                 "--cleanup, --retire, --tracks-run-id, --pin, --applies-request "
                 "and --expect-plan are recorded on a request at submit, and are "
                 "not used with --request."
@@ -959,8 +985,12 @@ def run_command(
         fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
     parsed = recipe_argument(recipe, as_json=as_json)
-    scope = entries_scope(entry, group)
-    step_scopes = parse_step_scopes(step_scope)
+    chosen = resolve_choices(
+        ds, entries_scope(entry, group, tags=tag), step_scope, as_json=as_json
+    )
+    scope = chosen.scope
+    step_scopes = chosen.step_scopes
+    tag_revision = chosen.tag_revision
     pins, applies_request_id = _pins_and_apply(pin, applies_request)
     with definition_scope(ds, load=False):
         submitted: Request | None = None
@@ -981,6 +1011,7 @@ def run_command(
                     cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                     retire=retire or (),
                     tracks_run_id=tracks_run_id,
+                    tag_revision=tag_revision,
                     pins=pins or None,
                     applies_request_id=applies_request_id,
                 )
@@ -1177,6 +1208,7 @@ def submit_command(
     manifest: ManifestOption,
     entry: EntriesOption = None,
     group: GroupOption = None,
+    tag: TagOption = None,
     step_scope: StepScopeOption = None,
     allow_partial: Annotated[
         bool,
@@ -1240,6 +1272,11 @@ def submit_command(
     ``--applies-request RID`` reuses the fit of a finished request over other
     entries. The request records the pins and the apply.
 
+    ``--tag NAME=VALUE`` submits over the entries holding a sequence tag, from
+    the latest revision of the dataset's tag table. The request records those
+    entries and the revision read, so a revision written later leaves its runs
+    unchanged.
+
     ``--cleanup superseded`` records the runs that the plan reviewed under
     ``--expect-plan`` found removable, and whatever runs the request removes
     them after every step has finished. ``--retire <digest>`` adds the runs that
@@ -1251,8 +1288,12 @@ def submit_command(
 
     ds = load_dataset(manifest)
     parsed = recipe_argument(recipe, as_json=as_json)
-    scope = entries_scope(entry, group)
-    step_scopes = parse_step_scopes(step_scope)
+    chosen = resolve_choices(
+        ds, entries_scope(entry, group, tags=tag), step_scope, as_json=as_json
+    )
+    scope = chosen.scope
+    step_scopes = chosen.step_scopes
+    tag_revision = chosen.tag_revision
     pins, applies_request_id = _pins_and_apply(pin, applies_request)
     try:
         with stdout_to_stderr():
@@ -1269,6 +1310,7 @@ def submit_command(
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 retire=retire or (),
                 tracks_run_id=tracks_run_id,
+                tag_revision=tag_revision,
                 pins=pins or None,
                 applies_request_id=applies_request_id,
             )

@@ -40,8 +40,10 @@ from tests.helpers import (
     assert_tree_unchanged,
     calms21_dataset,
     classifier_recipe,
+    tag_table,
     tree_snapshot,
     write_calms21_npy,
+    write_tags,
 )
 
 runner = CliRunner()
@@ -866,3 +868,58 @@ def test_a_mistyped_answers_path_and_a_bad_answers_body_are_said_plainly(
     assert "lists no step" in body.stderr
     assert "pydantic" not in body.stderr
     assert "errors.pydantic.dev" not in body.stderr
+
+
+def test_a_step_scope_that_names_tags_selects_the_training_entries(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    """The scope the recipe was run with is given as the tags that hold its entries."""
+    _ = write_tags(
+        study,
+        tag_table(
+            {("train", sequence): {"split": "fit"} for sequence in ("s1", "s2", "s3")},
+            {"split": "categorical"},
+        ),
+    )
+    before = tree_snapshot(study.base_dir)
+    arguments = [
+        "pipeline",
+        "score",
+        "--manifest",
+        str(study.manifest_path),
+        *_write(tmp_path, classifier_recipe("clf_a", "clf_b"), {"final": ["clf_a"]}),
+        *PROTOCOL,
+        "--step-scope",
+        'labeled={"sequence_tags": {"split": ["fit"]}}',
+        *_held_flags(heldout, tmp_path / "scored"),
+        "--dry-run",
+        "--json",
+    ]
+
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["moved"] == []
+    assert_tree_unchanged(study.base_dir, before)
+
+
+def test_a_step_scope_that_names_an_unknown_tag_is_refused(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    _ = write_tags(
+        study,
+        tag_table({("train", "s1"): {"split": "fit"}}, {"split": "categorical"}),
+    )
+
+    result = _score(
+        study,
+        tmp_path,
+        *_held_flags(heldout, tmp_path / "scored"),
+        "--step-scope",
+        'labeled={"sequence_tags": {"arm": ["fit"]}}',
+        scopes=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["kind"] == "invalid"
+    assert "'arm'" in json.loads(result.stdout)["message"]

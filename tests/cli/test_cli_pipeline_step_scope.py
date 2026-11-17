@@ -16,7 +16,13 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from tests.helpers import calms21_dataset, invoke_json, tree_snapshot
+from tests.helpers import (
+    calms21_dataset,
+    invoke_json,
+    tag_table,
+    tree_snapshot,
+    write_tags,
+)
 
 runner = CliRunner()
 
@@ -307,3 +313,190 @@ def test_group_option_selects_groups(split: Dataset, tmp_path: Path) -> None:
     assert submitted["step_scopes"] == {
         "templates": {"entries": [["train", "s1"]], "groups": None, "sequences": None}
     }
+
+
+# --- a selection by sequence tag ---------------------------------------------
+
+BY_SITE = 'templates={"sequence_tags": {"site": ["alpha"]}}'
+"""The step scope that selects the entries recorded at the site ``alpha``."""
+
+
+@pytest.fixture
+def sited(split: Dataset) -> Dataset:
+    """``split`` with its entries tagged: ``alpha`` at ``train/s1`` and ``test/s3``."""
+    _ = write_tags(
+        split,
+        tag_table(
+            {
+                ("train", "s1"): {"site": "alpha"},
+                ("train", "s2"): {"site": "beta"},
+                ("test", "s3"): {"site": "alpha"},
+            },
+            {"site": "categorical"},
+        ),
+    )
+    return split
+
+
+def _run_ids(plan: dict[str, object]) -> dict[str, str | None]:
+    from mosaic.core.pipeline.graph import PlanWire
+
+    return {step.step: step.run_id for step in PlanWire.model_validate(plan).steps}
+
+
+def test_plan_with_a_tag_step_scope_plans_the_selected_entries(
+    sited: Dataset, tmp_path: Path
+) -> None:
+    recipe = _recipe_file(tmp_path)
+    before = tree_snapshot(sited.base_dir)
+
+    by_tag = _plan(sited, recipe, "--step-scope", BY_SITE)
+    by_name = _plan(
+        sited,
+        recipe,
+        "--step-scope",
+        'templates={"entries": [["train", "s1"], ["test", "s3"]]}',
+    )
+
+    assert _targets(by_tag) == {"speed": 3, "templates": 2}
+    assert _run_ids(by_tag) == _run_ids(by_name)
+    assert tree_snapshot(sited.base_dir) == before
+
+
+def test_a_tag_step_scope_of_a_file_is_lowered_too(
+    sited: Dataset, tmp_path: Path
+) -> None:
+    scopes = {"templates": {"sequence_tags": {"site": ["beta"]}}}
+
+    plan = _plan(
+        sited, _recipe_file(tmp_path), "--step-scope", _scopes_file(tmp_path, scopes)
+    )
+
+    assert _targets(plan) == {"speed": 3, "templates": 1}
+
+
+def _submit(ds: Dataset, recipe: str, *extra: str) -> dict[str, object]:
+    return invoke_json(
+        [
+            "pipeline",
+            "submit",
+            "--recipe",
+            recipe,
+            "--manifest",
+            str(ds.manifest_path),
+            *extra,
+            "--json",
+        ]
+    )
+
+
+def test_submit_with_a_tag_step_scope_records_entries_and_the_revision_read(
+    sited: Dataset, tmp_path: Path
+) -> None:
+    submitted = _submit(sited, _recipe_file(tmp_path), "--step-scope", BY_SITE)
+
+    assert submitted["step_scopes"] == {
+        "templates": {
+            "entries": [["test", "s3"], ["train", "s1"]],
+            "groups": None,
+            "sequences": None,
+        }
+    }
+    text = Path(str(submitted["request_path"])).read_text(encoding="utf-8")
+    assert "site" not in text
+    assert "alpha" not in text
+    request = json.loads(text)
+    assert request["tag_revision"]["key"] == "dataset"
+    assert request["tag_revision"]["revision"] == 1
+
+
+def test_a_submission_that_selects_no_tag_records_no_revision(
+    sited: Dataset, tmp_path: Path
+) -> None:
+    submitted = _submit(
+        sited,
+        _recipe_file(tmp_path),
+        "--step-scope",
+        'templates={"groups": ["train"]}',
+    )
+
+    request = json.loads(
+        Path(str(submitted["request_path"])).read_text(encoding="utf-8")
+    )
+    assert "tag_revision" not in request
+
+
+@pytest.mark.parametrize("verb", ["plan", "verify", "submit", "run"])
+def test_a_tag_step_scope_that_selects_nothing_is_an_invalid_envelope(
+    sited: Dataset, tmp_path: Path, verb: str
+) -> None:
+    before = tree_snapshot(sited.base_dir)
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            verb,
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(sited.manifest_path),
+            "--step-scope",
+            'templates={"sequence_tags": {"site": ["gamma"]}}',
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "'gamma'" in payload["message"]
+    assert payload["detail"] == {"revision": 1, "tags": {"site": ["gamma"]}}
+    assert tree_snapshot(sited.base_dir) == before
+
+
+def test_a_tag_step_scope_beside_another_key_is_refused(
+    sited: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(sited.manifest_path),
+            "--step-scope",
+            'templates={"sequence_tags": {"site": ["alpha"]}, "groups": ["train"]}',
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--step-scope" in result.stderr
+    assert "sequence_tags" in result.stderr
+
+
+def test_a_tag_step_scope_of_a_dataset_without_tags_says_how_to_import_them(
+    split: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(split.manifest_path),
+            "--step-scope",
+            BY_SITE,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "mosaic sequence-tags import" in payload["message"]
+    assert payload["detail"] is None

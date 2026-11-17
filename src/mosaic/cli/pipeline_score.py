@@ -28,7 +28,7 @@ from mosaic.cli._io import (
     load_json_arg,
     log,
     parallel_settings,
-    parse_step_scopes,
+    resolve_choices,
     stdout_to_stderr,
 )
 from mosaic.cli.pipeline import (
@@ -272,7 +272,7 @@ def score_command(
 
     study = load_dataset(manifest, read_only=True)
     parsed = recipe_argument(recipe, as_json=as_json)
-    step_scopes = parse_step_scopes(step_scope)
+    step_scopes = resolve_choices(study, None, step_scope, as_json=as_json).step_scopes
     try:
         wanted = ScoreAnswers.model_validate(_json_file(answers, "--answers"))
         protocol = ScoreProtocol(

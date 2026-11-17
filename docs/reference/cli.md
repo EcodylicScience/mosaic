@@ -85,7 +85,7 @@ $ mosaic run [OPTIONS]
 * `--groups <str>`: Scope to these groups.
 * `--sequences <str>`: Scope to these sequences.
 * `--entries <str>`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
-* `--scope <str>`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. --params and --scope cannot both read stdin.
+* `--scope <str>`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. The object {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key. --params and --scope cannot both read stdin.
 * `--tracks-run-id <str>`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--labels-run-id <str>`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--overwrite`: Recompute even if a cached run exists.
@@ -117,7 +117,7 @@ $ mosaic prerequisites [OPTIONS]
 * `--groups <str>`: Scope to these groups.
 * `--sequences <str>`: Scope to these sequences.
 * `--entries <str>`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
-* `--scope <str>`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. --params and --scope cannot both read stdin.
+* `--scope <str>`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. The object {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key. --params and --scope cannot both read stdin.
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
 * `--help`: Show this message and exit.
 
@@ -1213,7 +1213,10 @@ tracks read, which an entry of two variants requires. ``--pin`` serves a
 fitted step from a finished run, and ``--applies-request`` reuses the fit of
 a finished request; the steps it locks are listed with the plan.
 ``--step-scope`` narrows one step, as a train/test split narrows the fit
-to the training groups and the scoring to the test groups.
+to the training groups and the scoring to the test groups. ``--tag
+NAME=VALUE`` selects the entries holding a sequence tag, from the latest
+revision of the dataset's tag table, and plans the same runs as naming
+those entries with ``--entry``.
 ``--cleanup superseded`` also reports the superseded runs of the recipe's
 feature storages, and the fingerprint then covers the ones removable. It
 also lists the saved recipes whose requests wrote runs, and ``--retire
@@ -1233,7 +1236,8 @@ $ mosaic pipeline plan [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps. SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key.
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
@@ -1249,7 +1253,7 @@ $ mosaic pipeline plan [OPTIONS]
 
 Fit a finished recipe's fitting steps again and compare them with the stored runs.
 
-Plans the recipe as 'pipeline plan' does (same --entry, --group and
+Plans the recipe as 'pipeline plan' does (same --entry, --group, --tag and
 --step-scope). Each step whose feature fits and whose run is complete is
 fitted again into a scratch directory, never into the dataset, and then:
 its stored per-entry outputs are compared with the same entries applied
@@ -1288,7 +1292,8 @@ $ mosaic pipeline verify [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps. SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key.
 * `--atol <float range>`: How far a tolerant feature's new fit may sit from the stored one, per value. Only a feature that trains a network is tolerant (it has an n_threads param, or a device other than cpu). Every other feature must match exactly.  [default: 1e-05; x>=0]
 * `--scratch <path>`: Where the new fits go, outside the dataset. It must be absent or empty, and is kept afterwards. Without it a temporary directory is used and removed.
 * `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with, and the most threads any BLAS or OpenMP library uses while a step is fitted. It is outside the run id.  [default: 1; x>=1]
@@ -1329,6 +1334,11 @@ refuses the submission with ``--refuse-duplicates``.
 ``--applies-request RID`` reuses the fit of a finished request over other
 entries. The request records the pins and the apply.
 
+``--tag NAME=VALUE`` submits over the entries holding a sequence tag, from
+the latest revision of the dataset's tag table. The request records those
+entries and the revision read, so a revision written later leaves its runs
+unchanged.
+
 ``--cleanup superseded`` records the runs that the plan reviewed under
 ``--expect-plan`` found removable, and whatever runs the request removes
 them after every step has finished. ``--retire <digest>`` adds the runs that
@@ -1348,7 +1358,8 @@ $ mosaic pipeline submit [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps. SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key.
 * `--allow-partial`: Let a step proceed when it would run over less than planned.
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
@@ -1379,6 +1390,10 @@ when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
 recipe's requests wrote, in any storage, to what that plan reviewed.
 ``--request`` runs the cleanup its request recorded.
 
+``--tag NAME=VALUE`` runs over the entries holding a sequence tag, from the
+latest revision of the dataset's tag table. The request records those
+entries and the revision read.
+
 ``--workers`` computes several entries of each parallelizable step at once.
 It belongs to the machine and changes neither a run's identity nor its
 outputs, so ``--request`` accepts it where it rejects the options above.
@@ -1407,7 +1422,8 @@ $ mosaic pipeline run [OPTIONS]
 * `--detach`: With --request, start the driver in a new session, print its pid and return. The driver and its steps append their output to the request's log under .mosaic/drivers/.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps. SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key.
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
 * `--owner <str>`: Recorded on each attempt.
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
@@ -1599,7 +1615,7 @@ $ mosaic pipeline score [OPTIONS]
 * `--bootstrap <int>`: The number of resamples of the entries behind an interval of each score. Unset: the evaluation's own default, none.
 * `--bootstrap-seed <int>`: The seed of the resamples.
 * `--bootstrap-confidence <float>`: The width of the intervals, between 0 and 1 (exclusive).
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps. SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding those sequence tags and takes no other key.
 * `--expect-plan <str>`: The plan_fingerprint that a --dry-run printed. Refuses the run, writing nothing more, when the scoring plan has changed since.
 * `--expect-md5 <str>`: The MD5 of the held-out file. Refuses an incomplete copy before anything is done. A file only.
 * `--reuse`: Continue with the copy in --out after a failure or a dry run. The plan recorded before the held-out data was added is the one compared.

@@ -11,8 +11,9 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
-from collections.abc import Generator
-from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
+from collections.abc import Generator, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Final, Literal, NoReturn, overload
 
 import typer
 
@@ -29,8 +30,12 @@ from mosaic.user_paths import user_path
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.error_kind import ClassifiedError
+    from mosaic.core.pipeline.label_series import LabelRevisionRef
     from mosaic.core.pipeline.refusal import Refusal
+    from mosaic.core.pipeline.summary_arguments import KeyValue
+    from mosaic.core.pipeline.tag_reads import ResolvedTagTable
     from mosaic.core.scope import Scope
 
 EntriesOption = Annotated[
@@ -46,6 +51,21 @@ GroupOption = Annotated[
     typer.Option(
         "--group",
         help="Narrow to every entry of a group (repeatable). Not with --entry.",
+    ),
+]
+
+TagOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--tag",
+        help=(
+            "Narrow to the entries holding a sequence tag, as NAME=VALUE "
+            "(repeatable). A value is read by its tag's type. The values of one "
+            "name are alternatives and different names must all match. NAME "
+            "alone names a label tag and matches the entries it is assigned to. "
+            "With --group, keeps the selected entries of those groups. Not with "
+            "--entry."
+        ),
     ),
 ]
 
@@ -81,7 +101,9 @@ RunScopeOption = Annotated[
     typer.Option(
         "--scope",
         help="Scope as JSON: an inline object, @path.json, or @- for "
-        "stdin. Excludes --entries / --groups / --sequences. --params and "
+        "stdin. Excludes --entries / --groups / --sequences. The object "
+        '{"sequence_tags": {"NAME": ["VALUE"]}} selects the entries holding '
+        "those sequence tags and takes no other key. --params and "
         "--scope cannot both read stdin.",
     ),
 ]
@@ -105,7 +127,9 @@ StepScopeOption = Annotated[
             "Narrow one step to part of the request's scope, as STEP=SCOPE "
             'where SCOPE is a JSON selector such as {"groups": ["train"]} or '
             '{"entries": [["g", "s"]]}, or @file.json (repeatable). A bare '
-            "@file.json holds a JSON object of STEP: SCOPE for several steps."
+            "@file.json holds a JSON object of STEP: SCOPE for several steps. "
+            'SCOPE {"sequence_tags": {"NAME": ["VALUE"]}} selects the entries '
+            "holding those sequence tags and takes no other key."
         ),
     ),
 ]
@@ -473,12 +497,208 @@ def refuse_scope_named_twice(
         )
 
 
+TAG_SELECTOR_KEY: Final = "sequence_tags"
+"""The key of a JSON scope that selects entries by sequence tag."""
+
+_TAG_SELECTOR_FORM: Final = '{"sequence_tags": {"NAME": ["VALUE"]}}'
+
+
+@dataclass(frozen=True, slots=True)
+class TagChoice:
+    """A selection of entries by sequence tag that no revision of the tag table has lowered.
+
+    A command line names the tags and values wanted. The entries that hold them
+    are known only once the dataset is open and a revision of its tag table is
+    read.
+
+    Attributes:
+        where: The wanted values by tag name. A ``label`` takes no values.
+        groups: Keep only the selected entries of these groups, or every group
+            when empty.
+    """
+
+    where: Mapping[str, tuple[KeyValue, ...]]
+    groups: tuple[str, ...] = ()
+
+
+def choices_tag_table(
+    ds: Dataset,
+    scope: Scope | TagChoice | None,
+    step_scopes: Mapping[str, Scope | TagChoice],
+    *,
+    revision: int | None = None,
+) -> ResolvedTagTable | None:
+    """Read the tag table once when any choice of a command selects by tag.
+
+    Args:
+        ds: The open dataset.
+        scope: The command's scope, or ``None`` when it names none.
+        step_scopes: The command's step scopes, by step id.
+        revision: The revision to read, or ``None`` for the latest.
+
+    Returns:
+        The table that every tag choice is lowered against, or ``None`` when no
+        choice names a tag, so that a command without a tag selection reads
+        nothing.
+
+    Raises:
+        TagSelectionInvalid: No revision is indexed, or *revision* is not.
+        SequenceTagTableUnavailable: The table cannot be read as one revision
+            of one dataset.
+    """
+    if not isinstance(scope, TagChoice) and not any(
+        isinstance(choice, TagChoice) for choice in step_scopes.values()
+    ):
+        return None
+    from mosaic.core.annotations.tag_selection import selection_tag_table
+
+    return selection_tag_table(ds, revision)
+
+
+def resolve_scope_choice(
+    ds: Dataset, choice: Scope | TagChoice, *, tags: ResolvedTagTable | None
+) -> Scope:
+    """Return *choice* as a scope of entries.
+
+    Args:
+        ds: The open dataset.
+        choice: A scope, which is returned as it is, or a tag selection.
+        tags: The table from :func:`choices_tag_table`. It is read there once, so
+            that the scope and every step scope select from one revision.
+
+    Raises:
+        TagSelectionInvalid: The selection names an unknown tag, a value its
+            type refuses, or no entry.
+    """
+    if not isinstance(choice, TagChoice):
+        return choice
+    from mosaic.core.annotations.tag_selection import tagged_scope
+
+    assert tags is not None
+    return tagged_scope(tags, choice.where, groups=choice.groups or None)
+
+
+def resolve_step_choices(
+    ds: Dataset,
+    choices: Mapping[str, Scope | TagChoice],
+    *,
+    tags: ResolvedTagTable | None,
+) -> dict[str, Scope]:
+    """Return each step's choice as a scope of entries, as :func:`resolve_scope_choice`."""
+    return {
+        step_id: resolve_scope_choice(ds, choice, tags=tags)
+        for step_id, choice in choices.items()
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedChoices:
+    """A command's scope and step scopes as entries, with the tag revision they came from.
+
+    Attributes:
+        scope: The command's scope, or ``None`` when it names none.
+        step_scopes: Each step's scope, by step id.
+        tag_revision: The revision of the tag table that a tag selection was
+            lowered against, or ``None`` when no choice named a tag.
+    """
+
+    scope: Scope | None
+    step_scopes: dict[str, Scope]
+    tag_revision: LabelRevisionRef | None
+
+
+def resolve_choices(
+    ds: Dataset,
+    scope: Scope | TagChoice | None,
+    step_scope: list[str] | None,
+    *,
+    as_json: bool,
+) -> ResolvedChoices:
+    """Parse the ``--step-scope`` tokens and lower every tag selection of a command.
+
+    The tag table is read once, so that the scope and every step scope select
+    from one revision. A refused selection leaves through
+    :func:`tag_selection_refusals`.
+
+    Args:
+        ds: The open dataset.
+        scope: The command's scope, or ``None`` when it names none.
+        step_scope: The ``--step-scope`` tokens.
+        as_json: Whether ``--json`` was given.
+    """
+    step_choices = parse_step_scopes(step_scope)
+    with tag_selection_refusals(as_json=as_json):
+        tags = choices_tag_table(ds, scope, step_choices)
+        resolved_scope = (
+            None if scope is None else resolve_scope_choice(ds, scope, tags=tags)
+        )
+        step_scopes = resolve_step_choices(ds, step_choices, tags=tags)
+    return ResolvedChoices(
+        scope=resolved_scope,
+        step_scopes=step_scopes,
+        tag_revision=None if tags is None else tags.ref,
+    )
+
+
+@contextlib.contextmanager
+def tag_selection_refusals(*, as_json: bool) -> Generator[None]:
+    """Report a refused tag selection as a classified error, and exit 1.
+
+    Wrap :func:`choices_tag_table` and the resolutions that read it. A selection
+    that the request must change, and a tag table that cannot be read as one
+    revision, each leave through :func:`fail_classified`, so ``--json`` prints
+    the error's envelope.
+
+    Args:
+        as_json: Whether ``--json`` was given.
+    """
+    from mosaic.core.annotations.sequence_tags import SequenceTagTableUnavailable
+    from mosaic.core.annotations.tag_selection import TagSelectionInvalid
+
+    try:
+        yield
+    except (TagSelectionInvalid, SequenceTagTableUnavailable) as error:
+        fail_classified(error, as_json=as_json)
+
+
+def _tag_choice(selector: Mapping[str, object], label: str) -> TagChoice:
+    """The tag selection that a JSON *selector* names, failing with *label* when it is not one."""
+    from mosaic.core.narrowing import is_object_list, is_str_mapping
+
+    others = sorted(key for key in selector if key != TAG_SELECTOR_KEY)
+    if others:
+        fail(
+            f"{label}: {TAG_SELECTOR_KEY} stands alone in its selector and cannot "
+            f"be combined with {', '.join(others)}."
+        )
+    named = selector[TAG_SELECTOR_KEY]
+    if not is_str_mapping(named):
+        fail(f"{label}: {TAG_SELECTOR_KEY} must be {_TAG_SELECTOR_FORM}.")
+    where: dict[str, tuple[KeyValue, ...]] = {}
+    for name, values in named.items():
+        found: list[KeyValue] = []
+        if not is_object_list(values):
+            fail(
+                f"{label}: {TAG_SELECTOR_KEY} must give the values of {name!r} as "
+                "a JSON list."
+            )
+        for value in values:
+            if not isinstance(value, str | int | float | bool):
+                fail(
+                    f"{label}: {TAG_SELECTOR_KEY} values of {name!r} must be text, "
+                    f"numbers or booleans, not {value!r}."
+                )
+            found.append(value)
+        where[name] = tuple(found)
+    return TagChoice(where=where)
+
+
 def command_line_scope(
     entries: list[str] | None,
     groups: list[str] | None,
     sequences: list[str] | None,
     scope_json: str | None,
-) -> Scope:
+) -> Scope | TagChoice:
     """Return the selector that the scope flags name, or fail with a message.
 
     ``--groups`` and ``--sequences`` combine as a cross product, and a group
@@ -489,6 +709,11 @@ def command_line_scope(
     validation, and a bad selector reads the same however it arrived. A
     selector that addresses cameras is refused after it is built.
 
+    ``--scope`` also takes ``{"sequence_tags": {NAME: [VALUE, ...]}}`` alone in
+    its object. That selection names entries only once a revision of the tag
+    table is read, so it is returned as a :class:`TagChoice` for the caller to
+    lower with :func:`resolve_scope_choice` after the dataset is open.
+
     Args:
         entries: The ``--entries`` tokens.
         groups: The ``--groups`` names.
@@ -496,18 +721,22 @@ def command_line_scope(
         scope_json: The ``--scope`` value: inline JSON, ``@file.json`` or ``@-``.
 
     Returns:
-        The selector. It is unset when every flag is absent.
+        The selector, unset when every flag is absent, or the tag selection that
+        ``--scope`` names.
     """
     from pydantic import ValidationError
 
+    from mosaic.core.narrowing import is_str_mapping
     from mosaic.core.scope import Scope, camera_grain_refusal
     from mosaic.core.strict_model import terse
 
     try:
         if scope_json is not None:
             scope_value = load_json_arg(scope_json)
-            if not isinstance(scope_value, dict):
+            if not is_str_mapping(scope_value):
                 fail("--scope must be a JSON object.")
+            if TAG_SELECTOR_KEY in scope_value:
+                return _tag_choice(scope_value, "--scope")
             scope = Scope.model_validate(scope_value)
         else:
             scope = Scope(
@@ -522,17 +751,66 @@ def command_line_scope(
     return scope
 
 
-def entries_scope(
-    entries: list[str] | None, groups: list[str] | None = None
-) -> Scope | None:
-    """Return repeated ``--entry`` or ``--group`` tokens as a selector.
+def _tag_wanted(tags: list[str]) -> dict[str, tuple[KeyValue, ...]]:
+    """The values wanted of each tag that repeated ``--tag NAME[=VALUE]`` tokens name.
 
-    ``None`` when neither is given. The two are refused together, because a
-    selector names entries or groups and not both.
+    A token without ``=`` names a ``label``, which takes no values. The text of a
+    value is kept as typed: the selection reads it by its tag's type.
+    """
+    wanted: dict[str, list[KeyValue]] = {}
+    for token in tags:
+        name, separator, value = token.partition("=")
+        name = name.strip()
+        if not name:
+            fail(f"--tag {token!r} names no tag. Give NAME=VALUE, or NAME for a label.")
+        values = wanted.setdefault(name, [])
+        if separator:
+            values.append(value)
+    return {name: tuple(values) for name, values in wanted.items()}
+
+
+@overload
+def entries_scope(
+    entries: list[str] | None, groups: list[str] | None = None, *, tags: None = None
+) -> Scope | None: ...
+
+
+@overload
+def entries_scope(
+    entries: list[str] | None, groups: list[str] | None = None, *, tags: list[str]
+) -> Scope | TagChoice | None: ...
+
+
+def entries_scope(
+    entries: list[str] | None,
+    groups: list[str] | None = None,
+    *,
+    tags: list[str] | None = None,
+) -> Scope | TagChoice | None:
+    """Return repeated ``--entry``, ``--group`` or ``--tag`` tokens as a selector.
+
+    ``None`` when none is given. ``--entry`` and ``--group`` are refused together,
+    because a selector names entries or groups and not both, and ``--entry`` is
+    refused beside ``--tag``. ``--tag`` names entries only once a revision of the
+    tag table is read, so it is returned as a :class:`TagChoice` for the caller to
+    lower with :func:`resolve_choices` after the dataset is open. ``--group``
+    beside it keeps the selected entries of those groups.
+
+    Args:
+        entries: The ``--entry`` tokens.
+        groups: The ``--group`` names.
+        tags: The ``--tag`` tokens, or ``None`` for a command that takes none.
+
+    Returns:
+        The selector, or ``None`` when every flag is absent.
     """
     from mosaic.core.scope import Scope
 
     pairs = parse_entries(entries)
+    if tags:
+        if pairs:
+            fail("Give --entry or --tag, not both.")
+        return TagChoice(where=_tag_wanted(tags), groups=tuple(groups or ()))
     if pairs and groups:
         fail("Give --entry or --group, not both.")
     if groups:
@@ -540,18 +818,20 @@ def entries_scope(
     return Scope(entries=pairs) if pairs else None
 
 
-def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
+def parse_step_scopes(values: list[str] | None) -> dict[str, Scope | TagChoice]:
     """Parse repeated ``--step-scope`` tokens into step scopes.
 
     A token is ``STEP=SCOPE``, where SCOPE is a JSON selector, inline or as
     ``@file.json``, or a bare ``@file.json`` holding a JSON object of ``STEP:
     SCOPE``. A token without a step, a step named twice across the tokens, or
     a value that is not a selector fails, naming the token, and for a file the
-    step as ``@file.json [STEP]``.
+    step as ``@file.json [STEP]``. A SCOPE of ``{"sequence_tags": {NAME: [VALUE,
+    ...]}}`` alone in its object is a :class:`TagChoice`, which the caller lowers
+    with :func:`resolve_step_choices` once the dataset is open.
     """
     from mosaic.core.narrowing import is_str_mapping
 
-    found: dict[str, Scope] = {}
+    found: dict[str, Scope | TagChoice] = {}
     for token in values or ():
         if token.startswith("@"):
             mapping = load_json_arg(token)
@@ -594,14 +874,17 @@ def parse_pins(values: list[str] | None) -> dict[str, str]:
     return found
 
 
-def _step_scope(selector: object, token: str) -> Scope:
+def _step_scope(selector: object, token: str) -> Scope | TagChoice:
     """The scope that *selector* names, failing with *token* when it names none."""
     from pydantic import ValidationError
 
+    from mosaic.core.narrowing import is_str_mapping
     from mosaic.core.scope import Scope
 
-    if not isinstance(selector, dict):
+    if not is_str_mapping(selector):
         fail(f"--step-scope {token!r}: SCOPE must be a JSON object.")
+    if TAG_SELECTOR_KEY in selector:
+        return _tag_choice(selector, f"--step-scope {token!r}")
     try:
         narrowed = Scope.model_validate(selector)
     except ValidationError as exc:

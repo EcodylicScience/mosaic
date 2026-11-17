@@ -26,13 +26,16 @@ from mosaic.cli._io import (
     RunParamsOption,
     RunScopeOption,
     RunSequencesOption,
+    choices_tag_table,
     command_line_params,
     command_line_scope,
     emit_json,
     fail,
     fail_classified,
     refuse_scope_named_twice,
+    resolve_scope_choice,
     stdout_to_stderr,
+    tag_selection_refusals,
     with_command_line_scope,
 )
 from mosaic.core.pipeline.run_commands import mosaic_run_command
@@ -137,7 +140,11 @@ def prerequisites_command(
 
     ds = load_dataset(manifest, read_only=True)
     params_dict = command_line_params(params)
-    scope = command_line_scope(entries, groups, sequences, scope_json)
+    scope_choice = command_line_scope(entries, groups, sequences, scope_json)
+    with tag_selection_refusals(as_json=as_json):
+        scope = resolve_scope_choice(
+            ds, scope_choice, tags=choices_tag_table(ds, scope_choice, {})
+        )
     register_ops()
     try:
         op = registered_op(kind)

@@ -40,6 +40,7 @@ from mosaic.cli._io import (
     RunScopeOption,
     RunSequencesOption,
     WorkersOption,
+    choices_tag_table,
     command_line_params,
     command_line_scope,
     parallel_settings,
@@ -50,7 +51,9 @@ from mosaic.cli._io import (
     load_json_arg,
     log,
     refuse_scope_named_twice,
+    resolve_scope_choice,
     stdout_to_stderr,
+    tag_selection_refusals,
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
@@ -264,8 +267,12 @@ def run_command(
     ds = load_dataset(manifest)
 
     params_dict = command_line_params(params)
-    # The --feature arm and the --kind arm read one selector.
-    scope = command_line_scope(entries, groups, sequences, scope_json)
+    # The --feature arm and the --kind arm read one selector. A tag selection is
+    # lowered against the revision that the feature run then reads.
+    scope_choice = command_line_scope(entries, groups, sequences, scope_json)
+    with tag_selection_refusals(as_json=as_json):
+        tags = choices_tag_table(ds, scope_choice, {})
+        scope = resolve_scope_choice(ds, scope_choice, tags=tags)
 
     exec_id = execution_id or new_execution_id()
     token = CancelToken()
@@ -340,6 +347,7 @@ def run_command(
                     overwrite=overwrite,
                     tracks_run_id=tracks_run_id,
                     labels_run_id=labels_run_id,
+                    tag_revision=None if tags is None else tags.ref,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

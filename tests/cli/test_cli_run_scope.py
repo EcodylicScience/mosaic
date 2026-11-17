@@ -20,6 +20,7 @@ which is the half that was wrong before these flags existed.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -28,14 +29,23 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
+from mosaic.core.annotations.tag_selection import selection_tag_table
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.graph import Recipe, Request, submit_request
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
+from mosaic.core.pipeline.types.feature import Feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope, camera_grain_refusal
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import MediaClip, make_dataset, write_media_index
+from tests.helpers import (
+    MediaClip,
+    make_dataset,
+    tag_table,
+    write_media_index,
+    write_tags,
+)
 
 runner = CliRunner()
 
@@ -271,6 +281,204 @@ def test_a_scope_from_stdin_reaches_the_same_selector(scoped: Dataset) -> None:
 
     assert result.exit_code == 0, result.output
     assert _regridded(scoped) == [("A", "one"), ("A", "two")]
+
+
+# --- a selection by sequence tag ---------------------------------------------
+
+
+def _tag_sites(dataset: Dataset) -> None:
+    """Tag the entries with the site each was recorded at."""
+    _ = write_tags(
+        dataset,
+        tag_table(
+            {
+                ("A", "one"): {"site": "a"},
+                ("A", "two"): {"site": "b"},
+                ("B", "one"): {"site": "b"},
+            },
+            {"site": "categorical"},
+        ),
+    )
+
+
+def _by_site(*sites: str) -> str:
+    """The ``--scope`` value that selects the entries recorded at *sites*."""
+    return json.dumps({"sequence_tags": {"site": list(sites)}})
+
+
+def _feature_run(dataset: Dataset, *flags: str) -> Result:
+    """``mosaic run --feature speed-angvel --json`` over *dataset*."""
+    return runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--feature",
+            "speed-angvel",
+            *flags,
+            "--json",
+        ],
+    )
+
+
+def test_a_feature_run_by_tag_has_the_run_id_of_the_entries_it_selects(
+    scoped: Dataset,
+) -> None:
+    """The selection lowers to entries before anything runs.
+
+    The run is asked for by tag and then for the same entry by name. Both must
+    name one run, which the second finds already computed.
+    """
+    _tag_sites(scoped)
+
+    by_tag = _feature_run(scoped, "--scope", _by_site("a"))
+    by_name = _feature_run(scoped, "--entries", "A:one")
+
+    assert by_tag.exit_code == 0, by_tag.output
+    assert by_name.exit_code == 0, by_name.output
+    assert json.loads(by_tag.stdout)["run_id"] == json.loads(by_name.stdout)["run_id"]
+    assert json.loads(by_name.stdout)["cache_hit"] is True
+    storage = scoped.get_root("features") / "speed-angvel__from__tracks"
+    assert sorted(path.name for path in storage.rglob("*.parquet")) == [
+        "A__one.parquet"
+    ]
+
+
+@dataclass(frozen=True)
+class _ReportedRun:
+    """What ``mosaic run --feature`` reads of a finished run."""
+
+    execution_id: str = "01H00000000000000000000000"
+    feature: str = "speed-angvel"
+    run_id: str = "0.0-0000000000"
+    cache_hit: bool = False
+    failed_entries: tuple[str, ...] = ()
+    entries_written: int = 0
+
+
+def test_a_feature_run_reads_the_revision_its_tag_selection_was_lowered_against(
+    scoped: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run is handed the revision of the table the selection read, and no other."""
+    _tag_sites(scoped)
+    seen: list[object] = []
+
+    def run_feature(ds: Dataset, feature: Feature, **kwargs: object) -> _ReportedRun:
+        seen.append(kwargs.get("tag_revision"))
+        return _ReportedRun()
+
+    monkeypatch.setattr(run_module, "run_feature", run_feature)
+
+    by_tag = _feature_run(scoped, "--scope", _by_site("a"))
+    by_name = _feature_run(scoped, "--entries", "A:one")
+
+    assert by_tag.exit_code == 0, by_tag.output
+    assert by_name.exit_code == 0, by_name.output
+    revision = selection_tag_table(scoped).ref
+    assert revision is not None
+    assert seen == [revision, None]
+
+
+def test_a_feature_run_by_tag_covers_every_entry_holding_the_value(
+    scoped: Dataset,
+) -> None:
+    _tag_sites(scoped)
+
+    result = _feature_run(scoped, "--scope", _by_site("b"))
+
+    assert result.exit_code == 0, result.output
+    storage = scoped.get_root("features") / "speed-angvel__from__tracks"
+    assert sorted(path.name for path in storage.rglob("*.parquet")) == [
+        "A__two.parquet",
+        "B__one.parquet",
+    ]
+
+
+def test_an_op_run_by_tag_lowers_to_the_same_entries(scoped: Dataset) -> None:
+    _tag_sites(scoped)
+
+    result = _regrid(scoped, "--scope", _by_site("b"))
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(scoped) == [("A", "two"), ("B", "one")]
+
+
+def test_a_tag_selection_beside_another_key_is_refused(scoped: Dataset) -> None:
+    _tag_sites(scoped)
+    selector = json.dumps({"sequence_tags": {"site": ["a"]}, "groups": ["A"]})
+
+    result = _regrid(scoped, "--scope", selector)
+
+    assert result.exit_code == 1
+    assert "sequence_tags" in result.output
+    assert "groups" in result.output
+    assert _regridded(scoped) == []
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        {"sequence_tags": ["site"]},
+        {"sequence_tags": {"site": "a"}},
+        {"sequence_tags": {"site": [None]}},
+        {"sequence_tags": {"site": [["a"]]}},
+    ],
+    ids=["list", "bare-value", "null", "nested"],
+)
+def test_a_malformed_tag_selection_is_refused(
+    scoped: Dataset, selector: object
+) -> None:
+    _tag_sites(scoped)
+
+    result = _regrid(scoped, "--scope", json.dumps(selector))
+
+    assert result.exit_code == 1
+    assert "sequence_tags" in result.output
+    assert _regridded(scoped) == []
+
+
+def test_an_unknown_tag_is_refused_naming_the_tags_that_exist(
+    scoped: Dataset,
+) -> None:
+    _tag_sites(scoped)
+
+    result = _regrid(
+        scoped, "--scope", json.dumps({"sequence_tags": {"colour": ["red"]}})
+    )
+
+    assert result.exit_code == 1
+    assert "colour" in result.output
+    assert "site" in result.output
+    assert _regridded(scoped) == []
+
+
+def test_an_empty_selection_is_refused_with_the_revision_it_read(
+    scoped: Dataset,
+) -> None:
+    _tag_sites(scoped)
+
+    result = _regrid(scoped, "--scope", _by_site("z"), "--json")
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "'z'" in payload["message"]
+    assert "revision 1" in payload["message"]
+    assert payload["detail"] == {"revision": 1, "tags": {"site": ["z"]}}
+    assert _regridded(scoped) == []
+
+
+def test_a_tag_selection_of_a_dataset_without_tags_says_how_to_import_them(
+    scoped: Dataset,
+) -> None:
+    result = _regrid(scoped, "--scope", _by_site("a"), "--json")
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "mosaic sequence-tags import" in payload["message"]
+    assert payload["detail"] is None
 
 
 # --- overwrite -----------------------------------------------------------------
