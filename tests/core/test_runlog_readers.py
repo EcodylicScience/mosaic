@@ -950,6 +950,15 @@ def _full_report() -> ResourceReport:
         peak_grown_bytes=150,
         peak_in_flight_entries=3,
         peak_in_flight_rows=1200,
+        peak_in_flight_pair_frames=900,
+        peak_in_flight_pair_frames_bound=True,
+        params_digest="0123456789",
+        params_default=True,
+        emits="pair",
+        in_flight_levels=(
+            InFlightLevel(in_flight=1, seconds=2.0, rows=30.0, cpu_seconds=1.5),
+            InFlightLevel(in_flight=2, seconds=1.25, rows=40.5, cpu_seconds=2.0),
+        ),
     )
 
 
@@ -961,9 +970,13 @@ def test_a_resources_event_carries_every_field_of_its_report(tmp_path: Path) -> 
 
     (event,) = _events_of(tmp_path, "E1", "resources")
 
-    assert {k: v for k, v in event.items() if k not in ("t", "ev")} == (
-        dataclasses.asdict(report)
+    assert {k: v for k, v in event.items() if k not in ("t", "ev")} == json.loads(
+        json.dumps(dataclasses.asdict(report))
     )
+    assert event["in_flight_levels"] == [
+        {"in_flight": 1, "seconds": 2.0, "rows": 30.0, "cpu_seconds": 1.5},
+        {"in_flight": 2, "seconds": 1.25, "rows": 40.5, "cpu_seconds": 2.0},
+    ]
 
 
 def test_a_report_of_only_its_required_fields_reads_every_other_as_empty() -> None:
@@ -998,11 +1011,24 @@ def test_a_report_of_only_its_required_fields_reads_every_other_as_empty() -> No
         report.peak_in_flight_entries,
         report.peak_in_flight_rows,
     ) == (0, 0, 0)
+    assert (
+        report.peak_in_flight_pair_frames,
+        report.peak_in_flight_pair_frames_bound,
+        report.params_digest,
+        report.params_default,
+        report.emits,
+        report.in_flight_levels,
+    ) == (0, False, "", False, "", ())
 
 
 def test_an_entry_end_carries_its_measure_only_when_given(tmp_path: Path) -> None:
     measure = EntryMeasure(
-        wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+        wall_seconds=2.5,
+        apply_seconds=1.5,
+        input_rows=40,
+        in_flight=2,
+        cpu_seconds=3.0,
+        mode="thread",
     )
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="t")
@@ -1020,6 +1046,7 @@ def test_an_entry_end_carries_its_measure_only_when_given(tmp_path: Path) -> Non
         "input_rows": 40,
         "in_flight": 2,
         "cpu_seconds": 3.0,
+        "mode": "thread",
     }
     assert {k: v for k, v in bare.items() if k not in ("t", "ev")} == {
         "index": 2,
@@ -1037,6 +1064,7 @@ def test_an_entry_end_carries_the_growth_only_when_it_was_measured(
         input_rows=40,
         in_flight=1,
         cpu_seconds=3.0,
+        mode="thread",
         peak_grown_bytes=4096,
     )
     none_measured = dataclasses.replace(grown, in_flight=2, peak_grown_bytes=None)
@@ -1053,6 +1081,62 @@ def test_an_entry_end_carries_the_growth_only_when_it_was_measured(
     assert "peak_grown_bytes" not in second
     assert second["in_flight"] == 2
     assert third["peak_grown_bytes"] == 0
+
+
+def test_entry_end_leaves_out_a_covariate_it_did_not_read(tmp_path: Path) -> None:
+    read = EntryMeasure(
+        wall_seconds=2.5,
+        apply_seconds=1.5,
+        input_rows=40,
+        in_flight=1,
+        cpu_seconds=3.0,
+        mode="process",
+        ids_per_frame=2.0,
+        pair_frames=80,
+        pair_frames_bound=True,
+        frames=40,
+        keypoints=7,
+        fps=25.0,
+    )
+    unread = dataclasses.replace(
+        read,
+        ids_per_frame=None,
+        pair_frames=None,
+        pair_frames_bound=None,
+        frames=None,
+        keypoints=None,
+        fps=None,
+    )
+    measured_pairs = dataclasses.replace(read, pair_frames_bound=None)
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.on_entry_end(1, 3, "a__1", measure=read)
+        log.on_entry_end(2, 3, "a__2", measure=unread)
+        log.on_entry_end(3, 3, "a__3", measure=measured_pairs)
+
+    first, second, third = _events_of(tmp_path, "E1", "entry_end")
+    covariates = (
+        "ids_per_frame",
+        "pair_frames",
+        "pair_frames_bound",
+        "frames",
+        "keypoints",
+        "fps",
+    )
+
+    assert {name: first[name] for name in covariates} == {
+        "ids_per_frame": 2.0,
+        "pair_frames": 80,
+        "pair_frames_bound": True,
+        "frames": 40,
+        "keypoints": 7,
+        "fps": 25.0,
+    }
+    assert first["mode"] == "process"
+    assert not any(name in second for name in covariates)
+    assert second["mode"] == "process"
+    assert third["pair_frames"] == 80
+    assert "pair_frames_bound" not in third
 
 
 def test_a_probe_event_names_its_request_step_entries_and_kind(tmp_path: Path) -> None:
@@ -1091,7 +1175,14 @@ def test_a_log_with_the_new_fields_reduces_to_the_snapshot_of_one_without(
         input_rows=40,
         in_flight=1,
         cpu_seconds=3.0,
+        mode="process",
         peak_grown_bytes=4096,
+        ids_per_frame=2.0,
+        pair_frames=80,
+        pair_frames_bound=True,
+        frames=40,
+        keypoints=7,
+        fps=25.0,
     )
     report = _full_report()
     with _log(tmp_path, "NEW") as log:

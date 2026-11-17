@@ -13,6 +13,7 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline._utils import ResolvedScope, canonical_json, hash_params
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.media_index import read_media_index
@@ -58,6 +59,7 @@ class _FeatureBase:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ()
 
     class Params(Params):

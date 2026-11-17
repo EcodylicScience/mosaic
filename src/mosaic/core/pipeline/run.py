@@ -90,7 +90,15 @@ from .index import (
 )
 from .arena_index import entry_compositions
 from .index_lock import index_lock
-from .input_size import by_rows, entry_input_size, manifest_input_sizes
+from .input_size import (
+    NO_COVARIATES,
+    EntryCovariates,
+    by_rows,
+    entry_input_size,
+    manifest_input_sizes,
+    step_tracks_variants,
+    tracks_covariates,
+)
 from .inventory.params import RunParams, TracksVariantWalk, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
@@ -158,6 +166,7 @@ from .parallelism import (
     process_capable,
     valid_admission_margin,
 )
+from .params_facts import params_equal_defaults, params_identity_digest
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
@@ -2175,6 +2184,17 @@ def _run_feature_impl(
     watch = MemoryWatch()
     estimate = RowCostEstimate()
     in_flight = EntriesInFlight(cpu_seconds=watch.cpu_seconds)
+    # What each computed entry's work scales with, filled from the tracks index once
+    # before the first entry loads, so the read is in no entry's flight.
+    covariates_by_key: dict[str, EntryCovariates] = {}
+
+    def covariates_of(key: str) -> EntryCovariates:
+        return covariates_by_key.get(key, NO_COVARIATES)
+
+    # A worker process computes an entry only where there are several workers.
+    entry_mode = (
+        "process" if parallel_mode_str == "process" and max_workers > 1 else "thread"
+    )
     cost = _RunCost()
     pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] | None = None
 
@@ -2222,6 +2242,16 @@ def _run_feature_impl(
             ),
             peak_in_flight_entries=0 if peak_sample is None else peak_sample.entries,
             peak_in_flight_rows=0 if peak_sample is None else peak_sample.rows,
+            peak_in_flight_pair_frames=(
+                0 if peak_sample is None else peak_sample.pair_frames
+            ),
+            peak_in_flight_pair_frames_bound=(
+                peak_sample is not None and peak_sample.pair_frames_bound
+            ),
+            params_digest=params_identity_digest(feature.params),
+            params_default=params_equal_defaults(feature.params),
+            emits=feature.emits,
+            in_flight_levels=in_flight.levels(),
         )
 
     def _publish_resources() -> None:
@@ -2380,7 +2410,7 @@ def _run_feature_impl(
             # hit was never in it and carries no cost.
             done = _total_written + len(_pending_idx_rows)
             key = make_entry_key(row.group, row.sequence)
-            span = in_flight.leave(key)
+            span = in_flight.leave(key, written=True)
             measure: EntryMeasure | None = None
             if span is not None:
                 written = time.monotonic()
@@ -2392,13 +2422,21 @@ def _run_feature_impl(
                     if key in worker_growth
                     else span.grown_bytes(base_bytes=cost.base_nonreclaimable_bytes)
                 )
+                covariates = covariates_of(key)
                 measure = EntryMeasure(
                     wall_seconds=written - span.load_started,
                     apply_seconds=span.apply_seconds,
                     input_rows=span.rows,
                     in_flight=span.most_in_flight,
                     cpu_seconds=max(0.0, watch.cpu_seconds() - span.cpu_at_load),
+                    mode=entry_mode,
                     peak_grown_bytes=grown,
+                    ids_per_frame=covariates.ids_per_frame,
+                    pair_frames=covariates.pair_frames,
+                    pair_frames_bound=True if covariates.pair_frames_bound else None,
+                    frames=covariates.frames,
+                    keypoints=covariates.keypoints,
+                    fps=covariates.fps,
                 )
             ctx.entry_ended(done, ctx.total, key, measure)
             ctx.heartbeat(done)
@@ -2657,6 +2695,21 @@ def _run_feature_impl(
                 key_of[entry]: compute_manifest[key_of[entry]] for entry in ordered
             }
 
+        # Only the entries to compute are read: a cached entry has no flight.
+        if compute_manifest:
+            read_covariates = tracks_covariates(
+                ds,
+                [resolve_sequence_identity(k, entry_map) for k in compute_manifest],
+                tracks_run_id=tracks_run_id,
+                variants=step_tracks_variants(ds, resolved),
+            )
+            covariates_by_key.update(
+                {
+                    make_entry_key(group, sequence): covariates
+                    for (group, sequence), covariates in read_covariates.items()
+                }
+            )
+
         # A full cache hit: state needed no fit and every manifest entry was already
         # valid on disk. Surfaced on Result (does not alter the run's flow).
         cache_hit = (
@@ -2894,8 +2947,14 @@ def _run_feature_impl(
             started = time.monotonic()
             if cost.apply_started is None:
                 cost.apply_started = started
+            covariates = covariates_of(key)
             in_flight.enter(
-                key, rows, pair_frames=None, started=started, cpu=watch.cpu_seconds()
+                key,
+                rows,
+                pair_frames=covariates.pair_frames,
+                pair_frames_bound=covariates.pair_frames_bound,
+                started=started,
+                cpu=watch.cpu_seconds(),
             )
             unhanded.append(key)
 

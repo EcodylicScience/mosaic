@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.drift import classify_identity
 from mosaic.core.media.facts_columns import media_row_uuid
@@ -177,6 +178,7 @@ class _CropLike:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ("media_raw",)
 
     def __init__(

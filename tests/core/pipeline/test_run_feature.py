@@ -51,6 +51,7 @@ from tests.helpers import (
 class _StatelessFeature:
     name = "test-stateless"
     version = "0.1"
+    emits: EmitsLevel = "individual"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
@@ -98,6 +99,7 @@ class _StatelessFeature:
 class _StatefulFeature:
     name = "test-stateful"
     version = "0.1"
+    emits: EmitsLevel = "individual"
     parallelizable = True
     scope_dependent = True
     consumed_roots: tuple[str, ...] = ()
@@ -160,6 +162,7 @@ class _StatefulFeature:
 class _EmptyInputFeature:
     name = "test-global"
     version = "0.1"
+    emits: EmitsLevel = "individual"
     parallelizable = False
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()

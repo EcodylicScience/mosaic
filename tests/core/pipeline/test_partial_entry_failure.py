@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.types import (
     Inputs,
@@ -51,6 +52,7 @@ class _FailsOnOneSequence:
 
     name = "test-fails-on-one"
     version = "0.1"
+    emits: EmitsLevel = "individual"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()

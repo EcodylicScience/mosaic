@@ -47,6 +47,7 @@ class CropLike:
     version = "0.1"
     parallelizable = False
     scope_dependent = False
+    emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ("media_raw",)
 
     def __init__(
@@ -137,6 +138,7 @@ class PairClusterFeature(PlainFeature):
     """
 
     name = "prov-pair-cluster"
+    emits: EmitsLevel = "pair"
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         frames = np.unique(df["frame"].to_numpy())

@@ -77,6 +77,11 @@ class MockDataset:
         )
         return recordings(self._continuous_groups, universe, order_facts)
 
+    def measured_entry_fps(self, group: str, sequence: str) -> float | None:
+        """Return no rate: a stand-in indexes no media."""
+        _ = (group, sequence)
+        return None
+
     def arena_layouts(self) -> dict[ArenaKey, DeclaredLayout]:
         """Return no arena layout: a stand-in declares none."""
         return {}

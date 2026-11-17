@@ -26,6 +26,7 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.pipeline import FeatureStep, build_step_feature
 from mosaic.core.pipeline.resolve import Resolution, resolve_references
@@ -59,6 +60,7 @@ class _FeatureBase:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ()
 
     def load_state(

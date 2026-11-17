@@ -19,6 +19,7 @@ import pytest
 import mosaic.runlog as runlog
 from mosaic.runlog import EntryMeasure, ResourceReport
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import (
@@ -59,6 +60,7 @@ from tests.helpers import MockDataset, add_track_sequences, make_dataset
 class _Stateless:
     name = "test-jc"
     version = "0.1"
+    emits: EmitsLevel = "individual"
     parallelizable = True
     scope_dependent = False
     consumed_roots: tuple[str, ...] = ()
@@ -1022,7 +1024,11 @@ def test_a_failed_flush_leaves_the_terminal_record(
 
 
 _MEASURE = EntryMeasure(
-    wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+    wall_seconds=2.5,
+    apply_seconds=1.5,
+    input_rows=40,
+    in_flight=2,
+    cpu_seconds=3.0,
 )
 
 

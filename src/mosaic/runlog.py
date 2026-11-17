@@ -337,6 +337,20 @@ class ResourceReport:
             the run's measure is not this figure or a base needed was not measured.
         peak_in_flight_entries: The entries in flight at that sample, 0 without one.
         peak_in_flight_rows: Their input rows.
+        peak_in_flight_pair_frames: Their ordered pairs summed over frames, an entry
+            with no figure adding 0, and 0 without a peak sample.
+        peak_in_flight_pair_frames_bound: Whether an entry in flight at that sample
+            carried a lower bound in place of a measured pair count.
+        params_digest: The hash of the feature's params as they enter its run id,
+            with the fields that leave the run id left out, 10 hex characters, or
+            ``""`` where not written. ``params_default`` is unknown wherever this is
+            empty.
+        params_default: Whether those params equal the defaults of their class.
+        emits: The level the feature declares it emits, ``as-input`` for a
+            passthrough, or ``""`` where not written.
+        in_flight_levels: What the run did at each count of entries in flight
+            together, ascending by count, for the run's own ``parallel_mode`` and
+            without level 0. Only entries written count.
     """
 
     workers: int
@@ -369,6 +383,12 @@ class ResourceReport:
     peak_grown_bytes: int = 0
     peak_in_flight_entries: int = 0
     peak_in_flight_rows: int = 0
+    peak_in_flight_pair_frames: int = 0
+    peak_in_flight_pair_frames_bound: bool = False
+    params_digest: str = ""
+    params_default: bool = False
+    emits: str = ""
+    in_flight_levels: tuple[InFlightLevel, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,11 +404,23 @@ class EntryMeasure:
             own.
         cpu_seconds: The CPU time of the process tree between its load start and
             its output written.
+        mode: ``process`` when a worker process computed the entry, else
+            ``thread``, which is also what a log without the field reads as.
         peak_grown_bytes: The memory the kernel cannot reclaim that the entry added
             over its base: in thread mode, when it ran alone, the largest figure
             sampled while it was in flight less the run's base; in process mode, its
             worker's peak less the worker's base. ``None`` when it was not measured,
             and then left out of the event.
+        ids_per_frame: The distinct non-null ``(frame, id)`` pairs over the frames
+            of the entry's extent, ``None`` when unread, and then left out.
+        pair_frames: Its ordered pairs summed over frames, or their lower bound
+            when ``pair_frames_bound`` is true. ``None`` when unread.
+        pair_frames_bound: ``True`` when ``pair_frames`` is the lower bound of a
+            tracks row that records no pair count, ``None`` otherwise, so that only
+            a bound is written.
+        frames: The length of its frame extent, ``None`` when unread.
+        keypoints: The keypoints of its tracks row, ``None`` when unread.
+        fps: The frame rate its indexed media measured, ``None`` when unread.
     """
 
     wall_seconds: float
@@ -396,7 +428,14 @@ class EntryMeasure:
     input_rows: int
     in_flight: int
     cpu_seconds: float
+    mode: str = "thread"
     peak_grown_bytes: int | None = None
+    ids_per_frame: float | None = None
+    pair_frames: int | None = None
+    pair_frames_bound: bool | None = None
+    frames: int | None = None
+    keypoints: int | None = None
+    fps: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,18 +9,20 @@ estimate, and is written during a fit as during apply.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import functools
 import json
 import os
 import threading
 import time
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import override
 
 import pandas as pd
 import pytest
+from pydantic import TypeAdapter
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
@@ -38,10 +40,23 @@ from mosaic.core.pipeline.admission import (
     WorkerBase,
     WorkerMeasure,
 )
+from mosaic.core.pipeline.input_size import EntryCovariates, entry_covariates
+from mosaic.core.pipeline.params_facts import (
+    params_equal_defaults,
+    params_identity_digest,
+)
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.run import ApplyOutcome, process_apply_worker, run_feature
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.types import DependencyLookup
-from mosaic.runlog import read_run, run_log_dir, run_log_path
+from mosaic.runlog import (
+    FlightSpan,
+    InFlightLevel,
+    read_run,
+    run_log_dir,
+    run_log_path,
+    sweep_levels,
+)
 from tests.helpers import (
     FitControl,
     FittingFeature,
@@ -756,6 +771,215 @@ def test_a_process_mode_run_measures_its_workers_base(
     assert _number(report, "worker_base_rss_bytes") > 0
 
 
+_LEVELS = TypeAdapter(list[InFlightLevel])
+_COVARIATE_FIELDS = (
+    "ids_per_frame",
+    "pair_frames",
+    "pair_frames_bound",
+    "frames",
+    "keypoints",
+    "fps",
+)
+
+
+def _indexed_covariates(ds: Dataset) -> dict[str, EntryCovariates]:
+    """What the tracks index records for each sequence, read as the run reads it."""
+    index = read_tracks_index(ds)
+    return {
+        str(row["sequence"]): entry_covariates(row, fps=None)
+        for _, row in index.iterrows()
+    }
+
+
+@pytest.mark.parametrize(
+    ("workers", "mode", "recorded"),
+    [
+        (1, "thread", "thread"),
+        (2, "thread", "thread"),
+        (1, "process", "thread"),
+        (2, "process", "process"),
+    ],
+    ids=["inline", "thread", "inline-process-request", "process"],
+)
+def test_each_entry_records_its_covariates_and_mode(
+    tmp_path: Path, workers: int, mode: str, recorded: str
+) -> None:
+    ds = _dataset(tmp_path)
+    execution_id = f"TESTCOVARIATES{workers}{mode}"
+    expected = _indexed_covariates(ds)
+    assert {covariates.frames for covariates in expected.values()} != {None}
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=workers,
+        parallel_mode=mode,
+        execution_id=execution_id,
+    )
+
+    ends = _events(ds, execution_id, "entry_end")
+    assert len(ends) == len(_SEQUENCES)
+    for end in ends:
+        sequence = str(end["key"]).rsplit("__", 1)[-1]
+        covariates = expected[sequence]
+        assert end["mode"] == recorded
+        for name in _COVARIATE_FIELDS:
+            value = getattr(covariates, name)
+            if value is None or value is False:
+                assert name not in end
+            else:
+                assert end[name] == value
+        assert _number(end, "frames") > 0
+        assert _number(end, "keypoints") > 0
+
+
+class _SleepsAndFailsOnSeqB(ParallelFeature):
+    """Holds each entry for a while, and raises from ``apply`` on ``seq_b``."""
+
+    name = "prov-parallel-sleeps-fails"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) == "seq_b":
+            time.sleep(0.2)
+            raise RuntimeError("a lost entry")
+        time.sleep(0.4)
+        return df
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["inline", "thread"])
+def test_the_final_resources_levels_match_the_written_entries(
+    tmp_path: Path, workers: int
+) -> None:
+    ds = _dataset(tmp_path)
+    execution_id = f"TESTLEVELS{workers}"
+
+    result = run_feature(
+        ds,
+        _SleepsAndFailsOnSeqB(),
+        parallel_workers=workers,
+        parallel_mode="thread",
+        execution_id=execution_id,
+    )
+
+    assert len(result.failed_entries) == 1
+    ends = _events(ds, execution_id, "entry_end")
+    assert len(ends) == len(_SEQUENCES) - 1
+    levels = _written_levels(ds, execution_id)
+    counts = [level.in_flight for level in levels]
+    assert counts == sorted(set(counts))
+    assert 1 <= min(counts) and max(counts) <= workers + 1
+    assert sum(level.rows for level in levels) == pytest.approx(
+        sum(_number(end, "input_rows") for end in ends)
+    )
+    flights = _events(ds, execution_id, "entry_end")
+    spent = sum(level.seconds for level in levels)
+    assert spent >= max(_number(end, "wall_seconds") for end in flights)
+    assert spent <= sum(_number(end, "wall_seconds") for end in flights)
+    assert all(level.cpu_seconds >= 0 for level in levels)
+
+
+def test_the_final_resources_levels_are_those_an_old_log_rebuilds(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+
+    _ = run_feature(
+        ds,
+        _Sleeps(),
+        parallel_workers=2,
+        parallel_mode="thread",
+        execution_id="TESTLEVELSREBUILT",
+    )
+
+    ends = _events(ds, "TESTLEVELSREBUILT", "entry_end")
+    spans = [
+        FlightSpan(
+            start=_stamp(end) - _number(end, "wall_seconds"),
+            end=_stamp(end),
+            rows=int(_number(end, "input_rows")),
+        )
+        for end in ends
+    ]
+    rebuilt = sweep_levels(spans, lambda _start, _end, _flights: 0.0)
+    written = _written_levels(ds, "TESTLEVELSREBUILT")
+    assert [level.in_flight for level in written] == [
+        level.in_flight for level in rebuilt
+    ]
+    # The event's time follows the entry's stamp by however long the host took to
+    # write it, so only the totals, which that shift leaves alone, are compared.
+    assert sum(level.rows for level in written) == pytest.approx(
+        sum(level.rows for level in rebuilt)
+    )
+    assert sum(level.seconds for level in written) == pytest.approx(
+        sum(level.seconds for level in rebuilt), abs=0.5
+    )
+
+
+def _written_levels(ds: Dataset, execution_id: str) -> list[InFlightLevel]:
+    """The levels the run's last ``resources`` event carries."""
+    return _LEVELS.validate_python(
+        _last_resources(ds, execution_id)["in_flight_levels"]
+    )
+
+
+def _stamp(record: dict[str, object]) -> float:
+    return datetime.datetime.fromisoformat(str(record["t"])).timestamp()
+
+
+def test_reading_the_covariates_is_in_no_entrys_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _dataset(tmp_path)
+    real = run_module.tracks_covariates
+    slow = 1.0
+
+    def slowly(
+        ds: Dataset,
+        entries: Collection[Entry],
+        *,
+        tracks_run_id: str | None,
+        variants: Collection[str] | None,
+    ) -> dict[Entry, EntryCovariates]:
+        time.sleep(slow)
+        return real(ds, entries, tracks_run_id=tracks_run_id, variants=variants)
+
+    monkeypatch.setattr(run_module, "tracks_covariates", slowly)
+
+    _ = run_feature(ds, ParallelFeature(), execution_id="TESTCOVARIATETIMING")
+
+    ends = _events(ds, "TESTCOVARIATETIMING", "entry_end")
+    assert all(_number(end, "wall_seconds") < slow / 2 for end in ends)
+    levels = _written_levels(ds, "TESTCOVARIATETIMING")
+    assert sum(level.seconds for level in levels) < slow / 2
+
+
+def test_a_full_cache_hit_reads_no_covariates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _dataset(tmp_path)
+    _ = run_feature(ds, ParallelFeature())
+
+    def refused(*_args: object, **_kwargs: object) -> dict[Entry, EntryCovariates]:
+        raise AssertionError("a cached run reads no covariates")
+
+    monkeypatch.setattr(run_module, "tracks_covariates", refused)
+
+    _ = run_feature(ds, ParallelFeature(), execution_id="TESTCOVARIATEHIT")
+
+
+def test_the_resources_carry_the_params_digest_and_emits(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    feature = ParallelFeature()
+
+    _ = run_feature(ds, feature, execution_id="TESTPARAMSFACTS")
+
+    report = _last_resources(ds, "TESTPARAMSFACTS")
+    assert report["params_digest"] == params_identity_digest(feature.params)
+    assert report["params_default"] is params_equal_defaults(feature.params)
+    assert report["params_default"] is True
+    assert report["emits"] == "as-input"
+
+
 # --- the entries in flight keep their largest sample ----------------------------
 
 
@@ -1201,6 +1425,27 @@ def test_the_peak_sample_sums_the_pair_frames_in_flight(
     for sample in _Spy.peak_samples:
         assert sample.pair_frames == 7 * sample.entries
         assert sample.pair_frames_bound
+
+
+def test_the_resources_carry_the_pair_frames_in_flight_at_the_peak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    covariates = _indexed_covariates(ds)
+    assert len({(c.pair_frames, c.pair_frames_bound) for c in covariates.values()}) == 1
+    one = covariates["seq_a"]
+    assert one.pair_frames is not None
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _run_gated(ds, "TESTPEAKPAIRFRAMES")
+
+    peak = _Spy.peak_samples[-1]
+    assert peak.pair_frames == peak.entries * one.pair_frames
+    assert peak.pair_frames_bound is one.pair_frames_bound
+    report = _last_resources(ds, "TESTPEAKPAIRFRAMES")
+    assert report["peak_in_flight_pair_frames"] == peak.pair_frames
+    assert report["peak_in_flight_pair_frames_bound"] is peak.pair_frames_bound
 
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["inline", "thread"])
