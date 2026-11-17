@@ -61,7 +61,7 @@ from ..parallelism import (
 )
 from ..definitions.scope import definition_scope
 from ..definitions.store import is_definition_slug
-from ..refusal import Refusal
+from ..refusal import Refusal, RefusalReason
 from ..run import ApplyPhase, run_feature
 from .claims import FileFailureStore
 from ..gpu_lease import leased_card
@@ -115,7 +115,14 @@ if TYPE_CHECKING:
     from .model import Recipe, Request, Step
     from .subset import StepSubset
 
-__all__ = ["STEP_RUN_KIND", "StepOutcome", "execute_step", "record_step_ended"]
+__all__ = [
+    "STEP_RUN_KIND",
+    "SettleDeclineReason",
+    "SettleDeclined",
+    "StepOutcome",
+    "execute_step",
+    "record_step_ended",
+]
 
 STEP_RUN_KIND: Final = "pipeline-step"
 """What a refusal records as its ``kind`` in the run-log.
@@ -174,6 +181,42 @@ class StepOutcome:
         return self.planned_run_id is not None and self.planned_run_id != self.run_id
 
 
+type SettleDeclineReason = Literal["would_compute", "refused"]
+"""Why a settle-only attempt records nothing.
+
+``would_compute`` is a step that is neither bound nor complete, so an ordinary
+attempt has work to do. ``refused`` is a step that an ordinary attempt refuses.
+"""
+
+
+class SettleDeclined(Exception):
+    """A settle-only attempt that records nothing, and says why.
+
+    Not a :class:`~mosaic.core.pipeline.refusal.Refusal`: nothing is recorded for
+    it, and the ordinary attempt that follows meets the refusal and records it. A
+    ``refused`` decline is raised from the refusal it replaces.
+
+    Attributes:
+        step_id: The step that was to settle.
+        reason: Why nothing was recorded.
+        refusal: The reason of the refusal that a ``refused`` decline replaces,
+            else ``""``.
+    """
+
+    def __init__(
+        self,
+        step_id: str,
+        reason: SettleDeclineReason,
+        *,
+        refusal: RefusalReason | Literal[""] = "",
+    ) -> None:
+        detail = f" ({refusal})" if refusal else ""
+        super().__init__(f"step {step_id!r} does not settle: {reason}{detail}")
+        self.step_id: str = step_id
+        self.reason: SettleDeclineReason = reason
+        self.refusal: RefusalReason | Literal[""] = refusal
+
+
 def execute_step(
     ds: Dataset,
     request: Request,
@@ -188,6 +231,7 @@ def execute_step(
     cancel_token: CancelToken | None = None,
     parallel: ParallelSettings | None = None,
     subset: StepSubset | None = None,
+    settle_only: bool = False,
 ) -> StepOutcome:
     """Run one step of *request* against *ds*, and say what it did.
 
@@ -223,6 +267,15 @@ def execute_step(
             A named subset computes its entries with *parallel*. The step's
             status reads only its own attempt, which afterward computes the rest
             and serves the subset's entries from the cache.
+        settle_only: Record the step only when it needs no work: the request binds
+            it, or its plan reads complete. It then writes the run-log an ordinary
+            attempt writes for either, under the step's own execution id. Any other
+            step is declined before anything is written, so this never computes: it
+            reaches no preflight, quarantine narrowing or run. A tool that the
+            catalog lacks does not stop a settle, since no tool runs, and a
+            cancelled *cancel_token* stops it before the record is written. A step
+            that only quarantine narrowing under ``allow_partial`` would leave
+            complete is declined.
 
     A step that *request* binds to a run is never executed: it is planned, so
     that a bind it could not have written is refused as at submission, and is
@@ -240,7 +293,14 @@ def execute_step(
 
     Raises:
         ValueError: *subset* is given and the attempt is the one the request
+            assigned the step, or *settle_only* is given with a *subset*, with
+            *overwrite*, or with an *execution_id* other than the one the request
             assigned the step. Nothing is recorded.
+        SettleDeclined: *settle_only* is given and the step is not bound or
+            complete (``would_compute``), or an ordinary attempt would refuse it
+            (``refused``, naming the refusal). Nothing is recorded.
+        Cancelled: *settle_only* is given and *cancel_token* is cancelled before
+            the record is written. Nothing is recorded.
         StepRefused: The step declined to run, naming why. Its ``error_json`` has
             already been written to this attempt's run-log. A subset of a
             ``scope_dependent``, op, bound or pinned step, or one naming an entry
@@ -252,6 +312,14 @@ def execute_step(
     """
     with definition_scope(ds, load=False, pins=request.definitions):
         attempt = execution_id or request.execution_of(step_id)
+        if settle_only:
+            _check_settle_arguments(
+                step_id,
+                request,
+                attempt=attempt,
+                overwrite=overwrite,
+                subset=subset,
+            )
         if subset is not None and attempt == request.execution_of(step_id):
             # Refused before anything is written: that run-log is the step's status,
             # and a subset recorded there would read as the step having ended.
@@ -274,6 +342,7 @@ def execute_step(
                 cancel_token=cancel_token,
                 parallel=parallel,
                 subset=subset,
+                settle_only=settle_only,
             )
         except StepRefused as refusal:
             # Written here because nothing else will: a refusal happens before
@@ -292,6 +361,35 @@ def execute_step(
             raise
 
 
+def _check_settle_arguments(
+    step_id: str,
+    request: Request,
+    *,
+    attempt: str,
+    overwrite: bool,
+    subset: StepSubset | None,
+) -> None:
+    """Refuse the arguments that a settle-only attempt cannot honor.
+
+    Raises:
+        ValueError: A subset or overwrite is asked for, or the attempt is not the
+            one the request assigned the step.
+    """
+    if subset is not None:
+        raise ValueError(f"a settle of step {step_id!r} runs no {subset.kind} subset")
+    if overwrite:
+        raise ValueError(
+            f"a settle of step {step_id!r} does not overwrite: it records a step "
+            f"that needs no work"
+        )
+    own = request.execution_of(step_id)
+    if attempt != own:
+        raise ValueError(
+            f"a settle of step {step_id!r} records under the step's own execution "
+            f"id {own!r}, not {attempt!r}"
+        )
+
+
 def _execute(
     ds: Dataset,
     request: Request,
@@ -306,6 +404,7 @@ def _execute(
     cancel_token: CancelToken | None,
     parallel: ParallelSettings | None,
     subset: StepSubset | None,
+    settle_only: bool,
 ) -> StepOutcome:
     """The body, with every refusal free to propagate to its recorder.
 
@@ -313,6 +412,9 @@ def _execute(
     ``run_feature`` is recorded here, because no run-log is open for it. One
     raised inside them is recorded by the job context of the attempt, and a second
     record would append another ``started`` and ``failed`` to the same file.
+
+    A settle-only attempt records no refusal: it becomes a :class:`SettleDeclined`,
+    and the ordinary attempt that follows meets the refusal and records it.
     """
     try:
         ready = _before_run(
@@ -326,11 +428,17 @@ def _execute(
             catalog=catalog,
             owner=owner,
             subset=subset,
+            settle_only=settle_only,
+            cancel_token=cancel_token,
         )
-    except StepRefused:
-        # Recorded by execute_step.
-        raise
     except Refusal as refusal:
+        if settle_only:
+            raise SettleDeclined(
+                step_id, "refused", refusal=refusal.reason
+            ) from refusal
+        if isinstance(refusal, StepRefused):
+            # Recorded by execute_step.
+            raise
         _record_terminal(
             ds,
             attempt,
@@ -424,6 +532,8 @@ def _before_run(
     catalog: DeclarationCatalog | None,
     owner: str,
     subset: StepSubset | None,
+    settle_only: bool,
+    cancel_token: CancelToken | None,
 ) -> StepOutcome | _Ready:
     """Check the step and plan it, or answer it from what is on disk.
 
@@ -431,11 +541,23 @@ def _before_run(
     is answered, so a refused subset is never recorded as a bound or cached
     attempt under its own execution id.
 
+    A settle-only attempt skips the tool check, since no tool runs for a bound or
+    cached answer, and answers only those two. It checks *cancel_token* right
+    before the record, and raises :class:`SettleDeclined` for a plan that reads
+    otherwise, before the preflight.
+
     Returns:
-        The outcome of a step that needs no run, else what its run needs.
+        The outcome of a step that needs no run, else what its run needs. A
+        settle-only attempt never returns what a run needs.
+
+    Raises:
+        SettleDeclined: A settle-only attempt on a step that is neither bound nor
+            complete.
+        Cancelled: A settle-only attempt with a cancelled *cancel_token*.
     """
     recipe = load_recipe_for_request(ds.base_dir, request)
-    _refuse_unavailable_tool(recipe.step(step_id), catalog)
+    if not settle_only:
+        _refuse_unavailable_tool(recipe.step(step_id), catalog)
     _refuse_moved_versions(recipe, request, step_id)
     # Before planning, because resolving the identity of a feature reading
     # unpinned tracks against a dataset of mixed schemas already fails -- and
@@ -467,13 +589,19 @@ def _before_run(
     if step_id in request.bind:
         # After the plan, which refuses at this step a bind the step could not
         # have written: an op step, another storage, or a run that is gone.
+        if settle_only and cancel_token is not None:
+            cancel_token.raise_if_cancelled()
         return _bound(ds, planned, attempt=attempt, owner=owner)
     # A pinned step serves its run and computes nothing, under overwrite too:
     # recomputing it would fit over this request's entries under the pin's name.
     # A feature step with drift work runs, and ``run_feature`` recomputes its
     # drifted entries and serves the rest.
     if planned.is_complete and (not overwrite or step_id in request.pins):
+        if settle_only and cancel_token is not None:
+            cancel_token.raise_if_cancelled()
         return _cached(ds, planned, attempt=attempt, owner=owner, probe=marker)
+    if settle_only:
+        raise SettleDeclined(step_id, "would_compute")
 
     preflight(ds, plan, step_id, allow_partial=request.allow_partial)
 

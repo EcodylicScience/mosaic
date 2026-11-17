@@ -28,7 +28,6 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.graph.claims import FileFailureStore
-from mosaic.core.pipeline.graph.failures import QUARANTINE_AFTER
 from mosaic.core.pipeline.graph.resolve import StepBuildError
 from mosaic.core.pipeline.graph import input_size as input_size_module
 from mosaic.core.pipeline.graph.input_size import (
@@ -55,6 +54,7 @@ from tests.helpers import (
     converting_recipe,
     invoke_ok,
     make_dataset,
+    quarantine_entry,
     run_speed,
 )
 
@@ -182,16 +182,6 @@ def test_a_quarantined_entry_is_left_out_and_one_backing_off_is_listed(
     assert report.entries == 3
 
 
-def _quarantine(dataset: Dataset, recipe: Recipe, step_id: str, sequence: str) -> None:
-    """Fail one entry of a step past the attempt bound, and record no exclusion."""
-    planned = plan_pipeline(dataset, recipe).step(step_id)
-    store = FileFailureStore(dataset.base_dir)
-    for _ in range(QUARANTINE_AFTER):
-        _ = store.note_entry_failure(
-            (planned.storage_name, planned.run_id or "", "", sequence), error="boom"
-        )
-
-
 def test_a_complete_step_has_no_entries_to_compute(tracked: Dataset) -> None:
     request = submit_request(tracked, chain_recipe()).request
     _ = execute_step(tracked, request, "speed")
@@ -223,7 +213,7 @@ def test_a_quarantined_entry_not_yet_excluded_is_left_out_and_blocks_the_step(
 ) -> None:
     recipe = chain_recipe()
     request = submit_request(tracked, recipe).request
-    _quarantine(tracked, recipe, "speed", "seq_b")
+    quarantine_entry(tracked, recipe, "speed", "seq_b")
 
     report = step_input_size(tracked, request, "speed")
 
@@ -240,7 +230,7 @@ def test_allow_partial_leaves_a_quarantined_entry_out_and_records_nothing(
     recipe = chain_recipe()
     request = submit_request(tracked, recipe).request
     partial = request.model_copy(update={"allow_partial": True})
-    _quarantine(tracked, recipe, "speed", "seq_b")
+    quarantine_entry(tracked, recipe, "speed", "seq_b")
 
     report = step_input_size(tracked, partial, "speed")
 
@@ -258,7 +248,7 @@ def test_a_scope_dependent_step_reports_the_run_it_names_without_the_quarantined
     request = submit_request(tracked, recipe).request
     _ = execute_step(tracked, request, "speed")
     whole = step_input_size(tracked, request, "templates")
-    _quarantine(tracked, recipe, "templates", "seq_b")
+    quarantine_entry(tracked, recipe, "templates", "seq_b")
 
     blocked = step_input_size(tracked, request, "templates")
     partial = step_input_size(

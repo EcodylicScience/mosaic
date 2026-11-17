@@ -30,6 +30,8 @@ What lives where:
 - ``labels`` writes converted label files of events, and their index rows, and
   holds the label converters that the conversion tests register. It also writes
   raw predictions tables and scans them as a labels source.
+- ``failures`` -- failure records written into a dataset, a quarantined entry of
+  a step.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
   ``run_info.json`` records and its frames-index row, and reads back the files
   of a dataset's one frames row.
@@ -157,6 +159,7 @@ from tests.helpers.feature_definitions import (
     noting_definition_loads,
 )
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
+from tests.helpers.failures import quarantine_entry
 from tests.helpers.extracted_frames import (
     extract_entry_camera,
     record_frames_row,
@@ -786,6 +789,7 @@ __all__ = [
     "pose_object",
     "pose_set",
     "published_table",
+    "quarantine_entry",
     "read_frame_code",
     "record_entry_predictions",
     "record_entry_selection",
