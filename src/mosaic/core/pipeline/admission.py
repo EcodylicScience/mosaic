@@ -47,16 +47,21 @@ What the estimate cannot see:
 - a child process of earlier work in the same process, which the tree counts as this
   run's. One that exits or grows during the run moves the figure.
 
-Imports the standard library only.
+Imports the standard library and :mod:`mosaic.runlog`, which imports the standard library
+only.
 """
 
 from __future__ import annotations
 
 import math
 import threading
+import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Final
+
+from mosaic.runlog import FlightSpan, InFlightLevel, sweep_levels
 
 __all__ = [
     "KEPT_OBSERVATIONS",
@@ -176,12 +181,18 @@ class PeakSample:
         bytes_: The non-reclaimable memory of the sample.
         entries: The entries in flight at the sample, at least 1.
         rows: Their input rows.
+        pair_frames: Their ordered pairs summed over frames, an entry without the
+            figure adding 0.
+        pair_frames_bound: Whether any of them carried a lower bound in place of a
+            measured figure.
         live_workers: The process workers alive at the sample, 0 in thread mode.
     """
 
     bytes_: int
     entries: int
     rows: int
+    pair_frames: int
+    pair_frames_bound: bool
     live_workers: int
 
 
@@ -191,6 +202,8 @@ def larger_peak(
     bytes_: int,
     entries: int,
     rows: int,
+    pair_frames: int,
+    pair_frames_bound: bool,
     live_workers: int,
 ) -> PeakSample | None:
     """Return the peak sample once a sample with these figures is considered.
@@ -203,6 +216,8 @@ def larger_peak(
         bytes_: The sample's non-reclaimable memory.
         entries: The entries in flight at the sample.
         rows: Their input rows.
+        pair_frames: Their ordered pairs summed over frames.
+        pair_frames_bound: Whether any of them carried a lower bound.
         live_workers: The process workers alive at the sample.
 
     Returns:
@@ -212,7 +227,12 @@ def larger_peak(
     if entries < 1 or (held is not None and bytes_ <= held.bytes_):
         return held
     return PeakSample(
-        bytes_=bytes_, entries=entries, rows=rows, live_workers=live_workers
+        bytes_=bytes_,
+        entries=entries,
+        rows=rows,
+        pair_frames=pair_frames,
+        pair_frames_bound=pair_frames_bound,
+        live_workers=live_workers,
     )
 
 
@@ -459,6 +479,8 @@ class EntrySpan:
 @dataclass(slots=True)
 class _Flight:
     rows: int
+    pair_frames: int | None
+    pair_frames_bound: bool
     most: int
     load_started: float
     cpu_at_load: float
@@ -467,23 +489,73 @@ class _Flight:
     peak_nonreclaimable: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _WrittenFlight:
+    """A flight that ended with its output written, with the tree's CPU at both ends."""
+
+    started: float
+    ended: float
+    rows: int
+    cpu_at_start: float
+    cpu_at_end: float
+
+
 class EntriesInFlight:
     """The entries of a run from the start of their load to their exit, with their rows.
 
     Every exit of an entry, an output written, a failure or a skip, calls
     :meth:`leave`, and leaving twice is harmless. Every method holds the record's
-    lock, because an apply ends on a worker thread.
+    lock, because an apply ends on a worker thread. An entry that leaves with its
+    output written keeps its span and rows, which :meth:`levels` reads.
+
+    Args:
+        cpu_seconds: The CPU seconds of the run's process tree now, read where an
+            entry leaves with its output written.
+        clock: The clock the entries' ``started`` comes from.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        cpu_seconds: Callable[[], float],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._cpu_seconds: Callable[[], float] = cpu_seconds
+        self._clock: Callable[[], float] = clock
         self._lock: threading.Lock = threading.Lock()
         self._flights: dict[str, _Flight] = {}
+        self._written: list[_WrittenFlight] = []
 
-    def enter(self, key: str, rows: int, *, started: float, cpu: float) -> None:
-        """Record that the entry *key* of *rows* input rows starts to load."""
+    def enter(
+        self,
+        key: str,
+        rows: int,
+        *,
+        pair_frames: int | None,
+        started: float,
+        cpu: float,
+        pair_frames_bound: bool = False,
+    ) -> None:
+        """Record that the entry *key* of *rows* input rows starts to load.
+
+        Args:
+            key: The entry's key.
+            rows: Its input rows.
+            pair_frames: Its ordered pairs summed over frames, ``None`` where it
+                has no figure.
+            started: When its load began, on the clock of this record.
+            cpu: The tree's CPU seconds when its load began.
+            pair_frames_bound: Whether *pair_frames* is a lower bound in place of a
+                measured figure.
+        """
         with self._lock:
             self._flights[key] = _Flight(
-                rows=rows, most=0, load_started=started, cpu_at_load=cpu
+                rows=rows,
+                pair_frames=pair_frames,
+                pair_frames_bound=pair_frames_bound,
+                most=0,
+                load_started=started,
+                cpu_at_load=cpu,
             )
             count = len(self._flights)
             for flight in self._flights.values():
@@ -523,10 +595,29 @@ class EntriesInFlight:
             if flight is not None and flight.applied is None:
                 flight.applied = at
 
-    def leave(self, key: str) -> EntrySpan | None:
-        """Remove the entry *key*, and return its span, ``None`` when it was not in flight."""
+    def leave(self, key: str, *, written: bool = False) -> EntrySpan | None:
+        """Remove the entry *key*, and return its span, ``None`` when it was not in flight.
+
+        Args:
+            key: The entry's key.
+            written: Whether the entry leaves with its output written. Its start,
+                end, rows and the tree's CPU at both ends are then kept for
+                :meth:`levels`. An entry that failed or was skipped adds nothing.
+        """
+        ended = self._clock() if written else 0.0
+        cpu_at_end = self._cpu_seconds() if written else 0.0
         with self._lock:
             flight = self._flights.pop(key, None)
+            if flight is not None and written:
+                self._written.append(
+                    _WrittenFlight(
+                        started=flight.load_started,
+                        ended=ended,
+                        rows=flight.rows,
+                        cpu_at_start=flight.cpu_at_load,
+                        cpu_at_end=cpu_at_end,
+                    )
+                )
         if flight is None:
             return None
         apply_seconds = (
@@ -541,6 +632,33 @@ class EntriesInFlight:
             cpu_at_load=flight.cpu_at_load,
             apply_seconds=max(0.0, apply_seconds),
             peak_nonreclaimable_bytes=flight.peak_nonreclaimable,
+        )
+
+    def levels(self) -> tuple[InFlightLevel, ...]:
+        """What the run did at each count of entries in flight together.
+
+        Only entries that left with their output written count, so an open flight
+        and a failed or skipped entry add neither time nor rows. A level's CPU is
+        the difference of the tree's CPU stamps at the two ends of each of its
+        segments, summed.
+
+        Returns:
+            The levels ascending by ``in_flight``, without level 0.
+        """
+        with self._lock:
+            kept = list(self._written)
+        stamps: dict[float, float] = {}
+        for flight in kept:
+            stamps[flight.started] = max(
+                stamps.get(flight.started, 0.0), flight.cpu_at_start
+            )
+            stamps[flight.ended] = max(stamps.get(flight.ended, 0.0), flight.cpu_at_end)
+
+        def cpu_of_segment(start: float, end: float, flights: tuple[int, ...]) -> float:
+            return max(0.0, stamps[end] - stamps[start])
+
+        return sweep_levels(
+            [FlightSpan(f.started, f.ended, f.rows) for f in kept], cpu_of_segment
         )
 
     def rows_of(self, key: str) -> int:
@@ -559,14 +677,20 @@ class EntriesInFlight:
         with self._lock:
             return len(self._flights)
 
-    def totals(self, *, sampled_from: float | None = None) -> tuple[int, int]:
-        """The entries in flight now and their input rows, read at one moment.
+    def totals(
+        self, *, sampled_from: float | None = None
+    ) -> tuple[int, int, int, bool]:
+        """The entries in flight now, their rows and pair frames, read at one moment.
 
         Args:
             sampled_from: When a measurement began, on the clock the entries'
                 ``started`` came from. An entry that started after it is not
                 counted, so the totals describe what the measurement saw.
                 ``None`` counts every entry in flight.
+
+        Returns:
+            The entries, their input rows, their pair frames (an entry without the
+            figure adding 0) and whether any of them carried a lower bound.
         """
         with self._lock:
             held = [
@@ -574,4 +698,9 @@ class EntriesInFlight:
                 for flight in self._flights.values()
                 if sampled_from is None or flight.load_started <= sampled_from
             ]
-            return len(held), sum(flight.rows for flight in held)
+            return (
+                len(held),
+                sum(flight.rows for flight in held),
+                sum(flight.pair_frames or 0 for flight in held),
+                any(flight.pair_frames_bound for flight in held),
+            )

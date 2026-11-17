@@ -72,7 +72,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
@@ -89,6 +89,8 @@ __all__ = [
     "EntryErrorPage",
     "EntryErrorRecord",
     "ErrorSummary",
+    "FlightSpan",
+    "InFlightLevel",
     "JsonlRunLog",
     "MachineFacts",
     "ProbeRecord",
@@ -132,6 +134,7 @@ __all__ = [
     "run_log_dir",
     "run_log_lines",
     "run_log_path",
+    "sweep_levels",
     "written_since",
 ]
 
@@ -419,6 +422,97 @@ class MachineFacts:
     threads_per_core: int | None = None
     memory_bytes: int = 0
     machine_class: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class InFlightLevel:
+    """What a run did while a given number of entries were in flight together.
+
+    Attributes:
+        in_flight: How many entries were in flight, at least 1.
+        seconds: The time spent at that count.
+        rows: The input rows of the entries over that time, each entry's rows
+            spread evenly over its own flight.
+        cpu_seconds: The CPU time of the process tree over that time.
+    """
+
+    in_flight: int
+    seconds: float
+    rows: float
+    cpu_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class FlightSpan:
+    """One entry's time in flight, as :func:`sweep_levels` reads it.
+
+    Attributes:
+        start: When it started, on any one clock.
+        end: When it ended, on the same clock.
+        rows: Its input rows.
+    """
+
+    start: float
+    end: float
+    rows: int
+
+
+def sweep_levels(
+    spans: Sequence[FlightSpan],
+    cpu_of_segment: Callable[[float, float, tuple[int, ...]], float],
+) -> tuple[InFlightLevel, ...]:
+    """Return the levels of a set of flights, one per count of flights at once.
+
+    Time is cut at every flight's start and end. The flights over each segment are
+    counted, each flight's rows are credited to its segments in proportion to their
+    seconds, and the segment's CPU is what *cpu_of_segment* gives. A flight with no
+    duration is in no segment and credits no rows. A count no segment reaches has
+    no level, and neither has a count of 0.
+
+    Args:
+        spans: The flights.
+        cpu_of_segment: The CPU seconds of one segment, given its start, its end
+            and the indices into *spans* of the flights over it, ascending.
+
+    Returns:
+        The levels, ascending by ``in_flight``.
+    """
+    events = sorted(
+        (at, joins, index)
+        for index, span in enumerate(spans)
+        if span.end > span.start
+        for at, joins in ((span.start, 1), (span.end, 0))
+    )
+    totals: dict[int, list[float]] = {}
+    active: set[int] = set()
+    cursor = 0
+    previous = 0.0
+    while cursor < len(events):
+        at = events[cursor][0]
+        if active and at > previous:
+            covering = tuple(sorted(active))
+            seconds = at - previous
+            total = totals.setdefault(len(covering), [0.0, 0.0, 0.0])
+            total[0] += seconds
+            total[1] += sum(
+                spans[index].rows * seconds / (spans[index].end - spans[index].start)
+                for index in covering
+            )
+            total[2] += cpu_of_segment(previous, at, covering)
+        while cursor < len(events) and events[cursor][0] == at:
+            _, joins, index = events[cursor]
+            if joins:
+                active.add(index)
+            else:
+                active.discard(index)
+            cursor += 1
+        previous = at
+    return tuple(
+        InFlightLevel(
+            in_flight=count, seconds=seconds, rows=rows, cpu_seconds=cpu_seconds
+        )
+        for count, (seconds, rows, cpu_seconds) in sorted(totals.items())
+    )
 
 
 @dataclass(frozen=True, slots=True)

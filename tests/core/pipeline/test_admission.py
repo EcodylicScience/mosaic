@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mosaic.core.pipeline.admission import (
     KEPT_OBSERVATIONS,
+    EntriesInFlight,
     EntrySpan,
     PeakSample,
     RowCostEstimate,
@@ -13,6 +16,7 @@ from mosaic.core.pipeline.admission import (
     grown_over_bases,
     larger_peak,
 )
+from mosaic.runlog import InFlightLevel
 
 
 def _worker(
@@ -293,26 +297,70 @@ def test_the_budget_takes_the_figure_the_run_holds_in_its_own_measure() -> None:
 # --- the peak sample -------------------------------------------------------------
 
 
-def test_the_first_sample_with_an_entry_in_flight_is_the_peak() -> None:
-    peak = larger_peak(None, bytes_=500, entries=1, rows=10, live_workers=0)
+def _sample(
+    bytes_: int,
+    *,
+    entries: int,
+    rows: int,
+    live_workers: int = 0,
+    pair_frames: int = 0,
+    pair_frames_bound: bool = False,
+) -> PeakSample:
+    return PeakSample(
+        bytes_=bytes_,
+        entries=entries,
+        rows=rows,
+        pair_frames=pair_frames,
+        pair_frames_bound=pair_frames_bound,
+        live_workers=live_workers,
+    )
 
-    assert peak == PeakSample(bytes_=500, entries=1, rows=10, live_workers=0)
+
+def _consider(
+    held: PeakSample | None,
+    bytes_: int,
+    *,
+    entries: int,
+    rows: int,
+    live_workers: int = 0,
+    pair_frames: int = 0,
+    pair_frames_bound: bool = False,
+) -> PeakSample | None:
+    return larger_peak(
+        held,
+        bytes_=bytes_,
+        entries=entries,
+        rows=rows,
+        pair_frames=pair_frames,
+        pair_frames_bound=pair_frames_bound,
+        live_workers=live_workers,
+    )
+
+
+def test_the_first_sample_with_an_entry_in_flight_is_the_peak() -> None:
+    peak = _consider(
+        None, 500, entries=1, rows=10, pair_frames=6, pair_frames_bound=True
+    )
+
+    assert peak == _sample(
+        500, entries=1, rows=10, pair_frames=6, pair_frames_bound=True
+    )
 
 
 def test_a_sample_with_no_entry_in_flight_is_never_the_peak() -> None:
-    held = PeakSample(bytes_=500, entries=1, rows=10, live_workers=0)
+    held = _sample(500, entries=1, rows=10)
 
-    assert larger_peak(None, bytes_=9_000, entries=0, rows=0, live_workers=0) is None
-    assert larger_peak(held, bytes_=9_000, entries=0, rows=0, live_workers=0) is held
+    assert _consider(None, 9_000, entries=0, rows=0) is None
+    assert _consider(held, 9_000, entries=0, rows=0) is held
 
 
 def test_only_a_larger_figure_replaces_the_peak_sample() -> None:
-    held = PeakSample(bytes_=500, entries=1, rows=10, live_workers=0)
+    held = _sample(500, entries=1, rows=10)
 
-    assert larger_peak(held, bytes_=500, entries=2, rows=20, live_workers=1) is held
-    assert larger_peak(held, bytes_=400, entries=2, rows=20, live_workers=1) is held
-    assert larger_peak(held, bytes_=501, entries=2, rows=20, live_workers=1) == (
-        PeakSample(bytes_=501, entries=2, rows=20, live_workers=1)
+    assert _consider(held, 500, entries=2, rows=20, live_workers=1) is held
+    assert _consider(held, 400, entries=2, rows=20, live_workers=1) is held
+    assert _consider(held, 501, entries=2, rows=20, live_workers=1) == (
+        _sample(501, entries=2, rows=20, live_workers=1)
     )
 
 
@@ -369,7 +417,7 @@ def test_a_worker_without_the_figure_leaves_the_base_an_earlier_one_gave() -> No
 
 
 def _peak(bytes_: int, *, live_workers: int = 0) -> PeakSample:
-    return PeakSample(bytes_=bytes_, entries=2, rows=50, live_workers=live_workers)
+    return _sample(bytes_, entries=2, rows=50, live_workers=live_workers)
 
 
 def test_the_peak_grew_over_the_parent_base_in_a_thread_run() -> None:
@@ -451,3 +499,165 @@ def test_an_entry_that_saw_no_sample_has_no_growth() -> None:
 
 def test_an_unmeasured_base_gives_an_entry_no_growth() -> None:
     assert _span(most_in_flight=1, peak=900).grown_bytes(base_bytes=0) is None
+
+
+# --- the levels of the entries in flight ------------------------------------------
+
+
+class _Time:
+    """A clock and a CPU counter that a test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.cpu = 0.0
+
+    def move(self, *, to: float, cpu: float) -> None:
+        self.now = to
+        self.cpu = cpu
+
+    def in_flight(self) -> EntriesInFlight:
+        return EntriesInFlight(cpu_seconds=lambda: self.cpu, clock=lambda: self.now)
+
+    def enter(
+        self,
+        in_flight: EntriesInFlight,
+        key: str,
+        rows: int,
+        *,
+        pair_frames: int | None,
+    ) -> None:
+        in_flight.enter(
+            key, rows, pair_frames=pair_frames, started=self.now, cpu=self.cpu
+        )
+
+
+def _two_overlapping(clock: _Time) -> EntriesInFlight:
+    """Entry ``a`` (100 rows) in flight from 0 to 6 s, ``b`` (60 rows) from 2 to 8 s."""
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 100, pair_frames=None)
+    clock.move(to=2.0, cpu=2.0)
+    clock.enter(in_flight, "b", 60, pair_frames=None)
+    clock.move(to=6.0, cpu=8.0)
+    _ = in_flight.leave("a", written=True)
+    clock.move(to=8.0, cpu=9.0)
+    _ = in_flight.leave("b", written=True)
+    return in_flight
+
+
+def test_two_overlapping_entries_give_levels_one_and_two() -> None:
+    in_flight = _two_overlapping(_Time())
+
+    one, two = in_flight.levels()
+
+    # Level 1 is 0-2 s and 6-8 s, level 2 is 2-6 s. Each entry's rows are spread
+    # evenly over its own 6 s: a has 100 / 6 rows a second, b has 60 / 6.
+    assert one.in_flight == 1
+    assert one.seconds == pytest.approx(4.0)
+    assert one.rows == pytest.approx(100 * 2 / 6 + 60 * 2 / 6)
+    assert one.cpu_seconds == pytest.approx((2.0 - 0.0) + (9.0 - 8.0))
+    assert two.in_flight == 2
+    assert two.seconds == pytest.approx(4.0)
+    assert two.rows == pytest.approx(100 * 4 / 6 + 60 * 4 / 6)
+    assert two.cpu_seconds == pytest.approx(8.0 - 2.0)
+
+
+def test_the_levels_hold_the_time_and_rows_of_the_written_entries() -> None:
+    levels = _two_overlapping(_Time()).levels()
+
+    assert sum(level.seconds for level in levels) == pytest.approx(8.0)
+    assert sum(level.rows for level in levels) == pytest.approx(160.0)
+
+
+def test_an_entry_that_was_not_written_adds_nothing() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 100, pair_frames=None)
+    clock.move(to=3.0, cpu=3.0)
+    span = in_flight.leave("a")
+
+    assert span is not None
+    assert in_flight.levels() == ()
+    assert in_flight.count() == 0
+
+
+def test_leaving_twice_adds_nothing_twice() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 100, pair_frames=None)
+    clock.move(to=3.0, cpu=3.0)
+    _ = in_flight.leave("a", written=True)
+    clock.move(to=9.0, cpu=9.0)
+
+    assert in_flight.leave("a", written=True) is None
+
+    assert in_flight.levels() == (
+        InFlightLevel(in_flight=1, seconds=3.0, rows=100.0, cpu_seconds=3.0),
+    )
+
+
+def test_a_written_exit_after_an_unwritten_one_adds_nothing() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 100, pair_frames=None)
+    clock.move(to=3.0, cpu=3.0)
+    _ = in_flight.leave("a")
+
+    assert in_flight.leave("a", written=True) is None
+    assert in_flight.levels() == ()
+
+
+def test_a_level_never_reached_is_absent() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 10, pair_frames=None)
+    clock.move(to=1.0, cpu=1.0)
+    _ = in_flight.leave("a", written=True)
+    clock.move(to=2.0, cpu=1.5)
+    clock.enter(in_flight, "b", 20, pair_frames=None)
+    clock.move(to=4.0, cpu=3.5)
+    _ = in_flight.leave("b", written=True)
+
+    levels = in_flight.levels()
+
+    assert [level.in_flight for level in levels] == [1]
+    assert levels[0].seconds == pytest.approx(3.0)
+    assert levels[0].rows == pytest.approx(30.0)
+
+
+def test_an_open_flight_is_not_counted() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 10, pair_frames=None)
+    clock.enter(in_flight, "open", 99, pair_frames=None)
+    clock.move(to=4.0, cpu=4.0)
+    _ = in_flight.leave("a", written=True)
+
+    assert in_flight.levels() == (
+        InFlightLevel(in_flight=1, seconds=4.0, rows=10.0, cpu_seconds=4.0),
+    )
+    assert in_flight.count() == 1
+
+
+def test_an_exit_that_is_not_written_still_lowers_the_count() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 10, pair_frames=None)
+
+    _ = in_flight.leave("a", written=False)
+
+    assert in_flight.count() == 0
+    assert in_flight.rows() == 0
+
+
+def test_the_totals_sum_the_pair_frames_and_flag_any_bound() -> None:
+    clock = _Time()
+    in_flight = clock.in_flight()
+    clock.enter(in_flight, "a", 10, pair_frames=6)
+    clock.enter(in_flight, "none", 20, pair_frames=None)
+    assert in_flight.totals() == (2, 30, 6, False)
+
+    in_flight.enter("c", 5, pair_frames=4, pair_frames_bound=True, started=0.0, cpu=0.0)
+
+    assert in_flight.totals() == (3, 35, 10, True)
+    _ = in_flight.leave("c")
+    assert in_flight.totals() == (2, 30, 6, False)

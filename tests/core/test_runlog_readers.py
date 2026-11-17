@@ -18,6 +18,8 @@ import pytest
 import mosaic.runlog as runlog
 from mosaic.runlog import (
     EntryMeasure,
+    FlightSpan,
+    InFlightLevel,
     JsonlRunLog,
     MachineFacts,
     ResourceReport,
@@ -32,6 +34,7 @@ from mosaic.runlog import (
     read_runs,
     run_log_dir,
     run_log_path,
+    sweep_levels,
 )
 from tests.helpers import wait_for
 
@@ -1204,3 +1207,78 @@ def test_the_last_attempt_is_the_records_from_the_last_started_on() -> None:
     assert runlog.last_attempt_records([first, tail, second, tail]) == [second, tail]
     assert runlog.last_attempt_records([tail, tail]) == [tail, tail]
     assert runlog.last_attempt_records([]) == []
+
+
+# --- the sweep over flights --------------------------------------------------------
+
+
+def _no_cpu(start: float, end: float, flights: tuple[int, ...]) -> float:
+    return 0.0
+
+
+def test_a_sweep_counts_the_flights_over_each_stretch_of_time() -> None:
+    spans = [
+        FlightSpan(0.0, 4.0, 40),
+        FlightSpan(2.0, 6.0, 40),
+        FlightSpan(3.0, 4.0, 10),
+    ]
+
+    levels = sweep_levels(spans, _no_cpu)
+
+    assert [level.in_flight for level in levels] == [1, 2, 3]
+    assert [level.seconds for level in levels] == [4.0, 1.0, 1.0]
+    assert sum(level.rows for level in levels) == pytest.approx(90.0)
+    # Level 3 is 3-4 s: a quarter of each of the first two, all of the third.
+    assert levels[2].rows == pytest.approx(10.0 + 10.0 + 10.0)
+
+
+def test_a_sweep_hands_the_covering_flights_to_the_cpu_reading() -> None:
+    seen: list[tuple[float, float, tuple[int, ...]]] = []
+
+    def cpu(start: float, end: float, flights: tuple[int, ...]) -> float:
+        seen.append((start, end, flights))
+        return end - start
+
+    levels = sweep_levels([FlightSpan(0.0, 2.0, 1), FlightSpan(1.0, 3.0, 1)], cpu)
+
+    assert seen == [(0.0, 1.0, (0,)), (1.0, 2.0, (0, 1)), (2.0, 3.0, (1,))]
+    assert levels == (
+        InFlightLevel(in_flight=1, seconds=2.0, rows=1.0, cpu_seconds=2.0),
+        InFlightLevel(in_flight=2, seconds=1.0, rows=1.0, cpu_seconds=1.0),
+    )
+
+
+def test_a_flight_with_no_duration_is_in_no_stretch() -> None:
+    assert (
+        sweep_levels([FlightSpan(1.0, 1.0, 5), FlightSpan(3.0, 2.0, 5)], _no_cpu) == ()
+    )
+
+
+def test_time_before_the_first_flight_is_not_a_level() -> None:
+    levels = sweep_levels([FlightSpan(5.0, 6.0, 1)], _no_cpu)
+
+    assert levels == (
+        InFlightLevel(in_flight=1, seconds=1.0, rows=1.0, cpu_seconds=0.0),
+    )
+
+
+def test_a_gap_between_flights_is_not_a_level() -> None:
+    levels = sweep_levels([FlightSpan(0.0, 1.0, 1), FlightSpan(3.0, 4.0, 1)], _no_cpu)
+
+    assert [(level.in_flight, level.seconds) for level in levels] == [(1, 2.0)]
+
+
+def test_the_levels_ascend_though_a_higher_one_is_reached_first() -> None:
+    spans = [FlightSpan(0.0, 4.0, 4), FlightSpan(0.0, 2.0, 2), FlightSpan(5.0, 6.0, 1)]
+
+    levels = sweep_levels(spans, _no_cpu)
+
+    # 0-2 s has two flights, 2-4 s and 5-6 s one.
+    assert [(level.in_flight, level.seconds) for level in levels] == [
+        (1, 3.0),
+        (2, 2.0),
+    ]
+
+
+def test_a_sweep_of_no_flights_is_empty() -> None:
+    assert sweep_levels([], _no_cpu) == ()

@@ -1592,7 +1592,14 @@ class _RunCost:
         return sample.tree_rss_bytes
 
     def consider_peak(
-        self, bytes_: int, *, entries: int, rows: int, live_workers: int
+        self,
+        bytes_: int,
+        *,
+        entries: int,
+        rows: int,
+        pair_frames: int,
+        pair_frames_bound: bool,
+        live_workers: int,
     ) -> None:
         """Replace the peak sample with this one when it is larger and has entries.
 
@@ -1605,6 +1612,8 @@ class _RunCost:
                 bytes_=bytes_,
                 entries=entries,
                 rows=rows,
+                pair_frames=pair_frames,
+                pair_frames_bound=pair_frames_bound,
                 live_workers=live_workers,
             )
 
@@ -2165,7 +2174,7 @@ def _run_feature_impl(
     # final report.
     watch = MemoryWatch()
     estimate = RowCostEstimate()
-    in_flight = EntriesInFlight()
+    in_flight = EntriesInFlight(cpu_seconds=watch.cpu_seconds)
     cost = _RunCost()
     pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] | None = None
 
@@ -2252,11 +2261,20 @@ def _run_feature_impl(
         if figure is None:
             return
         workers = sample.spawned_workers if parallel_mode_str == "process" else 0
-        entries, rows = in_flight.totals(sampled_from=sample.started_at)
+        entries, rows, pair_frames, pair_frames_bound = in_flight.totals(
+            sampled_from=sample.started_at
+        )
         estimate.observe(figure, rows, workers)
         if cost.nonreclaimable:
             in_flight.observe_memory(figure, sampled_from=sample.started_at)
-            cost.consider_peak(figure, entries=entries, rows=rows, live_workers=workers)
+            cost.consider_peak(
+                figure,
+                entries=entries,
+                rows=rows,
+                pair_frames=pair_frames,
+                pair_frames_bound=pair_frames_bound,
+                live_workers=workers,
+            )
 
     def _on_sample(sample: MemorySample) -> None:
         _observe(sample)
@@ -2876,7 +2894,9 @@ def _run_feature_impl(
             started = time.monotonic()
             if cost.apply_started is None:
                 cost.apply_started = started
-            in_flight.enter(key, rows, started=started, cpu=watch.cpu_seconds())
+            in_flight.enter(
+                key, rows, pair_frames=None, started=started, cpu=watch.cpu_seconds()
+            )
             unhanded.append(key)
 
         def _apply_here(key: str, df: pd.DataFrame) -> ApplyOutcome:

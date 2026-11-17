@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import override
 
 import pandas as pd
 import pytest
@@ -264,8 +265,13 @@ class _Recording(EntriesInFlight):
 
     made: list[EntriesInFlight] = []
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        cpu_seconds: Callable[[], float],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(cpu_seconds=cpu_seconds, clock=clock)
         _Recording.made.append(self)
 
 
@@ -753,11 +759,15 @@ def test_a_process_mode_run_measures_its_workers_base(
 # --- the entries in flight keep their largest sample ----------------------------
 
 
+def _in_flight() -> EntriesInFlight:
+    return EntriesInFlight(cpu_seconds=lambda: 0.0)
+
+
 def test_a_flight_keeps_its_largest_sample() -> None:
-    in_flight = EntriesInFlight()
-    in_flight.enter("a", 10, started=0.0, cpu=0.0)
+    in_flight = _in_flight()
+    in_flight.enter("a", 10, pair_frames=None, started=0.0, cpu=0.0)
     in_flight.observe_memory(500)
-    in_flight.enter("b", 20, started=1.0, cpu=0.0)
+    in_flight.enter("b", 20, pair_frames=None, started=1.0, cpu=0.0)
     in_flight.observe_memory(900)
     in_flight.observe_memory(700)
 
@@ -772,11 +782,11 @@ def test_a_flight_keeps_its_largest_sample() -> None:
 
 
 def test_an_entry_that_saw_no_sample_reads_none() -> None:
-    in_flight = EntriesInFlight()
-    in_flight.enter("a", 10, started=0.0, cpu=0.0)
+    in_flight = _in_flight()
+    in_flight.enter("a", 10, pair_frames=None, started=0.0, cpu=0.0)
     in_flight.observe_memory(500)
     _ = in_flight.leave("a")
-    in_flight.enter("b", 20, started=1.0, cpu=0.0)
+    in_flight.enter("b", 20, pair_frames=None, started=1.0, cpu=0.0)
 
     span = in_flight.leave("b")
 
@@ -785,9 +795,9 @@ def test_an_entry_that_saw_no_sample_reads_none() -> None:
 
 
 def test_an_entry_that_entered_after_a_sample_began_takes_no_figure_from_it() -> None:
-    in_flight = EntriesInFlight()
-    in_flight.enter("early", 10, started=1.0, cpu=0.0)
-    in_flight.enter("late", 20, started=3.0, cpu=0.0)
+    in_flight = _in_flight()
+    in_flight.enter("early", 10, pair_frames=None, started=1.0, cpu=0.0)
+    in_flight.enter("late", 20, pair_frames=None, started=3.0, cpu=0.0)
 
     in_flight.observe_memory(900, sampled_from=2.0)
     early = in_flight.leave("early")
@@ -800,8 +810,8 @@ def test_an_entry_that_entered_after_a_sample_began_takes_no_figure_from_it() ->
 
 
 def test_an_entry_that_entered_when_a_sample_began_takes_its_figure() -> None:
-    in_flight = EntriesInFlight()
-    in_flight.enter("a", 10, started=2.0, cpu=0.0)
+    in_flight = _in_flight()
+    in_flight.enter("a", 10, pair_frames=None, started=2.0, cpu=0.0)
 
     in_flight.observe_memory(900, sampled_from=2.0)
 
@@ -811,26 +821,26 @@ def test_an_entry_that_entered_when_a_sample_began_takes_its_figure() -> None:
 
 
 def test_a_sample_counts_only_the_entries_that_entered_before_it_began() -> None:
-    in_flight = EntriesInFlight()
-    in_flight.enter("early", 10, started=1.0, cpu=0.0)
-    in_flight.enter("late", 20, started=3.0, cpu=0.0)
+    in_flight = _in_flight()
+    in_flight.enter("early", 10, pair_frames=None, started=1.0, cpu=0.0)
+    in_flight.enter("late", 20, pair_frames=None, started=3.0, cpu=0.0)
 
-    assert in_flight.totals(sampled_from=2.0) == (1, 10)
-    assert in_flight.totals(sampled_from=3.0) == (2, 30)
-    assert in_flight.totals() == (2, 30)
+    assert in_flight.totals(sampled_from=2.0) == (1, 10, 0, False)
+    assert in_flight.totals(sampled_from=3.0) == (2, 30, 0, False)
+    assert in_flight.totals() == (2, 30, 0, False)
 
 
 def test_the_entries_and_rows_in_flight_are_read_together() -> None:
-    in_flight = EntriesInFlight()
-    assert in_flight.totals() == (0, 0)
-    in_flight.enter("a", 10, started=0.0, cpu=0.0)
-    in_flight.enter("b", 20, started=0.0, cpu=0.0)
+    in_flight = _in_flight()
+    assert in_flight.totals() == (0, 0, 0, False)
+    in_flight.enter("a", 10, pair_frames=None, started=0.0, cpu=0.0)
+    in_flight.enter("b", 20, pair_frames=None, started=0.0, cpu=0.0)
 
-    assert in_flight.totals() == (2, 30)
+    assert in_flight.totals() == (2, 30, 0, False)
 
     _ = in_flight.leave("a")
 
-    assert in_flight.totals() == (1, 20)
+    assert in_flight.totals() == (1, 20, 0, False)
 
 
 # --- the run's measure -----------------------------------------------------------
@@ -918,11 +928,19 @@ def spied(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[int]]:
         bytes_: int,
         entries: int,
         rows: int,
+        pair_frames: int,
+        pair_frames_bound: bool,
         live_workers: int,
     ) -> PeakSample | None:
         peaks.append(bytes_)
         found = real_peak(
-            peak, bytes_=bytes_, entries=entries, rows=rows, live_workers=live_workers
+            peak,
+            bytes_=bytes_,
+            entries=entries,
+            rows=rows,
+            pair_frames=pair_frames,
+            pair_frames_bound=pair_frames_bound,
+            live_workers=live_workers,
         )
         if found is not None:
             _Spy.peak_samples.append(found)
@@ -1143,6 +1161,46 @@ def test_the_resources_carry_the_peak_sample_and_its_growth_over_the_base(
     assert peak.rows > 0
     assert report["peak_in_flight_entries"] == peak.entries
     assert report["peak_in_flight_rows"] == peak.rows
+
+
+class _WithPairFrames(EntriesInFlight):
+    """Gives every entry 7 pair frames, the bound among them, as it enters."""
+
+    @override
+    def enter(
+        self,
+        key: str,
+        rows: int,
+        *,
+        pair_frames: int | None,
+        started: float,
+        cpu: float,
+        pair_frames_bound: bool = False,
+    ) -> None:
+        super().enter(
+            key,
+            rows,
+            pair_frames=7,
+            pair_frames_bound=True,
+            started=started,
+            cpu=cpu,
+        )
+
+
+def test_the_peak_sample_sums_the_pair_frames_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    monkeypatch.setattr(run_module, "EntriesInFlight", _WithPairFrames)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _run_gated(ds, "TESTPEAKPAIRS")
+
+    assert _Spy.peak_samples
+    for sample in _Spy.peak_samples:
+        assert sample.pair_frames == 7 * sample.entries
+        assert sample.pair_frames_bound
 
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["inline", "thread"])
