@@ -175,19 +175,33 @@ core, and `--workers 1` with one of them is refused.
 ```bash
 mosaic pipeline input-size -m dataset.yaml --request <request id> --step <step> --json
 mosaic run -m dataset.yaml --graph-request <request id> --step <step> \
-    --probe 3 --execution-id <new ULID> --json
+    --probe 5 --execution-id <new ULID> --json
 ```
 
 `input-size` reports how many entries a step would compute and the input rows of each,
-largest first, without running anything. `--probe N` computes the N largest of those
-entries (1 to 3) under an `--execution-id` of its own, the first alone and then two at
-once in threads, and keeps what it writes. Three give one entry alone and one pair,
-which `cost.levels` reads as levels 1 and 2. `--step-entries group:sequence`, repeated,
-computes the entries named instead. Neither flag may carry the step's own execution id,
-which is the step's status. `--probe` sets its own workers, so it refuses `--workers`,
-`--parallel-mode`, `--min-free-memory-fraction`, `--admission-margin` and `--overwrite`.
-A probe needs at least 2 usable CPUs: on one, its entries run in turn and `cost.levels`
-has no level 2.
+largest first, without running anything. Each entry also carries what its work scales
+with, read from the tracks and media indexes: `ids_per_frame`, `pair_frames`, `frames`,
+`keypoints` and `fps`, each `null` where the index does not hold it. A `pair_frames` that
+the index never recorded is read as a lower bound from the rows and frames, and
+`ids_per_frame` then reads as the rows over the frames, both flagged by
+`pair_frames_bound`. `mosaic measure-tracks --apply` records the measured values (see
+[`mosaic measure-tracks`](../../dataset.md#declare-a-recording-divided-by-hand)). The
+report also names the feature's version, the level it emits, and a digest of the step's
+params with whether they equal the feature's defaults.
+
+`--probe N` computes the N largest of those entries (1 to 5) under an `--execution-id` of
+its own, the first alone and then two at once in threads, and keeps what it writes. Three
+give one entry alone and one pair, which `cost.levels` reads as levels 1 and 2. A feature
+that can run in worker processes and is probed with 5 computes its three largest entries
+in threads as above, then its two smallest as a pair of worker processes, so the cost
+holds both modes. A feature that cannot run in processes computes at most 3 entries
+whatever `--probe` asks. The process pair starts together, so it reports a short level 1
+beside level 2. `--step-entries group:sequence`, repeated, computes the entries named
+instead. Neither flag may carry the step's own execution id, which is the step's status.
+`--probe` sets its own workers, so it refuses `--workers`, `--parallel-mode`,
+`--min-free-memory-fraction`, `--admission-margin` and `--overwrite`. A probe needs at
+least 2 usable CPUs: on one, its entries run in turn in threads and `cost.levels` has no
+level 2.
 
 The step is run as usual afterwards. It computes the entries the probe did not and reads
 the probe's from its cache, and `mosaic pipeline status` reads only the step's own
@@ -209,10 +223,21 @@ cost.levels      # per mode and count of entries in flight: seconds, rows, cpu_s
 ```
 
 A level's throughput is its `rows` over its `seconds`, so the speedup of a second thread
-is the throughput at level 2 over the throughput at level 1. A log written before levels
-were recorded has them rebuilt from its entries, each spanning its `t` less its
-`wall_seconds`, and `rebuilt` says so. `cost.entries` lists each measured entry, and
+is the throughput at level 2 over the throughput at level 1. A level counts only entries
+whose output was written, and spreads an entry's rows evenly over its flight, from the
+start of its load to its output written. A log written before levels were recorded has
+them rebuilt from its entries on the same rule, and `rebuilt` says so. `cost.entries`
+lists each measured entry with its mode, times, CPU and covariates, and
 `cost.skipped_lines` counts the lines of the log that could not be read.
+`cost.peak_points` holds the largest memory sample of each mode, with the rows and pair
+frames in flight (`pair_frames_bound` is true when one of those entries carried a lower
+bound). `cost.params_digest`, `cost.params_default` and `cost.emits` identify the
+feature's params and the level it emits.
+
+`cost.machine` names the machine the job ran on: its CPU model, logical CPUs, threads per
+core and memory. Set the environment variable `MOSAIC_MACHINE_CLASS` to a name of your own
+for each kind of machine, such as a node type, and `cost.machine.machine_class` carries
+it. It reads `""` when unset.
 
 `peak_rss_bytes` is the largest resident memory of the process tree, and it counts a
 page that several workers map once for each. `peak_nonreclaimable_bytes` is the figure

@@ -134,10 +134,18 @@ are in `graph/CLAUDE.md`.
 - `row_in_scope` is the one filter of resolved rows to a run's entries, and
   `rows_in_scope` applies it to a frame. `None` covers every row, and an empty list
   covers none.
-- The writer measures `n_keypoints` and `frame_min`/`frame_max` from the parquet. The
-  producer passes `media_frames`, `frames_read` and `known_tail_loss`. A blank cell on
-  every count column means unknown. The `TracksIndexRow` docstring defines each
-  column.
+- The writer measures `n_keypoints`, `frame_min`/`frame_max`, `pair_frames` and
+  `ids_per_frame` from the parquet (`frame_measures`, one read of the `frame` and `id`
+  columns). The producer passes `media_frames`, `frames_read` and `known_tail_loss`. A
+  blank cell on every count column means unknown. The `TracksIndexRow` docstring defines
+  each column.
+- `pair_frames` and `ids_per_frame` are two cells of one measure: the ordered pairs summed
+  over the extent's frames and the distinct `(frame, id)` over its length. A table with no
+  `id` column writes `none` (`NO_IDS`) in both, which means measured, no ids, and is never
+  a bound. `read_pair_frames` and `read_ids_per_frame` are the only readers and read
+  `none` and a blank as `None`. `backfill_pair_frames` fills a row whose `pair_frames`
+  cell is blank and so leaves a `none` row alone (`mosaic measure-tracks`,
+  `Dataset.measure_pair_frames`, `tests/core/pipeline/test_tracks_index.py`).
 - `carries_tracklets` is the row's `"true"`, `"false"` or blank for whether `id` follows
   an animal. `read_carries_tracklets` is the only reader. It answers a blank from
   `producer` where the producer settles it and otherwise returns `None`, which no plan
@@ -310,6 +318,16 @@ are in `graph/CLAUDE.md`.
   Consecutive phases that run alike (`_ApplySettings.runs_like`) are one phase, because
   two phases that read as one mode would leave that mode's levels and peak to the later
   phase's last event (`tests/core/pipeline/test_apply_phases.py`).
+- A run keeps each written entry's flight, from the start of its load to its output
+  written, and `in_flight_levels` of the `resources` event is the time, rows and tree CPU
+  at each count of entries in flight together. An entry's rows spread evenly over its
+  flight, an entry whose output was not written adds neither rows nor time, and level 0 is
+  not written, so `RunCost` rebuilds the same levels from the `entry_end` events of a log
+  that wrote none. The peak sample sums the covariates of the entries in flight into
+  `peak_in_flight_pair_frames`, flagged by `peak_in_flight_pair_frames_bound` when any
+  carries the lower bound of a blank cell. An entry's covariates are read once, from the
+  tracks and media indexes (`tracks_covariates`), before the first entry loads, so the
+  read falls in no flight (`tests/core/pipeline/test_run_measures.py`).
 
 ## Reading a run
 

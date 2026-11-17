@@ -446,6 +446,13 @@ to leave it out.
     mosaic measure-tracks -m dataset.yaml --apply
     ```
 
+    The same command also fills `pair_frames` and `ids_per_frame` for each tracks table
+    that lacks them: the ordered pairs of animals summed over the frames, and the mean
+    number of animals present per frame. They are reported by `mosaic pipeline input-size`
+    and recorded in a run's log, and do not affect a run's identity. A table with no `id`
+    column records `none` and is not read again. `ds.measure_pair_frames()` does the same
+    in Python. Without `--apply`, the command reports what it would measure.
+
 Index each sequence's media under the group, one entry per sequence. A sequence reads
 its own media, and starts at the summed frame counts of the sequences before it in a
 natural sort on their names. Name the sequences so that they sort in recording order. A

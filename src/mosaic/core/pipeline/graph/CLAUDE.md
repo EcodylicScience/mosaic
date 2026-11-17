@@ -353,13 +353,22 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   its own levels, peak and worker bases in its own final `resources` event, so the
   attempt's thread levels and peak and its process ones read apart. The fit, the process
   tree's memory and CPU, `admission_waits` and `apply_wall_seconds` span the attempt.
-  On a host of one processor both phases run one entry at a time in threads, which
+  The pair starts together, with no gate and no first entry alone, but the second loads
+  just after the first, so the process phase reports a short level 1 beside level 2. On
+  a host of one processor both phases run one entry at a time in threads, which
   `run_feature` takes as one phase, so the levels and the peak cover all five entries.
   The worker-base measure is dropped when the process pair runs in processes, and kept
   otherwise. A named subset takes the caller's settings. Both write a
   `probe` event and count failures as any attempt does. Status reads only the step's own
   attempt (`rollup._attempt`), whose run computes the remainder and serves the subset's
   entries from the cache (`test_pipeline_step_subset.py`).
+- `step_input_size` (`input_size.py`) reports each entry's covariates and the step's
+  `feature_version`, `emits`, `params_digest` and `params_default` beside its rows, for a
+  step the plan refuses as well. The covariates come from `tracks_covariates`, which reads
+  the tracks index once over the variants the step reads (`step_tracks_variants`: `None`
+  is every variant, an empty set the unlabeled tables). An entry with no row or two
+  candidate rows reads every covariate `None`
+  (`tests/core/pipeline/graph/test_step_input_size.py`).
 - A request is one-shot, and a driver does not drive one whose rollup has ended. A
   failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
   reads a failed request with an unstarted step `running` while its driver lease file

@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns; the catalog search reads keywords and filters by track space, a parallel knob needs no `--workers`, and a coverage refusal names every step to narrow
+## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns; the catalog search reads keywords and filters by track space, a parallel knob needs no `--workers`, a coverage refusal names every step to narrow, runs record the size covariates of their entries, the machine and their load by number in flight, and a probe of up to 5 entries measures threads and processes
 
 `index_lock` warns with `CachingMountWarning`, once per mount, when a dataset is on a
 Linux CIFS mount without `actimeo=0,closetimeo=0`. The lock excludes writers on other
@@ -104,6 +104,86 @@ intersection of that scope and the parent's. The values are left out when a scop
 entries, an intersection selects nothing, or they take more than
 `MAX_SCOPE_SUGGESTION_CHARS` (1,500) characters. The set of problems and the steps they
 come at do not change.
+
+### Runs record what their cost scales with, and a probe measures both modes
+
+**The tracks index records the animals present per frame.** `tracks/index.csv` gains two
+text columns, `pair_frames` and `ids_per_frame`. `pair_frames` is the sum over the frames
+of the extent of `n * (n - 1)`, with `n` the distinct non-null ids at that frame, which is
+the count of ordered pairs a pair feature works over. `ids_per_frame` is the distinct
+`(frame, id)` pairs over the length of the extent, written to 4 decimal places. A frame
+with no row with an id counts 0, and a row with a null `id` counts in neither. A table
+with no `id` column writes `none` in both, meaning measured and without ids. A blank cell
+is unknown, and a file written before the columns reads as blank. The writer fills both
+cells with the extent. `mosaic measure-tracks` gains a pass, the second of its five, over
+the rows whose `pair_frames` cell is blank (`backfill_pair_frames`,
+`Dataset.measure_pair_frames`), which leaves a `none` row alone, and its payload gains
+`pair_frames_measured`. No run id, version or output moves.
+
+**`mosaic pipeline input-size` reports the covariates of each entry.** An `EntryRowsWire`
+gains `ids_per_frame` (float or null), `pair_frames` (integer or null),
+`pair_frames_bound` (boolean), `frames` (integer or null), `keypoints` (integer or null)
+and `fps` (float or null), read from the tracks index once for the step over the variants
+the step reads, and from `Dataset.measured_entry_fps`. `frames` is
+`frame_max - frame_min + 1`: mosaic records no frame unit, so no axis is converted by the
+rate. A blank `pair_frames` reads its lower bound from the entry's rows and frames, with
+`pair_frames_bound` true, and a blank `ids_per_frame` then reads as those rows over those
+frames, flagged by the same `pair_frames_bound`. `rows` stays as it was. An entry that has
+no row in the index, or two variants to choose between, reads every covariate null.
+`StepInputSizeWire` gains `feature_version` (string or null), `emits` (`individual`,
+`pair`, `unidentified`, `as-input` or null, the level the feature class declares),
+`params_digest` (the params term of the run id, 10 hex characters, or null) and
+`params_default` (whether the params equal the feature's defaults, or null). All four are
+null for an op step, and are reported also for a step whose inputs are not ready. The
+covariates are one set of names in `EntryCovariates` (`mosaic.core.pipeline.input_size`),
+with `tracks_covariates` reading them for a set of entries and `step_tracks_variants`
+naming the variants a step reads.
+
+**A run-log records the covariates, the machine and the load by entries in flight.** The
+`entry_end` event gains `mode` (`thread` or `process`) and the covariates `ids_per_frame`,
+`pair_frames`, `pair_frames_bound`, `frames`, `keypoints` and `fps`, each omitted where
+unknown, `pair_frames_bound` written only when true. The covariates are read before the
+first entry loads, so the read is in no entry's flight. The `resources` event gains
+`peak_in_flight_pair_frames` (0 without a peak sample),
+`peak_in_flight_pair_frames_bound`, `params_digest` and `emits` (`""` where unwritten),
+`params_default`, and `in_flight_levels`, a list of
+`{in_flight, seconds, rows, cpu_seconds}` ascending by `in_flight`, of the event's own
+`parallel_mode`, with level 0 left out. A level spreads each written entry's rows evenly
+over its flight, from the start of its load to its output written, so an entry whose
+output was not written adds neither rows nor time. The `started` event gains `machine`,
+written by a job's own process: `cpu_model`, `logical_cpus`, `threads_per_core` (integer
+or null), `memory_bytes` and `machine_class`. `machine_class` is the value of the new
+environment variable `MOSAIC_MACHINE_CLASS`, `""` when unset, for an operator to name the
+kind of machine a job ran on. A step whose result another process wrote records none. A
+reader that does not know these keys ignores them.
+
+**`RunCost` reads them, and `ThreadScaling` is gone.** `mosaic.run_cost.RunCost` gains
+`skipped_lines` (the lines of the log that did not parse, which `read_run_log` returns
+with the records beside `read_run_records`), `entries` (one `EntryCost` per measured
+`entry_end`: `key`, `mode`, `ended_at`, `wall_seconds`, `apply_seconds`, `cpu_seconds`,
+`input_rows`, `in_flight`, `peak_grown_bytes` and the six covariates, a figure the event
+lacks reading `None`), `levels` (one `LevelCost` per mode and count in flight: `mode`,
+`in_flight`, `seconds`, `rows`, `cpu_seconds` and `rebuilt`), `peak_points` (one
+`PeakPoint` per mode: `mode`, `grown_bytes`, `entries`, `rows`, `pair_frames` and
+`pair_frames_bound`), `params_digest`, `params_default`, `emits` and `machine` (a
+`MachineFacts`). A log that wrote no levels has them rebuilt from its `entry_end` events
+by the same rule, with `rebuilt` true. A `parallel_mode` of `""` or an absent one reads
+`thread`. `RunCost.thread_scaling` and the `ThreadScaling` class are removed: the speedup
+of a second thread is `LevelCost.rows / seconds` at level 2 over level 1, in the mode
+measured. Nothing here changes how the admission gate predicts.
+
+**A probe takes up to 5 entries.** `MAX_PROBE_ENTRIES` is 5 (it was 3), and
+`PROBE_THREAD_ENTRIES` is 3. `mosaic run --probe N` and `ProbeSubset` take 1 to 5. A probe
+of 5 over a feature that can run in processes computes its 3 largest entries in threads as
+before, the first alone and then two behind the gate, and then its 2 smallest as a pair of
+two worker processes, started together without the gate, in the same attempt. The attempt
+writes a `resources` event for each phase, so the thread levels and peak and the process
+ones read apart in `RunCost.levels` and `peak_points`, and the second worker of the pair
+loads just after the first, so the process phase also reports a short level 1 beside level
+2. A probe of 4 or fewer runs threads only, and a feature that cannot run in processes
+computes at most 3 entries whatever it asks. On a host of one processor both phases run
+one entry at a time in threads and read as one phase. The `probe` event lists the entries
+largest first. A probe's settings still enter no recipe, request or run id.
 
 ### Smaller changes
 
