@@ -50,6 +50,7 @@ from mosaic.cli.summarize import summarize_command
 from mosaic.cli.tracking import tracking_app
 from mosaic.cli.track import track_command
 from mosaic.cli.wait import wait_command
+from mosaic.version import installed_version
 
 app = typer.Typer(
     name="mosaic",
@@ -57,6 +58,30 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def _print_version_and_exit(value: bool) -> None:
+    if value:
+        typer.echo(installed_version())
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version_and_exit,
+        is_eager=True,
+        help="Print the installed mosaic version and exit.",
+    ),
+) -> None:
+    """Root options of the mosaic CLI.
+
+    Args:
+        version: Print the installed version and exit before any subcommand runs.
+    """
+
 
 # Compute + observe (the critical path that unblocks the Layer-2 executor).
 _ = app.command(name="run")(run_command)

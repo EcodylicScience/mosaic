@@ -13,6 +13,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 **Options**:
 
+* `--version`: Print the installed mosaic version and exit.
 * `--help`: Show this message and exit.
 
 **Commands**:
