@@ -535,14 +535,35 @@ def _continuous_frame_extents(
         return {}
     if tracks_run_id is not None:
         return read_frame_extents(ds, tracks_run_id, groups=groups)
-    read: set[str] | None = set(tracks_variants)
+    read = tracks_variants_read(ds, tracks_variants, upstream_runs)
+    return read_frame_extents(ds, None, groups=groups, variants=read)
+
+
+def tracks_variants_read(
+    ds: Dataset,
+    tracks_variants: Iterable[str],
+    upstream_runs: Iterable[tuple[str, str | None]],
+) -> set[str] | None:
+    """Return the tracks variants that a step's inputs read, ``None`` if unknown.
+
+    The union of *tracks_variants*, which a ``tracks`` input read, and the
+    variants each feature run of *upstream_runs* read, from its ``params.json``.
+    A run whose variants are unknown makes the answer unknown. An empty set
+    names the unlabeled tables only.
+
+    Args:
+        ds: The dataset holding the upstream runs.
+        tracks_variants: The variants a ``tracks`` input read.
+        upstream_runs: The ``(storage, run_id)`` of each feature input. An
+            unpinned ``run_id`` is the run :func:`_resolve_feature` reads.
+    """
+    read = set(tracks_variants)
     for storage, run_id in upstream_runs:
         upstream = _upstream_tracks_variants(ds, storage, run_id)
         if upstream is None:
-            read = None
-            break
+            return None
         read |= upstream
-    return read_frame_extents(ds, None, groups=groups, variants=read)
+    return read
 
 
 def _upstream_tracks_variants(
