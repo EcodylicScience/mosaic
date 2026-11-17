@@ -6,9 +6,9 @@ log into a :class:`RunCost`, so a caller never parses the events itself.
 
 This module imports the standard library and :mod:`mosaic.runlog` only, so
 reading a cost loads neither pydantic nor pandas. Every field defaults when the
-log lacks it: a log written before a field existed reads as 0, ``False`` or
-``None``, and the log of an op or of a refusal reads with every measured field
-empty.
+log lacks it: a log written before a field existed reads it as 0, ``False``,
+``None`` or empty, and the log of an op or of a refusal reads with every measured
+field empty.
 """
 
 from __future__ import annotations
@@ -16,21 +16,29 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from mosaic.runlog import (
     TERMINAL_STATUSES,
+    FlightSpan,
+    MachineFacts,
     error_fields,
     fold_run_records,
     last_attempt_records,
-    read_run_records,
+    parse_instant,
+    read_machine,
+    read_run_log,
     record_count,
     record_flag,
+    record_optional_count,
+    record_optional_number,
+    record_optional_seconds,
     record_seconds,
     record_text,
+    sweep_levels,
 )
 
-__all__ = ["RunCost", "ThreadScaling", "read_run_cost"]
+__all__ = ["EntryCost", "LevelCost", "PeakPoint", "RunCost", "read_run_cost"]
 
 _MEMORY_FAILURES: Final = frozenset(
     {"WorkerProcessDied", "MemoryFloorReached", "EntryOverMemoryLimit"}
@@ -39,29 +47,102 @@ _MEMORY_FAILURES: Final = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
-class ThreadScaling:
-    """How a feature's entries fare when two run at once in threads.
+class EntryCost:
+    """What one computed entry cost, read from its ``entry_end`` event.
 
-    Measured over the entries of one attempt that ran alone and the entries that
-    ran in a pair.
+    A figure the event lacks reads ``None``.
 
     Attributes:
-        alone_seconds_per_row: Wall seconds per input row over the entries that
-            ran alone.
-        paired_seconds_per_row: The same over the entries that ran in a pair.
-        speedup: Twice the alone figure over the paired one. 2 means a second
-            thread doubles the throughput, 1 means it adds nothing.
-        alone_cpu_per_wall_second: The CPU seconds over the wall seconds of the
-            entries that ran alone, the processors one worker uses.
-        paired_cpu_per_wall_second: The same over the entries that ran in a pair,
-            both entries of a pair counting.
+        key: The entry's key.
+        mode: ``thread`` or ``process``, the mode the event names, else the run's
+            ``parallel_mode``, with an empty one read as ``thread``.
+        ended_at: When the event was written, in seconds since the epoch, ``None``
+            where its time does not parse.
+        wall_seconds: From the start of the entry's input load to its output
+            written.
+        apply_seconds: From its dispatch to the end of its apply.
+        cpu_seconds: The CPU time of the process tree over its flight, which
+            counts every entry in flight with it.
+        input_rows: The rows of its input files.
+        in_flight: The most entries in flight at once during its flight, itself
+            included.
+        peak_grown_bytes: The memory it added over its base, ``None`` when it was
+            not measured.
+        ids_per_frame: The distinct non-null ``(frame, id)`` pairs over the frames
+            of its extent.
+        pair_frames: Its ordered pairs summed over frames, or their lower bound
+            when ``pair_frames_bound`` is true.
+        pair_frames_bound: Whether ``pair_frames`` is a lower bound.
+        frames: The length of its frame extent.
+        keypoints: The keypoints of its tracks row.
+        fps: The frame rate its indexed media measured.
     """
 
-    alone_seconds_per_row: float
-    paired_seconds_per_row: float
-    speedup: float
-    alone_cpu_per_wall_second: float
-    paired_cpu_per_wall_second: float
+    key: str
+    mode: str
+    ended_at: float | None
+    wall_seconds: float | None
+    apply_seconds: float | None
+    cpu_seconds: float | None
+    input_rows: int | None
+    in_flight: int
+    peak_grown_bytes: int | None
+    ids_per_frame: float | None
+    pair_frames: int | None
+    pair_frames_bound: bool
+    frames: int | None
+    keypoints: int | None
+    fps: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class LevelCost:
+    """What a run did while a given number of entries were in flight together.
+
+    Throughput at a level is ``rows / seconds``.
+
+    Attributes:
+        mode: ``thread`` or ``process``, the mode of the phase that ran it.
+        in_flight: The entries in flight, at least 1.
+        seconds: The time spent at that count.
+        rows: The input rows of the entries over that time, each entry's rows
+            spread evenly over its own flight.
+        cpu_seconds: The CPU time of the process tree over that time.
+        rebuilt: Whether the level was rebuilt from the ``entry_end`` events of a
+            log that records none, each entry spanning its time less its
+            ``wall_seconds``, rather than read as the run measured it.
+    """
+
+    mode: str
+    in_flight: int
+    seconds: float
+    rows: float
+    cpu_seconds: float
+    rebuilt: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PeakPoint:
+    """The memory sample with the most growth over the base, and the work then in flight.
+
+    Attributes:
+        mode: ``thread`` or ``process``, the mode of the phase that sampled it.
+        grown_bytes: What that sample held over the run's base and its live
+            workers' bases.
+        entries: The entries in flight at it.
+        rows: Their input rows.
+        pair_frames: Their ordered pairs summed over frames, ``None`` for a log
+            that predates the figure.
+        pair_frames_bound: Whether an entry in flight carried a lower bound in
+            place of a measured pair count.
+    """
+
+    mode: str
+    grown_bytes: int
+    entries: int
+    rows: int
+    pair_frames: int | None
+    pair_frames_bound: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +154,14 @@ class RunCost:
     ``probe``, ``workers`` and ``parallel_mode`` are the status snapshot's. The
     costs are those of the attempt's last process, the events after its last
     ``started``. ``None`` and 0 mean the log does not say.
+
+    A probe of both modes writes each phase's own ``resources`` events. Every
+    scalar describes the whole attempt, from the last ``resources`` event and the
+    entries of every phase, except the six that describe the last phase:
+    ``workers``, ``parallel_mode``, ``worker_base_rss_bytes``,
+    ``worker_base_nonreclaimable_bytes``, ``peak_bytes_per_row`` and
+    ``rows_per_second``. ``entries``, ``levels`` and ``peak_points`` hold each
+    phase apart, by ``mode``.
 
     Attributes:
         execution_id: The attempt.
@@ -93,8 +182,8 @@ class RunCost:
         refusal_cause: The ``cause`` in a refusal's detail, such as
             ``scope_dependent`` of a ``subset_refused``, ``None`` otherwise.
         probe: Whether the attempt measured a few entries of a step.
-        workers: How many entries it computed at once.
-        parallel_mode: How, ``""`` for one at a time.
+        workers: How many entries it computed at once in the last phase.
+        parallel_mode: How the last phase computed them, ``""`` for one at a time.
         process_capable: Whether the feature may run in worker processes.
         memory_limit_bytes: The memory limit it ran under, a container's or the
             host's.
@@ -110,16 +199,16 @@ class RunCost:
         fit_input_rows: Their input rows. A fitter that fits from pinned artifacts
             ignores that stream, so for it both figures describe what it was
             offered and not what it read.
-        worker_base_rss_bytes: One process worker's own memory, ``None`` when
-            unmeasured.
+        worker_base_rss_bytes: One process worker's own memory in the last phase,
+            ``None`` when unmeasured.
         peak_nonreclaimable_bytes: The largest memory the kernel cannot reclaim
             that a sample read, ``None`` when unmeasured.
         base_nonreclaimable_bytes: The same before the first entry loaded, ``None``
             when unmeasured.
         worker_base_nonreclaimable_bytes: One process worker's own anonymous and
-            shared memory, ``None`` when unmeasured.
-        peak_bytes_per_row: The run's estimate of an entry's peak memory per input
-            row, ``None`` until an observation with rows exceeds the fixed part:
+            shared memory in the last phase, ``None`` when unmeasured.
+        peak_bytes_per_row: The last phase's estimate of an entry's peak memory per
+            input row, ``None`` until an observation with rows exceeds the fixed part:
             when no entry had input rows, or none rose above the run's base and
             its workers' own memory. It is in the run's measure: the
             non-reclaimable figure when ``base_nonreclaimable_bytes`` is set, else
@@ -128,16 +217,30 @@ class RunCost:
             alone.
         alone_cpu_per_wall_second: CPU seconds per wall second over the entries
             that ran alone, one worker's processors, probe or not.
-        rows_per_second: The input rows of every measured entry over the wall time
-            of the apply phase.
+        rows_per_second: The input rows of the last phase's measured entries over
+            the wall time of its apply phase.
         cpu_seconds: The CPU time of the process tree since measuring began.
         wall_seconds: The wall time since measuring began.
         cpu_per_wall_second: The two above as a ratio, ``None`` without wall time.
         entries_measured: The computed entries that recorded a cost.
-        rows_measured: Their input rows.
+        rows_measured: Their input rows, an entry without the figure adding none.
         largest_entry_rows: The input rows of the largest.
-        thread_scaling: The alone and paired phases compared, ``None`` unless
-            entries ended alone and in pairs both.
+        skipped_lines: The lines of the log that do not parse once NUL bytes are
+            stripped.
+        entries: The measured ``entry_end`` events of the attempt (``in_flight`` at
+            least 1) in file order.
+        levels: Each mode's levels, ascending by ``in_flight`` within a mode, from
+            the last ``resources`` event of that mode, else rebuilt from its
+            entries.
+        peak_points: One peak point per mode that sampled an entry in flight.
+        params_digest: The hash of the feature's params as they enter its run id,
+            ``None`` where the log does not write it.
+        params_default: Whether those params equal their class's defaults, ``None``
+            wherever ``params_digest`` is ``None``.
+        emits: The level the feature declares it emits, ``None`` where the log does
+            not write it.
+        machine: The machine the attempt's last process ran on, ``None`` where its
+            ``started`` event names none.
     """
 
     execution_id: str
@@ -179,17 +282,14 @@ class RunCost:
     entries_measured: int
     rows_measured: int
     largest_entry_rows: int
-    thread_scaling: ThreadScaling | None
-
-
-@dataclass(frozen=True, slots=True)
-class _Measured:
-    """The cost of one computed entry, as its ``entry_end`` event recorded it."""
-
-    rows: int
-    wall_seconds: float
-    cpu_seconds: float
-    in_flight: int
+    skipped_lines: int = 0
+    entries: tuple[EntryCost, ...] = ()
+    levels: tuple[LevelCost, ...] = ()
+    peak_points: tuple[PeakPoint, ...] = ()
+    params_digest: str | None = None
+    params_default: bool | None = None
+    emits: str | None = None
+    machine: MachineFacts | None = None
 
 
 def read_run_cost(run_dir: Path | str, execution_id: str) -> RunCost | None:
@@ -206,21 +306,25 @@ def read_run_cost(run_dir: Path | str, execution_id: str) -> RunCost | None:
     Returns:
         Its cost, ``None`` for a missing or empty log.
     """
-    records = read_run_records(run_dir, execution_id)
+    read = read_run_log(run_dir, execution_id)
+    records = read.records
     snapshot = fold_run_records(execution_id, records)
     if snapshot is None:
         return None
     attempt = last_attempt_records(records)
     ending = _ending(attempt)
     resources = _last_resources(attempt)
-    measured = _measured_entries(attempt)
-    alone = [entry for entry in measured if entry.in_flight == 1]
-    paired = [entry for entry in measured if entry.in_flight == 2]
-    rows_measured = sum(entry.rows for entry in measured)
+    run_mode = _mode(snapshot["parallel_mode"])
+    entries = _entries(attempt, run_mode)
+    last_phase = [entry for entry in entries if entry.mode == _phase_mode(resources)]
+    alone = [entry for entry in entries if entry.in_flight == 1]
+    rows_measured = _rows(entries)
     cpu_seconds = record_seconds(resources, "cpu_seconds")
     wall_seconds = record_seconds(resources, "wall_seconds")
     apply_wall_seconds = record_seconds(resources, "apply_wall_seconds")
     error_type, refusal_reason, refusal_cause = _failure(ending)
+    params_digest = record_text(resources, "params_digest") or None
+    phases = _phases(attempt, run_mode)
     return RunCost(
         execution_id=execution_id,
         kind=snapshot["kind"],
@@ -262,14 +366,29 @@ def read_run_cost(run_dir: Path | str, execution_id: str) -> RunCost | None:
         peak_bytes_per_row=record_count(resources, "peak_bytes_per_row") or None,
         seconds_per_row=_seconds_per_row(alone),
         alone_cpu_per_wall_second=_cpu_per_wall_second(alone),
-        rows_per_second=_ratio(rows_measured, apply_wall_seconds),
+        rows_per_second=_ratio(_rows(last_phase), apply_wall_seconds),
         cpu_seconds=cpu_seconds,
         wall_seconds=wall_seconds,
         cpu_per_wall_second=_ratio(cpu_seconds, wall_seconds),
-        entries_measured=len(measured),
+        entries_measured=len(entries),
         rows_measured=rows_measured,
-        largest_entry_rows=max((entry.rows for entry in measured), default=0),
-        thread_scaling=_thread_scaling(alone, paired),
+        largest_entry_rows=max((entry.input_rows or 0 for entry in entries), default=0),
+        skipped_lines=read.skipped_lines,
+        entries=tuple(entries),
+        levels=tuple(
+            level for mode, event in phases for level in _levels(mode, event, entries)
+        ),
+        peak_points=tuple(
+            point
+            for mode, event in phases
+            if (point := _peak_point(mode, event)) is not None
+        ),
+        params_digest=params_digest,
+        params_default=(
+            record_flag(resources, "params_default") if params_digest else None
+        ),
+        emits=record_text(resources, "emits") or None,
+        machine=read_machine(attempt),
     )
 
 
@@ -293,22 +412,168 @@ def _last_resources(records: Sequence[Mapping[str, object]]) -> Mapping[str, obj
     return {}
 
 
-def _measured_entries(records: Sequence[Mapping[str, object]]) -> list[_Measured]:
+def _mode(word: str) -> str:
+    """``process`` for a process mode, else ``thread``, which a blank mode also reads as."""
+    return "process" if word == "process" else "thread"
+
+
+def _phase_mode(resources: Mapping[str, object]) -> str:
+    """The normalized mode of a ``resources`` event's phase."""
+    return _mode(record_text(resources, "parallel_mode"))
+
+
+def _is_measured(rec: Mapping[str, object]) -> bool:
+    """Whether *rec* is the ``entry_end`` of an entry that was computed."""
+    return rec.get("ev") == "entry_end" and record_count(rec, "in_flight") >= 1
+
+
+def _entry_mode(rec: Mapping[str, object], run_mode: str) -> str:
+    """The normalized mode of an ``entry_end`` event, the run's when it names none."""
+    word = record_text(rec, "mode")
+    return _mode(word) if word else run_mode
+
+
+def _entries(records: Sequence[Mapping[str, object]], run_mode: str) -> list[EntryCost]:
     """The computed entries that recorded a cost, in file order.
 
     A cache hit writes its ``entry_end`` without the fields, and an old log
-    never wrote them, so neither is a measurement.
+    never wrote them, so neither is a measurement. An event without a mode reads
+    the run's.
     """
     return [
-        _Measured(
-            rows=record_count(rec, "input_rows"),
-            wall_seconds=record_seconds(rec, "wall_seconds"),
-            cpu_seconds=record_seconds(rec, "cpu_seconds"),
+        EntryCost(
+            key=record_text(rec, "key"),
+            mode=_entry_mode(rec, run_mode),
+            ended_at=_epoch_seconds(record_text(rec, "t")),
+            wall_seconds=record_optional_seconds(rec, "wall_seconds"),
+            apply_seconds=record_optional_seconds(rec, "apply_seconds"),
+            cpu_seconds=record_optional_seconds(rec, "cpu_seconds"),
+            input_rows=record_optional_count(rec, "input_rows"),
             in_flight=record_count(rec, "in_flight"),
+            peak_grown_bytes=record_optional_count(rec, "peak_grown_bytes"),
+            ids_per_frame=record_optional_number(rec, "ids_per_frame"),
+            pair_frames=record_optional_count(rec, "pair_frames"),
+            pair_frames_bound=record_flag(rec, "pair_frames_bound"),
+            frames=record_optional_count(rec, "frames"),
+            keypoints=record_optional_count(rec, "keypoints"),
+            fps=record_optional_number(rec, "fps"),
         )
         for rec in records
-        if rec.get("ev") == "entry_end" and record_count(rec, "in_flight") >= 1
+        if _is_measured(rec)
     ]
+
+
+def _epoch_seconds(stamp: str) -> float | None:
+    """An ISO instant as seconds since the epoch, ``None`` when it does not parse."""
+    moment = parse_instant(stamp)
+    return None if moment is None else moment.timestamp()
+
+
+def _phases(
+    records: Sequence[Mapping[str, object]], run_mode: str
+) -> list[tuple[str, Mapping[str, object]]]:
+    """Each mode the attempt ran in, with its last ``resources`` event.
+
+    Modes come in the order the log first shows them. A mode whose entries wrote
+    no ``resources`` event reads an empty one.
+    """
+    last: dict[str, Mapping[str, object]] = {}
+    for rec in records:
+        if rec.get("ev") == "resources":
+            last[_phase_mode(rec)] = rec
+        elif _is_measured(rec):
+            last.setdefault(_entry_mode(rec, run_mode), {})
+    return list(last.items())
+
+
+def _levels(
+    mode: str, resources: Mapping[str, object], entries: Sequence[EntryCost]
+) -> tuple[LevelCost, ...]:
+    """One mode's levels: those its last ``resources`` event wrote, else rebuilt."""
+    written = resources.get("in_flight_levels")
+    if not isinstance(written, list):
+        return _rebuilt_levels(mode, [entry for entry in entries if entry.mode == mode])
+    levels = [
+        LevelCost(
+            mode=mode,
+            in_flight=record_count(level, "in_flight"),
+            seconds=record_seconds(level, "seconds"),
+            rows=record_seconds(level, "rows"),
+            cpu_seconds=record_seconds(level, "cpu_seconds"),
+            rebuilt=False,
+        )
+        for level in (
+            cast("dict[str, object]", item)
+            for item in cast("list[object]", written)
+            if isinstance(item, dict)
+        )
+    ]
+    return tuple(
+        sorted((level for level in levels if level.in_flight >= 1), key=_by_count)
+    )
+
+
+def _by_count(level: LevelCost) -> int:
+    """The sort key of a level, the entries in flight."""
+    return level.in_flight
+
+
+def _rebuilt_levels(mode: str, entries: Sequence[EntryCost]) -> tuple[LevelCost, ...]:
+    """Levels of a log that wrote none, from the flights its entries ended.
+
+    Each entry spans its ``t`` less its ``wall_seconds`` to its ``t``. An entry
+    without a time or a wall time has no span. Each entry's CPU seconds count the
+    whole tree, so they are spread evenly over its span, and a segment's CPU is the
+    mean over the entries in flight there that recorded one.
+    """
+    flown = [
+        (
+            FlightSpan(
+                start=entry.ended_at - entry.wall_seconds,
+                end=entry.ended_at,
+                rows=entry.input_rows or 0,
+            ),
+            entry.cpu_seconds,
+        )
+        for entry in entries
+        if entry.ended_at is not None and entry.wall_seconds is not None
+    ]
+    spans = [span for span, _ in flown]
+
+    def cpu_of_segment(start: float, end: float, covering: tuple[int, ...]) -> float:
+        shares = [
+            cpu * (end - start) / (spans[index].end - spans[index].start)
+            for index in covering
+            if (cpu := flown[index][1]) is not None
+        ]
+        return sum(shares) / len(shares) if shares else 0.0
+
+    return tuple(
+        LevelCost(
+            mode=mode,
+            in_flight=level.in_flight,
+            seconds=level.seconds,
+            rows=level.rows,
+            cpu_seconds=level.cpu_seconds,
+            rebuilt=True,
+        )
+        for level in sweep_levels(spans, cpu_of_segment)
+    )
+
+
+def _peak_point(mode: str, resources: Mapping[str, object]) -> PeakPoint | None:
+    """The peak sample of a mode's last ``resources`` event, ``None`` without one."""
+    entries = record_count(resources, "peak_in_flight_entries")
+    if entries == 0:
+        return None
+    return PeakPoint(
+        mode=mode,
+        grown_bytes=record_count(resources, "peak_grown_bytes"),
+        entries=entries,
+        rows=record_count(resources, "peak_in_flight_rows"),
+        pair_frames=record_optional_count(resources, "peak_in_flight_pair_frames"),
+        pair_frames_bound=record_flag(resources, "peak_in_flight_pair_frames_bound"),
+    )
 
 
 def _ratio(numerator: float, denominator: float) -> float | None:
@@ -318,45 +583,29 @@ def _ratio(numerator: float, denominator: float) -> float | None:
     return numerator / denominator
 
 
-def _seconds_per_row(entries: Sequence[_Measured]) -> float | None:
-    """Wall seconds per input row over *entries*, ``None`` without rows."""
-    return _ratio(
-        sum(entry.wall_seconds for entry in entries),
-        sum(entry.rows for entry in entries),
-    )
+def _rows(entries: Sequence[EntryCost]) -> int:
+    """The input rows of *entries*, an entry without the figure adding none."""
+    return sum(entry.input_rows or 0 for entry in entries)
 
 
-def _cpu_per_wall_second(entries: Sequence[_Measured]) -> float | None:
-    """CPU seconds per wall second over *entries*, ``None`` without wall time."""
-    return _ratio(
-        sum(entry.cpu_seconds for entry in entries),
-        sum(entry.wall_seconds for entry in entries),
-    )
+def _seconds_per_row(entries: Sequence[EntryCost]) -> float | None:
+    """Wall seconds per input row over the *entries* that recorded both."""
+    both = [
+        (entry.wall_seconds, entry.input_rows)
+        for entry in entries
+        if entry.wall_seconds is not None and entry.input_rows is not None
+    ]
+    return _ratio(sum(wall for wall, _ in both), sum(rows for _, rows in both))
 
 
-def _thread_scaling(
-    alone: Sequence[_Measured], paired: Sequence[_Measured]
-) -> ThreadScaling | None:
-    """Compare the entries that ran alone with those that ran in a pair."""
-    alone_rate = _seconds_per_row(alone)
-    paired_rate = _seconds_per_row(paired)
-    alone_cpu = _cpu_per_wall_second(alone)
-    paired_cpu = _cpu_per_wall_second(paired)
-    if (
-        alone_rate is None
-        or paired_rate is None
-        or paired_rate <= 0
-        or alone_cpu is None
-        or paired_cpu is None
-    ):
-        return None
-    return ThreadScaling(
-        alone_seconds_per_row=alone_rate,
-        paired_seconds_per_row=paired_rate,
-        speedup=2 * alone_rate / paired_rate,
-        alone_cpu_per_wall_second=alone_cpu,
-        paired_cpu_per_wall_second=paired_cpu,
-    )
+def _cpu_per_wall_second(entries: Sequence[EntryCost]) -> float | None:
+    """CPU seconds per wall second over the *entries* that recorded both."""
+    both = [
+        (entry.cpu_seconds, entry.wall_seconds)
+        for entry in entries
+        if entry.cpu_seconds is not None and entry.wall_seconds is not None
+    ]
+    return _ratio(sum(cpu for cpu, _ in both), sum(wall for _, wall in both))
 
 
 def _failure(

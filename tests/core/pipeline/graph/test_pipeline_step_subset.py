@@ -146,7 +146,11 @@ def test_a_probe_computes_the_largest_entries_alone_then_in_a_pair(
     cost = read_run_cost(run_log_dir(five.base_dir), "PROBEATTEMPT")
     assert cost is not None
     assert cost.probe
-    assert cost.thread_scaling is not None
+    assert [(level.mode, level.in_flight) for level in cost.levels] == [
+        ("thread", 1),
+        ("thread", 2),
+    ]
+    assert not any(level.rebuilt for level in cost.levels)
     assert cost.alone_cpu_per_wall_second is not None
     assert cost.worker_base_rss_bytes is not None
 

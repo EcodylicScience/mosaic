@@ -181,13 +181,13 @@ mosaic run -m dataset.yaml --graph-request <request id> --step <step> \
 `input-size` reports how many entries a step would compute and the input rows of each,
 largest first, without running anything. `--probe N` computes the N largest of those
 entries (1 to 3) under an `--execution-id` of its own, the first alone and then two at
-once in threads, and keeps what it writes. Three give one entry alone and one pair, which
-is what the cost compares. `--step-entries group:sequence`, repeated, computes the
-entries named instead. Neither flag may carry the step's own execution id, which is the
-step's status. `--probe` sets its own workers, so it refuses `--workers`,
+once in threads, and keeps what it writes. Three give one entry alone and one pair,
+which `cost.levels` reads as levels 1 and 2. `--step-entries group:sequence`, repeated,
+computes the entries named instead. Neither flag may carry the step's own execution id,
+which is the step's status. `--probe` sets its own workers, so it refuses `--workers`,
 `--parallel-mode`, `--min-free-memory-fraction`, `--admission-margin` and `--overwrite`.
-A probe needs at least 2 usable CPUs: on one, its entries run in turn and the cost has no
-`thread_scaling`.
+A probe needs at least 2 usable CPUs: on one, its entries run in turn and `cost.levels`
+has no level 2.
 
 The step is run as usual afterwards. It computes the entries the probe did not and reads
 the probe's from its cache, and `mosaic pipeline status` reads only the step's own
@@ -205,8 +205,14 @@ from mosaic.runlog import run_log_dir
 cost = read_run_cost(run_log_dir(dataset.base_dir), "<execution_id>")
 cost.memory_limit_bytes, cost.memory_limit_source   # "cgroup_v2", "cgroup_v1" or "host"
 cost.peak_rss_bytes, cost.peak_nonreclaimable_bytes, cost.seconds_per_row
-cost.thread_scaling
+cost.levels      # per mode and count of entries in flight: seconds, rows, cpu_seconds
 ```
+
+A level's throughput is its `rows` over its `seconds`, so the speedup of a second thread
+is the throughput at level 2 over the throughput at level 1. A log written before levels
+were recorded has them rebuilt from its entries, each spanning its `t` less its
+`wall_seconds`, and `rebuilt` says so. `cost.entries` lists each measured entry, and
+`cost.skipped_lines` counts the lines of the log that could not be read.
 
 `peak_rss_bytes` is the largest resident memory of the process tree, and it counts a
 page that several workers map once for each. `peak_nonreclaimable_bytes` is the figure

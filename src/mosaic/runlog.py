@@ -101,6 +101,7 @@ __all__ = [
     "RemovalState",
     "RunLogPage",
     "RunLogSnapshot",
+    "RunRecordsRead",
     "TimeIrregularPage",
     "TimeIrregularRecord",
     "TERMINAL_STATUSES",
@@ -119,6 +120,7 @@ __all__ = [
     "read_machine",
     "read_removal_records",
     "read_run",
+    "read_run_log",
     "read_run_records",
     "read_run_progress",
     "read_time_irregular",
@@ -126,6 +128,9 @@ __all__ = [
     "time_irregular_sentence",
     "record_exited_attempt",
     "record_flag",
+    "record_optional_count",
+    "record_optional_number",
+    "record_optional_seconds",
     "record_seconds",
     "record_text",
     "read_runs",
@@ -1495,17 +1500,65 @@ def run_log_lines(text: str) -> list[str]:
     return [line for line in lines if line]
 
 
+@dataclass(frozen=True, slots=True)
+class RunRecordsRead:
+    """The records of one run-log and how many of its lines could not be read.
+
+    Attributes:
+        records: The records in file order, one per line that parses as a JSON
+            object.
+        skipped_lines: The non-empty lines left after the NUL bytes of a
+            zero-filled gap are removed that do not parse as a JSON object.
+    """
+
+    records: list[Mapping[str, object]]
+    skipped_lines: int
+
+
+def read_run_log(run_dir: Path | str, execution_id: str) -> RunRecordsRead:
+    """Parse one attempt's run-log JSON lines, counting the lines it cannot read.
+
+    An unparseable line (a partial append caught mid-write on NFS, or the remains
+    of a write that failed) is skipped rather than raising. The writer begins the
+    line after a failed write on a fresh line, so only the torn line itself is
+    lost. On a network filesystem a zero-filled gap may also sit in mid-file, glued
+    to the front of the next record. The gap is stripped, and that record is read.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The attempt.
+
+    Returns:
+        The records in file order and the count of skipped lines, both empty when
+        the log is absent.
+    """
+    path = Path(run_dir) / f"{execution_id}.jsonl"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, FileNotFoundError):
+        return RunRecordsRead(records=[], skipped_lines=0)
+    records: list[Mapping[str, object]] = []
+    skipped = 0
+    for line in run_log_lines(text):
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        if isinstance(rec, dict):
+            records.append(cast("dict[str, Any]", rec))
+        else:
+            skipped += 1
+    return RunRecordsRead(records=records, skipped_lines=skipped)
+
+
 def read_run_records(
     run_dir: Path | str, execution_id: str
 ) -> list[Mapping[str, object]]:
     """Parse one attempt's run-log JSON lines, tolerating a torn or partial line.
 
-    Returns records in file order, empty when the log is absent. An unparseable
-    line (a partial append caught mid-write on NFS, or the remains of a write that
-    failed) is skipped rather than raising. The writer begins the line after a
-    failed write on a fresh line, so only the torn line itself is lost. On a network
-    filesystem a zero-filled gap may also sit in mid-file, glued to the front of the
-    next record. The gap is stripped, and that record is read.
+    Returns records in file order, empty when the log is absent. The lines it
+    skips are those :func:`read_run_log` counts.
 
     Args:
         run_dir: The run-log directory.
@@ -1514,20 +1567,7 @@ def read_run_records(
     Returns:
         The records of the log, one per line that parses as a JSON object.
     """
-    path = Path(run_dir) / f"{execution_id}.jsonl"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, FileNotFoundError):
-        return []
-    out: list[Mapping[str, object]] = []
-    for line in run_log_lines(text):
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(rec, dict):
-            out.append(cast("dict[str, Any]", rec))
-    return out
+    return read_run_log(run_dir, execution_id).records
 
 
 def read_machine(records: Sequence[Mapping[str, object]]) -> MachineFacts | None:
@@ -1553,7 +1593,7 @@ def read_machine(records: Sequence[Mapping[str, object]]) -> MachineFacts | None
         return MachineFacts(
             cpu_model=record_text(fields, "cpu_model"),
             logical_cpus=record_count(fields, "logical_cpus"),
-            threads_per_core=_optional_count(fields, "threads_per_core"),
+            threads_per_core=record_optional_count(fields, "threads_per_core"),
             memory_bytes=record_count(fields, "memory_bytes"),
             machine_class=record_text(fields, "machine_class"),
         )
@@ -1690,15 +1730,9 @@ def fold_run_records(
     return snap
 
 
-def _optional_count(rec: Mapping[str, object], key: str) -> int | None:
-    """An integer field of a run-log record, ``None`` when absent or not an integer."""
-    value = rec.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _count_or(rec: Mapping[str, object], key: str, default: int) -> int:
     """An integer field of a run-log record, *default* when absent or not an integer."""
-    value = _optional_count(rec, key)
+    value = record_optional_count(rec, key)
     return default if value is None else value
 
 
@@ -2228,12 +2262,30 @@ def record_count(rec: Mapping[str, object], key: str) -> int:
     return _count_or(rec, key, 0)
 
 
-def record_seconds(rec: Mapping[str, object], key: str) -> float:
-    """A non-negative number field of a run-log record, 0.0 when absent or not one."""
+def record_optional_count(rec: Mapping[str, object], key: str) -> int | None:
+    """An integer field of a run-log record, ``None`` when absent or not an integer."""
+    value = rec.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def record_optional_number(rec: Mapping[str, object], key: str) -> float | None:
+    """A number field of a run-log record, ``None`` when absent or not one."""
     value = rec.get(key)
     if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0.0
-    return max(float(value), 0.0)
+        return None
+    return float(value)
+
+
+def record_optional_seconds(rec: Mapping[str, object], key: str) -> float | None:
+    """A non-negative number field of a run-log record, ``None`` when absent or not one."""
+    value = record_optional_number(rec, key)
+    return None if value is None else max(value, 0.0)
+
+
+def record_seconds(rec: Mapping[str, object], key: str) -> float:
+    """A non-negative number field of a run-log record, 0.0 when absent or not one."""
+    value = record_optional_seconds(rec, key)
+    return 0.0 if value is None else value
 
 
 def record_text(rec: Mapping[str, object], key: str) -> str:

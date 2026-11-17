@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import json
 from pathlib import Path
 
@@ -11,7 +12,9 @@ import pytest
 from mosaic.run_cost import RunCost, read_run_cost
 from mosaic.runlog import (
     EntryMeasure,
+    InFlightLevel,
     JsonlRunLog,
+    MachineFacts,
     ResourceReport,
     run_log_dir,
     run_log_path,
@@ -57,7 +60,11 @@ def _report(**changes: object) -> ResourceReport:
 
 
 def _measure(
-    rows: int, wall: float, in_flight: int, cpu: float | None = None
+    rows: int,
+    wall: float,
+    in_flight: int,
+    cpu: float | None = None,
+    mode: str = "thread",
 ) -> EntryMeasure:
     return EntryMeasure(
         wall_seconds=wall,
@@ -65,7 +72,48 @@ def _measure(
         input_rows=rows,
         in_flight=in_flight,
         cpu_seconds=wall if cpu is None else cpu,
+        mode=mode,
     )
+
+
+def _instant(seconds: float) -> str:
+    """The ISO instant *seconds* after the epoch, as a run-log writes ``t``."""
+    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+
+
+def _entry_end(
+    key: str,
+    *,
+    ended: float,
+    wall: float,
+    rows: int,
+    cpu: float,
+    in_flight: int = 1,
+    **more: object,
+) -> dict[str, object]:
+    """One measured ``entry_end`` record that ended *ended* seconds after the epoch."""
+    return {
+        "t": _instant(ended),
+        "ev": "entry_end",
+        "index": 1,
+        "total": 1,
+        "key": key,
+        "wall_seconds": wall,
+        "apply_seconds": wall,
+        "input_rows": rows,
+        "in_flight": in_flight,
+        "cpu_seconds": cpu,
+        **more,
+    }
+
+
+def _resources(**fields: object) -> dict[str, object]:
+    """A ``resources`` record as :meth:`JsonlRunLog.resources` writes one.
+
+    A field given as ``None`` is left out of the record.
+    """
+    record = {"ev": "resources", **dataclasses.asdict(_report()), **fields}
+    return {name: value for name, value in record.items() if value is not None}
 
 
 def _write_lines(base: Path, execution_id: str, *records: dict[str, object]) -> None:
@@ -132,7 +180,7 @@ def test_a_sequential_run_reads_its_costs_and_the_one_workers_cpu(
     assert cost.rows_per_second == pytest.approx(400 / 10.0)
     assert (cost.cpu_seconds, cost.wall_seconds) == (30.0, 20.0)
     assert cost.cpu_per_wall_second == pytest.approx(1.5)
-    assert cost.thread_scaling is None
+    assert cost.levels == ()
 
 
 def test_a_run_with_the_non_reclaimable_figures_reads_each_of_them(
@@ -176,13 +224,17 @@ def test_a_figure_the_run_did_not_measure_reads_none(tmp_path: Path) -> None:
 def test_a_probe_run_reads_the_alone_and_the_paired_phase_apart(
     tmp_path: Path,
 ) -> None:
+    levels = (
+        InFlightLevel(in_flight=1, seconds=4.0, rows=200.0, cpu_seconds=3.0),
+        InFlightLevel(in_flight=2, seconds=3.0, rows=200.0, cpu_seconds=9.0),
+    )
     with _log(tmp_path, "PROBE") as log:
         log.started(kind="feature", target="speed")
         log.probe(
             request_id="R1", step="speed", entries=["g:a", "g:b", "g:c"], kind="probe"
         )
         log.set_total(3)
-        log.resources(_report(worker_base_rss_bytes=GIB // 4))
+        log.resources(_report(worker_base_rss_bytes=GIB // 4, in_flight_levels=levels))
         log.on_entry_end(
             1, 3, "g__a", measure=_measure(rows=200, wall=4.0, in_flight=1, cpu=3.0)
         )
@@ -200,40 +252,60 @@ def test_a_probe_run_reads_the_alone_and_the_paired_phase_apart(
     assert cost.worker_base_rss_bytes == GIB // 4
     assert cost.seconds_per_row == pytest.approx(4.0 / 200)
     assert cost.alone_cpu_per_wall_second == pytest.approx(3.0 / 4.0)
-    scaling = cost.thread_scaling
-    assert scaling is not None
-    assert scaling.alone_seconds_per_row == pytest.approx(0.02)
-    assert scaling.paired_seconds_per_row == pytest.approx(6.0 / 200)
-    assert scaling.speedup == pytest.approx(2 * 0.02 / 0.03)
-    assert scaling.alone_cpu_per_wall_second == pytest.approx(0.75)
-    assert scaling.paired_cpu_per_wall_second == pytest.approx(9.0 / 6.0)
+    alone, paired = cost.levels
+    assert (alone.mode, alone.in_flight, alone.rebuilt) == ("thread", 1, False)
+    assert (paired.mode, paired.in_flight, paired.rebuilt) == ("thread", 2, False)
+    assert (alone.seconds, alone.rows, alone.cpu_seconds) == (4.0, 200.0, 3.0)
+    assert (paired.seconds, paired.rows, paired.cpu_seconds) == (3.0, 200.0, 9.0)
+    speedup = (paired.rows / paired.seconds) / (alone.rows / alone.seconds)
+    assert speedup == pytest.approx((200 / 3.0) / (200 / 4.0))
 
 
-def test_entries_that_never_ran_in_pairs_give_no_thread_scaling(
+def test_entries_that_never_ran_in_pairs_give_level_one_alone(
     tmp_path: Path,
 ) -> None:
     with _log(tmp_path, "ALONE") as log:
         log.started(kind="feature", target="speed")
-        log.resources(_report())
+        log.resources(
+            _report(
+                in_flight_levels=(
+                    InFlightLevel(in_flight=1, seconds=2.0, rows=20.0, cpu_seconds=2.0),
+                )
+            )
+        )
         log.on_entry_end(1, 2, "g__a", measure=_measure(rows=10, wall=1.0, in_flight=1))
-        log.on_entry_end(2, 2, "g__b", measure=_measure(rows=10, wall=1.0, in_flight=3))
+        log.on_entry_end(2, 2, "g__b", measure=_measure(rows=10, wall=1.0, in_flight=1))
         log.finished()
 
-    assert _read(tmp_path, "ALONE").thread_scaling is None
+    cost = _read(tmp_path, "ALONE")
+
+    assert [(level.in_flight, level.rebuilt) for level in cost.levels] == [(1, False)]
 
 
 def test_a_cache_hit_entry_is_not_a_measurement(tmp_path: Path) -> None:
-    with _log(tmp_path, "HIT") as log:
-        log.started(kind="feature", target="speed")
-        log.resources(_report(apply_wall_seconds=4.0))
-        log.on_entry_end(1, 2, "g__a")
-        log.on_entry_end(2, 2, "g__b", measure=_measure(rows=50, wall=2.0, in_flight=1))
-        log.finished()
+    _write_lines(
+        tmp_path,
+        "HIT",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(apply_wall_seconds=4.0, in_flight_levels=None),
+        {
+            "t": _instant(100.0),
+            "ev": "entry_end",
+            "index": 1,
+            "total": 2,
+            "key": "g__a",
+        },
+        _entry_end("g__b", ended=110.0, wall=2.0, rows=50, cpu=2.0),
+        {"ev": "finished"},
+    )
 
     cost = _read(tmp_path, "HIT")
 
     assert (cost.entries_measured, cost.rows_measured) == (1, 50)
     assert cost.largest_entry_rows == 50
+    assert [entry.key for entry in cost.entries] == ["g__b"]
+    (level,) = cost.levels
+    assert (level.in_flight, level.seconds, level.rows) == (1, 2.0, 50.0)
 
 
 def test_an_old_log_reads_every_measured_field_as_empty(tmp_path: Path) -> None:
@@ -274,7 +346,43 @@ def test_an_old_log_reads_every_measured_field_as_empty(tmp_path: Path) -> None:
     assert (cost.seconds_per_row, cost.alone_cpu_per_wall_second) == (None, None)
     assert (cost.rows_per_second, cost.cpu_per_wall_second) == (None, None)
     assert (cost.entries_measured, cost.rows_measured) == (0, 0)
-    assert cost.thread_scaling is None
+    assert (cost.entries, cost.peak_points, cost.levels) == ((), (), ())
+    assert (cost.params_digest, cost.params_default, cost.emits) == (None, None, None)
+    assert (cost.machine, cost.skipped_lines) == (None, 0)
+
+
+def test_an_old_log_with_entry_costs_rebuilds_its_levels(tmp_path: Path) -> None:
+    _write_lines(
+        tmp_path,
+        "OLDCOST",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        {
+            "ev": "resources",
+            "workers": 2,
+            "parallel_mode": "thread",
+            "peak_rss_bytes": 300,
+            "min_available_bytes": 500,
+            "total_memory_bytes": 1000,
+        },
+        _entry_end("g__a", ended=104.0, wall=4.0, rows=40, cpu=4.0),
+        _entry_end("g__b", ended=106.0, wall=4.0, rows=40, cpu=8.0, in_flight=2),
+        {"ev": "finished"},
+    )
+
+    cost = _read(tmp_path, "OLDCOST")
+
+    alone, paired = cost.levels
+    assert [(level.mode, level.in_flight, level.rebuilt) for level in cost.levels] == [
+        ("thread", 1, True),
+        ("thread", 2, True),
+    ]
+    assert (alone.seconds, alone.rows, alone.cpu_seconds) == pytest.approx(
+        (4.0, 40.0, 6.0)
+    )
+    assert (paired.seconds, paired.rows, paired.cpu_seconds) == pytest.approx(
+        (2.0, 40.0, 3.0)
+    )
+    assert (cost.peak_points, cost.params_digest) == ((), None)
 
 
 def test_a_log_cut_before_its_terminal_event_reads_as_running(tmp_path: Path) -> None:
@@ -344,7 +452,7 @@ def test_a_refusal_reads_its_reason_and_cause_and_no_error_type(
     assert cost.refusal_cause == "scope_dependent"
     assert cost.error_type is None
     assert cost.stopped_for_memory is False
-    assert (cost.entries_measured, cost.thread_scaling) == (0, None)
+    assert (cost.entries_measured, cost.levels) == (0, ())
     assert (cost.memory_limit_bytes, cost.peak_bytes_per_row) == (0, None)
 
 
@@ -490,3 +598,373 @@ def test_a_restarted_attempt_reads_the_end_of_its_own_process(tmp_path: Path) ->
 
     assert (cost.status, cost.has_terminal_event) == ("failed", True)
     assert (cost.error_type, cost.stopped_for_memory) == ("ValueError", False)
+
+
+def test_a_nul_prefixed_record_is_read_and_a_torn_line_counted(tmp_path: Path) -> None:
+    path = run_log_path(tmp_path, "NUL")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"ev": "started", "kind": "feature", "target": "speed"}),
+        "\x00" * 700 + json.dumps({"ev": "finished"}),
+        '{"ev": "entry_end", "key": "g__a", "wall_sec',
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+    cost = _read(tmp_path, "NUL")
+
+    assert (cost.status, cost.has_terminal_event) == ("finished", True)
+    assert cost.skipped_lines == 1
+
+
+def test_an_entry_reads_its_covariates_and_the_time_it_ended(tmp_path: Path) -> None:
+    _write_lines(
+        tmp_path,
+        "COV",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(),
+        _entry_end(
+            "g__a",
+            ended=500.5,
+            wall=4.0,
+            rows=100,
+            cpu=3.0,
+            peak_grown_bytes=GIB,
+            ids_per_frame=2.5,
+            pair_frames=900,
+            pair_frames_bound=True,
+            frames=40,
+            keypoints=7,
+            fps=30.0,
+        ),
+        {**_entry_end("g__b", ended=0.0, wall=1.0, rows=10, cpu=1.0), "t": "later"},
+        {"ev": "finished"},
+    )
+
+    first, second = _read(tmp_path, "COV").entries
+
+    assert (first.key, first.mode, first.ended_at) == ("g__a", "thread", 500.5)
+    assert (first.wall_seconds, first.apply_seconds) == (4.0, 4.0)
+    assert (first.cpu_seconds, first.input_rows, first.in_flight) == (3.0, 100, 1)
+    assert first.peak_grown_bytes == GIB
+    assert (first.ids_per_frame, first.pair_frames, first.pair_frames_bound) == (
+        2.5,
+        900,
+        True,
+    )
+    assert (first.frames, first.keypoints, first.fps) == (40, 7, 30.0)
+    assert second.ended_at is None
+    assert (second.peak_grown_bytes, second.ids_per_frame, second.pair_frames) == (
+        None,
+        None,
+        None,
+    )
+    assert (second.pair_frames_bound, second.frames, second.fps) == (False, None, None)
+
+
+def test_an_entry_end_without_a_figure_reads_none_and_the_aggregates_skip_it(
+    tmp_path: Path,
+) -> None:
+    _write_lines(
+        tmp_path,
+        "GAPS",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(),
+        {"t": _instant(10.0), "ev": "entry_end", "key": "g__a", "in_flight": 1},
+        _entry_end("g__b", ended=20.0, wall=2.0, rows=40, cpu=1.0),
+        {"ev": "finished"},
+    )
+
+    cost = _read(tmp_path, "GAPS")
+
+    bare = cost.entries[0]
+    assert (bare.wall_seconds, bare.apply_seconds, bare.cpu_seconds) == (
+        None,
+        None,
+        None,
+    )
+    assert (bare.input_rows, bare.in_flight) == (None, 1)
+    assert cost.entries_measured == 2
+    assert (cost.rows_measured, cost.largest_entry_rows) == (40, 40)
+    assert cost.seconds_per_row == pytest.approx(2.0 / 40)
+    assert cost.alone_cpu_per_wall_second == pytest.approx(1.0 / 2.0)
+
+
+def test_a_log_of_two_modes_reads_each_modes_levels_entries_and_peak(
+    tmp_path: Path,
+) -> None:
+    thread_levels = [
+        {"in_flight": 1, "seconds": 4.0, "rows": 200.0, "cpu_seconds": 3.0},
+        {"in_flight": 2, "seconds": 3.0, "rows": 200.0, "cpu_seconds": 9.0},
+    ]
+    _write_lines(
+        tmp_path,
+        "TWO",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        {
+            "ev": "probe",
+            "kind": "probe",
+            "entries": ["g:a", "g:b", "g:c", "g:d", "g:e"],
+        },
+        _resources(
+            parallel_mode="thread",
+            in_flight_levels=thread_levels,
+            peak_in_flight_entries=2,
+            peak_in_flight_rows=200,
+            peak_in_flight_pair_frames=50,
+            peak_grown_bytes=GIB,
+        ),
+        _entry_end("g__a", ended=104.0, wall=4.0, rows=200, cpu=3.0, mode="thread"),
+        _entry_end(
+            "g__b", ended=108.0, wall=3.0, rows=100, cpu=4.5, in_flight=2, mode="thread"
+        ),
+        _entry_end(
+            "g__c", ended=108.0, wall=3.0, rows=100, cpu=4.5, in_flight=2, mode="thread"
+        ),
+        _resources(
+            parallel_mode="process",
+            in_flight_levels=None,
+            peak_in_flight_entries=2,
+            peak_in_flight_rows=80,
+            peak_in_flight_pair_frames_bound=True,
+            peak_grown_bytes=2 * GIB,
+        ),
+        _entry_end(
+            "g__d",
+            ended=210.0,
+            wall=10.0,
+            rows=50,
+            cpu=6.0,
+            in_flight=2,
+            mode="process",
+        ),
+        _entry_end(
+            "g__e",
+            ended=210.0,
+            wall=10.0,
+            rows=30,
+            cpu=10.0,
+            in_flight=2,
+            mode="process",
+        ),
+        {"ev": "finished"},
+    )
+
+    cost = _read(tmp_path, "TWO")
+
+    assert [(entry.key, entry.mode) for entry in cost.entries] == [
+        ("g__a", "thread"),
+        ("g__b", "thread"),
+        ("g__c", "thread"),
+        ("g__d", "process"),
+        ("g__e", "process"),
+    ]
+    assert [(level.mode, level.in_flight, level.rebuilt) for level in cost.levels] == [
+        ("thread", 1, False),
+        ("thread", 2, False),
+        ("process", 2, True),
+    ]
+    rebuilt = cost.levels[2]
+    assert (rebuilt.seconds, rebuilt.rows, rebuilt.cpu_seconds) == pytest.approx(
+        (10.0, 80.0, 8.0)
+    )
+    thread_peak, process_peak = cost.peak_points
+    assert (thread_peak.mode, thread_peak.grown_bytes) == ("thread", GIB)
+    assert (thread_peak.entries, thread_peak.rows) == (2, 200)
+    assert (thread_peak.pair_frames, thread_peak.pair_frames_bound) == (50, False)
+    assert (process_peak.mode, process_peak.grown_bytes) == ("process", 2 * GIB)
+    assert (process_peak.entries, process_peak.rows) == (2, 80)
+    assert (process_peak.pair_frames, process_peak.pair_frames_bound) == (0, True)
+
+
+def test_an_empty_parallel_mode_reads_thread_everywhere(tmp_path: Path) -> None:
+    _write_lines(
+        tmp_path,
+        "SEQ",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(
+            parallel_mode="",
+            workers=1,
+            in_flight_levels=None,
+            peak_in_flight_entries=1,
+            peak_in_flight_rows=10,
+        ),
+        _entry_end("g__a", ended=10.0, wall=2.0, rows=10, cpu=1.0),
+        {"ev": "finished"},
+    )
+    _write_lines(
+        tmp_path,
+        "PROC",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(parallel_mode="process", in_flight_levels=None),
+        _entry_end("g__a", ended=10.0, wall=2.0, rows=10, cpu=1.0),
+        {"ev": "finished"},
+    )
+
+    cost = _read(tmp_path, "SEQ")
+    processed = _read(tmp_path, "PROC")
+
+    assert cost.parallel_mode == ""
+    assert [entry.mode for entry in cost.entries] == ["thread"]
+    assert [level.mode for level in cost.levels] == ["thread"]
+    assert [point.mode for point in cost.peak_points] == ["thread"]
+    assert [entry.mode for entry in processed.entries] == ["process"]
+    assert [level.mode for level in processed.levels] == ["process"]
+
+
+def test_params_default_reads_none_without_a_digest(tmp_path: Path) -> None:
+    _write_lines(
+        tmp_path,
+        "NODIGEST",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(params_digest="", params_default=True, emits=""),
+        {"ev": "finished"},
+    )
+    _write_lines(
+        tmp_path,
+        "DIGEST",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(params_digest="0123456789", params_default=True, emits="pair"),
+        {"ev": "finished"},
+    )
+    _write_lines(
+        tmp_path,
+        "CHANGED",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(params_digest="0123456789", params_default=False),
+        {"ev": "finished"},
+    )
+
+    unwritten = _read(tmp_path, "NODIGEST")
+    default = _read(tmp_path, "DIGEST")
+    changed = _read(tmp_path, "CHANGED")
+
+    assert (unwritten.params_digest, unwritten.params_default) == (None, None)
+    assert unwritten.emits is None
+    assert (default.params_digest, default.params_default) == ("0123456789", True)
+    assert default.emits == "pair"
+    assert changed.params_default is False
+
+
+def test_a_peak_point_without_pair_frames_reads_none(tmp_path: Path) -> None:
+    with_key = _resources(peak_in_flight_entries=2, peak_in_flight_rows=30)
+    without_key = {
+        name: value
+        for name, value in with_key.items()
+        if not name.startswith("peak_in_flight_pair_frames")
+    }
+    none_in_flight = _resources(peak_in_flight_entries=0, peak_in_flight_rows=0)
+    for name, record in (
+        ("KEY", with_key),
+        ("NOKEY", without_key),
+        ("NONE", none_in_flight),
+    ):
+        _write_lines(
+            tmp_path,
+            name,
+            {"ev": "started", "kind": "feature", "target": "speed"},
+            record,
+            {"ev": "finished"},
+        )
+
+    (present,) = _read(tmp_path, "KEY").peak_points
+    (absent,) = _read(tmp_path, "NOKEY").peak_points
+
+    assert (present.pair_frames, present.pair_frames_bound) == (0, False)
+    assert (absent.pair_frames, absent.pair_frames_bound) == (None, False)
+    assert (absent.entries, absent.rows) == (2, 30)
+    assert _read(tmp_path, "NONE").peak_points == ()
+
+
+def test_the_machine_of_the_attempt_reads_from_its_started_event(
+    tmp_path: Path,
+) -> None:
+    machine = MachineFacts(
+        cpu_model="Example Xeon 9000",
+        logical_cpus=40,
+        threads_per_core=2,
+        memory_bytes=128 * GIB,
+        machine_class="cpu-large",
+    )
+    with _log(tmp_path, "MACHINE") as log:
+        log.started(kind="feature", target="speed", machine=machine)
+        log.finished()
+
+    assert _read(tmp_path, "MACHINE").machine == machine
+
+
+def test_the_attempt_scalars_span_both_phases_and_the_phase_scalars_the_last(
+    tmp_path: Path,
+) -> None:
+    _write_lines(
+        tmp_path,
+        "PHASES",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        {
+            "ev": "probe",
+            "kind": "probe",
+            "entries": ["g:a", "g:b", "g:c", "g:d", "g:e"],
+        },
+        _resources(
+            workers=2,
+            parallel_mode="thread",
+            worker_base_rss_bytes=GIB,
+            peak_bytes_per_row=500,
+            peak_rss_bytes=2 * GIB,
+            cpu_seconds=12.0,
+            wall_seconds=8.0,
+            apply_wall_seconds=6.0,
+        ),
+        _entry_end("g__a", ended=104.0, wall=4.0, rows=200, cpu=3.0, mode="thread"),
+        _entry_end(
+            "g__b", ended=108.0, wall=3.0, rows=100, cpu=4.5, in_flight=2, mode="thread"
+        ),
+        _entry_end(
+            "g__c", ended=108.0, wall=3.0, rows=100, cpu=4.5, in_flight=2, mode="thread"
+        ),
+        _resources(
+            workers=2,
+            parallel_mode="process",
+            worker_base_rss_bytes=GIB // 2,
+            peak_bytes_per_row=900,
+            peak_rss_bytes=5 * GIB,
+            cpu_seconds=40.0,
+            wall_seconds=30.0,
+            apply_wall_seconds=10.0,
+        ),
+        _entry_end(
+            "g__d",
+            ended=210.0,
+            wall=10.0,
+            rows=60,
+            cpu=6.0,
+            in_flight=2,
+            mode="process",
+        ),
+        _entry_end(
+            "g__e",
+            ended=210.0,
+            wall=10.0,
+            rows=20,
+            cpu=10.0,
+            in_flight=2,
+            mode="process",
+        ),
+        {"ev": "finished"},
+    )
+
+    cost = _read(tmp_path, "PHASES")
+
+    assert (cost.workers, cost.parallel_mode) == (2, "process")
+    assert cost.worker_base_rss_bytes == GIB // 2
+    assert cost.peak_bytes_per_row == 900
+    assert cost.rows_per_second == pytest.approx(80 / 10.0)
+    assert (cost.peak_rss_bytes, cost.cpu_seconds, cost.wall_seconds) == (
+        5 * GIB,
+        40.0,
+        30.0,
+    )
+    assert cost.cpu_per_wall_second == pytest.approx(40.0 / 30.0)
+    assert (cost.entries_measured, cost.rows_measured) == (5, 480)
+    assert cost.largest_entry_rows == 200
+    assert cost.seconds_per_row == pytest.approx(4.0 / 200)
+    assert cost.alone_cpu_per_wall_second == pytest.approx(3.0 / 4.0)

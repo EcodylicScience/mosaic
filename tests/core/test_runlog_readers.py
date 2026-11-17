@@ -488,6 +488,32 @@ def test_a_record_glued_behind_a_nul_block_is_still_read(tmp_path: Path) -> None
     assert records[1]["workers"] == 2
 
 
+def test_the_log_read_counts_the_lines_it_could_not_parse(tmp_path: Path) -> None:
+    path = _write_with_nul_block_before(
+        tmp_path,
+        "E1",
+        1,
+        {"t": "2026-01-01T00:00:00Z", "ev": "started"},
+        {"t": "2026-01-01T00:00:01Z", "ev": "resources", "workers": 2},
+    )
+    with path.open("a") as file:
+        _ = file.write('{"t": "2026-01-01T00:00:02Z", "ev": "fini\n')
+        _ = file.write("[1, 2]\n")
+        _ = file.write(NUL_BLOCK + "\n\n")
+
+    read = runlog.read_run_log(path.parent, "E1")
+
+    assert [record["ev"] for record in read.records] == ["started", "resources"]
+    assert read.skipped_lines == 2
+    assert runlog.read_run_records(path.parent, "E1") == read.records
+
+
+def test_the_log_read_of_a_missing_log_is_empty(tmp_path: Path) -> None:
+    read = runlog.read_run_log(run_log_dir(tmp_path), "ABSENT")
+
+    assert (read.records, read.skipped_lines) == ([], 0)
+
+
 def test_a_finished_record_behind_a_nul_block_still_reduces_as_finished(
     tmp_path: Path,
 ) -> None:
