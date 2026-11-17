@@ -613,6 +613,7 @@ def resolve_choices(
     step_scope: list[str] | None,
     *,
     as_json: bool,
+    revision: int | None = None,
 ) -> ResolvedChoices:
     """Parse the ``--step-scope`` tokens and lower every tag selection of a command.
 
@@ -625,10 +626,12 @@ def resolve_choices(
         scope: The command's scope, or ``None`` when it names none.
         step_scope: The ``--step-scope`` tokens.
         as_json: Whether ``--json`` was given.
+        revision: The revision of the tag table to lower against, or ``None`` for
+            the latest.
     """
     step_choices = parse_step_scopes(step_scope)
     with tag_selection_refusals(as_json=as_json):
-        tags = choices_tag_table(ds, scope, step_choices)
+        tags = choices_tag_table(ds, scope, step_choices, revision=revision)
         resolved_scope = (
             None if scope is None else resolve_scope_choice(ds, scope, tags=tags)
         )

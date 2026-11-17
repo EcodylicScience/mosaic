@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -23,14 +23,22 @@ from pydantic import BaseModel
 from scipy import stats
 
 from mosaic.core import pipeline as pipeline_package
+from mosaic.core.annotations import sequence_tags as sequence_tags_module
+from mosaic.core.annotations.sequence_tags import (
+    SequenceTagTableUnavailable,
+    read_sequence_tag_table,
+)
+from mosaic.core.annotations.tag_table import TagDefinition, TagTable
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline import run_matrix as run_matrix_module
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph.param_table import strip_schema_keywords
+from mosaic.core.pipeline.index import feature_index_path
+from mosaic.core.pipeline.label_series_index import ResolvedRevision
 from mosaic.core.pipeline.preview import ArtifactPreview
-from mosaic.core.pipeline.run_matrix import RunRead, RunReadInvalid
+from mosaic.core.pipeline.run_matrix import RunColumnsConflict, RunRead, RunReadInvalid
 from mosaic.core.pipeline.run_summary import (
     MAX_PAIRWISE_GROUPS,
     PreviewOutput,
@@ -38,13 +46,21 @@ from mosaic.core.pipeline.run_summary import (
     RunSummaryWire,
     SummaryConflict,
     SummaryInvalid,
+    TagRevisionRead,
     run_summary_wire,
     summarize_run,
 )
-from mosaic.core.pipeline.summary_arguments import KeyValue
+from mosaic.core.pipeline.summary_arguments import KeyValue, read_where
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
-from tests.helpers import labeled_run, rewrite_index
+from mosaic.core.typed_attribute import TypedAttributeType
+from tests.helpers import (
+    index_a_second_origin,
+    labeled_run,
+    rewrite_index,
+    tag_table,
+    write_tags,
+)
 
 type Summarize = Callable[[Dataset, Result[str]], RunSummary]
 """One call of ``summarize_run`` on a run."""
@@ -797,6 +813,388 @@ def test_the_readers_refusals_pass_through(tmp_path: Path) -> None:
         _ = summarize_run(ds, result, scope=Scope(groups=["nowhere"]))
     with pytest.raises(RunReadInvalid, match="absent"):
         _ = summarize_run(ds, result, by=["absent"])
+
+
+# --- tag keys ---------------------------------------------------------------
+
+TAG_TYPES: dict[str, TypedAttributeType] = {
+    "condition": "categorical",
+    "place": "int",
+    "score": "float",
+    "ok": "bool",
+    "mark": "label",
+}
+"""The sequence tags of :func:`tagged_run`, by type."""
+
+
+def tag_table_of(condition_of_a: str = "treated") -> TagTable:
+    """Tags on three of the four entries of :func:`tagged_run`; ``g/d`` has none."""
+    table = tag_table(
+        {
+            ("g", "a"): {
+                "condition": condition_of_a,
+                "place": 3,
+                "score": 1.5,
+                "ok": True,
+                "mark": None,
+            },
+            ("g", "b"): {"condition": "treated", "place": 5, "score": 2.5, "ok": False},
+            ("g", "c"): {
+                "condition": "control",
+                "place": 3,
+                "score": 1.5,
+                "ok": True,
+                "mark": None,
+            },
+        },
+        TAG_TYPES,
+    )
+    individual = (TagDefinition(name="weight", type="float"),)
+    return replace(table, definitions=replace(table.definitions, individual=individual))
+
+
+def tagged_run(tmp_path: Path) -> tuple[Dataset, Result[str]]:
+    """Four entries of two rows each, with the tags of :func:`tag_table_of` at revision 1."""
+    ds, result = run_of(
+        tmp_path,
+        {
+            ("g", name): table(batch=[name, name], value=[1.0, 2.0])
+            for name in ("a", "b", "c", "d")
+        },
+    )
+    _ = write_tags(ds, tag_table_of())
+    return ds, result
+
+
+def test_a_sequence_tag_groups_the_entries_by_its_values(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(ds, result, by=["condition"])
+
+    assert summary.by == ("condition",)
+    assert summary.columns == ("value",)
+    assert records(summary.groups, "condition", "n_rows", "n_entries") == [
+        ("control", 2, 1),
+        ("treated", 4, 2),
+    ]
+    assert records(summary.statistics, "condition", "column", "n", "mean") == [
+        ("control", "value", 2, 1.5),
+        ("treated", "value", 4, 1.5),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("key", "values", "kind", "without_key"),
+    [
+        ("condition", ["control", "treated"], str, 2),
+        ("place", [3, 5], int, 2),
+        ("score", [1.5, 2.5], float, 2),
+        ("ok", [False, True], bool, 2),
+        ("mark", [False, True], bool, 0),
+    ],
+)
+def test_a_tag_key_takes_the_type_of_its_definition(
+    tmp_path: Path, key: str, values: list[object], kind: type, without_key: int
+) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(ds, result, by=[key])
+
+    assert summary.groups[key].tolist() == values
+    assert all(type(value) is kind for value in summary.groups[key].tolist())
+    assert summary.rows_without_key == without_key
+    assert wire_of(summary).groups[0].key == {key: values[0]}
+
+
+def test_a_label_is_true_where_assigned_and_false_elsewhere(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(ds, result, by=["mark"])
+
+    assert records(summary.groups, "mark", "n_rows", "n_entries") == [
+        (False, 4, 2),
+        (True, 4, 2),
+    ]
+    assert summary.rows_without_key == 0
+
+
+def test_an_entry_without_the_tags_value_counts_in_rows_without_key(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(ds, result, by=["condition"])
+
+    assert summary.rows_without_key == 2
+    assert sum(summary.groups["n_rows"]) == 6
+
+
+def test_where_keeps_the_rows_of_the_tags_listed_values(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(ds, result, by=["batch"], where={"condition": ["treated"]})
+
+    assert records(summary.groups, "batch", "n_rows") == [("a", 2), ("b", 2)]
+    assert summary.tag_keys == ("condition",)
+
+
+def test_where_of_an_integer_tag_reads_the_text_of_a_number(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    summary = summarize_run(
+        ds, result, by=["batch"], where=read_where({"place": ["3"]})
+    )
+
+    assert records(summary.groups, "batch", "n_rows") == [("a", 2), ("c", 2)]
+
+
+def test_a_column_the_run_writes_wins_over_a_tag_of_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result = run_of(
+        tmp_path,
+        {
+            ("g", "a"): table(condition=["x", "x"], value=[1.0, 2.0]),
+            ("g", "b"): table(condition=["y", "y"], value=[3.0, 4.0]),
+        },
+    )
+    _ = write_tags(
+        ds,
+        tag_table(
+            {("g", "a"): {"condition": "t"}, ("g", "b"): {"condition": "t"}},
+            {"condition": "categorical"},
+        ),
+    )
+    resolved = spy_on_the_series_index(monkeypatch)
+
+    summary = summarize_run(ds, result, by=["condition"])
+
+    assert summary.groups["condition"].tolist() == ["x", "y"]
+    assert summary.tag_keys == ()
+    assert summary.tag_revision is None
+    assert resolved == []
+
+
+def partly_written_run(tmp_path: Path) -> tuple[Dataset, Result[str]]:
+    """Entry ``g/b`` writes the column ``strain``, which ``g/a`` lacks."""
+    return run_of(
+        tmp_path,
+        {
+            ("g", "a"): table(value=[1.0, 2.0]),
+            ("g", "b"): table(strain=["A", "B"], value=[3.0, 4.0]),
+        },
+    )
+
+
+def test_a_key_that_only_some_entries_write_is_a_conflict_whatever_the_first_writes(
+    tmp_path: Path,
+) -> None:
+    ds, result = partly_written_run(tmp_path)
+
+    with pytest.raises(RunColumnsConflict) as raised:
+        _ = summarize_run(ds, result, by=["strain"])
+
+    assert raised.value.error_kind == "conflict"
+
+
+def test_a_tag_does_not_stand_in_for_a_column_that_only_some_entries_write(
+    tmp_path: Path,
+) -> None:
+    ds, result = partly_written_run(tmp_path)
+    _ = write_tags(
+        ds,
+        tag_table(
+            {("g", "a"): {"strain": "T"}, ("g", "b"): {"strain": "T"}},
+            {"strain": "categorical"},
+        ),
+    )
+
+    with pytest.raises(RunColumnsConflict) as raised:
+        _ = summarize_run(ds, result, by=["strain"])
+
+    assert raised.value.error_kind == "conflict"
+
+
+def test_an_individual_tag_as_a_key_is_refused_naming_id_tag_columns(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    with pytest.raises(SummaryInvalid, match="id-tag-columns") as raised:
+        _ = summarize_run(ds, result, by=["weight"])
+
+    assert "'weight'" in str(raised.value)
+    assert raised.value.error_kind == "invalid"
+
+
+def test_keys_that_are_neither_columns_nor_tags_are_refused_once_for_all(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    with pytest.raises(RunReadInvalid) as raised:
+        _ = summarize_run(
+            ds, result, by=["nowhere", "condition"], where={"nothing": ["x"]}
+        )
+
+    message = str(raised.value)
+    assert "'nowhere'" in message
+    assert "'nothing'" in message
+    for column in ("batch", "value"):
+        assert column in message
+    for tag in TAG_TYPES:
+        assert tag in message
+    assert raised.value.error_kind == "invalid"
+    assert {"batch", "value"} <= set(raised.value.columns)
+
+
+def test_a_dataset_without_tag_revisions_says_it_has_no_sequence_tags(
+    tmp_path: Path,
+) -> None:
+    ds, result = three_strains(tmp_path)
+
+    with pytest.raises(RunReadInvalid) as raised:
+        _ = summarize_run(ds, result, by=["absent"])
+
+    message = str(raised.value)
+    assert "'absent'" in message
+    assert "strain" in message
+    assert "no sequence tags" in message
+
+
+def test_a_tag_revision_that_is_not_indexed_is_refused_naming_it(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+
+    with pytest.raises(SummaryInvalid, match="revision 9") as raised:
+        _ = summarize_run(ds, result, by=["condition"], tag_revision=9)
+
+    assert raised.value.error_kind == "invalid"
+
+
+def test_tag_revisions_from_two_datasets_are_a_conflict(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+    _ = index_a_second_origin(ds)
+
+    with pytest.raises(SequenceTagTableUnavailable) as raised:
+        _ = summarize_run(ds, result, by=["condition"])
+
+    assert raised.value.error_kind == "conflict"
+    assert raised.value.error_reason() == "sequence_tags_unavailable"
+
+
+def spy_on_the_series_index(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
+    """Record each call that resolves a revision of the tag table."""
+    resolve = sequence_tags_module.resolve_sequence_tag_revision
+    asked: list[int | None] = []
+
+    def recording(
+        ds: Dataset, revision: int | None = None, *, kind: str
+    ) -> ResolvedRevision | None:
+        asked.append(revision)
+        return resolve(ds, revision, kind=kind)
+
+    monkeypatch.setattr(
+        sequence_tags_module, "resolve_sequence_tag_revision", recording
+    )
+    return asked
+
+
+def test_the_tag_keys_and_the_revision_read_are_recorded(tmp_path: Path) -> None:
+    ds, result = tagged_run(tmp_path)
+    read = read_sequence_tag_table(ds, kind="test")
+    assert read is not None
+
+    summary = summarize_run(
+        ds, result, by=["condition"], where={"place": [3], "condition": ["treated"]}
+    )
+
+    assert summary.tag_keys == ("condition", "place")
+    assert summary.tag_revision == TagRevisionRead(
+        revision=1, digest=read.payload_digest
+    )
+
+
+def test_a_summary_without_a_tag_key_reads_no_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    asked = spy_on_the_series_index(monkeypatch)
+
+    keyed = summarize_run(ds, result, by=["batch"])
+    unkeyed = summarize_run(ds, result)
+
+    assert asked == []
+    for summary in (keyed, unkeyed):
+        assert summary.tag_keys == ()
+        assert summary.tag_revision is None
+
+
+def test_a_summary_reads_the_revision_it_names_after_a_later_one_exists(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    _ = write_tags(ds, tag_table_of(condition_of_a="control"))
+
+    first = summarize_run(ds, result, by=["condition"], tag_revision=1)
+    latest = summarize_run(ds, result, by=["condition"])
+
+    assert records(first.groups, "condition", "n_entries") == [
+        ("control", 1),
+        ("treated", 2),
+    ]
+    assert records(latest.groups, "condition", "n_entries") == [
+        ("control", 2),
+        ("treated", 1),
+    ]
+    assert first.tag_revision is not None and first.tag_revision.revision == 1
+    assert latest.tag_revision is not None and latest.tag_revision.revision == 2
+
+
+def test_an_edit_of_a_tag_between_two_summaries_changes_the_groups_and_moves_no_run(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    index = feature_index_path(ds, result.feature)
+    before = summarize_run(ds, result, by=["condition"])
+    index_bytes = index.read_bytes()
+
+    _ = write_tags(ds, tag_table_of(condition_of_a="control"))
+    after = summarize_run(ds, result, by=["condition"])
+
+    assert records(before.groups, "condition", "n_entries") != records(
+        after.groups, "condition", "n_entries"
+    )
+    assert after.run_id == before.run_id
+    assert index.read_bytes() == index_bytes
+
+
+def test_the_wire_names_the_tag_keys_and_the_revision_and_dumps_strict_json(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    read = read_sequence_tag_table(ds, kind="test")
+    assert read is not None
+
+    wire = wire_of(summarize_run(ds, result, by=["condition"]))
+
+    assert wire.tag_keys == ["condition"]
+    assert wire.tag_revision == TagRevisionRead(revision=1, digest=read.payload_digest)
+    document = dumped(wire)
+    assert document["tag_keys"] == ["condition"]
+    assert document["tag_revision"] == {"revision": 1, "digest": read.payload_digest}
+    json.dumps(document, allow_nan=False)
+    assert RunSummaryWire.model_validate(document) == wire
+
+
+def test_the_wire_of_a_summary_without_tag_keys_holds_none(tmp_path: Path) -> None:
+    ds, result = three_strains(tmp_path)
+
+    document = dumped(wire_of(summarize_run(ds, result, by=["strain"])))
+
+    assert document["tag_keys"] == []
+    assert document["tag_revision"] is None
 
 
 # --- tests between groups ---------------------------------------------------

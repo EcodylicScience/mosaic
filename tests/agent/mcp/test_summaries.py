@@ -76,6 +76,8 @@ SUMMARY = RunSummaryWire(
         ),
     ),
     mann_whitney=(_pair(COLUMNS[0], 0.2), _pair(COLUMNS[1], None)),
+    tag_keys=[],
+    tag_revision=None,
 )
 
 

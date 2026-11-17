@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import pandas as pd
+
 from mosaic.core.annotations.projection import write_tag_table_revision
 from mosaic.core.annotations.tag_table import (
     SequenceTags,
@@ -19,10 +21,11 @@ from mosaic.core.annotations.tag_table import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.label_series_index import SeriesRevision
+from mosaic.core.pipeline.label_series import TAGS_SERIES
+from mosaic.core.pipeline.label_series_index import SeriesRevision, series_index_path
 from mosaic.core.typed_attribute import TypedAttributeType, TypedAttributeValue
 
-__all__ = ["tag_table", "write_tags"]
+__all__ = ["index_a_second_origin", "tag_table", "write_tags"]
 
 
 def tag_table(
@@ -62,3 +65,17 @@ def write_tags(
 ) -> SeriesRevision:
     """Save *table* as the next revision of the dataset's ``tags`` series."""
     return write_tag_table_revision(ds, table=table, origin=origin or {})
+
+
+def index_a_second_origin(ds: Dataset) -> str:
+    """Index every revision of the ``tags`` series again as saved by another dataset.
+
+    Returns:
+        The ``origin_uuid`` of the added rows.
+    """
+    path = series_index_path(ds, TAGS_SERIES)
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    other = rows.copy()
+    other["origin_uuid"] = "other-origin"
+    pd.concat([rows, other]).to_csv(path, index=False)
+    return "other-origin"

@@ -41,13 +41,13 @@ from mosaic.core.pipeline.graph import request as request_module
 from mosaic.core.pipeline.graph import step as step_module
 from mosaic.core.pipeline.label_series_index import (
     LabelSeriesTamperedError,
-    series_index_path,
 )
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.label_series import LabelRevisionRef
 from mosaic.core.typed_attribute import TypedAttributeType
 from mosaic.core.pipeline.verify import verify_plan
 from tests.helpers import (
+    index_a_second_origin,
     add_tracks_variant,
     make_dataset,
     speed_recipe,
@@ -290,20 +290,11 @@ def test_a_revision_edited_in_place_is_refused_by_the_plan(ds: Dataset) -> None:
         _ = plan_pipeline(ds, _recipe("treatment"))
 
 
-def _index_a_second_origin(ds: Dataset) -> str:
-    path = series_index_path(ds, "tags")
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    other = rows.copy()
-    other["origin_uuid"] = "other-origin"
-    pd.concat([rows, other]).to_csv(path, index=False)
-    return "other-origin"
-
-
 def test_two_origins_without_a_named_one_are_a_problem_of_each_reading_step(
     ds: Dataset,
 ) -> None:
     _ = write_tags(ds, _table())
-    _ = _index_a_second_origin(ds)
+    _ = index_a_second_origin(ds)
 
     plan = plan_pipeline(ds, _recipe("treatment"), refuse=False)
 
@@ -320,7 +311,7 @@ def test_a_keyword_revision_naming_no_origin_among_several_is_a_problem(
     ds: Dataset,
 ) -> None:
     _ = write_tags(ds, _table())
-    _ = _index_a_second_origin(ds)
+    _ = index_a_second_origin(ds)
 
     plan = plan_pipeline(
         ds,
@@ -341,7 +332,7 @@ def test_a_keyword_revision_naming_no_origin_among_several_is_a_problem(
 
 def test_a_request_naming_an_origin_plans_among_several(ds: Dataset) -> None:
     _ = write_tags(ds, _table())
-    other = _index_a_second_origin(ds)
+    other = index_a_second_origin(ds)
     request = Request(
         request_id="R",
         recipe_digest="0" * 16,
@@ -540,7 +531,7 @@ def test_a_reference_naming_no_origin_among_several_is_the_plans_problem(
     ds: Dataset,
 ) -> None:
     _ = write_tags(ds, _table())
-    _ = _index_a_second_origin(ds)
+    _ = index_a_second_origin(ds)
 
     with pytest.raises(RecipeRefused) as refused:
         _ = submit_request(

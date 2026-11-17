@@ -6,8 +6,12 @@ keys whose types disagree between entries from the plan alone, and only then rea
 the values. Each group is one combination of key values that rows hold, and each
 statistic is taken over the finite cells of one column of one group.
 
-The reader and scipy are imported inside the functions that use them, so a module
-that names :class:`RunSummary` loads neither.
+A ``by`` or ``where`` key that the run does not write may name a sequence tag. The
+key then takes each row's value of the tag from the dataset's tag table, by the
+row's entry, and the summary records the revision it read.
+
+The reader, the tag table and scipy are imported inside the functions that use them,
+so a module that names :class:`RunSummary` loads none of them.
 
 :func:`run_summary_wire` turns a summary into :class:`RunSummaryWire`, the model that
 ``mosaic summarize --json`` prints and the MCP server returns. Every non-finite
@@ -38,15 +42,18 @@ from .error_kind import ClassifiedError, ErrorKind
 from .inventory.model import FeatureRunRef
 from .inventory.wire import ref_address
 from .preview import ArtifactPreview, PreviewInvalid, preview_ref
-from .run_errors import RunError, entry_label
+from .run_errors import RunError, entry_label, list_names
 from .summary_arguments import SUMMARY_TESTS, KeyValue, SummaryTest
 
 if TYPE_CHECKING:
+    from mosaic.core.annotations.tag_table import TagTable
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
     from mosaic.core.scope import Scope
+    from mosaic.core.typed_attribute import TypedAttributeType
 
     from .run_matrix import KeyKind, RunRead
+    from .tag_reads import ResolvedTagTable
     from .types import Result
 
 __all__ = [
@@ -61,6 +68,7 @@ __all__ = [
     "SummaryConflict",
     "SummaryInvalid",
     "SummaryReason",
+    "TagRevisionRead",
     "run_summary_wire",
     "summarize_ref",
     "summarize_run",
@@ -72,6 +80,16 @@ pair without values, or every value the test reads equal."""
 
 type _KeyType = Literal["string", "integer", "floating", "boolean", "null"]
 """The one type a key takes across entries, ``null`` when it holds no value."""
+
+_TAG_KEY_TYPES: Final[dict[TypedAttributeType, _KeyType]] = {
+    "text": "string",
+    "categorical": "string",
+    "int": "integer",
+    "float": "floating",
+    "bool": "boolean",
+    "label": "boolean",
+}
+"""The type that a sequence tag of each type takes as a key."""
 
 _RESERVED: Final = (
     "column",
@@ -194,6 +212,11 @@ class RunSummary:
             column that have a ``p``, and ``comparisons`` their count. Columns
             are not adjusted against each other. Empty when the test was not
             asked.
+        tag_keys: The ``by`` and ``where`` keys read from the sequence tags, in
+            the order they were named. Empty when every key is a column of the
+            run.
+        tag_revision: The revision of the tag table that ``tag_keys`` were read
+            from, ``None`` when ``tag_keys`` is empty.
 
     A test row without a statistic names its :data:`SummaryReason`, and its
     ``statistic``, ``p`` and ``p_holm`` are NaN, as is ``df`` with fewer than two
@@ -214,6 +237,8 @@ class RunSummary:
     statistics: pd.DataFrame
     kruskal: pd.DataFrame
     mann_whitney: pd.DataFrame
+    tag_keys: tuple[str, ...]
+    tag_revision: TagRevisionRead | None
 
 
 class GroupWire(StrictModel):
@@ -304,6 +329,19 @@ class MannWhitneyWire(StrictModel):
     reason: SummaryReason | None
 
 
+class TagRevisionRead(StrictModel):
+    """The revision of the tag table that a summary read its tag keys from.
+
+    Attributes:
+        revision: The revision's number.
+        digest: The digest of the revision's payload, as it was measured when the
+            summary read it.
+    """
+
+    revision: int
+    digest: str
+
+
 class RunSummaryWire(StrictModel):
     """A :class:`RunSummary` as it is printed and returned: JSON with no NaN.
 
@@ -322,6 +360,10 @@ class RunSummaryWire(StrictModel):
         kruskal: One item per column, empty when the test was not asked.
         mann_whitney: One item per column and pair of groups, empty when the test
             was not asked.
+        tag_keys: The keys read from the sequence tags, in the order named. Empty
+            when every key is a column of the run.
+        tag_revision: The revision of the tag table that ``tag_keys`` were read
+            from, ``None`` when ``tag_keys`` is empty.
     """
 
     ref: str
@@ -337,6 +379,8 @@ class RunSummaryWire(StrictModel):
     statistics: tuple[StatisticsWire, ...]
     kruskal: tuple[KruskalWire, ...]
     mann_whitney: tuple[MannWhitneyWire, ...]
+    tag_keys: list[str]
+    tag_revision: TagRevisionRead | None
 
 
 class PreviewOutput(RootModel[ArtifactPreview | RunSummaryWire]):
@@ -362,6 +406,24 @@ class _Key:
     cells: tuple[KeyValue | None, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _KeySplit:
+    """The keys of a summary sorted by where their values come from.
+
+    Attributes:
+        run_keys: The keys that are columns of the run, in the order named.
+        tag_keys: The keys that are sequence tags, in the order named.
+        unknown: The keys that are neither.
+        table: The tag table the tag keys read, ``None`` when no key needed it or
+            the dataset has none.
+    """
+
+    run_keys: tuple[str, ...]
+    tag_keys: tuple[str, ...]
+    unknown: tuple[str, ...]
+    table: ResolvedTagTable | None
+
+
 def summarize_run(
     ds: Dataset,
     run: Result[str],
@@ -372,6 +434,7 @@ def summarize_run(
     where: Mapping[str, Sequence[KeyValue]] | None = None,
     scope: Scope | None = None,
     allow_partial: bool = False,
+    tag_revision: int | None = None,
 ) -> RunSummary:
     """Count and describe the rows of one run by group, per value column.
 
@@ -394,13 +457,26 @@ def summarize_run(
     :func:`~mosaic.core.pipeline.run_matrix.read_run` pass through unchanged,
     among them a key that no entry writes.
 
+    A ``by`` or ``where`` key that the run does not write may name a sequence tag
+    of the dataset. Its value on a row is the entry's value of the tag, in the
+    revision of the tag table that *tag_revision* names, the latest when ``None``.
+    The summary reads the revision when it runs, so an edit of a tag moves no run
+    and changes only the groups of the next summary, and it records the revision
+    it read. A column that the run writes wins over a tag of its name, and a
+    summary whose keys are all columns of the run reads no tag. A tag key takes
+    its definition's type: ``text`` and ``categorical`` are text, ``int`` an
+    integer, ``float`` floating point, and ``bool`` and ``label`` booleans, a
+    ``label`` being false for an entry it is not assigned to. An entry that
+    holds no value of the tag leaves its rows out under ``rows_without_key``. An
+    individual tag cannot be a key.
+
     Args:
         ds: The dataset holding the run.
         run: The run to summarize, as for
             :func:`~mosaic.core.pipeline.run_matrix.load_run_matrix`.
         by: The group keys: ``group``, ``sequence``, an identity column the run
-            writes, or any other column it writes, such as a kept label. No key
-            groups every row into one group.
+            writes, any other column it writes, such as a kept label, or a
+            sequence tag. No key groups every row into one group.
         columns: The value columns, as for ``load_run_matrix``. A ``by`` or
             ``where`` key is never among them.
         tests: The tests between groups to run: ``kruskal``, ``mannwhitney`` or
@@ -413,6 +489,8 @@ def summarize_run(
             never a value.
         scope: The entries to read.
         allow_partial: Read what the run holds where it is partial.
+        tag_revision: The revision of the tag table that the tag keys read, the
+            latest when ``None``. It is read only when a key is a tag.
 
     Returns:
         The summary, with groups sorted by the keys in order, each ascending in
@@ -425,9 +503,19 @@ def summarize_run(
             ``median``; a ``where`` key with no value; a test name other than
             ``kruskal`` and ``mannwhitney``; ``mannwhitney`` over more than
             :data:`MAX_PAIRWISE_GROUPS` groups, refused before any test runs;
-            a per-frame run; or a key that is
+            a per-frame run; a key that names an individual tag, which
+            ``id-tag-columns`` copies into a column of the run; *tag_revision*
+            when it is not indexed; or a key that is
             not text, an integer, floating point or a boolean (a ``ValueError``,
             kind ``invalid``).
+        RunReadInvalid: A key that no entry writes and that is not a sequence tag,
+            naming every such key, the columns of the run and the sequence tags,
+            or saying that the dataset has none (a ``ValueError``, kind
+            ``invalid``).
+        SequenceTagTableUnavailable: A tag key needs the table, and revisions of
+            several datasets are indexed, or the revision is not on disk, was
+            edited after it was indexed, or is not a valid tag table (a
+            ``ValueError``, kind ``conflict``).
         SummaryConflict: A key that is text, a boolean or a number in different
             entries, or a key mixing integers and floating point that holds a
             value of magnitude at least 2**53 (a ``ValueError``, kind
@@ -440,23 +528,39 @@ def summarize_run(
     kept = {name: tuple(values) for name, values in (where or {}).items()}
     _refuse_arguments(run, keys_by, columns, kept, tests)
     names = tuple(dict.fromkeys((*keys_by, *kept)))
+    split = _split_keys(ds, run, names, scope, tag_revision)
     read = plan_run_read(
         ds,
         run,
         scope=scope,
         columns=columns,
-        keys=names,
+        keys=split.run_keys,
         allow_partial=allow_partial,
     )
+    _refuse_unknown_keys(read, split)
     _refuse_per_frame(read)
     kinds: dict[str, _KeyType | Literal["mixed"]] = {
-        name: _resolve_kind(read, name) for name in names
+        name: _resolve_kind(read, name) for name in split.run_keys
     }
     matrix = read_run(read, np.float64)
+    entry_of = list(
+        zip(
+            matrix.index["group"].astype(str).tolist(),
+            matrix.index["sequence"].astype(str).tolist(),
+            strict=True,
+        )
+    )
     keys = {
         name: _typed(read, name, kinds[name], matrix.index[name].tolist())
-        for name in names
+        for name in split.run_keys
     }
+    if split.table is not None:
+        keys.update(
+            {
+                name: _tag_key(split.table.table, name, entry_of)
+                for name in split.tag_keys
+            }
+        )
     found = read.outputs.found
     entries_without_rows = tuple(
         entry
@@ -480,13 +584,6 @@ def summarize_run(
             for name, tokens in wanted.items()
         )
     ]
-    entry_of = list(
-        zip(
-            matrix.index["group"].astype(str).tolist(),
-            matrix.index["sequence"].astype(str).tolist(),
-            strict=True,
-        )
-    )
     group_keys, members = _groups(keys_by, keys, rows)
     _refuse_pairwise(read, keys_by, tests, len(members))
     values = np.asarray(matrix.values, dtype=np.float64)
@@ -515,6 +612,8 @@ def summarize_run(
         mann_whitney=_mann_whitney_frame(
             keys_by, keys, group_keys, samples if "mannwhitney" in tests else {}
         ),
+        tag_keys=split.tag_keys,
+        tag_revision=_tag_revision_read(split),
     )
 
 
@@ -598,6 +697,8 @@ def run_summary_wire(summary: RunSummary, ref: str) -> RunSummaryWire:
             )
             for row in range(len(summary.mann_whitney))
         ),
+        tag_keys=list(summary.tag_keys),
+        tag_revision=summary.tag_revision,
     )
 
 
@@ -611,6 +712,7 @@ def summarize_ref(
     where: Mapping[str, Sequence[KeyValue]] | None = None,
     scope: Scope | None = None,
     allow_partial: bool = False,
+    tag_revision: int | None = None,
 ) -> RunSummaryWire:
     """Summarize the feature run that the address *ref* names, as the wire model.
 
@@ -626,6 +728,8 @@ def summarize_ref(
         where: The values a row's key must take to be kept, by key.
         scope: The entries to read.
         allow_partial: Read what the run holds where it is partial.
+        tag_revision: The revision of the tag table that sequence tag keys read,
+            the latest when ``None``.
 
     Raises:
         PreviewInvalid: *ref* is malformed, or names a tracks or labels variant.
@@ -648,6 +752,7 @@ def summarize_ref(
         where=where,
         scope=scope,
         allow_partial=allow_partial,
+        tag_revision=tag_revision,
     )
     return run_summary_wire(summary, ref_address(run))
 
@@ -769,6 +874,142 @@ def _refuse_arguments(
         feature=run.feature,
         run_id=run.run_id,
         columns=[*valued, *reserved, *empty],
+    )
+
+
+def _split_keys(
+    ds: Dataset,
+    run: Result[str],
+    names: tuple[str, ...],
+    scope: Scope | None,
+    tag_revision: int | None,
+) -> _KeySplit:
+    """Sort *names* into the run's columns, sequence tags and unknown names.
+
+    A name that any output in scope writes is a column of the run, and the tag
+    table is read only when a name is not. A name that the run writes wins over a
+    tag, even where only some entries write it, which the read then refuses.
+    """
+    from .run_matrix import run_key_columns
+
+    if not names:
+        return _KeySplit((), (), (), None)
+    written = run_key_columns(ds, run, names, scope=scope)
+    run_keys = tuple(name for name in names if name in written)
+    others = tuple(name for name in names if name not in written)
+    if not others:
+        return _KeySplit(run_keys, (), (), None)
+    from mosaic.core.annotations.sequence_tags import (
+        SequenceTagRevisionNotFound,
+        read_sequence_tag_table,
+    )
+
+    try:
+        table = read_sequence_tag_table(ds, tag_revision, kind="summary")
+    except SequenceTagRevisionNotFound as error:
+        raise SummaryInvalid(
+            str(error), feature=run.feature, run_id=run.run_id
+        ) from error
+    sequence = _definition_names(table, individual=False)
+    individual = _definition_names(table, individual=True)
+    tags = tuple(name for name in others if name in sequence)
+    individuals = [name for name in others if name in individual and name not in tags]
+    if individuals:
+        msg = (
+            f"{run.feature}: the key {_quoted(individuals)} is an individual tag, "
+            f"and a summary reaches an individual only through the links of a "
+            f"tracks variant, which it does not resolve. Copy the tag into a "
+            f"column of the run with id-tag-columns and summarize that run."
+        )
+        raise SummaryInvalid(
+            msg, feature=run.feature, run_id=run.run_id, columns=individuals
+        )
+    unknown = tuple(
+        name for name in others if name not in tags and name not in individual
+    )
+    return _KeySplit(run_keys, tags, unknown, table)
+
+
+def _definition_names(table: ResolvedTagTable | None, *, individual: bool) -> list[str]:
+    """The names of the sequence or the individual tags that *table* defines."""
+    if table is None:
+        return []
+    definitions = table.table.definitions
+    return [
+        definition.name
+        for definition in (
+            definitions.individual if individual else definitions.sequence
+        )
+    ]
+
+
+def _refuse_unknown_keys(read: RunRead, split: _KeySplit) -> None:
+    """Raise once for every key that is neither a column of the run nor a tag."""
+    from .run_matrix import RunReadInvalid
+
+    if not split.unknown:
+        return
+    columns = [name for name, _ in read.footer_columns]
+    tags = _definition_names(split.table, individual=False)
+    tag_clause = (
+        f"The sequence tags are: {list_names(tags)}."
+        if tags
+        else "The dataset has no sequence tags."
+    )
+    msg = (
+        f"{read.feature} run {read.run_id}: no entry writes the key "
+        f"{_quoted(split.unknown)}, and it is not a sequence tag. The columns of "
+        f"entry {entry_label(read.outputs.found[0][0])} are: {list_names(columns)}. "
+        f"{tag_clause}"
+    )
+    raise RunReadInvalid(
+        msg,
+        feature=read.feature,
+        run_id=read.run_id,
+        entries=[read.outputs.found[0][0]],
+        columns=columns,
+    )
+
+
+def _quoted(names: Sequence[str]) -> str:
+    """The names, each in quotes, as a clause for a message."""
+    return ", ".join(repr(name) for name in names)
+
+
+def _tag_key(table: TagTable, name: str, entry_of: Sequence[tuple[str, str]]) -> _Key:
+    """The cells of the sequence tag *name* on each row, by the row's entry.
+
+    A ``label`` is true on the entries it is assigned to and false elsewhere. Any
+    other type is ``None`` on an entry that holds no value of it.
+    """
+    type_: TypedAttributeType = next(
+        definition.type
+        for definition in table.definitions.sequence
+        if definition.name == name
+    )
+    kind = _TAG_KEY_TYPES[type_]
+    held = {
+        (sequence.group, sequence.sequence): sequence.tags
+        for sequence in table.sequences
+    }
+    cast = {"string": str, "integer": int, "floating": float, "boolean": bool}
+    cells: list[KeyValue | None] = []
+    for entry in entry_of:
+        tags = held.get(entry, {})
+        if type_ == "label":
+            cells.append(name in tags)
+            continue
+        value = tags.get(name)
+        cells.append(None if value is None else cast[kind](value))
+    return _Key(kind, tuple(cells))
+
+
+def _tag_revision_read(split: _KeySplit) -> TagRevisionRead | None:
+    """The revision that the tag keys were read from, ``None`` without tag keys."""
+    if not split.tag_keys or split.table is None or split.table.revision is None:
+        return None
+    return TagRevisionRead(
+        revision=split.table.revision, digest=split.table.payload_digest
     )
 
 

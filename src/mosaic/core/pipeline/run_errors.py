@@ -4,14 +4,16 @@
 message lists, and returns them as the error's detail. The classified errors of
 :mod:`~mosaic.core.pipeline.run_matrix` and
 :mod:`~mosaic.core.pipeline.run_summary` subclass it beside
-:class:`~mosaic.core.pipeline.error_kind.ClassifiedError`.
+:class:`~mosaic.core.pipeline.error_kind.ClassifiedError`. :func:`list_names`
+writes such a list for a message: the first :data:`LISTED` names and a count
+of the rest.
 
 The module is a leaf. It imports the standard library only.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -19,12 +21,22 @@ if TYPE_CHECKING:
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
 
-__all__ = ["RunError", "entry_label"]
+__all__ = ["LISTED", "RunError", "entry_label", "list_names"]
+
+LISTED: Final = 12
+"""How many names a message lists before it counts the rest."""
 
 
 def entry_label(entry: Entry) -> str:
     """Return the ``group/sequence`` that names an entry in a message."""
     return f"{entry[0]}/{entry[1]}"
+
+
+def list_names(names: Sequence[str]) -> str:
+    """Return the first :data:`LISTED` names, and a count of the rest, for a message."""
+    shown = ", ".join(names[:LISTED])
+    rest = len(names) - LISTED
+    return shown if rest <= 0 else f"{shown}, and {rest} more"
 
 
 class RunError(Exception):

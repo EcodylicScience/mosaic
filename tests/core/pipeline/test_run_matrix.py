@@ -46,6 +46,7 @@ from mosaic.core.pipeline.run_matrix import (
     load_run_matrix,
     plan_run_read,
     read_run,
+    run_key_columns,
 )
 from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf, current_run_id
 from mosaic.core.pipeline.types import Result, ResultColumn
@@ -903,6 +904,83 @@ def strain_and_batch_run(tmp_path: Path) -> tuple[Dataset, Result]:
             ),
         },
     )
+
+
+def test_the_key_columns_are_group_sequence_and_the_columns_of_the_first_output(
+    tmp_path: Path,
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    assert run_key_columns(ds, result) == {
+        "group",
+        "sequence",
+        "frame",
+        "id",
+        "strain",
+        "batch",
+        "value",
+    }
+
+
+def test_the_key_columns_are_those_of_the_first_output_in_the_scope(
+    tmp_path: Path,
+) -> None:
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): labeled_table(("g", "a"), 1, strain=["A"]),
+            ("g", "b"): labeled_table(("g", "b"), 1, batch=np.array([2])),
+        },
+    )
+
+    assert "strain" in run_key_columns(ds, result, scope=Scope(entries=[("g", "a")]))
+    assert "batch" in run_key_columns(ds, result, scope=Scope(entries=[("g", "b")]))
+
+
+def test_a_key_that_only_a_later_output_writes_is_among_the_key_columns(
+    tmp_path: Path,
+) -> None:
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): labeled_table(("g", "a"), 1),
+            ("g", "b"): labeled_table(("g", "b"), 1, strain=["B"]),
+        },
+    )
+
+    assert "strain" not in run_key_columns(ds, result)
+    assert "strain" in run_key_columns(ds, result, ["strain"])
+
+
+def test_the_key_columns_read_one_footer_when_the_first_writes_every_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+    reader = run_matrix_module.read_footer
+    paths: list[Path] = []
+
+    def recording(path: Path) -> object:
+        paths.append(path)
+        return reader(path)
+
+    monkeypatch.setattr(run_matrix_module, "read_footer", recording)
+
+    assert run_key_columns(ds, result, ["strain", "batch", "group"]) >= {
+        "strain",
+        "batch",
+    }
+    assert len(paths) == 1
+
+
+def test_the_key_columns_of_a_scope_that_selects_nothing_are_refused(
+    tmp_path: Path,
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    with pytest.raises(ValueError, match="selects no output"):
+        _ = run_key_columns(ds, result, scope=Scope(groups=["nowhere"]))
+    with pytest.raises(ValueError, match="g9/never"):
+        _ = run_key_columns(ds, result, scope=Scope(entries=[("g9", "never")]))
 
 
 @pytest.mark.parametrize(

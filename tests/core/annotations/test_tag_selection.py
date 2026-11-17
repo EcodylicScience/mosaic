@@ -32,6 +32,7 @@ from mosaic.core.recording import RecordingKey
 from mosaic.core.scope import Scope
 from mosaic.core.typed_attribute import TypedAttributeType
 from tests.helpers import (
+    index_a_second_origin,
     MediaClip,
     make_dataset,
     tag_table,
@@ -249,14 +250,6 @@ class TestTheRevision:
         assert read.origin_uuid == (ds.uuid or "")
 
 
-def _second_origin(ds: Dataset) -> None:
-    path = series_index_path(ds, TAGS_SERIES)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    other = rows.copy()
-    other["origin_uuid"] = "other-origin"
-    pd.concat([rows, other]).to_csv(path, index=False)
-
-
 def _missing_payload(ds: Dataset) -> None:
     index = pd.read_csv(
         series_index_path(ds, TAGS_SERIES), dtype=str, keep_default_na=False
@@ -284,11 +277,11 @@ def _unreadable_payload(ds: Dataset) -> None:
 class TestAnUnavailableTable:
     @pytest.mark.parametrize(
         "damage",
-        [_second_origin, _missing_payload, _edited_payload, _unreadable_payload],
+        [index_a_second_origin, _missing_payload, _edited_payload, _unreadable_payload],
         ids=["two-origins", "missing-payload", "edited-in-place", "unreadable"],
     )
     def test_each_state_is_a_conflict_that_names_the_reason(
-        self, ds: Dataset, damage: Callable[[Dataset], None]
+        self, ds: Dataset, damage: Callable[[Dataset], object]
     ) -> None:
         _ = write_tags(ds, _table())
         damage(ds)

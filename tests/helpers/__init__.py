@@ -119,7 +119,7 @@ What lives where:
   rows of one individual at a steady step, the error text that a missing ``time``
   gives ``duration`` and ``share``, and the values of an ROI column.
 - ``tag_tables``: a table of sequence tags in the shape the ``tags`` series saves,
-  and its write into a dataset.
+  and its write into a dataset, and the index row of a second origin's copy of it.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -433,7 +433,7 @@ from tests.helpers.state_writes import (
     load_results_after_each_failed_write,
     record_published_files,
 )
-from tests.helpers.tag_tables import tag_table, write_tags
+from tests.helpers.tag_tables import index_a_second_origin, tag_table, write_tags
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
     add_track_sequences,
@@ -730,6 +730,7 @@ __all__ = [
     "fake_tool_probe",
     "finish_media_variant",
     "image_mark",
+    "index_a_second_origin",
     "index_locked_out",
     "index_media_sequence",
     "index_session",

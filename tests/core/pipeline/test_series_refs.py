@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from mosaic.core.annotations.tag_table import tag_table_payload
@@ -14,7 +13,6 @@ from mosaic.core.pipeline.label_series_index import (
     LabelSeriesTamperedError,
     SeveralOrigins,
     resolve_series_refs,
-    series_index_path,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred
 from mosaic.core.pipeline.label_series import (
@@ -23,7 +21,7 @@ from mosaic.core.pipeline.label_series import (
     LabelRevisionRef,
 )
 from mosaic.core.typed_attribute import TypedAttributeType
-from tests.helpers import make_dataset, tag_table, write_tags
+from tests.helpers import index_a_second_origin, make_dataset, tag_table, write_tags
 
 TYPES: dict[str, TypedAttributeType] = {"treatment": "categorical"}
 
@@ -131,19 +129,9 @@ def test_a_payload_edited_in_place_is_refused(ds: Dataset) -> None:
         )
 
 
-def _index_a_second_origin(ds: Dataset) -> str:
-    """Add a row that says another dataset saved the same key."""
-    path = series_index_path(ds, TAGS_SERIES)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    other = rows.copy()
-    other["origin_uuid"] = "other-origin"
-    pd.concat([rows, other]).to_csv(path, index=False)
-    return "other-origin"
-
-
 def test_two_origins_without_an_origin_uuid_raise_key_error(ds: Dataset) -> None:
     _ = write_tags(ds, tag_table({("g", "s1"): {"treatment": "a"}}, TYPES))
-    _ = _index_a_second_origin(ds)
+    _ = index_a_second_origin(ds)
 
     with pytest.raises(KeyError, match="origin_uuid"):
         _ = resolve_series_refs(
@@ -155,7 +143,7 @@ def test_the_several_origins_error_names_the_series_key_and_origins(
     ds: Dataset,
 ) -> None:
     _ = write_tags(ds, tag_table({("g", "s1"): {"treatment": "a"}}, TYPES))
-    other = _index_a_second_origin(ds)
+    other = index_a_second_origin(ds)
 
     with pytest.raises(SeveralOrigins) as raised:
         _ = resolve_series_refs(
@@ -170,7 +158,7 @@ def test_the_several_origins_error_names_the_series_key_and_origins(
 
 def test_an_origin_uuid_selects_among_origins(ds: Dataset) -> None:
     _ = write_tags(ds, tag_table({("g", "s1"): {"treatment": "a"}}, TYPES))
-    other = _index_a_second_origin(ds)
+    other = index_a_second_origin(ds)
 
     (resolved,) = resolve_series_refs(
         ds,

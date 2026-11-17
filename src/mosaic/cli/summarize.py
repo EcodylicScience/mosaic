@@ -20,9 +20,11 @@ from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
     EntriesOption,
     GroupOption,
+    TagOption,
     emit_json,
     entries_scope,
     fail_classified,
+    resolve_choices,
 )
 from mosaic.cli._render import render_kv, render_table
 
@@ -52,9 +54,9 @@ def summarize_command(
         typer.Option(
             "--by",
             help=(
-                "A group key (repeatable): 'group', 'sequence' or a column the run "
-                "writes, such as a label kept with keep_columns. Default: one "
-                "group of every row."
+                "A group key (repeatable): 'group', 'sequence', a column the run "
+                "writes, such as a label kept with keep_columns, or a sequence "
+                "tag. Default: one group of every row."
             ),
         ),
     ] = None,
@@ -91,6 +93,19 @@ def summarize_command(
     ] = None,
     entry: EntriesOption = None,
     group: GroupOption = None,
+    tag: TagOption = None,
+    tag_revision: Annotated[
+        int | None,
+        typer.Option(
+            "--tag-revision",
+            min=1,
+            help=(
+                "The revision of the sequence tags to read, for --tag and for a "
+                "--by or --where key that names a sequence tag. Default: the "
+                "latest."
+            ),
+        ),
+    ] = None,
     allow_partial: Annotated[
         bool,
         typer.Option(
@@ -102,13 +117,27 @@ def summarize_command(
         bool, typer.Option("--json", help="Emit as a JSON object.")
     ] = False,
 ) -> None:
-    """Summarize one feature run: rows, statistics and tests by group."""
+    """Summarize one feature run: rows, statistics and tests by group.
+
+    A --by or --where key that the run does not write and that names a sequence
+    tag groups or filters the entries by the tag's value. --tag selects the entries
+    that hold a sequence tag, as 'mosaic pipeline plan --tag' does. A --tag and a
+    tag key read one revision of the tags, which the output records.
+    """
     # Imported in the body, so --help and the other verbs stay import-light.
     from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.run_summary import summarize_ref
 
     ds = load_dataset(manifest, read_only=True)
-    scope = entries_scope(entry, group)
+    chosen = resolve_choices(
+        ds,
+        entries_scope(entry, group, tags=tag),
+        None,
+        as_json=as_json,
+        revision=tag_revision,
+    )
+    if chosen.tag_revision is not None:
+        tag_revision = chosen.tag_revision.revision
     try:
         tests = _tests(test or [])
         wire = summarize_ref(
@@ -118,8 +147,9 @@ def summarize_command(
             columns=column,
             tests=tests,
             where=_where(where or []),
-            scope=scope,
+            scope=chosen.scope,
             allow_partial=allow_partial,
+            tag_revision=tag_revision,
         )
     except ClassifiedError as error:
         fail_classified(error, as_json=as_json)
@@ -177,14 +207,17 @@ def _where(tokens: list[str]) -> dict[str, list[KeyValue]]:
 
 def _render(wire: RunSummaryWire, tests: tuple[SummaryTest, ...]) -> None:
     """Print the run, the groups, the statistics and each test asked for."""
-    render_kv(
-        {
-            "ref": wire.ref,
-            "by": ", ".join(wire.by) or "(none)",
-            "columns": ", ".join(wire.columns),
-            "entries": wire.n_entries,
-        }
-    )
+    header: dict[str, object] = {
+        "ref": wire.ref,
+        "by": ", ".join(wire.by) or "(none)",
+        "columns": ", ".join(wire.columns),
+        "entries": wire.n_entries,
+    }
+    if wire.tag_revision is not None:
+        header["tag_keys"] = (
+            f"{', '.join(wire.tag_keys)} (revision {wire.tag_revision.revision})"
+        )
+    render_kv(header)
     typer.echo()
     render_table(
         [

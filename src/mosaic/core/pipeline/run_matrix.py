@@ -52,7 +52,7 @@ from .error_kind import ClassifiedError, ErrorKind
 from .index import feature_index, feature_index_path, missing_outputs_error
 from .memory_limit import usable_memory_bytes
 from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
-from .run_errors import RunError, entry_label
+from .run_errors import RunError, entry_label, list_names
 from .track_universe import AmbiguousTrackLeaf, current_run_id
 from .types import BOOKKEEPING_COLS, META_COLS, Result
 
@@ -76,6 +76,7 @@ __all__ = [
     "load_run_matrix",
     "plan_run_read",
     "read_run",
+    "run_key_columns",
 ]
 
 type KeyKind = ArrowKind | Literal["null"]
@@ -113,9 +114,6 @@ _ENTRY_COLUMNS: Final = ("group", "sequence")
 """The columns of a row's entry, which every index holds."""
 
 _NUMERIC_KINDS: Final = frozenset({"integer", "floating", "boolean"})
-
-_LISTED: Final = 12
-"""How many names a message lists before it counts the rest."""
 
 
 class RunNotFound(RunError, ClassifiedError, FileNotFoundError):
@@ -385,6 +383,54 @@ def plan_run_read(
     )
 
 
+def run_key_columns(
+    ds: Dataset,
+    result: Result[str],
+    names: Sequence[str] = (),
+    *,
+    scope: Scope | None = None,
+) -> frozenset[str]:
+    """The names a ``by`` or ``where`` key may take from the run itself.
+
+    These are ``group``, ``sequence`` and the columns of the outputs in *scope*.
+    The footer of the first output is read, and the footers of the others only
+    while a name in *names* is not yet among the columns, so a read whose keys the
+    first output writes reads one footer. A name outside the set is written by no
+    entry, so a caller may resolve it elsewhere before it plans the read. A name
+    that some entries write and others do not is in the set, and
+    :func:`plan_run_read` then refuses it as a conflict.
+
+    Args:
+        ds: The dataset holding the run.
+        result: The run to read.
+        names: The keys that the caller needs to place.
+        scope: The entries to read.
+
+    Raises:
+        RunNotFound: The feature has no index, or the run is not in it.
+        RunIndexEmpty: The feature has no run to read.
+        AmbiguousRunLeaf: *result* names no run, and the feature has several.
+        RunReadInvalid: The scope selects no output of the run.
+        RunOutputsGone: Every output in scope is gone from disk.
+        RunIncomplete: The scope names entries that the run holds no output for.
+    """
+    run_id = _resolve_run_id(ds, result)
+    outputs = _run_outputs(
+        ds, result.feature, run_id, scope if scope is not None else Scope()
+    )
+    _refuse_a_partial_run(result.feature, run_id, outputs, allow_partial=True)
+    paths = iter(path for _, path in outputs.found)
+    columns = {
+        *_ENTRY_COLUMNS,
+        *(column.name for column in read_footer(next(paths)).columns),
+    }
+    for path in paths:
+        if columns.issuperset(names):
+            break
+        columns.update(column.name for column in read_footer(path).columns)
+    return frozenset(columns)
+
+
 def read_run(read: RunRead, dtype: npt.DTypeLike = np.float32) -> RunMatrix:
     """Read the rows that *read* plans into an identity frame and an array.
 
@@ -449,7 +495,7 @@ def _resolve_run_id(ds: Dataset, result: Result[str]) -> str:
             f"{result.feature!r} has no runs in this dataset: {path} does not "
             f"exist. A feature is stored under the name its run was given, such "
             f"as 'speed-angvel__from__tracks'. The features that have runs are: "
-            f"{_listed(with_runs)}."
+            f"{list_names(with_runs)}."
         )
         raise RunNotFound(msg, feature=result.feature, run_id=result.run_id)
     if result.run_id is not None:
@@ -519,7 +565,7 @@ def _refuse_a_partial_run(
     if not outputs.found:
         msg = (
             f"{feature} run {run_id} holds no output for the entries the scope "
-            f"names: {_listed(_names(outputs.absent))}."
+            f"names: {list_names(_names(outputs.absent))}."
         )
         raise RunIncomplete(msg, feature=feature, run_id=run_id, entries=outputs.absent)
     if allow_partial:
@@ -527,7 +573,7 @@ def _refuse_a_partial_run(
     if outputs.unreadable:
         msg = (
             f"{feature} run {run_id} lists outputs that are gone from disk: "
-            f"{_listed(_names(outputs.unreadable))}. Recompute those entries, "
+            f"{list_names(_names(outputs.unreadable))}. Recompute those entries, "
             f"drop their stale index rows with ds.reindex_features(), or read the "
             f"others with scope=, or with allow_partial=True."
         )
@@ -537,7 +583,7 @@ def _refuse_a_partial_run(
     if outputs.absent:
         msg = (
             f"The scope names entries that {feature} run {run_id} holds no output "
-            f"for: {_listed(_names(outputs.absent))}. Compute them, drop them from "
+            f"for: {list_names(_names(outputs.absent))}. Compute them, drop them from "
             f"the scope, or pass allow_partial=True."
         )
         raise RunIncomplete(msg, feature=feature, run_id=run_id, entries=outputs.absent)
@@ -620,8 +666,8 @@ def _plan(
         names = [column.name for column in first_footer.columns]
         msg = (
             f"{feature} run {run_id}: no entry writes the key "
-            f"{_listed([repr(name) for name in absent])}. The columns of entry "
-            f"{entry_label(first_entry)} are: {_listed(names)}."
+            f"{list_names([repr(name) for name in absent])}. The columns of entry "
+            f"{entry_label(first_entry)} are: {list_names(names)}."
         )
         raise RunReadInvalid(
             msg, feature=feature, run_id=run_id, entries=[first_entry], columns=names
@@ -690,7 +736,7 @@ def _select_columns(
             msg = (
                 f"{where}: entry {entry_label(entry)} has no numeric payload column. Name "
                 f"the columns to read with columns=. Its numeric columns are: "
-                f"{_listed(candidates)}."
+                f"{list_names(candidates)}."
             )
             raise RunReadInvalid(
                 msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
@@ -706,7 +752,7 @@ def _select_columns(
                 f"{where}: columns={pattern!r} matches no numeric column of entry "
                 f"{entry_label(entry)}. An identity column (frame, time, id, id1, id2, "
                 f"perspective) is not a value, and nor is a string column. The "
-                f"numeric columns are: {_listed(candidates)}."
+                f"numeric columns are: {list_names(candidates)}."
             )
             raise RunReadInvalid(
                 msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
@@ -851,13 +897,6 @@ def _names(entries: Sequence[Entry]) -> list[str]:
     return [entry_label(entry) for entry in entries]
 
 
-def _listed(names: Sequence[str]) -> str:
-    """The first names, and a count of the rest."""
-    shown = ", ".join(names[:_LISTED])
-    rest = len(names) - _LISTED
-    return shown if rest <= 0 else f"{shown}, and {rest} more"
-
-
 def _differences(
     expected: tuple[str, ...], actual: tuple[str, ...]
 ) -> tuple[list[str], list[str]]:
@@ -872,8 +911,8 @@ def _difference_clause(lacks: list[str], adds: list[str]) -> str:
     clauses = [
         text
         for text in (
-            f"lacks {_listed(lacks)}" if lacks else "",
-            f"adds {_listed(adds)}" if adds else "",
+            f"lacks {list_names(lacks)}" if lacks else "",
+            f"adds {list_names(adds)}" if adds else "",
         )
         if text
     ]

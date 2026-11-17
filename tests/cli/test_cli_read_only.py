@@ -527,6 +527,20 @@ CLI_READS: dict[str, CliArguments] = {
         "--test",
         "kruskal",
     ],
+    "summarize --by a tag": lambda f: [
+        "summarize",
+        f"feature/{AGGREGATE_STORAGE}/{f.aggregate_run_id}",
+        "--by",
+        "site",
+    ],
+    "summarize --tag": lambda f: [
+        "summarize",
+        f"feature/{AGGREGATE_STORAGE}/{f.aggregate_run_id}",
+        "--tag",
+        "site=a",
+        "--by",
+        "group",
+    ],
     "sweep-tracking --dry-run": lambda _: ["sweep-tracking"],
     "tags list": lambda _: ["tags", "list"],
     "upgrade-tracks --dry-run": lambda _: ["upgrade-tracks"],
@@ -829,6 +843,11 @@ LIBRARY_READS: dict[str, LibraryRead] = {
         Result[str](feature=AGGREGATE_STORAGE, run_id=f.aggregate_run_id),
         by=["group"],
         tests=["kruskal"],
+    ),
+    "summarize_run of a tag": lambda f: summarize_run(
+        f.reopened(),
+        Result[str](feature=AGGREGATE_STORAGE, run_id=f.aggregate_run_id),
+        by=["site"],
     ),
 }
 

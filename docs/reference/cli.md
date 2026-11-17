@@ -306,6 +306,11 @@ $ mosaic preview [OPTIONS] {ref}
 
 Summarize one feature run: rows, statistics and tests by group.
 
+A --by or --where key that the run does not write and that names a sequence
+tag groups or filters the entries by the tag's value. --tag selects the entries
+that hold a sequence tag, as 'mosaic pipeline plan --tag' does. A --tag and a
+tag key read one revision of the tags, which the output records.
+
 **Usage**:
 
 ```console
@@ -319,12 +324,14 @@ $ mosaic summarize [OPTIONS] {ref}
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--by <str>`: A group key (repeatable): 'group', 'sequence' or a column the run writes, such as a label kept with keep_columns. Default: one group of every row.
+* `--by <str>`: A group key (repeatable): 'group', 'sequence', a column the run writes, such as a label kept with keep_columns, or a sequence tag. Default: one group of every row.
 * `--column <str>`: A value column or pattern (repeatable). A name with *, ? or [ is a pattern, such as 'speed_*'. Default: every numeric column.
 * `--test <str>`: A test between groups (repeatable): kruskal over all groups, or mannwhitney for every pair, adjusted by Holm within a column.
 * `--where <str>`: Keep the rows whose KEY is VALUE (repeatable). Values of one key are alternatives. A value is read as text, and as a number or a boolean where the key holds one: --where n_inds=1.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--tag-revision <int range>`: The revision of the sequence tags to read, for --tag and for a --by or --where key that names a sequence tag. Default: the latest.  [x>=1]
 * `--allow-partial`: Read a run that lacks entries of the scope or is not finished.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
