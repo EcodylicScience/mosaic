@@ -931,26 +931,50 @@ def test_reading_the_covariates_is_in_no_entrys_flight(
 ) -> None:
     ds = _dataset(tmp_path)
     real = run_module.tracks_covariates
-    slow = 1.0
+    read_returned: list[float] = []
+    flight_started: list[float] = []
 
-    def slowly(
+    def noting(
         ds: Dataset,
         entries: Collection[Entry],
         *,
         tracks_run_id: str | None,
         variants: Collection[str] | None,
     ) -> dict[Entry, EntryCovariates]:
-        time.sleep(slow)
-        return real(ds, entries, tracks_run_id=tracks_run_id, variants=variants)
+        read = real(ds, entries, tracks_run_id=tracks_run_id, variants=variants)
+        read_returned.append(time.monotonic())
+        return read
 
-    monkeypatch.setattr(run_module, "tracks_covariates", slowly)
+    class _NotingStarts(EntriesInFlight):
+        @override
+        def enter(
+            self,
+            key: str,
+            rows: int,
+            *,
+            pair_frames: int | None,
+            started: float,
+            cpu: float,
+            pair_frames_bound: bool = False,
+        ) -> None:
+            flight_started.append(started)
+            super().enter(
+                key,
+                rows,
+                pair_frames=pair_frames,
+                started=started,
+                cpu=cpu,
+                pair_frames_bound=pair_frames_bound,
+            )
+
+    monkeypatch.setattr(run_module, "tracks_covariates", noting)
+    monkeypatch.setattr(run_module, "EntriesInFlight", _NotingStarts)
 
     _ = run_feature(ds, ParallelFeature(), execution_id="TESTCOVARIATETIMING")
 
-    ends = _events(ds, "TESTCOVARIATETIMING", "entry_end")
-    assert all(_number(end, "wall_seconds") < slow / 2 for end in ends)
-    levels = _written_levels(ds, "TESTCOVARIATETIMING")
-    assert sum(level.seconds for level in levels) < slow / 2
+    assert len(read_returned) == 1
+    assert flight_started
+    assert min(flight_started) >= read_returned[0]
 
 
 def test_a_full_cache_hit_reads_no_covariates(

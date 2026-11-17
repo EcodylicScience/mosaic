@@ -1551,54 +1551,55 @@ def _asked_by_now(
     return asked, asked_all and not feature.scope_dependent
 
 
-@dataclass
-class _RunCost:
-    """What a feature run has measured of its fit and its entries, beside the watch.
+@dataclass(frozen=True)
+class _ApplySettings:
+    """How a phase of apply runs its entries.
 
-    The sampling thread reads it to write a report, and the run's thread and its
-    apply threads update it, one assignment at a time.
-
-    The run fixes its measure at the base sample: the non-reclaimable figure where
-    that sample measured it (``nonreclaimable``), else tree RSS. Every figure the
-    estimate and the gate take afterwards is in that measure.
+    Attributes:
+        workers: How many entries are computed at once.
+        mode: Whether those entries run in threads or in worker processes.
+        admission_margin: The gate's margin, 0 for no gate.
+        min_free_memory_fraction: The floor of free memory that holds an entry back.
+        measure_worker_base: Whether to measure one process worker's own memory
+            once the phase has ended without one.
     """
 
-    fitting: bool = False
-    fit_seconds: float = 0.0
-    fit_peak_rss_bytes: int = 0
-    fit_entries: int = 0
-    fit_input_rows: int = 0
-    high_water_after_fit: int | None = None
-    base_rss_bytes: int = 0
-    base_nonreclaimable_bytes: int = 0
+    workers: int
+    mode: ParallelMode
+    admission_margin: float
+    min_free_memory_fraction: float
+    measure_worker_base: bool
+
+    @property
+    def entry_mode(self) -> ParallelMode:
+        """The mode an entry runs in: a worker process only where there are several."""
+        return "process" if self.mode == "process" and self.workers > 1 else "thread"
+
+
+@dataclass
+class _PhaseState:
+    """What one phase of apply has measured and holds, beside the run's other figures.
+
+    The sampling thread reads it through :attr:`_RunCost.phase`, and the apply
+    threads update it, one assignment at a time.
+
+    Attributes:
+        settings: How the phase runs its entries.
+        in_flight: The entries in flight, and what each cost.
+        estimate: The memory an input row in flight has cost.
+        worker_bases: What a process worker holds before it applies an entry.
+        peak_sample: The largest sample taken with an entry in flight.
+        closed: Whether the phase's pool has written its final report, after
+            which the run publishes no further report for the phase.
+    """
+
+    settings: _ApplySettings
+    in_flight: EntriesInFlight
+    estimate: RowCostEstimate
     worker_bases: WorkerBases = field(default_factory=WorkerBases)
-    nonreclaimable: bool = False
     peak_sample: PeakSample | None = None
     _peak_lock: threading.Lock = field(default_factory=threading.Lock)
-    apply_started: float | None = None
-    apply_ended: float | None = None
-    admission_waits: int = 0
-    entries_with_rows_written: int = 0
-    last_report: ResourceReport | None = None
-
-    def end_fit(self, watch: MemoryWatch, seconds: float) -> None:
-        """Freeze the fit's figures, its high-water mark counted once it has risen."""
-        self.fit_seconds = seconds
-        self.fit_peak_rss_bytes = max(
-            watch.peak_rss_bytes, watch.high_water_mark_since()
-        )
-        self.high_water_after_fit = watch.high_water_mark()
-        self.fitting = False
-
-    def figure_of(self, sample: MemorySample) -> int | None:
-        """Return *sample*'s memory in the run's measure.
-
-        ``None`` for a sample of a non-reclaimable run that could not measure the
-        figure. A caller leaves that sample out rather than read it as 0.
-        """
-        if self.nonreclaimable:
-            return sample.nonreclaimable_bytes
-        return sample.tree_rss_bytes
+    closed: bool = False
 
     def consider_peak(
         self,
@@ -1625,6 +1626,90 @@ class _RunCost:
                 pair_frames_bound=pair_frames_bound,
                 live_workers=live_workers,
             )
+
+
+def _new_phase_state(
+    settings: _ApplySettings, watch: MemoryWatch, *, parent_base: int | None = None
+) -> _PhaseState:
+    """Return the state of a phase that has measured nothing.
+
+    Args:
+        settings: How the phase runs its entries.
+        watch: The attempt's watch, whose CPU the entries in flight stamp.
+        parent_base: The run's own memory in the run's measure, once the base
+            sample has measured it, else ``None``.
+    """
+    estimate = RowCostEstimate()
+    if parent_base is not None:
+        estimate.parent_base(parent_base)
+    return _PhaseState(
+        settings=settings,
+        in_flight=EntriesInFlight(cpu_seconds=watch.cpu_seconds),
+        estimate=estimate,
+    )
+
+
+@dataclass(frozen=True)
+class _PhaseOutcome:
+    """What a phase of apply decided about its entries.
+
+    Attributes:
+        cache_hit: Whether every entry was served from a valid output on disk.
+        computed: How many entries were computed.
+    """
+
+    cache_hit: bool
+    computed: int
+
+
+@dataclass
+class _RunCost:
+    """What a feature run has measured of its fit and its entries, beside the watch.
+
+    The sampling thread reads it to write a report, and the run's thread and its
+    apply threads update it, one assignment at a time. The figures of the entries
+    in the running phase are in ``phase``.
+
+    The run fixes its measure at the base sample: the non-reclaimable figure where
+    that sample measured it (``nonreclaimable``), else tree RSS. Every figure the
+    estimate and the gate take afterwards is in that measure.
+    """
+
+    phase: _PhaseState
+    fitting: bool = False
+    fit_seconds: float = 0.0
+    fit_peak_rss_bytes: int = 0
+    fit_entries: int = 0
+    fit_input_rows: int = 0
+    high_water_after_fit: int | None = None
+    base_rss_bytes: int = 0
+    base_nonreclaimable_bytes: int = 0
+    parent_base_bytes: int | None = None
+    nonreclaimable: bool = False
+    apply_started: float | None = None
+    apply_ended: float | None = None
+    admission_waits: int = 0
+    entries_with_rows_written: int = 0
+    last_report: ResourceReport | None = None
+
+    def end_fit(self, watch: MemoryWatch, seconds: float) -> None:
+        """Freeze the fit's figures, its high-water mark counted once it has risen."""
+        self.fit_seconds = seconds
+        self.fit_peak_rss_bytes = max(
+            watch.peak_rss_bytes, watch.high_water_mark_since()
+        )
+        self.high_water_after_fit = watch.high_water_mark()
+        self.fitting = False
+
+    def figure_of(self, sample: MemorySample) -> int | None:
+        """Return *sample*'s memory in the run's measure.
+
+        ``None`` for a sample of a non-reclaimable run that could not measure the
+        figure. A caller leaves that sample out rather than read it as 0.
+        """
+        if self.nonreclaimable:
+            return sample.nonreclaimable_bytes
+        return sample.tree_rss_bytes
 
     def apply_wall_seconds(self) -> float:
         """From the first entry's load start to the last output written, 0 before both."""
@@ -2182,8 +2267,6 @@ def _run_feature_impl(
     # in the run-log. Every exit of this span stops the sampler and writes the
     # final report.
     watch = MemoryWatch()
-    estimate = RowCostEstimate()
-    in_flight = EntriesInFlight(cpu_seconds=watch.cpu_seconds)
     # What each computed entry's work scales with, filled from the tracks index once
     # before the first entry loads, so the read is in no entry's flight.
     covariates_by_key: dict[str, EntryCovariates] = {}
@@ -2191,25 +2274,31 @@ def _run_feature_impl(
     def covariates_of(key: str) -> EntryCovariates:
         return covariates_by_key.get(key, NO_COVARIATES)
 
-    # A worker process computes an entry only where there are several workers.
-    entry_mode = (
-        "process" if parallel_mode_str == "process" and max_workers > 1 else "thread"
+    run_settings = _ApplySettings(
+        workers=max_workers,
+        mode=parallel_mode_str,
+        admission_margin=margin,
+        min_free_memory_fraction=min_free_memory_fraction,
+        measure_worker_base=measure_worker_base,
     )
-    cost = _RunCost()
-    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] | None = None
+    cost = _RunCost(phase=_new_phase_state(run_settings, watch))
+    # Held while a report is written and while a phase's pool is closed, so no report
+    # follows a phase's final one.
+    publishing = threading.RLock()
 
-    def _resource_report() -> ResourceReport:
+    def _resource_report(phase: _PhaseState) -> ResourceReport:
+        settings = phase.settings
         limit = watch.limit
         fit_peak = watch.peak_rss_bytes if cost.fitting else cost.fit_peak_rss_bytes
         peak = max(watch.peak_rss_bytes, fit_peak)
-        if parallel_mode_str == "thread" or max_workers == 1:
+        if settings.mode == "thread" or settings.workers == 1:
             # One process: its high-water mark counts once it rises past the fit.
             peak = max(peak, watch.high_water_mark_since(cost.high_water_after_fit))
-        per_row = estimate.bytes_per_row
-        peak_sample = cost.peak_sample
+        per_row = phase.estimate.bytes_per_row
+        peak_sample = phase.peak_sample
         return ResourceReport(
-            workers=max_workers,
-            parallel_mode=parallel_mode_str if max_workers > 1 else "",
+            workers=settings.workers,
+            parallel_mode=settings.mode if settings.workers > 1 else "",
             peak_rss_bytes=peak,
             min_available_bytes=watch.min_available_bytes,
             total_memory_bytes=watch.total_bytes,
@@ -2227,10 +2316,10 @@ def _run_feature_impl(
             peak_bytes_per_row=0 if per_row is None else per_row,
             fit_entries=cost.fit_entries,
             fit_input_rows=cost.fit_input_rows,
-            worker_base_rss_bytes=cost.worker_bases.rss_bytes,
-            worker_base_nonreclaimable_bytes=cost.worker_bases.nonreclaimable_bytes,
+            worker_base_rss_bytes=phase.worker_bases.rss_bytes,
+            worker_base_nonreclaimable_bytes=phase.worker_bases.nonreclaimable_bytes,
             apply_wall_seconds=cost.apply_wall_seconds(),
-            admission_margin=margin,
+            admission_margin=settings.admission_margin,
             admission_waits=cost.admission_waits,
             nonreclaimable_bytes=watch.nonreclaimable_bytes,
             peak_nonreclaimable_bytes=watch.peak_nonreclaimable_bytes,
@@ -2238,7 +2327,7 @@ def _run_feature_impl(
             peak_grown_bytes=grown_over_bases(
                 peak_sample,
                 base_bytes=cost.base_nonreclaimable_bytes,
-                worker_base_bytes=cost.worker_bases.nonreclaimable_bytes,
+                worker_base_bytes=phase.worker_bases.nonreclaimable_bytes,
             ),
             peak_in_flight_entries=0 if peak_sample is None else peak_sample.entries,
             peak_in_flight_rows=0 if peak_sample is None else peak_sample.rows,
@@ -2251,13 +2340,30 @@ def _run_feature_impl(
             params_digest=params_identity_digest(feature.params),
             params_default=params_equal_defaults(feature.params),
             emits=feature.emits,
-            in_flight_levels=in_flight.levels(),
+            in_flight_levels=phase.in_flight.levels(),
         )
 
     def _publish_resources() -> None:
-        report = _resource_report()
-        cost.last_report = report
-        ctx.resources(report)
+        with publishing:
+            phase = cost.phase
+            if phase.closed:
+                return
+            report = _resource_report(phase)
+            cost.last_report = report
+            ctx.resources(report)
+
+    def _close_phase(
+        phase: _PhaseState,
+        pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome],
+    ) -> None:
+        """Close the phase's pool, which writes its final report, and report nothing after it.
+
+        A report the sampling thread holds when the pool closes is written before
+        the final one or not at all.
+        """
+        with publishing:
+            pool.close()
+            phase.closed = True
 
     def _pool_report(_measured: ResourceReport) -> None:
         """Replace the pool's own report with the run's, which adds the cost."""
@@ -2290,14 +2396,15 @@ def _run_feature_impl(
         figure = cost.figure_of(sample)
         if figure is None:
             return
-        workers = sample.spawned_workers if parallel_mode_str == "process" else 0
-        entries, rows, pair_frames, pair_frames_bound = in_flight.totals(
+        phase = cost.phase
+        workers = sample.spawned_workers if phase.settings.mode == "process" else 0
+        entries, rows, pair_frames, pair_frames_bound = phase.in_flight.totals(
             sampled_from=sample.started_at
         )
-        estimate.observe(figure, rows, workers)
+        phase.estimate.observe(figure, rows, workers)
         if cost.nonreclaimable:
-            in_flight.observe_memory(figure, sampled_from=sample.started_at)
-            cost.consider_peak(
+            phase.in_flight.observe_memory(figure, sampled_from=sample.started_at)
+            phase.consider_peak(
                 figure,
                 entries=entries,
                 rows=rows,
@@ -2379,7 +2486,8 @@ def _run_feature_impl(
             base_figure = base.nonreclaimable_bytes
             cost.nonreclaimable = base_figure is not None
             cost.base_nonreclaimable_bytes = base_figure or 0
-            estimate.parent_base(cost.figure_of(base) or 0)
+            cost.parent_base_bytes = cost.figure_of(base) or 0
+            cost.phase.estimate.parent_base(cost.parent_base_bytes)
 
         # Apply phase — index rows are flushed periodically for interrupt recovery
         _pending_idx_rows: list[FeatureIndexRow] = []
@@ -2396,229 +2504,427 @@ def _run_feature_impl(
                 _total_written += len(rows)
                 _pending_idx_rows.clear()
 
-        # The growth each process worker measured of the entry it applied, held
-        # until the entry's row is recorded. A worker that could not read its figure
-        # holds None, so its entry is not given the parent's sample, which counts
-        # every worker.
-        worker_growth: dict[str, int | None] = {}
+        def _apply_entries(entries: Manifest, state: _PhaseState) -> _PhaseOutcome:
+            """Apply the feature to *entries* and record each one's index row.
 
-        def _record_row(row: FeatureIndexRow) -> None:
-            _pending_idx_rows.append(row)
-            # Single per-entry choke point (fires on cache-hit, inline, and
-            # parallel-drain paths): report progress + refresh the liveness heartbeat.
-            # A computed entry leaves the in-flight record here with its cost. A cache
-            # hit was never in it and carries no cost.
-            done = _total_written + len(_pending_idx_rows)
-            key = make_entry_key(row.group, row.sequence)
-            span = in_flight.leave(key, written=True)
-            measure: EntryMeasure | None = None
-            if span is not None:
-                written = time.monotonic()
-                cost.apply_ended = written
-                if span.rows > 0:
-                    cost.entries_with_rows_written += 1
-                grown = (
-                    worker_growth.pop(key)
-                    if key in worker_growth
-                    else span.grown_bytes(base_bytes=cost.base_nonreclaimable_bytes)
-                )
-                covariates = covariates_of(key)
-                measure = EntryMeasure(
-                    wall_seconds=written - span.load_started,
-                    apply_seconds=span.apply_seconds,
-                    input_rows=span.rows,
-                    in_flight=span.most_in_flight,
-                    cpu_seconds=max(0.0, watch.cpu_seconds() - span.cpu_at_load),
-                    mode=entry_mode,
-                    peak_grown_bytes=grown,
-                    ids_per_frame=covariates.ids_per_frame,
-                    pair_frames=covariates.pair_frames,
-                    pair_frames_bound=True if covariates.pair_frames_bound else None,
-                    frames=covariates.frames,
-                    keypoints=covariates.keypoints,
-                    fps=covariates.fps,
-                )
-            ctx.entry_ended(done, ctx.total, key, measure)
-            ctx.heartbeat(done)
-            if index_pacer.due():
-                _flush_idx()
+            Entries with a valid output on disk are recorded without loading their
+            input. The rest are computed through a pool built from the settings of
+            *state*, and their measures go to *state*. Rows are flushed periodically,
+            and once more when the apply stops early. The pool is closed on every
+            exit after it is built, which writes the phase's final report.
+            """
+            settings = state.settings
+            # The growth each process worker measured of the entry it applied, held
+            # until the entry's row is recorded. A worker that could not read its figure
+            # holds None, so its entry is not given the parent's sample, which counts
+            # every worker.
+            worker_growth: dict[str, int | None] = {}
 
-        # --- Cache-hit pre-pass --------------------------------------------------
-        # When state is cached and we are not overwriting, resolve which entries
-        # already have valid outputs WITHOUT loading their input parquet (the apply
-        # loop would otherwise deserialize each input only to discard it). Validated
-        # hits are recorded immediately; their keys are excluded from the compute
-        # manifest so iter_manifest never loads them.
-        # NOTE: ``check_output`` here is the run_feature *parameter* (a bool); the
-        # feature's optional validator is the *attribute* feature.check_output.
-        # Resolved once and reused by the cache-hit pre-pass.
-        custom_check = getattr(feature, "check_output", None) if check_output else None
-        if custom_check is not None and not callable(custom_check):
-            custom_check = None  # not a validator method; use the default
+            def _record_row(row: FeatureIndexRow) -> None:
+                _pending_idx_rows.append(row)
+                # Single per-entry choke point (fires on cache-hit, inline, and
+                # parallel-drain paths): report progress + refresh the liveness heartbeat.
+                # A computed entry leaves the in-flight record here with its cost. A cache
+                # hit was never in it and carries no cost.
+                done = _total_written + len(_pending_idx_rows)
+                key = make_entry_key(row.group, row.sequence)
+                span = state.in_flight.leave(key, written=True)
+                measure: EntryMeasure | None = None
+                if span is not None:
+                    written = time.monotonic()
+                    cost.apply_ended = written
+                    if span.rows > 0:
+                        cost.entries_with_rows_written += 1
+                    grown = (
+                        worker_growth.pop(key)
+                        if key in worker_growth
+                        else span.grown_bytes(base_bytes=cost.base_nonreclaimable_bytes)
+                    )
+                    covariates = covariates_of(key)
+                    measure = EntryMeasure(
+                        wall_seconds=written - span.load_started,
+                        apply_seconds=span.apply_seconds,
+                        input_rows=span.rows,
+                        in_flight=span.most_in_flight,
+                        cpu_seconds=max(0.0, watch.cpu_seconds() - span.cpu_at_load),
+                        mode=settings.entry_mode,
+                        peak_grown_bytes=grown,
+                        ids_per_frame=covariates.ids_per_frame,
+                        pair_frames=covariates.pair_frames,
+                        pair_frames_bound=True
+                        if covariates.pair_frames_bound
+                        else None,
+                        frames=covariates.frames,
+                        keypoints=covariates.keypoints,
+                        fps=covariates.fps,
+                    )
+                ctx.entry_ended(done, ctx.total, key, measure)
+                ctx.heartbeat(done)
+                if index_pacer.due():
+                    _flush_idx()
 
-        # What each entry recorded consuming, before this run touches the index. A
-        # skipped entry carries its own value forward; re-deriving it here would
-        # assert that an output not recomputed was built from whatever is true now,
-        # and `drifted_entries` compares exactly this cell -- so the evidence of a
-        # source having moved would erase itself on the first ordinary re-run.
-        prior_compositions: dict[tuple[str, str], str] = (
-            {
-                entry: digest
-                for entry, (_roots, digest) in recorded_consumption(
-                    ds, storage_feature_name, run_id
-                ).items()
-            }
-            if feature.consumed_roots
-            else {}
-        )
-        # The same question for tracks, which no feature declares as a root: the tracks
-        # row records what its table was converted from, so the comparison is two index
-        # reads rather than a new digest. A run with a feature input reads, beside it,
-        # what each upstream row recorded, joined in input order by the manifest.
-        prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
-        tracks_now_by_entry = (
-            resolved.input_tracks_compositions
-            if resolved.input_tracks_compositions is not None
-            else tracks_compositions(ds, resolved.tracks_variants)
-        )
-        # An overlapped entry also read its neighbors, and their keys and tracks
-        # compositions are compared the same way. The run id leaves them out.
-        # Declaring a group, adding a sequence to it or converting a neighbor again
-        # recomputes the entries whose neighbors changed.
-        neighbors_now_by_entry = (
-            neighbor_compositions(manifest, tracks_now_by_entry)
-            if overlap_frames > 0
-            else {}
-        )
-        # What each feature input's upstream recorded of its declared roots, its own
-        # and those it inherited, so an entry recomputes after its upstream entry
-        # recomputes for a moved root. An upstream declaring no root records nothing,
-        # which is absence and not blindness, so this channel never warns.
-        inputs_now_by_entry: Mapping[Entry, str] = (
-            resolved.input_root_compositions
-            if resolved.input_root_compositions is not None
-            else {}
-        )
-        # A run reading tracks only through feature inputs is blind where an
-        # upstream run read a named variant whose tables record no composition.
-        upstreams_over_variants = _upstreams_over_variants(ds, resolved.feature_inputs)
+            # --- Cache-hit pre-pass --------------------------------------------------
+            # When state is cached and we are not overwriting, resolve which entries
+            # already have valid outputs WITHOUT loading their input parquet (the apply
+            # loop would otherwise deserialize each input only to discard it). Validated
+            # hits are recorded immediately; their keys are excluded from the compute
+            # manifest so iter_manifest never loads them.
+            # NOTE: ``check_output`` here is the run_feature *parameter* (a bool); the
+            # feature's optional validator is the *attribute* feature.check_output.
+            # Resolved once and reused by the cache-hit pre-pass.
+            custom_check = (
+                getattr(feature, "check_output", None) if check_output else None
+            )
+            if custom_check is not None and not callable(custom_check):
+                custom_check = None  # not a validator method; use the default
 
-        skip_keys: set[str] = set()
-        # Entries whose provenance neither side can establish. Collected rather than
-        # reported per entry: on a dataset with no projection this is every entry,
-        # and one line naming the repair is worth more than two hundred naming the
-        # symptom.
-        #
-        # One set per channel, because the two are blind independently and their
-        # repairs differ. A channel the run does not read is not blind, it is absent,
-        # and counting it as blind is how one set reported the wrong thing twice over:
-        # `disposition` is unconditionally `undetectable` for a feature declaring no
-        # source root -- forty-four of forty-seven, and the declaration `consumed_roots`
-        # documents as correct -- so every such run announced an unverifiable source
-        # while the tracks channel it actually reads was recorded and compared; and a
-        # genuinely unrecorded tracks channel under a declared root that *was* recorded
-        # was served in silence.
-        roots_blind: set[tuple[str, str]] = set()
-        tracks_blind: set[tuple[str, str]] = set()
-        # Only a source root can be blind. An entry without an arena layout is a
-        # known state, and one that gains a layout recomputes once.
-        blind_capable = sorted(
-            {root for root in feature.consumed_roots if root in get_args(SourceRoot)}
-        )
-        # An arena-blind feature is refused on an entry spanning arenas, so the
-        # index rows, which hold each layout's arena count, are read once when the
-        # feature is one. Declaring a layout changes no tracks composition, and only
-        # an entry's input shows whether it spans the arenas of its layout, so an
-        # entry whose layout names several is never served from the cache.
-        relates: object = getattr(feature, "relates", "none")
-        blind_arena_rows = indexed_arena_rows(ds) if relates == "arena-blind" else None
-        if state_ready and not overwrite:
-            for entry_key in manifest:
-                group, sequence = resolve_sequence_identity(entry_key, entry_map)
-                meta = build_feature_meta(group, sequence, run_root)
-                if not meta.out_path.exists():
-                    continue
-                if check_output:
-                    # A buggy/edge-case validator must not abort the whole run; treat
-                    # any failure as "invalid output" so the entry is recomputed.
+            # What each entry recorded consuming, before this run touches the index. A
+            # skipped entry carries its own value forward; re-deriving it here would
+            # assert that an output not recomputed was built from whatever is true now,
+            # and `drifted_entries` compares exactly this cell -- so the evidence of a
+            # source having moved would erase itself on the first ordinary re-run.
+            prior_compositions: dict[tuple[str, str], str] = (
+                {
+                    entry: digest
+                    for entry, (_roots, digest) in recorded_consumption(
+                        ds, storage_feature_name, run_id
+                    ).items()
+                }
+                if feature.consumed_roots
+                else {}
+            )
+            # The same question for tracks, which no feature declares as a root: the tracks
+            # row records what its table was converted from, so the comparison is two index
+            # reads rather than a new digest. A run with a feature input reads, beside it,
+            # what each upstream row recorded, joined in input order by the manifest.
+            prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
+            tracks_now_by_entry = (
+                resolved.input_tracks_compositions
+                if resolved.input_tracks_compositions is not None
+                else tracks_compositions(ds, resolved.tracks_variants)
+            )
+            # An overlapped entry also read its neighbors, and their keys and tracks
+            # compositions are compared the same way. The run id leaves them out.
+            # Declaring a group, adding a sequence to it or converting a neighbor again
+            # recomputes the entries whose neighbors changed.
+            neighbors_now_by_entry = (
+                neighbor_compositions(manifest, tracks_now_by_entry)
+                if overlap_frames > 0
+                else {}
+            )
+            # What each feature input's upstream recorded of its declared roots, its own
+            # and those it inherited, so an entry recomputes after its upstream entry
+            # recomputes for a moved root. An upstream declaring no root records nothing,
+            # which is absence and not blindness, so this channel never warns.
+            inputs_now_by_entry: Mapping[Entry, str] = (
+                resolved.input_root_compositions
+                if resolved.input_root_compositions is not None
+                else {}
+            )
+            # A run reading tracks only through feature inputs is blind where an
+            # upstream run read a named variant whose tables record no composition.
+            upstreams_over_variants = _upstreams_over_variants(
+                ds, resolved.feature_inputs
+            )
+
+            skip_keys: set[str] = set()
+            # Entries whose provenance neither side can establish. Collected rather than
+            # reported per entry: on a dataset with no projection this is every entry,
+            # and one line naming the repair is worth more than two hundred naming the
+            # symptom.
+            #
+            # One set per channel, because the two are blind independently and their
+            # repairs differ. A channel the run does not read is not blind, it is absent,
+            # and counting it as blind is how one set reported the wrong thing twice over:
+            # `disposition` is unconditionally `undetectable` for a feature declaring no
+            # source root -- forty-four of forty-seven, and the declaration `consumed_roots`
+            # documents as correct -- so every such run announced an unverifiable source
+            # while the tracks channel it actually reads was recorded and compared; and a
+            # genuinely unrecorded tracks channel under a declared root that *was* recorded
+            # was served in silence.
+            roots_blind: set[tuple[str, str]] = set()
+            tracks_blind: set[tuple[str, str]] = set()
+            # Only a source root can be blind. An entry without an arena layout is a
+            # known state, and one that gains a layout recomputes once.
+            blind_capable = sorted(
+                {
+                    root
+                    for root in feature.consumed_roots
+                    if root in get_args(SourceRoot)
+                }
+            )
+            # An arena-blind feature is refused on an entry spanning arenas, so the
+            # index rows, which hold each layout's arena count, are read once when the
+            # feature is one. Declaring a layout changes no tracks composition, and only
+            # an entry's input shows whether it spans the arenas of its layout, so an
+            # entry whose layout names several is never served from the cache.
+            relates: object = getattr(feature, "relates", "none")
+            blind_arena_rows = (
+                indexed_arena_rows(ds) if relates == "arena-blind" else None
+            )
+            if state_ready and not overwrite:
+                for entry_key in entries:
+                    group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                    meta = build_feature_meta(group, sequence, run_root)
+                    if not meta.out_path.exists():
+                        continue
+                    if check_output:
+                        # A buggy/edge-case validator must not abort the whole run; treat
+                        # any failure as "invalid output" so the entry is recomputed.
+                        try:
+                            ok = (
+                                custom_check(meta, run_root)
+                                if custom_check is not None
+                                else default_check_output(meta, run_root)
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[feature:{feature.name}] check_output raised for "
+                                f"({group},{sequence}): {exc}; recomputing.",
+                                file=sys.stderr,
+                            )
+                            ok = False
+                        if not ok:
+                            continue  # corrupt/incomplete -> fall through to recompute
+                    # Reading the footer can fail on a truncated/half-written parquet
+                    # (e.g. an OOM-killed prior run). Recompute rather than crash.
                     try:
-                        ok = (
-                            custom_check(meta, run_root)
-                            if custom_check is not None
-                            else default_check_output(meta, run_root)
-                        )
+                        n_rows = output_n_rows(meta.out_path)
                     except Exception as exc:
                         print(
-                            f"[feature:{feature.name}] check_output raised for "
+                            f"[feature:{feature.name}] unreadable cached output for "
                             f"({group},{sequence}): {exc}; recomputing.",
                             file=sys.stderr,
                         )
-                        ok = False
-                    if not ok:
-                        continue  # corrupt/incomplete -> fall through to recompute
-                # Reading the footer can fail on a truncated/half-written parquet
-                # (e.g. an OOM-killed prior run). Recompute rather than crash.
-                try:
-                    n_rows = output_n_rows(meta.out_path)
-                except Exception as exc:
-                    print(
-                        f"[feature:{feature.name}] unreadable cached output for "
-                        f"({group},{sequence}): {exc}; recomputing.",
-                        file=sys.stderr,
+                        continue
+                    entry = (meta.group, meta.sequence)
+                    recorded = prior_compositions.get(entry)
+                    was_made_from = recorded if recorded is not None else ""
+                    now_made_of = entry_composition(feature, resolved, entry)
+                    recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
+                    tracks_was = recorded_reads.composition
+                    tracks_now = tracks_now_by_entry.get(entry, "")
+                    neighbors_was = recorded_reads.neighbors
+                    neighbors_now = neighbors_now_by_entry.get(entry, "")
+                    inputs_was = recorded_reads.inputs
+                    inputs_now = inputs_now_by_entry.get(entry, "")
+                    disposition = cached_entry_disposition(was_made_from, now_made_of)
+                    tracks_disposition = cached_entry_disposition(
+                        tracks_was, tracks_now
                     )
-                    continue
-                entry = (meta.group, meta.sequence)
-                recorded = prior_compositions.get(entry)
-                was_made_from = recorded if recorded is not None else ""
-                now_made_of = entry_composition(feature, resolved, entry)
-                recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
-                tracks_was = recorded_reads.composition
-                tracks_now = tracks_now_by_entry.get(entry, "")
-                neighbors_was = recorded_reads.neighbors
-                neighbors_now = neighbors_now_by_entry.get(entry, "")
-                inputs_was = recorded_reads.inputs
-                inputs_now = inputs_now_by_entry.get(entry, "")
-                disposition = cached_entry_disposition(was_made_from, now_made_of)
-                tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
-                refusal: str | None = None
-                if disposition == "recompute":
-                    refusal = _disposition_reason(was_made_from, now_made_of)
-                elif tracks_disposition == "recompute":
-                    refusal = _disposition_reason(tracks_was, tracks_now)
-                elif cached_entry_disposition(inputs_was, inputs_now) == "recompute":
-                    refusal = _disposition_reason(
-                        inputs_was, inputs_now, moved="its upstream's source moved"
-                    )
-                elif (
-                    cached_entry_disposition(neighbors_was, neighbors_now)
-                    == "recompute"
-                ):
-                    refusal = _neighbors_reason(neighbors_was)
-                if refusal is None and blind_arena_rows is not None:
-                    arena_count = entry_arena_count(
-                        ds, group, sequence, blind_arena_rows
-                    )
-                    if arena_count >= 2:
-                        refusal = (
-                            f"its recording has a layout of {arena_count} arenas, "
-                            "and only its input shows whether it spans them"
+                    refusal: str | None = None
+                    if disposition == "recompute":
+                        refusal = _disposition_reason(was_made_from, now_made_of)
+                    elif tracks_disposition == "recompute":
+                        refusal = _disposition_reason(tracks_was, tracks_now)
+                    elif (
+                        cached_entry_disposition(inputs_was, inputs_now) == "recompute"
+                    ):
+                        refusal = _disposition_reason(
+                            inputs_was, inputs_now, moved="its upstream's source moved"
                         )
-                if refusal is not None:
-                    # Serving this would be the wrong answer this milestone exists to
-                    # prevent, and recording it would restamp the only cell that says
-                    # so. Costly, loud, and never destructive.
-                    print(
-                        f"[feature:{feature.name}] cannot serve cached output for "
-                        f"({group},{sequence}): {refusal}; recomputing.",
-                        file=sys.stderr,
+                    elif (
+                        cached_entry_disposition(neighbors_was, neighbors_now)
+                        == "recompute"
+                    ):
+                        refusal = _neighbors_reason(neighbors_was)
+                    if refusal is None and blind_arena_rows is not None:
+                        arena_count = entry_arena_count(
+                            ds, group, sequence, blind_arena_rows
+                        )
+                        if arena_count >= 2:
+                            refusal = (
+                                f"its recording has a layout of {arena_count} arenas, "
+                                "and only its input shows whether it spans them"
+                            )
+                    if refusal is not None:
+                        # Serving this would be the wrong answer this milestone exists to
+                        # prevent, and recording it would restamp the only cell that says
+                        # so. Costly, loud, and never destructive.
+                        print(
+                            f"[feature:{feature.name}] cannot serve cached output for "
+                            f"({group},{sequence}): {refusal}; recomputing.",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if blind_capable and disposition == "undetectable":
+                        roots_blind.add(entry)
+                    if tracks_disposition == "undetectable" and (
+                        resolved.tracks_variants or upstreams_over_variants
+                    ):
+                        tracks_blind.add(entry)
+                    _record_row(
+                        FeatureIndexRow(
+                            run_id=run_id,
+                            feature=storage_feature_name,
+                            version=feature.version,
+                            group=meta.group,
+                            sequence=meta.sequence,
+                            abs_path=Path(ds.relative_to_root(meta.out_path)),
+                            consumed_roots=encode_consumed_roots(
+                                feature.consumed_roots
+                            ),
+                            # Carried, never re-derived. An entry with no prior row is an
+                            # output nothing describes, so its provenance is unknown and
+                            # says so, rather than claiming the present.
+                            consumed_composition=was_made_from,
+                            consumed_tracks_composition=tracks_was,
+                            consumed_input_composition=inputs_was,
+                            consumed_neighbors=neighbors_was,
+                            n_rows=n_rows,
+                            params_hash=params_hash,
+                            identity_scheme=FEATURE_IDENTITY_SCHEME,
+                        )
                     )
-                    continue
-                if blind_capable and disposition == "undetectable":
-                    roots_blind.add(entry)
-                if tracks_disposition == "undetectable" and (
-                    resolved.tracks_variants or upstreams_over_variants
-                ):
-                    tracks_blind.add(entry)
+                    skip_keys.add(entry_key)
+
+            # No guard beyond emptiness: each set is populated only where its channel
+            # exists, so a non-empty one is already the whole condition.
+            if roots_blind:
+                print(
+                    _blind_roots_warning(feature.name, blind_capable, len(roots_blind)),
+                    file=sys.stderr,
+                )
+            # A run with feature inputs names the upstream runs, whose tracks tables are
+            # the ones to repair; a variant it reads directly is named beside them.
+            if tracks_blind and resolved.tracks_variants:
+                print(
+                    _blind_tracks_warning(
+                        feature.name, resolved.tracks_variants, len(tracks_blind)
+                    ),
+                    file=sys.stderr,
+                )
+            if tracks_blind and upstreams_over_variants:
+                print(
+                    _blind_upstream_tracks_warning(
+                        feature.name, upstreams_over_variants, len(tracks_blind)
+                    ),
+                    file=sys.stderr,
+                )
+
+            compute_manifest = (
+                {k: v for k, v in entries.items() if k not in skip_keys}
+                if skip_keys
+                else entries
+            )
+            # Each entry's input rows, read from its footers once.
+            input_rows: dict[str, int] = {}
+
+            def _rows_of(entry_key: str) -> int:
+                if entry_key not in input_rows:
+                    input_rows[entry_key] = entry_input_size(
+                        compute_manifest[entry_key]
+                    ).rows
+                return input_rows[entry_key]
+
+            if settings.admission_margin > 0.0:
+                # Largest first: the entry that runs alone and teaches the estimate is
+                # the largest, and the entries paired last are the smallest. Only the
+                # apply order changes: each entry writes its own file, and the fit
+                # reads ``manifest``.
+                key_of = {
+                    resolve_sequence_identity(key, resolved.entry_map): key
+                    for key in compute_manifest
+                }
+                ordered = by_rows(
+                    {entry: _rows_of(key) for entry, key in key_of.items()}
+                )
+                compute_manifest = {
+                    key_of[entry]: compute_manifest[key_of[entry]] for entry in ordered
+                }
+
+            # Only the entries to compute are read: a cached entry has no flight.
+            if compute_manifest:
+                read_covariates = tracks_covariates(
+                    ds,
+                    [resolve_sequence_identity(k, entry_map) for k in compute_manifest],
+                    tracks_run_id=tracks_run_id,
+                    variants=step_tracks_variants(ds, resolved),
+                )
+                covariates_by_key.update(
+                    {
+                        make_entry_key(group, sequence): covariates
+                        for (group, sequence), covariates in read_covariates.items()
+                    }
+                )
+
+            # A full cache hit: state needed no fit and every manifest entry was already
+            # valid on disk. Surfaced on Result (does not alter the run's flow).
+            cache_hit = (
+                state_ready
+                and not overwrite
+                and len(entries) > 0
+                and len(skip_keys) == len(entries)
+            )
+            if cache_hit:
+                # Emitted where it is decided, so the claim and its record cannot drift.
+                ctx.cache_hit()
+
+            apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
+
+            def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
+                """Record that one entity's ``apply`` raised, unless the run was cancelled.
+
+                Shared by the inline and parallel-drain paths deliberately. They used to
+                hold two copies of a bare ``print``, which is how one of them could be
+                repaired and the other left reporting success.
+
+                ``ctx.entry_failed_unless_cancelled`` decides between a lost entity and
+                a cancel. A cancel can kill a tool that an entry's ``apply`` drives, and
+                ``apply`` then raises the tool's error. While the attempt's cancel token
+                is set, that call raises :class:`~mosaic.core.pipeline.job.Cancelled`
+                instead of recording a failure. The line on standard error is printed
+                only after that call records the entity as lost, for a human who runs
+                the CLI directly. A queued run keeps the run-log record alone, because
+                the queue discards the child's standard error.
+
+                The entry leaves the in-flight record first, whatever follows.
+                """
+                _ = state.in_flight.leave(make_entry_key(group, sequence))
+                ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
+                print(
+                    f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
+                    file=sys.stderr,
+                )
+                # A tool this machine lacks fails every entry the same way, so it is the
+                # run's refusal and not one entity's loss.
+                if isinstance(exc, ToolUnavailable):
+                    raise exc
+
+            collector = PacedCollector()
+
+            def _record_result(
+                tag: tuple[FeatureMeta, CoreSelector | None], outcome: ApplyOutcome
+            ) -> None:
+                meta, selector = tag
+                key = make_entry_key(meta.group, meta.sequence)
+                result_df, notices, worker = outcome
+                # A future's done callbacks may run after the wait wakes, so the
+                # apply's end is stamped here too. The earlier stamp wins.
+                state.in_flight.applied(key, time.monotonic())
+                if worker is not None:
+                    worker_growth[key] = (
+                        worker.grown_bytes if cost.nonreclaimable else None
+                    )
+                    worker_base = state.worker_bases.learn(
+                        worker, nonreclaimable=cost.nonreclaimable
+                    )
+                    if worker_base is not None:
+                        state.estimate.worker_base(worker_base)
+                    # The worker's peak sees what no sample between two of its
+                    # entries did.
+                    state.estimate.observe_worker(
+                        worker,
+                        state.in_flight.rows_of(key),
+                        nonreclaimable=cost.nonreclaimable,
+                    )
+                    # A process worker's apply ends here as far as the run sees it.
+                    _observe(watch.sample())
+                for notice in notices:
+                    ctx.time_irregular(key, notice)
+                if selector is not None:
+                    result_df = trim_feature_output(result_df, selector)
+                n_rows = write_output(meta, result_df)
                 _record_row(
                     FeatureIndexRow(
                         run_id=run_id,
@@ -2628,457 +2934,307 @@ def _run_feature_impl(
                         sequence=meta.sequence,
                         abs_path=Path(ds.relative_to_root(meta.out_path)),
                         consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                        # Carried, never re-derived. An entry with no prior row is an
-                        # output nothing describes, so its provenance is unknown and
-                        # says so, rather than claiming the present.
-                        consumed_composition=was_made_from,
-                        consumed_tracks_composition=tracks_was,
-                        consumed_input_composition=inputs_was,
-                        consumed_neighbors=neighbors_was,
+                        consumed_composition=entry_composition(
+                            feature, resolved, (meta.group, meta.sequence)
+                        ),
+                        consumed_tracks_composition=tracks_now_by_entry.get(
+                            (meta.group, meta.sequence), ""
+                        ),
+                        consumed_input_composition=inputs_now_by_entry.get(
+                            (meta.group, meta.sequence), ""
+                        ),
+                        consumed_neighbors=neighbors_now_by_entry.get(
+                            (meta.group, meta.sequence), ""
+                        ),
                         n_rows=n_rows,
                         params_hash=params_hash,
                         identity_scheme=FEATURE_IDENTITY_SCHEME,
                     )
                 )
-                skip_keys.add(entry_key)
-
-        # No guard beyond emptiness: each set is populated only where its channel
-        # exists, so a non-empty one is already the whole condition.
-        if roots_blind:
-            print(
-                _blind_roots_warning(feature.name, blind_capable, len(roots_blind)),
-                file=sys.stderr,
-            )
-        # A run with feature inputs names the upstream runs, whose tracks tables are
-        # the ones to repair; a variant it reads directly is named beside them.
-        if tracks_blind and resolved.tracks_variants:
-            print(
-                _blind_tracks_warning(
-                    feature.name, resolved.tracks_variants, len(tracks_blind)
-                ),
-                file=sys.stderr,
-            )
-        if tracks_blind and upstreams_over_variants:
-            print(
-                _blind_upstream_tracks_warning(
-                    feature.name, upstreams_over_variants, len(tracks_blind)
-                ),
-                file=sys.stderr,
-            )
-
-        compute_manifest = (
-            {k: v for k, v in manifest.items() if k not in skip_keys}
-            if skip_keys
-            else manifest
-        )
-        # Each entry's input rows, read from its footers once.
-        input_rows: dict[str, int] = {}
-
-        def _rows_of(entry_key: str) -> int:
-            if entry_key not in input_rows:
-                input_rows[entry_key] = entry_input_size(
-                    compute_manifest[entry_key]
-                ).rows
-            return input_rows[entry_key]
-
-        if margin > 0.0:
-            # Largest first: the entry that runs alone and teaches the estimate is
-            # the largest, and the entries paired last are the smallest. Only the
-            # apply order changes: each entry writes its own file, and the fit
-            # reads ``manifest``.
-            key_of = {
-                resolve_sequence_identity(key, resolved.entry_map): key
-                for key in compute_manifest
-            }
-            ordered = by_rows({entry: _rows_of(key) for entry, key in key_of.items()})
-            compute_manifest = {
-                key_of[entry]: compute_manifest[key_of[entry]] for entry in ordered
-            }
-
-        # Only the entries to compute are read: a cached entry has no flight.
-        if compute_manifest:
-            read_covariates = tracks_covariates(
-                ds,
-                [resolve_sequence_identity(k, entry_map) for k in compute_manifest],
-                tracks_run_id=tracks_run_id,
-                variants=step_tracks_variants(ds, resolved),
-            )
-            covariates_by_key.update(
-                {
-                    make_entry_key(group, sequence): covariates
-                    for (group, sequence), covariates in read_covariates.items()
-                }
-            )
-
-        # A full cache hit: state needed no fit and every manifest entry was already
-        # valid on disk. Surfaced on Result (does not alter the run's flow).
-        cache_hit = (
-            state_ready
-            and not overwrite
-            and len(manifest) > 0
-            and len(skip_keys) == len(manifest)
-        )
-        if cache_hit:
-            # Emitted where it is decided, so the claim and its record cannot drift.
-            ctx.cache_hit()
-
-        apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
-
-        def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
-            """Record that one entity's ``apply`` raised, unless the run was cancelled.
-
-            Shared by the inline and parallel-drain paths deliberately. They used to
-            hold two copies of a bare ``print``, which is how one of them could be
-            repaired and the other left reporting success.
-
-            ``ctx.entry_failed_unless_cancelled`` decides between a lost entity and
-            a cancel. A cancel can kill a tool that an entry's ``apply`` drives, and
-            ``apply`` then raises the tool's error. While the attempt's cancel token
-            is set, that call raises :class:`~mosaic.core.pipeline.job.Cancelled`
-            instead of recording a failure. The line on standard error is printed
-            only after that call records the entity as lost, for a human who runs
-            the CLI directly. A queued run keeps the run-log record alone, because
-            the queue discards the child's standard error.
-
-            The entry leaves the in-flight record first, whatever follows.
-            """
-            _ = in_flight.leave(make_entry_key(group, sequence))
-            ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
-            print(
-                f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
-                file=sys.stderr,
-            )
-            # A tool this machine lacks fails every entry the same way, so it is the
-            # run's refusal and not one entity's loss.
-            if isinstance(exc, ToolUnavailable):
-                raise exc
-
-        collector = PacedCollector()
-
-        def _record_result(
-            tag: tuple[FeatureMeta, CoreSelector | None], outcome: ApplyOutcome
-        ) -> None:
-            meta, selector = tag
-            key = make_entry_key(meta.group, meta.sequence)
-            result_df, notices, worker = outcome
-            # A future's done callbacks may run after the wait wakes, so the
-            # apply's end is stamped here too. The earlier stamp wins.
-            in_flight.applied(key, time.monotonic())
-            if worker is not None:
-                worker_growth[key] = worker.grown_bytes if cost.nonreclaimable else None
-                worker_base = cost.worker_bases.learn(
-                    worker, nonreclaimable=cost.nonreclaimable
+                collector.finished(
+                    0
+                    if result_df is None
+                    else int(result_df.memory_usage(index=True).sum())
                 )
-                if worker_base is not None:
-                    estimate.worker_base(worker_base)
-                # The worker's peak sees what no sample between two of its
-                # entries did.
-                estimate.observe_worker(
-                    worker, in_flight.rows_of(key), nonreclaimable=cost.nonreclaimable
-                )
-                # A process worker's apply ends here as far as the run sees it.
-                _observe(watch.sample())
-            for notice in notices:
-                ctx.time_irregular(key, notice)
-            if selector is not None:
-                result_df = trim_feature_output(result_df, selector)
-            n_rows = write_output(meta, result_df)
-            _record_row(
-                FeatureIndexRow(
-                    run_id=run_id,
-                    feature=storage_feature_name,
-                    version=feature.version,
-                    group=meta.group,
-                    sequence=meta.sequence,
-                    abs_path=Path(ds.relative_to_root(meta.out_path)),
-                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                    consumed_composition=entry_composition(
-                        feature, resolved, (meta.group, meta.sequence)
-                    ),
-                    consumed_tracks_composition=tracks_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    consumed_input_composition=inputs_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    consumed_neighbors=neighbors_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    n_rows=n_rows,
-                    params_hash=params_hash,
-                    identity_scheme=FEATURE_IDENTITY_SCHEME,
+                del result_df
+
+            def _record_failure(
+                tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
+            ) -> None:
+                meta, _ = tag
+                _entry_failed(meta.group, meta.sequence, exc)
+
+            def _entry_key_of(tag: tuple[FeatureMeta, CoreSelector | None]) -> str:
+                return make_entry_key(tag[0].group, tag[0].sequence)
+
+            def _dispatched(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
+                state.in_flight.dispatched(_entry_key_of(tag), time.monotonic())
+
+            def _computed(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
+                state.in_flight.applied(_entry_key_of(tag), time.monotonic())
+
+            # The pool holds an entry back for a free worker after its table is loaded.
+            # The memory floor and the admission gate hold it back before the load
+            # (``_before_load``), so a table is never loaded while memory is under the
+            # floor, and the floor does not end a run on the memory a loaded table takes.
+            active: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] = (
+                EntryPool(
+                    workers=settings.workers,
+                    mode=settings.mode,
+                    on_result=_record_result,
+                    on_error=_record_failure,
+                    min_free_memory_fraction=settings.min_free_memory_fraction,
+                    on_resources=_pool_report,
+                    watch=watch,
+                    floor_at_submit=False,
+                    on_dispatch=_dispatched,
+                    on_computed=_computed,
                 )
             )
-            collector.finished(
-                0
-                if result_df is None
-                else int(result_df.memory_usage(index=True).sum())
-            )
-            del result_df
 
-        def _record_failure(
-            tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
-        ) -> None:
-            meta, _ = tag
-            _entry_failed(meta.group, meta.sequence, exc)
+            # The key that the last load started and that has not reached _process_entry.
+            # An entry iter_manifest skips without a table never does, so the next load,
+            # or the end of the loop, lowers it.
+            unhanded: list[str] = []
 
-        def _entry_key_of(tag: tuple[FeatureMeta, CoreSelector | None]) -> str:
-            return make_entry_key(tag[0].group, tag[0].sequence)
+            def _lower_unhanded() -> None:
+                while unhanded:
+                    _ = state.in_flight.leave(unhanded.pop())
 
-        def _dispatched(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
-            in_flight.dispatched(_entry_key_of(tag), time.monotonic())
+            def _hold_back() -> None:
+                """Wait for one entry in flight, counted as a wait of the gate."""
+                active.drain_one()
+                cost.admission_waits += 1
 
-        def _computed(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
-            in_flight.applied(_entry_key_of(tag), time.monotonic())
+            def _workers_after(sample: MemorySample) -> int:
+                """The process workers alive once one more entry is dispatched, 0 in threads.
 
-        # The pool holds an entry back for a free worker after its table is loaded.
-        # The memory floor and the admission gate hold it back before the load
-        # (``_before_load``), so a table is never loaded while memory is under the
-        # floor, and the floor does not end a run on the memory a loaded table takes.
-        active: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] = (
-            EntryPool(
-                workers=max_workers,
-                mode=parallel_mode_str,
-                on_result=_record_result,
-                on_error=_record_failure,
-                min_free_memory_fraction=min_free_memory_fraction,
-                on_resources=_pool_report,
-                watch=watch,
-                floor_at_submit=False,
-                on_dispatch=_dispatched,
-                on_computed=_computed,
-            )
-        )
-        pool = active
+                The pool keeps a worker it started, and starts one when none is idle.
+                """
+                if settings.mode != "process":
+                    return 0
+                return min(
+                    settings.workers, max(sample.spawned_workers, active.in_flight + 1)
+                )
 
-        # The key that the last load started and that has not reached _process_entry.
-        # An entry iter_manifest skips without a table never does, so the next load,
-        # or the end of the loop, lowers it.
-        unhanded: list[str] = []
+            def _admit(key: str, rows: int) -> None:
+                """Hold the entry *key* back until its predicted memory fits beside the rest.
 
-        def _lower_unhanded() -> None:
-            while unhanded:
-                _ = in_flight.leave(unhanded.pop())
+                Until an entry with input rows has been written and the estimate has
+                formed, the entry starts alone, so the first entry ends before another
+                starts and a sample taken partway through it admits nothing. Then the
+                entry starts beside the entries in flight while the prediction fits the
+                budget, and alone otherwise. Alone, an entry whose prediction without
+                the margin exceeds the limit less the floor raises, whatever is
+                available now, which the floor answers next.
 
-        def _hold_back() -> None:
-            """Wait for one entry in flight, counted as a wait of the gate."""
-            active.drain_one()
-            cost.admission_waits += 1
-
-        def _workers_after(sample: MemorySample) -> int:
-            """The process workers alive once one more entry is dispatched, 0 in threads.
-
-            The pool keeps a worker it started, and starts one when none is idle.
-            """
-            if parallel_mode_str != "process":
-                return 0
-            return min(max_workers, max(sample.spawned_workers, active.in_flight + 1))
-
-        def _admit(key: str, rows: int) -> None:
-            """Hold the entry *key* back until its predicted memory fits beside the rest.
-
-            Until an entry with input rows has been written and the estimate has
-            formed, the entry starts alone, so the first entry ends before another
-            starts and a sample taken partway through it admits nothing. Then the
-            entry starts beside the entries in flight while the prediction fits the
-            budget, and alone otherwise. Alone, an entry whose prediction without
-            the margin exceeds the limit less the floor raises, whatever is
-            available now, which the floor answers next.
-
-            A sample that measured nothing, or a non-reclaimable run's sample
-            without the figure, holds the entry back like a wait for an entry in
-            flight, so the budget never takes an unmeasured figure as 0 held.
-            """
-            if estimate.bytes_per_row is None or cost.entries_with_rows_written == 0:
-                while active.in_flight:
-                    _hold_back()
-            else:
-                while active.in_flight:
-                    sample = watch.sample()
-                    held = None if sample is None else cost.figure_of(sample)
-                    if sample is None or held is None:
+                A sample that measured nothing, or a non-reclaimable run's sample
+                without the figure, holds the entry back like a wait for an entry in
+                flight, so the budget never takes an unmeasured figure as 0 held.
+                """
+                if (
+                    state.estimate.bytes_per_row is None
+                    or cost.entries_with_rows_written == 0
+                ):
+                    while active.in_flight:
                         _hold_back()
-                        continue
-                    budget = admission_budget(
-                        available_bytes=sample.limit.available_bytes,
-                        held_bytes=held,
+                else:
+                    while active.in_flight:
+                        sample = watch.sample()
+                        held = None if sample is None else cost.figure_of(sample)
+                        if sample is None or held is None:
+                            _hold_back()
+                            continue
+                        budget = admission_budget(
+                            available_bytes=sample.limit.available_bytes,
+                            held_bytes=held,
+                            limit_bytes=sample.limit.limit_bytes,
+                            floor=settings.min_free_memory_fraction,
+                        )
+                        predicted = state.estimate.predicted_peak(
+                            state.in_flight.rows(),
+                            rows,
+                            _workers_after(sample),
+                            settings.admission_margin,
+                        )
+                        if predicted <= budget:
+                            return
+                        _hold_back()
+                if state.estimate.bytes_per_row is None:
+                    return
+                sample = watch.sample()
+                if sample is None:
+                    return
+                alone = state.estimate.predicted_peak(
+                    0, rows, _workers_after(sample), 1.0
+                )
+                usable = sample.limit.limit_bytes * (
+                    1.0 - settings.min_free_memory_fraction
+                )
+                if alone > usable:
+                    _report_resources(final=True)
+                    raise EntryOverMemoryLimit(
+                        key,
+                        predicted_bytes=alone,
                         limit_bytes=sample.limit.limit_bytes,
-                        floor=min_free_memory_fraction,
+                        source=sample.limit.source,
+                        parallel_mode=settings.mode,
                     )
-                    predicted = estimate.predicted_peak(
-                        in_flight.rows(), rows, _workers_after(sample), margin
-                    )
-                    if predicted <= budget:
-                        return
-                    _hold_back()
-            if estimate.bytes_per_row is None:
-                return
-            sample = watch.sample()
-            if sample is None:
-                return
-            alone = estimate.predicted_peak(0, rows, _workers_after(sample), 1.0)
-            usable = sample.limit.limit_bytes * (1.0 - min_free_memory_fraction)
-            if alone > usable:
-                _report_resources(final=True)
-                raise EntryOverMemoryLimit(
+
+            def _before_load(entry_key: str) -> None:
+                """Admit the entry, then count it in flight from the start of its load.
+
+                With several workers the gate and then the floor run here, before the
+                table is loaded, so a table is never loaded while memory is under the
+                floor. The wait for a free slot stays after the load, so loading the
+                next table overlaps the entries computing.
+                """
+                _lower_unhanded()
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                key = make_entry_key(group, sequence)
+                rows = _rows_of(entry_key)
+                if active.workers > 1:
+                    if settings.admission_margin > 0.0:
+                        _admit(key, rows)
+                    active.wait_for_memory()
+                started = time.monotonic()
+                if cost.apply_started is None:
+                    cost.apply_started = started
+                covariates = covariates_of(key)
+                state.in_flight.enter(
                     key,
-                    predicted_bytes=alone,
-                    limit_bytes=sample.limit.limit_bytes,
-                    source=sample.limit.source,
-                    parallel_mode=parallel_mode_str,
+                    rows,
+                    pair_frames=covariates.pair_frames,
+                    pair_frames_bound=covariates.pair_frames_bound,
+                    started=started,
+                    cpu=watch.cpu_seconds(),
                 )
+                unhanded.append(key)
 
-        def _before_load(entry_key: str) -> None:
-            """Admit the entry, then count it in flight from the start of its load.
+            def _apply_here(key: str, df: pd.DataFrame) -> ApplyOutcome:
+                """Apply in this process, and measure the tree before the result is handed back."""
+                output, notices = apply_noting_irregular_time(feature.apply, df)
+                state.in_flight.applied(key, time.monotonic())
+                _observe(watch.sample())
+                return output, notices, None
 
-            With several workers the gate and then the floor run here, before the
-            table is loaded, so a table is never loaded while memory is under the
-            floor. The wait for a free slot stays after the load, so loading the
-            next table overlaps the entries computing.
-            """
-            _lower_unhanded()
-            group, sequence = resolve_sequence_identity(entry_key, entry_map)
-            key = make_entry_key(group, sequence)
-            rows = _rows_of(entry_key)
-            if active.workers > 1:
-                if margin > 0.0:
-                    _admit(key, rows)
-                active.wait_for_memory()
-            started = time.monotonic()
-            if cost.apply_started is None:
-                cost.apply_started = started
-            covariates = covariates_of(key)
-            in_flight.enter(
-                key,
-                rows,
-                pair_frames=covariates.pair_frames,
-                pair_frames_bound=covariates.pair_frames_bound,
-                started=started,
-                cpu=watch.cpu_seconds(),
-            )
-            unhanded.append(key)
-
-        def _apply_here(key: str, df: pd.DataFrame) -> ApplyOutcome:
-            """Apply in this process, and measure the tree before the result is handed back."""
-            output, notices = apply_noting_irregular_time(feature.apply, df)
-            in_flight.applied(key, time.monotonic())
-            _observe(watch.sample())
-            return output, notices, None
-
-        def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
-            """Record an entry with no pair rows to widen onto as lost."""
-            group, sequence = resolve_sequence_identity(entry_key, entry_map)
-            _entry_failed(group, sequence, exc)
-
-        def _process_entry(
-            entry_key: str,
-            df: pd.DataFrame,
-            selector: CoreSelector | None,
-        ) -> None:
-            unhanded.clear()
-            # Cooperative cancel checkpoint: covers both apply loops and both the
-            # executor and inline branches. Completed entries are already durable.
-            ctx.check_cancel()
-            group, sequence = resolve_sequence_identity(entry_key, entry_map)
-            meta = build_feature_meta(group, sequence, run_root)
-            key = make_entry_key(group, sequence)
-
-            # Pipeline validation checks the recipe against this declaration, and
-            # the entry's merged frame is checked against it too. A missing column
-            # fails the entry with one message, before apply reads anything.
-            try:
-                check_input_columns(
-                    feature,
-                    df.columns,
-                    numeric=df.select_dtypes(include="number").columns,
-                )
-            except MissingInputColumns as exc:
+            def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
+                """Record an entry with no pair rows to widen onto as lost."""
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 _entry_failed(group, sequence, exc)
-                return
-            if blind_arena_rows is not None:
-                count = entry_arena_count(ds, group, sequence, blind_arena_rows)
+
+            def _process_entry(
+                entry_key: str,
+                df: pd.DataFrame,
+                selector: CoreSelector | None,
+            ) -> None:
+                unhanded.clear()
+                # Cooperative cancel checkpoint: covers both apply loops and both the
+                # executor and inline branches. Completed entries are already durable.
+                ctx.check_cancel()
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                meta = build_feature_meta(group, sequence, run_root)
+                key = make_entry_key(group, sequence)
+
+                # Pipeline validation checks the recipe against this declaration, and
+                # the entry's merged frame is checked against it too. A missing column
+                # fails the entry with one message, before apply reads anything.
                 try:
-                    refuse_arena_blind(feature.name, df, count)
-                except ArenaBlindFeature as exc:
+                    check_input_columns(
+                        feature,
+                        df.columns,
+                        numeric=df.select_dtypes(include="number").columns,
+                    )
+                except MissingInputColumns as exc:
                     _entry_failed(group, sequence, exc)
                     return
+                if blind_arena_rows is not None:
+                    count = entry_arena_count(ds, group, sequence, blind_arena_rows)
+                    try:
+                        refuse_arena_blind(feature.name, df, count)
+                    except ArenaBlindFeature as exc:
+                        _entry_failed(group, sequence, exc)
+                        return
 
-            # Cache hits are resolved up-front in the pre-pass; any entry reaching
-            # here needs (re)computation.
-            if parallel_mode_str == "process" and active.workers > 1:
-                artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
-                active.submit(
-                    (meta, selector),
-                    process_apply_worker,
-                    feature.__module__,
-                    type(feature).__name__,
-                    feature.inputs.model_dump(),
-                    feature.params.model_dump(),
-                    str(run_root),
-                    artifact_paths_str,
-                    dependency_lookups,
-                    df,
-                    str(ds.manifest_path),
-                    tracklets,
-                )
-            else:
-                active.submit((meta, selector), _apply_here, key, df)
+                # Cache hits are resolved up-front in the pre-pass; any entry reaching
+                # here needs (re)computation.
+                if settings.mode == "process" and active.workers > 1:
+                    artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
+                    active.submit(
+                        (meta, selector),
+                        process_apply_worker,
+                        feature.__module__,
+                        type(feature).__name__,
+                        feature.inputs.model_dump(),
+                        feature.params.model_dump(),
+                        str(run_root),
+                        artifact_paths_str,
+                        dependency_lookups,
+                        df,
+                        str(ds.manifest_path),
+                        tracklets,
+                    )
+                else:
+                    active.submit((meta, selector), _apply_here, key, df)
 
-        # Iterate manifest entries. A cooperative cancel (raised at the top of
-        # _process_entry) stops dispatch; completed entries stay recorded in
-        # index.csv + on disk, so a later identical run resumes from the entries whose
-        # output parquet is already present (the cache-hit pre-pass above).
-        try:
-            if apply_overlap is not None:
-                for entry_key, df, selector in iter_manifest(
-                    compute_manifest,
-                    filter_factory=filter_factory,
-                    overlap_frames=apply_overlap,
-                    progress_label=storage_feature_name,
-                    cross_join=cross_join,
-                    expands_individuals=widens_individuals,
-                    on_pairs_missing=_pairs_missing,
-                    before_load=_before_load,
-                ):
-                    _process_entry(entry_key, df, selector)
-            else:
-                for entry_key, df in iter_manifest(
-                    compute_manifest,
-                    filter_factory=filter_factory,
-                    progress_label=storage_feature_name,
-                    cross_join=cross_join,
-                    expands_individuals=widens_individuals,
-                    on_pairs_missing=_pairs_missing,
-                    before_load=_before_load,
-                ):
-                    _process_entry(entry_key, df, None)
-            _lower_unhanded()
+            # Iterate manifest entries. A cooperative cancel (raised at the top of
+            # _process_entry) stops dispatch; completed entries stay recorded in
+            # index.csv + on disk, so a later identical run resumes from the entries whose
+            # output parquet is already present (the cache-hit pre-pass above).
+            try:
+                if apply_overlap is not None:
+                    for entry_key, df, selector in iter_manifest(
+                        compute_manifest,
+                        filter_factory=filter_factory,
+                        overlap_frames=apply_overlap,
+                        progress_label=storage_feature_name,
+                        cross_join=cross_join,
+                        expands_individuals=widens_individuals,
+                        on_pairs_missing=_pairs_missing,
+                        before_load=_before_load,
+                    ):
+                        _process_entry(entry_key, df, selector)
+                else:
+                    for entry_key, df in iter_manifest(
+                        compute_manifest,
+                        filter_factory=filter_factory,
+                        progress_label=storage_feature_name,
+                        cross_join=cross_join,
+                        expands_individuals=widens_individuals,
+                        on_pairs_missing=_pairs_missing,
+                        before_load=_before_load,
+                    ):
+                        _process_entry(entry_key, df, None)
+                _lower_unhanded()
 
-            active.finish()
-        except (
-            Cancelled,
-            WorkerProcessDied,
-            MemoryFloorReached,
-            EntryOverMemoryLimit,
-            ToolUnavailable,
-        ):
-            _flush_idx()
-            # A run that stops after writing 40 of 100 entries has 40 durable on disk,
-            # and "how far did it get" is the question an operator resubmits on.
-            # Recorded here because the flush above is the last moment the count is
-            # true.
-            ctx.entries_written(_total_written)
-            raise
+                active.finish()
+            except (
+                Cancelled,
+                WorkerProcessDied,
+                MemoryFloorReached,
+                EntryOverMemoryLimit,
+                ToolUnavailable,
+            ):
+                _flush_idx()
+                # A run that stops after writing 40 of 100 entries has 40 durable on disk,
+                # and "how far did it get" is the question an operator resubmits on.
+                # Recorded here because the flush above is the last moment the count is
+                # true.
+                ctx.entries_written(_total_written)
+                raise
+            finally:
+                _close_phase(state, active)
+
+            return _PhaseOutcome(cache_hit=cache_hit, computed=len(compute_manifest))
+
+        applied = _apply_entries(manifest, cost.phase)
     finally:
-        # Every exit stops the sampler and shuts the pool down: a pool left running
-        # holds its workers' memory, and a broken one is of no further use. Closing
-        # records the memory the run reached, and a run that ended before it had a
-        # pool records it here.
+        # Every exit stops the sampler. A phase closes its own pool, which holds its
+        # workers' memory while it runs and records the memory the run reached, so a
+        # run that ended before its phase had a pool records it here.
         watch.stop_sampling()
-        if pool is None:
+        if not cost.phase.closed:
             _report_resources(final=True)
-        else:
-            pool.close()
 
     # Global marker (for empty-input features).
     #
@@ -3121,13 +3277,13 @@ def _run_feature_impl(
     ctx.entries_written(_total_written)
     # After the outputs are recorded, so a worker that takes the pod down leaves
     # them counted. A run that lost every entry it computed has nothing to size.
-    every_entry_failed = bool(compute_manifest) and len(ctx.failed_keys) == len(
-        compute_manifest
+    every_entry_failed = bool(applied.computed) and (
+        len(ctx.failed_keys) == applied.computed
     )
     if (
-        measure_worker_base
+        cost.phase.settings.measure_worker_base
         and capable
-        and cost.worker_bases.rss_bytes == 0
+        and cost.phase.worker_bases.rss_bytes == 0
         and not every_entry_failed
     ):
         _report_worker_base(
@@ -3173,7 +3329,7 @@ def _run_feature_impl(
         feature=storage_feature_name,
         run_id=run_id,
         execution_id=ctx.execution_id,
-        cache_hit=cache_hit,
+        cache_hit=applied.cache_hit,
         failed_entries=failed_entries,
         entries_written=_total_written,
     )
