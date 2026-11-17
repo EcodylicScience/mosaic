@@ -464,15 +464,21 @@ def _run_summary(summary: RunSummaryWire) -> str:
         )
         if rows
     ]
-    tag_keys = (
-        f" {len(summary.tag_keys)} tag key(s) read from revision "
-        f"{summary.tag_revision.revision} of the sequence tags."
-        if summary.tag_revision is not None
-        else ""
-    )
+    revision = summary.tag_revision
+    if revision is None:
+        tags_read = ""
+    elif summary.tag_keys:
+        tags_read = (
+            f" {len(summary.tag_keys)} tag key(s) read from revision "
+            f"{revision.revision} of the sequence tags."
+        )
+    else:
+        tags_read = (
+            f" Entries chosen by revision {revision.revision} of the sequence tags."
+        )
     return (
         f"Run {run_id}: {len(summary.groups)} group(s) and "
         f"{len(summary.columns)} column(s) over {summary.n_entries} entries read, "
         f"{len(summary.missing)} missing, {summary.rows_without_key} row(s) "
-        f"without a key.{tag_keys}{''.join(tests)} {_STRUCTURED}"
+        f"without a key.{tags_read}{''.join(tests)} {_STRUCTURED}"
     )

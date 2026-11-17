@@ -136,8 +136,8 @@ def summarize_command(
         as_json=as_json,
         revision=tag_revision,
     )
-    if chosen.tag_revision is not None:
-        tag_revision = chosen.tag_revision.revision
+    if chosen.tags is not None:
+        tag_revision = None
     try:
         tests = _tests(test or [])
         wire = summarize_ref(
@@ -150,6 +150,7 @@ def summarize_command(
             scope=chosen.scope,
             allow_partial=allow_partial,
             tag_revision=tag_revision,
+            tag_table=chosen.tags,
         )
     except ClassifiedError as error:
         fail_classified(error, as_json=as_json)
@@ -214,9 +215,12 @@ def _render(wire: RunSummaryWire, tests: tuple[SummaryTest, ...]) -> None:
         "entries": wire.n_entries,
     }
     if wire.tag_revision is not None:
-        header["tag_keys"] = (
-            f"{', '.join(wire.tag_keys)} (revision {wire.tag_revision.revision})"
-        )
+        if wire.tag_keys:
+            header["tag_keys"] = (
+                f"{', '.join(wire.tag_keys)} (revision {wire.tag_revision.revision})"
+            )
+        else:
+            header["tag_revision"] = wire.tag_revision.revision
     render_kv(header)
     typer.echo()
     render_table(

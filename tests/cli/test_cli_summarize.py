@@ -22,6 +22,7 @@ from mosaic.core.pipeline.run_summary import (
     summarize_run,
 )
 from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
+from mosaic.core.pipeline.tag_reads import ResolvedTagTable
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -522,7 +523,11 @@ def test_a_tag_selection_reads_the_entries_that_the_tag_holds(
         )
     )
 
-    assert json.loads(by_tag.stdout) == json.loads(by_entry.stdout)
+    by_entry_document = json.loads(by_entry.stdout)
+    by_tag_document = json.loads(by_tag.stdout)
+    assert by_entry_document.pop("tag_revision") is None
+    assert by_tag_document.pop("tag_revision")["revision"] == 1
+    assert by_tag_document == by_entry_document
     assert summary_of(by_tag.stdout).n_entries == 2
 
 
@@ -543,6 +548,7 @@ def test_a_tag_selection_and_a_tag_key_read_the_revision_the_selection_resolved(
         scope: Scope | None,
         allow_partial: bool,
         tag_revision: int | None,
+        tag_table: ResolvedTagTable | None,
     ) -> RunSummaryWire:
         write_swapped_sites(ds)
         return summarize_ref(
@@ -555,6 +561,7 @@ def test_a_tag_selection_and_a_tag_key_read_the_revision_the_selection_resolved(
             scope=scope,
             allow_partial=allow_partial,
             tag_revision=tag_revision,
+            tag_table=tag_table,
         )
 
     monkeypatch.setattr(run_summary, "summarize_ref", after_a_new_revision)
@@ -568,6 +575,32 @@ def test_a_tag_selection_and_a_tag_key_read_the_revision_the_selection_resolved(
     assert [group.key for group in wire.groups] == [{"site": "x"}]
     assert wire.tag_revision is not None
     assert wire.tag_revision.revision == 1
+
+
+def test_a_tag_selection_records_its_revision_without_a_tag_key(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_strain_run(tmp_path)
+
+    printed = invoke_ok(
+        summarize(ds, result, "--by", "group", "--tag", "site=x", "--json")
+    )
+
+    wire = summary_of(printed.stdout)
+    assert wire.tag_keys == []
+    assert wire.tag_revision is not None
+    assert wire.tag_revision.revision == 1
+
+
+def test_the_plain_output_prints_the_revision_a_tag_selection_read(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_strain_run(tmp_path)
+
+    printed = invoke_ok(summarize(ds, result, "--by", "group", "--tag", "site=x"))
+
+    assert "tag_revision: 1" in printed.stdout.splitlines()
+    assert "tag_keys" not in printed.stdout
 
 
 def test_a_tag_selection_reads_the_revision_that_tag_revision_names(

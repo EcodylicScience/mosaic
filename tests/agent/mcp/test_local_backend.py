@@ -2299,7 +2299,27 @@ def test_a_summary_by_sequence_tags_reads_the_selected_entries_of_the_groups(
     assert returned.n_entries == entries
     assert returned == printed
     assert returned.tag_keys == []
-    assert returned.tag_revision is None
+    assert returned.tag_revision is not None
+    assert returned.tag_revision.revision == 1
+
+
+def test_a_tag_selection_records_the_revision_it_read_beside_a_run_key(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+
+    returned, printed = _summary_and_printed(
+        ds,
+        result,
+        backend,
+        {"by": ["group"], "sequence_tags": {"site": ["x"]}},
+        ["--by", "group", "--tag", "site=x"],
+    )
+
+    assert returned.tag_keys == []
+    assert returned.tag_revision is not None
+    assert returned.tag_revision.revision == 1
+    assert returned == printed
 
 
 def test_a_summary_reads_the_revision_that_tag_revision_names(tmp_path: Path) -> None:

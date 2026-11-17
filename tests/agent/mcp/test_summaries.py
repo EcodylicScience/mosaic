@@ -171,3 +171,20 @@ def test_the_paragraph_names_no_tag_key() -> None:
     )
 
     assert "site" not in summarize(tagged)
+
+
+def test_a_selection_without_tag_keys_names_the_revision_that_chose_the_entries() -> (
+    None
+):
+    selected = SUMMARY.model_copy(
+        update={
+            "tag_keys": [],
+            "tag_revision": TagRevisionRead(revision=4, digest="abc"),
+        }
+    )
+
+    paragraph = summarize(selected)
+
+    assert "Entries chosen by revision 4 of the sequence tags" in paragraph
+    assert "tag key" not in paragraph
+    assert "abc" not in paragraph

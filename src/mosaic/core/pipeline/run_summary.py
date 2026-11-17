@@ -215,8 +215,9 @@ class RunSummary:
         tag_keys: The ``by`` and ``where`` keys read from the sequence tags, in
             the order they were named. Empty when every key is a column of the
             run.
-        tag_revision: The revision of the tag table that ``tag_keys`` were read
-            from, ``None`` when ``tag_keys`` is empty.
+        tag_revision: The revision of the tag table read by the tag keys or by
+            the tag selection that chose the entries, ``None`` when neither read
+            one.
 
     A test row without a statistic names its :data:`SummaryReason`, and its
     ``statistic``, ``p`` and ``p_holm`` are NaN, as is ``df`` with fewer than two
@@ -362,8 +363,9 @@ class RunSummaryWire(StrictModel):
             was not asked.
         tag_keys: The keys read from the sequence tags, in the order named. Empty
             when every key is a column of the run.
-        tag_revision: The revision of the tag table that ``tag_keys`` were read
-            from, ``None`` when ``tag_keys`` is empty.
+        tag_revision: The revision of the tag table read by the tag keys or by
+            the tag selection that chose the entries, ``None`` when neither read
+            one.
     """
 
     ref: str
@@ -414,8 +416,9 @@ class _KeySplit:
         run_keys: The keys that are columns of the run, in the order named.
         tag_keys: The keys that are sequence tags, in the order named.
         unknown: The keys that are neither.
-        table: The tag table the tag keys read, ``None`` when no key needed it or
-            the dataset has none.
+        table: The given selection table, or the tag table the tag keys read.
+            ``None`` when none was given and no key needed it or the dataset has
+            none.
     """
 
     run_keys: tuple[str, ...]
@@ -435,6 +438,7 @@ def summarize_run(
     scope: Scope | None = None,
     allow_partial: bool = False,
     tag_revision: int | None = None,
+    tag_table: ResolvedTagTable | None = None,
 ) -> RunSummary:
     """Count and describe the rows of one run by group, per value column.
 
@@ -491,12 +495,16 @@ def summarize_run(
         allow_partial: Read what the run holds where it is partial.
         tag_revision: The revision of the tag table that the tag keys read, the
             latest when ``None``. It is read only when a key is a tag.
+        tag_table: The table that a tag selection chose *scope* from. The tag
+            keys read it and no other, and the summary records its revision
+            whether or not a key is a tag.
 
     Returns:
         The summary, with groups sorted by the keys in order, each ascending in
         its type.
 
     Raises:
+        ValueError: Both *tag_table* and *tag_revision* are given.
         SummaryInvalid: A ``by`` or ``where`` key among the names in
             *columns*; a ``by`` key named ``column``, ``n``, ``n_rows``,
             ``n_entries``, ``n_missing``, ``mean``, ``sd``, ``sem`` or
@@ -528,7 +536,13 @@ def summarize_run(
     kept = {name: tuple(values) for name, values in (where or {}).items()}
     _refuse_arguments(run, keys_by, columns, kept, tests)
     names = tuple(dict.fromkeys((*keys_by, *kept)))
-    split = _split_keys(ds, run, names, scope, tag_revision)
+    if tag_table is not None and tag_revision is not None:
+        msg = (
+            "tag_table is the table the selection read, so it takes no "
+            "tag_revision: the revision is the table's."
+        )
+        raise ValueError(msg)
+    split = _split_keys(ds, run, names, scope, tag_revision, tag_table)
     read = plan_run_read(
         ds,
         run,
@@ -613,7 +627,7 @@ def summarize_run(
             keys_by, keys, group_keys, samples if "mannwhitney" in tests else {}
         ),
         tag_keys=split.tag_keys,
-        tag_revision=_tag_revision_read(split),
+        tag_revision=_tag_revision_read(split, tag_table),
     )
 
 
@@ -713,6 +727,7 @@ def summarize_ref(
     scope: Scope | None = None,
     allow_partial: bool = False,
     tag_revision: int | None = None,
+    tag_table: ResolvedTagTable | None = None,
 ) -> RunSummaryWire:
     """Summarize the feature run that the address *ref* names, as the wire model.
 
@@ -730,8 +745,10 @@ def summarize_ref(
         allow_partial: Read what the run holds where it is partial.
         tag_revision: The revision of the tag table that sequence tag keys read,
             the latest when ``None``.
+        tag_table: The table that a tag selection chose *scope* from.
 
     Raises:
+        ValueError: Both *tag_table* and *tag_revision* are given.
         PreviewInvalid: *ref* is malformed, or names a tracks or labels variant.
     """
     from .types import Result
@@ -753,6 +770,7 @@ def summarize_ref(
         scope=scope,
         allow_partial=allow_partial,
         tag_revision=tag_revision,
+        tag_table=tag_table,
     )
     return run_summary_wire(summary, ref_address(run))
 
@@ -883,33 +901,38 @@ def _split_keys(
     names: tuple[str, ...],
     scope: Scope | None,
     tag_revision: int | None,
+    tag_table: ResolvedTagTable | None,
 ) -> _KeySplit:
     """Sort *names* into the run's columns, sequence tags and unknown names.
 
     A name that any output in scope writes is a column of the run, and the tag
     table is read only when a name is not. A name that the run writes wins over a
-    tag, even where only some entries write it, which the read then refuses.
+    tag, even where only some entries write it, which the read then refuses. A
+    given *tag_table* is the table the tags are read from, and no revision is
+    resolved.
     """
     from .run_matrix import run_key_columns
 
     if not names:
-        return _KeySplit((), (), (), None)
+        return _KeySplit((), (), (), tag_table)
     written = run_key_columns(ds, run, names, scope=scope)
     run_keys = tuple(name for name in names if name in written)
     others = tuple(name for name in names if name not in written)
     if not others:
-        return _KeySplit(run_keys, (), (), None)
-    from mosaic.core.annotations.sequence_tags import (
-        SequenceTagRevisionNotFound,
-        read_sequence_tag_table,
-    )
+        return _KeySplit(run_keys, (), (), tag_table)
+    table = tag_table
+    if table is None:
+        from mosaic.core.annotations.sequence_tags import (
+            SequenceTagRevisionNotFound,
+            read_sequence_tag_table,
+        )
 
-    try:
-        table = read_sequence_tag_table(ds, tag_revision, kind="summary")
-    except SequenceTagRevisionNotFound as error:
-        raise SummaryInvalid(
-            str(error), feature=run.feature, run_id=run.run_id
-        ) from error
+        try:
+            table = read_sequence_tag_table(ds, tag_revision, kind="summary")
+        except SequenceTagRevisionNotFound as error:
+            raise SummaryInvalid(
+                str(error), feature=run.feature, run_id=run.run_id
+            ) from error
     sequence = _definition_names(table, individual=False)
     individual = _definition_names(table, individual=True)
     tags = tuple(name for name in others if name in sequence)
@@ -1004,13 +1027,20 @@ def _tag_key(table: TagTable, name: str, entry_of: Sequence[tuple[str, str]]) ->
     return _Key(kind, tuple(cells))
 
 
-def _tag_revision_read(split: _KeySplit) -> TagRevisionRead | None:
-    """The revision that the tag keys were read from, ``None`` without tag keys."""
-    if not split.tag_keys or split.table is None or split.table.revision is None:
+def _tag_revision_read(
+    split: _KeySplit, tag_table: ResolvedTagTable | None
+) -> TagRevisionRead | None:
+    """The revision that a tag selection or the tag keys read, ``None`` if neither.
+
+    A given *tag_table* is recorded whether or not a key reads it. Otherwise the
+    revision is recorded only when a tag key read it.
+    """
+    table = tag_table if tag_table is not None else split.table
+    if table is None or table.revision is None:
         return None
-    return TagRevisionRead(
-        revision=split.table.revision, digest=split.table.payload_digest
-    )
+    if tag_table is None and not split.tag_keys:
+        return None
+    return TagRevisionRead(revision=table.revision, digest=table.payload_digest)
 
 
 def _refuse_pairwise(

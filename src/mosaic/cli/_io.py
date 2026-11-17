@@ -602,13 +602,18 @@ class ResolvedChoices:
     Attributes:
         scope: The command's scope, or ``None`` when it names none.
         step_scopes: Each step's scope, by step id.
-        tag_revision: The revision of the tag table that a tag selection was
-            lowered against, or ``None`` when no choice named a tag.
+        tags: The table the choices read, or ``None`` when no choice named a
+            tag.
     """
 
     scope: Scope | None
     step_scopes: dict[str, Scope]
-    tag_revision: LabelRevisionRef | None
+    tags: ResolvedTagTable | None
+
+    @property
+    def tag_revision(self) -> LabelRevisionRef | None:
+        """The revision the tag selections were lowered against, if any."""
+        return None if self.tags is None else self.tags.ref
 
 
 def resolve_choices(
@@ -643,7 +648,7 @@ def resolve_choices(
     return ResolvedChoices(
         scope=resolved_scope,
         step_scopes=step_scopes,
-        tag_revision=None if tags is None else tags.ref,
+        tags=tags,
     )
 
 

@@ -1749,8 +1749,9 @@ class LocalBackend:
 def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
     """Summarize the feature run *args* names, over the entries it selects.
 
-    Sequence tags select against the revision that ``tag_revision`` names, which
-    is then the one that the summary's tag keys read.
+    Sequence tags select against the revision that ``tag_revision`` names. The
+    summary's tag keys read that table, and the summary records its revision
+    whether or not a key is a tag.
 
     Raises:
         TagSelectionInvalid: The tags select no entry, or name an unknown tag or a
@@ -1764,6 +1765,7 @@ def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
 
     scope = None if args.groups is None else Scope(groups=args.groups)
     tag_revision = args.tag_revision
+    tag_table = None
     if args.sequence_tags is not None:
         from mosaic.core.annotations.tag_selection import (
             selection_tag_table,
@@ -1772,7 +1774,8 @@ def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
 
         tags = selection_tag_table(dataset, tag_revision)
         scope = tagged_scope(tags, args.sequence_tags, groups=args.groups)
-        tag_revision = tags.revision
+        tag_revision = None
+        tag_table = tags
     return summarize_ref(
         dataset,
         args.ref,
@@ -1783,6 +1786,7 @@ def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
         scope=scope,
         allow_partial=args.allow_partial,
         tag_revision=tag_revision,
+        tag_table=tag_table,
     )
 
 

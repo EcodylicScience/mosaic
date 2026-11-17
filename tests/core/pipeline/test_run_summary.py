@@ -48,6 +48,7 @@ from mosaic.core.pipeline.run_summary import (
     SummaryInvalid,
     TagRevisionRead,
     run_summary_wire,
+    summarize_ref,
     summarize_run,
 )
 from mosaic.core.pipeline.summary_arguments import KeyValue, read_where
@@ -1150,6 +1151,65 @@ def test_a_summary_reads_the_revision_it_names_after_a_later_one_exists(
     ]
     assert first.tag_revision is not None and first.tag_revision.revision == 1
     assert latest.tag_revision is not None and latest.tag_revision.revision == 2
+
+
+def test_a_selection_table_records_its_revision_without_a_tag_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    selected = read_sequence_tag_table(ds, kind="test")
+    assert selected is not None
+    asked = spy_on_the_series_index(monkeypatch)
+
+    summary = summarize_run(ds, result, by=["batch"], tag_table=selected)
+
+    assert asked == []
+    assert summary.tag_keys == ()
+    assert summary.tag_revision == TagRevisionRead(
+        revision=1, digest=selected.payload_digest
+    )
+    assert wire_of(summary).tag_revision == summary.tag_revision
+
+
+def test_a_tag_key_reads_the_selection_table_after_a_later_revision_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    selected = read_sequence_tag_table(ds, kind="test")
+    assert selected is not None
+    _ = write_tags(ds, tag_table_of(condition_of_a="control"))
+    asked = spy_on_the_series_index(monkeypatch)
+
+    summary = summarize_run(ds, result, by=["condition"], tag_table=selected)
+
+    assert asked == []
+    assert summary.tag_keys == ("condition",)
+    assert records(summary.groups, "condition", "n_entries") == [
+        ("control", 1),
+        ("treated", 2),
+    ]
+    assert summary.tag_revision is not None and summary.tag_revision.revision == 1
+
+
+def test_a_selection_table_and_a_tag_revision_together_are_a_caller_error(
+    tmp_path: Path,
+) -> None:
+    ds, result = tagged_run(tmp_path)
+    selected = read_sequence_tag_table(ds, kind="test")
+    assert selected is not None
+
+    with pytest.raises(ValueError, match="tag_table"):
+        _ = summarize_run(
+            ds, result, by=["condition"], tag_table=selected, tag_revision=1
+        )
+    with pytest.raises(ValueError, match="tag_table"):
+        _ = summarize_ref(
+            ds,
+            f"feature/{result.feature}/{result.run_id}",
+            by=["condition"],
+            tag_table=selected,
+            tag_revision=1,
+        )
 
 
 def test_an_edit_of_a_tag_between_two_summaries_changes_the_groups_and_moves_no_run(
