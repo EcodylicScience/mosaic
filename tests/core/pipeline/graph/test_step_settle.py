@@ -595,3 +595,17 @@ def test_a_cancelled_token_raises_before_the_settle_writes(tracked: Dataset) -> 
         _ = settle_step(tracked, request, "speed", owner=OWNER, cancel_token=token)
 
     assert_tree_unchanged(tracked.base_dir, before)
+
+
+def test_a_cancelled_token_raises_for_a_step_that_would_not_be_attempted(
+    tracked: Dataset,
+) -> None:
+    request = submit_request(tracked, chain_recipe()).request
+    token = CancelToken()
+    token.cancel()
+    before = tree_snapshot(tracked.base_dir)
+
+    with pytest.raises(Cancelled):
+        _ = settle_step(tracked, request, "speed", owner=OWNER, cancel_token=token)
+
+    assert_tree_unchanged(tracked.base_dir, before)

@@ -107,7 +107,8 @@ def settle_step(
         request: The submission the step belongs to.
         step_id: The step.
         owner: Who records the attempt.
-        cancel_token: Checked right before the record is written.
+        cancel_token: Checked after the size is read and again right before the
+            record is written.
 
     Returns:
         The step's input size and the settle's outcome.
@@ -116,10 +117,12 @@ def settle_step(
         KeyError: The recipe has no step *step_id*.
         StepRefused: The size read refuses the step, as a parent step whose
             run-log records no run does. Nothing is written.
-        Cancelled: *cancel_token* is cancelled before the record is written.
-            Nothing is written.
+        Cancelled: *cancel_token* is cancelled before the settle returns or
+            records. Nothing is written.
     """
     sized = step_input_size(ds, request, step_id)
+    if cancel_token is not None:
+        cancel_token.raise_if_cancelled()
     execution_id = request.execution_of(step_id)
 
     def report(
