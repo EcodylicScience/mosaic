@@ -19,6 +19,7 @@ import mosaic.runlog as runlog
 from mosaic.runlog import (
     EntryMeasure,
     JsonlRunLog,
+    MachineFacts,
     ResourceReport,
     RunLogSnapshot,
     attempt_outcome,
@@ -26,6 +27,7 @@ from mosaic.runlog import (
     list_runs,
     read_entry_error_keys,
     read_entry_errors,
+    read_machine,
     read_run_progress,
     read_runs,
     run_log_dir,
@@ -588,6 +590,99 @@ def test_a_run_log_without_a_card_reads_an_empty_one(tmp_path: Path) -> None:
     assert snap is not None
     assert snap["gpu_card"] == ""
     assert "gpu_card" not in path.read_text(encoding="utf-8")
+
+
+_MACHINE = MachineFacts(
+    cpu_model="Example Xeon 9000",
+    logical_cpus=40,
+    threads_per_core=2,
+    memory_bytes=128 * 2**30,
+    machine_class="cpu-large",
+)
+
+
+def test_started_carries_the_machine_only_when_given(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t", machine=_MACHINE)
+    with _log(tmp_path, "E2") as log:
+        log.started(kind="feature", target="t")
+
+    with_machine = runlog.read_run_records(run_log_dir(tmp_path), "E1")
+    without = runlog.read_run_records(run_log_dir(tmp_path), "E2")
+
+    assert with_machine[0]["machine"] == {
+        "cpu_model": "Example Xeon 9000",
+        "logical_cpus": 40,
+        "threads_per_core": 2,
+        "memory_bytes": 128 * 2**30,
+        "machine_class": "cpu-large",
+    }
+    assert read_machine(with_machine) == _MACHINE
+    assert "machine" not in without[0]
+    assert read_machine(without) is None
+
+
+def test_the_machine_of_the_last_started_that_carries_one_is_read(
+    tmp_path: Path,
+) -> None:
+    other = MachineFacts(cpu_model="Other", logical_cpus=4)
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t", machine=_MACHINE)
+        log.started(kind="feature", target="t", machine=other)
+        log.started(kind="feature", target="t")
+
+    records = runlog.read_run_records(run_log_dir(tmp_path), "E1")
+
+    assert read_machine(records) == other
+
+
+def test_a_machine_field_of_the_wrong_type_reads_as_empty() -> None:
+    records: list[dict[str, object]] = [
+        {
+            "ev": "started",
+            "machine": {
+                "cpu_model": 7,
+                "logical_cpus": "forty",
+                "threads_per_core": 2.5,
+                "memory_bytes": True,
+                "machine_class": "cpu-large",
+            },
+        }
+    ]
+
+    assert read_machine(records) == MachineFacts(machine_class="cpu-large")
+
+
+def test_a_machine_that_is_not_an_object_is_not_carried() -> None:
+    records: list[dict[str, object]] = [
+        {"ev": "started", "machine": [1, 2]},
+        {"ev": "started", "machine": "x"},
+    ]
+
+    assert read_machine(records) is None
+
+
+def test_a_log_with_a_machine_folds_to_the_same_snapshot() -> None:
+    plain: list[dict[str, object]] = [
+        {
+            "t": "2026-01-01T00:00:00+00:00",
+            "ev": "started",
+            "kind": "feature",
+            "pid": 7,
+        },
+        {"t": "2026-01-01T00:00:01+00:00", "ev": "total", "total": 2},
+        {"t": "2026-01-01T00:00:02+00:00", "ev": "finished"},
+    ]
+    with_machine = [
+        {**record, "machine": {"cpu_model": "x", "logical_cpus": 4}}
+        if record["ev"] == "started"
+        else record
+        for record in plain
+    ]
+
+    assert runlog.fold_run_records("E1", with_machine) == runlog.fold_run_records(
+        "E1", plain
+    )
 
 
 def test_a_resumed_attempt_takes_the_card_of_its_last_started(tmp_path: Path) -> None:

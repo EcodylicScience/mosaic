@@ -69,7 +69,9 @@ from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
 from mosaic.runlog import (
     TERMINAL_STATUSES,
     JsonlRunLog,
+    read_machine,
     read_run,
+    read_run_records,
     run_log_dir,
     run_log_path,
 )
@@ -498,6 +500,37 @@ def test_a_step_that_runs_nothing_records_the_card_of_its_process(
     assert cached.state == "cached"
     (speed, _templates) = request_rollup(tracked.base_dir, second).steps
     assert speed.gpu_card == "0:GPU-abc"
+
+
+def test_a_record_of_a_step_run_elsewhere_names_no_machine(
+    tracked: Dataset,
+) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _ = execute_step(tracked, request, "speed")
+    cached_request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    cached = execute_step(tracked, cached_request, "speed")
+    assert cached.state == "cached"
+    record_step_ended(
+        tracked,
+        request.execution_of("templates"),
+        step_id="templates",
+        owner="",
+        status="cancelled",
+    )
+
+    ran = read_run_records(run_log_dir(tracked.base_dir), request.execution_of("speed"))
+    cached_log = read_run_records(
+        run_log_dir(tracked.base_dir), cached_request.execution_of("speed")
+    )
+    ended = read_run_records(
+        run_log_dir(tracked.base_dir), request.execution_of("templates")
+    )
+
+    for records in (ran, cached_log, ended):
+        assert records[0]["ev"] == "started"
+    assert read_machine(ran) is not None
+    assert read_machine(cached_log) is None
+    assert read_machine(ended) is None
 
 
 def test_a_step_a_driver_records_ended_names_no_card(

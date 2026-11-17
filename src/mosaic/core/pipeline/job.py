@@ -42,6 +42,7 @@ from mosaic import runlog
 
 from ._utils import new_execution_id
 from .gpu_lease import leased_card
+from .machine import current_machine
 from .markers import current_boot_id, current_pid_namespace
 from .parallelism import ParallelSettings
 from .progress import (
@@ -521,6 +522,7 @@ def job_context(
             pid_ns=current_pid_namespace(),
             liveness_interval=interval,
             gpu_card=leased_card(),
+            machine=current_machine(),
         )
         if total:
             run_log.set_total(total)

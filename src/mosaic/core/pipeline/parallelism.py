@@ -42,6 +42,7 @@ __all__ = [
     "parallel_flags",
     "physical_cpus",
     "process_capable",
+    "threads_per_core",
     "valid_admission_margin",
 ]
 
@@ -243,18 +244,28 @@ def process_capable(feature: object) -> bool:
     )
 
 
-def physical_cpus() -> int:
-    """Return how many physical cores this process may use, at least 1.
+def threads_per_core() -> int | None:
+    """Return the host's logical processors per physical core, at least 1.
 
-    The processors of :func:`host_cpus` divided by the host's threads per core, so a
-    host that runs two hardware threads per core counts each core once. Process
-    workers of numeric code gain nothing from a second thread on a core. A host
-    that does not report its physical cores counts every processor.
+    ``None`` when psutil reports either count as unknown, which a container or a
+    virtual machine may.
     """
     logical = psutil.cpu_count(logical=True)
     physical = psutil.cpu_count(logical=False)
-    threads_per_core = 1 if not logical or not physical else max(1, logical // physical)
-    return max(1, host_cpus() // threads_per_core)
+    if not logical or not physical:
+        return None
+    return max(1, logical // physical)
+
+
+def physical_cpus() -> int:
+    """Return how many physical cores this process may use, at least 1.
+
+    The processors of :func:`host_cpus` divided by the host's :func:`threads_per_core`,
+    so a host that runs two hardware threads per core counts each core once. Process
+    workers of numeric code gain nothing from a second thread on a core. A host
+    that does not report its physical cores counts every processor.
+    """
+    return max(1, host_cpus() // (threads_per_core() or 1))
 
 
 def effective_parallel(

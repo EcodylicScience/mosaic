@@ -296,6 +296,24 @@ def test_a_refusal_is_recorded_by_its_reason_and_the_step_it_ran_in(
     }
 
 
+def test_every_attempt_records_the_machine_it_ran_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOSAIC_MACHINE_CLASS", "cpu-large")
+    dataset = make_dataset(tmp_path / "dataset")
+
+    with job_context(dataset, kind="feature", target="t") as ctx:
+        pass
+
+    machine = runlog.read_machine(
+        runlog.read_run_records(run_log_dir(dataset.base_dir), ctx.execution_id)
+    )
+    assert machine is not None
+    assert machine.machine_class == "cpu-large"
+    assert machine.logical_cpus > 0
+    assert machine.memory_bytes > 0
+
+
 # --- track=False opt-out ---------------------------------------------------
 
 

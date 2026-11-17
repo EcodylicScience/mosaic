@@ -90,6 +90,7 @@ __all__ = [
     "EntryErrorRecord",
     "ErrorSummary",
     "JsonlRunLog",
+    "MachineFacts",
     "ProbeRecord",
     "ProgressEventRecord",
     "ResourceReport",
@@ -113,6 +114,7 @@ __all__ = [
     "parse_instant",
     "read_entry_error_keys",
     "read_entry_errors",
+    "read_machine",
     "read_removal_records",
     "read_run",
     "read_run_records",
@@ -392,6 +394,31 @@ class EntryMeasure:
     in_flight: int
     cpu_seconds: float
     peak_grown_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MachineFacts:
+    """The machine a job ran on, written as the ``machine`` object of its ``started`` event.
+
+    A fact the writer could not learn, or a field of the wrong type, reads as 0 for
+    a count, ``""`` for a text and ``None`` for ``threads_per_core``. A 0 or ``""``
+    therefore means unknown.
+
+    Attributes:
+        cpu_model: The processor's model name, ``""`` when unknown.
+        logical_cpus: The logical processors of the host, 0 when unknown.
+        threads_per_core: The logical over the physical cores, ``None`` when the
+            host reports either as unknown.
+        memory_bytes: The host's total memory, 0 when unknown.
+        machine_class: The operator's name for the kind of machine, ``""`` when
+            the operator set none.
+    """
+
+    cpu_model: str = ""
+    logical_cpus: int = 0
+    threads_per_core: int | None = None
+    memory_bytes: int = 0
+    machine_class: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,6 +875,7 @@ class JsonlRunLog:
         pid_ns: str = "",
         liveness_interval: float = 0.0,
         gpu_card: str = "",
+        machine: MachineFacts | None = None,
     ) -> None:
         """Bracket the start of the attempt (kind/target/owner/host/pid).
 
@@ -855,7 +883,8 @@ class JsonlRunLog:
         reader judging whether it still runs. *gpu_card* names the card the
         process was leased, ``<index>:<uuid>``. Each is written only when set, so
         a record of a process that runs nothing (a refusal, a cache hit) reads as
-        before.
+        before. *machine* is written as a nested ``machine`` object, and only by the
+        process that runs the job.
         """
         process: dict[str, Any] = {}
         if boot_id:
@@ -866,6 +895,8 @@ class JsonlRunLog:
             process["liveness_interval"] = liveness_interval
         if gpu_card:
             process["gpu_card"] = gpu_card
+        if machine is not None:
+            process["machine"] = dataclasses.asdict(machine)
         self._emit(
             "started",
             kind=kind,
@@ -1366,6 +1397,36 @@ def read_run_records(
     return out
 
 
+def read_machine(records: Sequence[Mapping[str, object]]) -> MachineFacts | None:
+    """The machine of the last ``started`` record that carries one.
+
+    A field of the wrong type reads as empty. A ``machine`` that is not an object
+    is not carried.
+
+    Args:
+        records: An attempt's records in file order, as :func:`read_run_records`
+            returns them.
+
+    Returns:
+        The machine, ``None`` when no ``started`` record names one.
+    """
+    for rec in reversed(records):
+        if rec.get("ev") != "started":
+            continue
+        machine = rec.get("machine")
+        if not isinstance(machine, dict):
+            continue
+        fields = cast("dict[str, object]", machine)
+        return MachineFacts(
+            cpu_model=record_text(fields, "cpu_model"),
+            logical_cpus=record_count(fields, "logical_cpus"),
+            threads_per_core=_optional_count(fields, "threads_per_core"),
+            memory_bytes=record_count(fields, "memory_bytes"),
+            machine_class=record_text(fields, "machine_class"),
+        )
+    return None
+
+
 def reduce_run_log(path: Path) -> RunLogSnapshot | None:
     """Fold a run-log JSONL into a :class:`RunLogSnapshot` (``None`` if empty/unreadable)."""
     path = Path(path)
@@ -1496,10 +1557,16 @@ def fold_run_records(
     return snap
 
 
+def _optional_count(rec: Mapping[str, object], key: str) -> int | None:
+    """An integer field of a run-log record, ``None`` when absent or not an integer."""
+    value = rec.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _count_or(rec: Mapping[str, object], key: str, default: int) -> int:
     """An integer field of a run-log record, *default* when absent or not an integer."""
-    value = rec.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else default
+    value = _optional_count(rec, key)
+    return default if value is None else value
 
 
 def _text_or(rec: Mapping[str, object], key: str, default: str) -> str:
@@ -2025,8 +2092,7 @@ def read_run_progress(
 
 def record_count(rec: Mapping[str, object], key: str) -> int:
     """An integer field of a run-log record, 0 when absent or not an integer."""
-    value = rec.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return _count_or(rec, key, 0)
 
 
 def record_seconds(rec: Mapping[str, object], key: str) -> float:
