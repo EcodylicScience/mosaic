@@ -8,6 +8,67 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: selecting by sequence tag, tag keys in summaries, and arena layouts for many recordings
+
+No run id moves and no identity golden changes. A request selected by tag records
+its entries and the revision of the tags it read as `tag_revision`. Its run ids equal
+those of the same entries named one by one, and a recipe does not contain a tag selection.
+
+### Selecting entries by sequence tag
+
+A tag selection is `NAME=VALUE` pairs. The values of one tag are alternatives, different
+tags must all match, `NAME` alone names a `label` tag, and a value is read by its tag's
+type. The selection reads the latest revision of the tags. It is refused when it names an
+undefined tag or when it matches zero entries. The request does not record the tag values.
+A tag imported later changes neither the request nor its runs.
+
+- `--tag NAME=VALUE`, repeatable, on `mosaic pipeline plan`, `verify`, `run` and
+  `submit` and on `mosaic summarize`. It excludes `--entry`, and beside `--group` it
+  keeps the selected entries of those groups.
+- `{"sequence_tags": {"genotype": ["wt"], "treated": []}}` in `--scope` and
+  `--step-scope`, alone in its object. `mosaic run` and `mosaic prerequisites` take it in
+  `--scope`, and `mosaic pipeline plan`, `verify`, `run`, `submit` and `score` take it in
+  `--step-scope`.
+- In the MCP server, `sequence_tags` is a key of the scope selector, alone in the
+  selector, that `plan_recipe` and `submit_pipeline` take for `entries` and
+  `step_entries`, and `get_inventory` for `entries`. `preview_output` in `summary` mode
+  takes `sequence_tags` with `tag_revision`, and `manage_dataset` `set_arenas` takes
+  `sequence_tags` in place of `recording`.
+
+`plan_pipeline` and `plan_with_cleanup` take `tag_revision`, a `LabelRevisionRef`, and
+plan every tag-reading step from that revision in place of the request's.
+
+### A summary groups and filters by tag and records the revision it read
+
+A `by` or `where` key that names a sequence tag and is not a column of the run groups or
+filters the entries by the tag's value. The strain or sex needs no `keep_columns` or
+`sequence-tag-columns` step. A column of the run takes precedence over a tag of its name,
+and a key that is neither is refused with the columns and the tags listed. An entry
+without a value of the tag leaves its rows out, counted in `rows_without_key`. An
+individual tag is refused as a key.
+
+`mosaic summarize --tag-revision N` reads revision N for the selection and the tag keys.
+`RunSummary` and `RunSummaryWire` gain `tag_keys`, the keys read from the tags in the
+order named, and `tag_revision`, the `revision` and `digest` read by the tag keys or by
+the tag selection that chose the entries. `tag_revision` is null when neither read the
+tags. `summarize_run` and `summarize_ref` gain `tag_revision` and `tag_table`, the table
+that a tag selection chose the scope from. `run_key_columns` in
+`mosaic.core.pipeline.run_matrix` returns the names that a key may take from the run.
+
+### One arena layout for many recordings
+
+`mosaic arenas set --tag NAME=VALUE`, in place of `--recording`, declares the layout
+under one key for each recording that an entry with the tag belongs to. `--tag` repeats,
+and `--camera` sets the camera of every recording. A divided recording that the tags
+select only in part is refused, naming the recording and the values its sequences have.
+Every recording is checked before any layout is written, and a recording keeps its
+layout when the tags are edited later.
+
+`write_arena_layout` in `mosaic.core.pipeline.arena_index` is replaced by
+`write_arena_layouts`. It takes a sequence of keys, takes the index lock once and writes
+every file and index row, or none when a key is refused. `Dataset.set_arena_layout` is
+unchanged, and `Dataset.set_arena_layouts` declares one layout under several keys.
+
 ## Unreleased: `mosaic pipeline settle` records a step that has nothing to compute, and `mosaic --version` prints the release
 
 ### `mosaic pipeline settle`

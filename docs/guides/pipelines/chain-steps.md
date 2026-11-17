@@ -185,12 +185,15 @@ mosaic pipeline run -m dataset.yaml --recipe @recipe.json \
 ```
 
 SCOPE is a JSON selector, `{"groups": [...]}`, `{"sequences": [...]}` (both together
-cover their cross product) or `{"entries": [[group, sequence], ...]}`, or `@file.json`.
-A bare `--step-scope @scopes.json` holding `{"templates": {"groups": ["train"]},
-"evaluate": {"groups": ["test"]}}` scopes several steps at once, and a step it names
-may not be named again by another `--step-scope`.
-`plan`, `submit` and `run` take it, and so does an MCP client as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
-it to entries.
+cover their cross product), `{"entries": [[group, sequence], ...]}` or
+`{"sequence_tags": {"genotype": ["wt"]}}`, which stands alone and selects the entries
+that have those [sequence tags](run-and-see-what-ran.md#scoping), or `@file.json`. A
+bare `--step-scope @scopes.json` holding
+`{"templates": {"groups": ["train"]}, "evaluate": {"groups": ["test"]}}` scopes several
+steps at once, and a step it names may not be named again by another `--step-scope`.
+`plan`, `verify`, `submit` and `run` take it, and so does an MCP client as
+`step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows it
+to entries.
 
 - A step scope is intersected with the request's entries, and a step whose identity
   covers its entries, such as `extract-templates`, is named by the narrowed set.

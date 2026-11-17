@@ -43,6 +43,41 @@ difference from `--entries`, and every group name reaches the run as it was writ
 or the other. `--params` and `--scope` cannot both read stdin, because the first `@-`
 consumes it.
 
+**By sequence tag.** `--scope` also selects the entries that have given
+[sequence tags](../../dataset.md#sequence-tags). Other keys are refused beside
+`sequence_tags`. The values of one tag are alternatives, different tags must all match,
+and an empty list names a `label` tag and matches the entries it is assigned to. A value
+is read by its tag's type, so `03` selects the number 3 of an `int` tag and only the
+text `03` of a `categorical` tag.
+
+```bash
+mosaic run -m dataset.yaml --feature speed-angvel \
+    --scope '{"sequence_tags": {"genotype": ["wt", "het"], "treated": []}}'
+```
+
+`mosaic prerequisites --scope` takes the same object. The selection reads the latest
+revision of the tags. It is refused when it names a tag the dataset does not define or
+when its values match zero entries. The run has the identity of the same entries named
+with `--entries`.
+
+The pipeline verbs take the selection as `--tag NAME=VALUE`, repeatable, and
+`--tag NAME` for a label, beside `--group`:
+
+```bash
+mosaic pipeline plan -m dataset.yaml --recipe @recipe.json \
+    --tag genotype=wt --tag genotype=het --tag treated
+```
+
+`pipeline plan`, `verify`, `run` and `submit` take `--tag`, and so does
+`mosaic summarize`
+([Summaries across entries](../analysis/features.md#summaries-across-entries)). `--tag`
+excludes `--entry`. Beside `--group` it keeps the selected entries of those groups.
+`--step-scope` takes `{"sequence_tags": ...}` as a step's selector. The scope and every
+step scope of a command select from the latest revision of the tags. A submitted request
+records its entries and that revision. The tag values are not recorded. A tag imported
+later changes neither the request nor its runs. Its runs have the ids of the same
+entries named with `--entry`.
+
 A scope key inside `--params` is refused. `--params` names the settings a feature's
 or an op's model validates, and a selector is not one of them.
 

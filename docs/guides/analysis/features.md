@@ -266,12 +266,13 @@ mosaic summarize feature/<storage>/<run_id> -m dataset.yaml \
     --where sex=female --where sex=male
 ```
 
-`by` takes `group`, `sequence`, an identity column the run writes or any other column it
-writes, such as a kept label. Several keys cross into one grouping. `where` keeps the
-rows whose key takes one of the values listed, and a key of `where` need not be in
-`by`. `--json` prints the same summary as `RunSummaryWire`, and `--allow-partial` reads
-a run that lacks entries or is not finished. Rows with a null key are counted in
-`rows_without_key`, and the entries that have no row in `entries_without_rows`.
+`by` takes `group`, `sequence`, an identity column the run writes, any other column it
+writes, such as a kept label, or a [sequence tag](../../dataset.md#sequence-tags).
+Several keys cross into one grouping. `where` keeps the rows whose key takes one of the
+values listed, and a key of `where` need not be in `by`. `--json` prints the same
+summary as `RunSummaryWire`, and `--allow-partial` reads a run that lacks entries or is
+not finished. Rows with a null key are counted in `rows_without_key`, and the entries
+that have no row in `entries_without_rows`.
 
 A `where` value from the command line, or a string in a `where` of the MCP tool, is read
 as text and as a number or a boolean where the key holds one. `--where n_inds=1` keeps
@@ -279,6 +280,36 @@ the integer 1, `--where code=1` keeps the text `"1"` of a text key, and `true` a
 `false` match a boolean key. A JSON number in an MCP call, or a Python number, matches an
 integer or float key alike, and a boolean matches a boolean key. `where` in Python does
 not read a string as a number or a boolean.
+
+**By sequence tag.** A `by` or `where` key that names a sequence tag and is not a column
+of the run groups or filters the entries by the tag's value. The strain or sex then
+needs no `keep_columns` or `sequence-tag-columns` step. A column that the run writes
+wins over a tag of its name, and a key that is neither is refused, listing the columns
+and the tags. A tag key takes its tag's type: `text` and `categorical` read as text,
+`int` as an integer, `float` as floating point, and `bool` and `label` as booleans, a
+`label` being false where it is not assigned. An entry with no value of the tag leaves
+its rows out, counted in `rows_without_key`. An individual tag is refused as a key. Copy
+it into a column of the run with `id-tag-columns` and summarize that run.
+
+```bash
+mosaic summarize feature/<storage>/<run_id> -m dataset.yaml \
+    --by genotype --column speed_mean --test kruskal \
+    --tag treated --tag-revision 3
+```
+
+`--tag NAME=VALUE`, repeatable, selects the entries that have a tag, as
+`mosaic pipeline plan --tag` does, and `--tag NAME` names a `label`. It excludes
+`--entry`, and beside `--group` it keeps the selected entries of those groups.
+`--tag-revision N` reads revision N of the tags for the selection and for the tag keys,
+and without it both read the latest. A summary reads the tags when it runs. Changing a
+tag leaves every run as it is and changes only the groups of the next summary. `--json`
+records `tag_keys` and `tag_revision`, the `revision` and `digest` that were read.
+`tag_revision` is null when neither a tag key nor a `--tag` read the tags. In Python,
+`summarize_run` takes `tag_revision`.
+
+A pool of several values of a tag, compared as one group, is one more tag that you
+write: a column of the CSV that you [import](../../dataset.md#sequence-tags). Group by
+it.
 
 **The statistics.** Each group and column has `n`, `n_missing`, `mean`, `sd` (`ddof=1`),
 `sem` and `median`. A NaN or infinite cell is missing, so one infinite value does not
@@ -306,7 +337,9 @@ replicate of its strain. `n_entries` beside `n_rows` shows how many recordings s
 behind a group, so read it before reading a p value.
 
 **Through MCP.** `preview_output` with `mode: "summary"` takes `by`, `tests`, `where`,
-`columns`, `groups` and `allow_partial` and returns the same summary. A summary has no
+`columns`, `groups`, `sequence_tags`, `tag_revision` and `allow_partial` and returns the
+same summary. `sequence_tags` selects entries as `--tag` does, as
+`{"genotype": ["wt"], "treated": []}`, with `[]` naming a label. A summary has no
 default bound: about 265 characters per group and column, so about 150 groups of one
 column fit under the 40,000 characters a result may hold. The tests add to that.
 `mann_whitney` takes about 190 characters per pair and column with one short key, and

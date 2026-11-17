@@ -232,6 +232,12 @@ A dataset is a directory with `dataset.yaml` and named roots
   circle or polygon) and named `rois`: `--rois FILE`, a JSON list, gives every arena of a
   grid or circle the same ones, and `mosaic arenas show` lists each arena's boundary and
   region names.
+- One layout for many recordings is `mosaic arenas set --tag NAME=VALUE` in place of
+  `-r`, or `sequence_tags` of the `set_arenas` action: each recording that an entry with
+  the tag belongs to gets the layout
+  (https://ecodylicscience.github.io/mosaic/dataset/#arenas). A divided recording that
+  the tags select only in part is refused, and a later edit of the tags leaves the
+  layouts as they are.
 - Per-sequence tags such as a genotype, sex or date live in one table of the dataset. A
   user keeps them in a CSV with one row per recording or sequence, and
   `mosaic sequence-tags import design.csv -m dataset.yaml` (`manage_dataset` action
@@ -249,6 +255,20 @@ A dataset is a directory with `dataset.yaml` and named roots
   import, `mosaic pipeline verify` reports the tag-reading step of a finished request as
   having no complete run, because it checks the latest table. Submit the recipe again.
   https://ecodylicscience.github.io/mosaic/dataset/#sequence-tags
+- To select entries by tag, give `--tag NAME=VALUE` (repeatable, `--tag NAME` for a
+  `label`; excludes `--entry`; with `--group` it keeps the selected entries of those
+  groups) to `mosaic pipeline plan`, `verify`, `run` and `submit` and to
+  `mosaic summarize`. Or give `{"sequence_tags": {"NAME": ["VALUE"]}}` alone in a
+  `--scope`, a `--step-scope`, or the `entries` and `step_entries` of `plan_recipe`,
+  `submit_pipeline` and `get_inventory` (`[]` names a label). A request records the
+  entries and the revision of the tags it read, and its run ids equal those of the same
+  entries named one by one
+  (https://ecodylicscience.github.io/mosaic/guides/pipelines/run-and-see-what-ran/#scoping).
+- To summarize by tag, `mosaic summarize` takes a sequence tag as a `--by` or `--where`
+  key, and `--tag-revision N` reads an earlier revision of the tags. Its JSON records
+  `tag_keys` and `tag_revision`, as `preview_output` does with `sequence_tags` and
+  `tag_revision`. A pool of values is one more tag that the user writes into the CSV
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#summaries-across-entries).
 - Time in a region of an arena: run `roi-occupancy` with `rois` naming regions
   stored on the arenas or defined inline. Each row gains `in_<roi>`, `dist_<roi>`
   in pixels and `roi`, the first region holding it. Read pixel tracks, not a

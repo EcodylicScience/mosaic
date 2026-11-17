@@ -498,6 +498,26 @@ mosaic arenas set -m dataset.yaml -r 23036146_20210219_112253 \
 mosaic arenas show -m dataset.yaml
 ```
 
+**One layout for many recordings.** `--tag NAME=VALUE`, in place of `-r`, declares the
+layout for each recording that an entry with the [sequence tag](#sequence-tags) belongs
+to in the latest revision of the tags, one key per recording:
+
+```bash
+mosaic arenas set -m dataset.yaml --tag setup=A \
+    --xs 0,506,1012 --ys 0,170,346,524,702,878,1068
+```
+
+`--tag` repeats and `--tag NAME` names a `label`, with the grammar of
+[`mosaic pipeline plan --tag`](guides/pipelines/run-and-see-what-ran.md#scoping). A
+value is read by its tag's type, so `03` selects the number 3 of an `int` tag and only
+the text `03` of a `categorical` tag. `--camera` sets the camera of every recording. A
+divided recording that the tags select only in part is refused, naming the recording and
+the values its sequences have, because the layout would also apply to the sequences left
+out. Every recording is checked before any layout is written. A recording keeps its
+layout when the tag is edited. Run the command again to declare the layouts of the
+recordings that the new tags select. In MCP, `manage_dataset` `set_arenas` takes
+`sequence_tags` in place of `recording`.
+
 `--exclude-x x0,x1` excludes a vertical strip from every grid arena it crosses, and
 `--exclude-y y0,y1` a horizontal one. Both repeat, and a strip whose lower edge is not
 first or that crosses no arena is refused. Any other exclusion is declared in a layout
@@ -687,6 +707,15 @@ reads the same table, whatever is imported meanwhile. `mosaic pipeline verify` p
 recipe without the request, so it compares each tag-reading step with the latest table:
 after an import that changed a tag the step names, the step of a finished request reads
 as having no complete run. Submit the recipe again to compute it.
+
+**Select and summarize by tag.** A tag chooses the entries of a plan, a run or a
+summary: `--tag genotype=wt` on `mosaic pipeline plan`, `submit`, `run` and `verify` and
+on `mosaic summarize`, and `{"sequence_tags": ...}` in `--scope`
+([Scoping](guides/pipelines/run-and-see-what-ran.md#scoping)). `mosaic summarize` also
+takes a tag as a `--by` or `--where` key
+([Summaries across entries](guides/analysis/features.md#summaries-across-entries)).
+`mosaic arenas set --tag` declares one layout for the recordings that a tag selects
+([Arenas](#arenas)).
 
 ## Hold groups out of training
 

@@ -167,7 +167,7 @@ by that first `create`.
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts, or only those that changed `since` an earlier read. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
-| `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class. With `mode: "summary"`, a feature run's rows counted and described by group across entries (`by`, `where`, `tests`), as `mosaic summarize --json` prints them. A `where` string also matches an integer, float or boolean key where its text reads as one, as `--where` does |
+| `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class. With `mode: "summary"`, a feature run's rows counted and described by group across entries (`by`, `where`, `tests`), as `mosaic summarize --json` prints them. A key of `by` or `where` may name a sequence tag, `sequence_tags` selects the entries by tag, and `tag_revision` reads that revision of the tags instead of the latest, as `--tag-revision` does. The summary records the revision it read as `tag_revision`, null unless a tag key or `sequence_tags` read the tags. A `where` string also matches an integer, float or boolean key where its text reads as one, as `--where` does |
 
 Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
 `patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission
@@ -222,11 +222,16 @@ the recipe again. The server offers no tool for this
 
 `plan_recipe`, `submit_pipeline` and `get_inventory` take `entries` as a list of
 `[group, sequence]` pairs or as the scope `--step-scope` takes: `{"entries": [...]}`, or
-`{"groups": [...], "sequences": [...]}` with either left out. `plan_recipe` and
-`submit_pipeline` also take `step_entries`, which narrows single steps by step id: a
-classifier fitted on the training groups and scored on the test groups is one request
-([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)). A step
-scope is intersected with `entries`, so leave `entries` unset when steps are scoped to
+`{"groups": [...], "sequences": [...]}` with either left out, or
+`{"sequence_tags": {"genotype": ["wt"], "treated": []}}`, the entries that have those
+[sequence tags](dataset.md#sequence-tags), with `[]` naming a label. The `sequence_tags`
+object stands alone in its selector and reads the latest revision of the tags. A
+submission records its entries and that revision. The tag values are not recorded.
+`plan_recipe` and `submit_pipeline` also take `step_entries`, which narrows single steps
+by step id: a classifier fitted on the training groups and scored on the test groups is
+one request. See
+[Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes). A step scope
+is intersected with `entries`, so leave `entries` unset when steps are scoped to
 different groups.
 
 A long recipe is sent once. The agent writes a step repeated over seeds or classes once,
@@ -260,6 +265,12 @@ lets the agent start from a folder of raw files: create a dataset inside a datas
   stay, as `mosaic sources remove` keeps them.
 - `scan` reads and checksums every file, and a large folder takes minutes.
 - `set_tags` sets dataset tags; a tag not defined yet is typed by its first value.
+- `set_arenas` declares `arena_layout` as the arenas of `recording`, or of each
+  recording that the entries with `sequence_tags` belong to, as `{"setup": ["A"]}` with
+  `[]` naming a label. `sequence_tags` is a separate field because `tags` is the field
+  of dataset tags for `set_tags`. Give `recording` or `sequence_tags`. A divided
+  recording that the tags select only in part is refused, and every recording is checked
+  before any layout is written. See [Arenas](dataset.md#arenas).
 - `import_sequence_tags` writes the CSV at `path`, inside a source root, as the next
   revision of the dataset's [sequence tags](dataset.md#sequence-tags). It takes `key`,
   `types`, `replace` and `dry_run` as `mosaic sequence-tags import` takes `--key`,
