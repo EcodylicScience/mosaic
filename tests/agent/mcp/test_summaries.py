@@ -9,6 +9,7 @@ from mosaic.core.pipeline.run_summary import (
     MannWhitneyWire,
     RunSummaryWire,
     StatisticsWire,
+    TagRevisionRead,
 )
 
 RUN_ID = "0.2-1a2b3c4d5e"
@@ -139,3 +140,34 @@ def test_a_summary_with_mann_whitney_alone_names_no_kruskal_column() -> None:
 
     assert "Mann-Whitney tested 1 pair(s)" in paragraph
     assert "Kruskal" not in paragraph
+
+
+def test_a_summary_with_tag_keys_names_how_many_and_the_revision_read() -> None:
+    tagged = SUMMARY.model_copy(
+        update={
+            "tag_keys": ["site", "season"],
+            "tag_revision": TagRevisionRead(revision=3, digest="abc"),
+        }
+    )
+
+    paragraph = summarize(tagged)
+
+    assert "2 tag key(s) read from revision 3 of the sequence tags" in paragraph
+
+
+def test_a_summary_without_tag_keys_names_no_tag_revision() -> None:
+    paragraph = summarize(SUMMARY)
+
+    assert "tag" not in paragraph
+    assert "revision" not in paragraph
+
+
+def test_the_paragraph_names_no_tag_key() -> None:
+    tagged = SUMMARY.model_copy(
+        update={
+            "tag_keys": ["site"],
+            "tag_revision": TagRevisionRead(revision=1, digest="abc"),
+        }
+    )
+
+    assert "site" not in summarize(tagged)

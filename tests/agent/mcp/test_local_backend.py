@@ -65,10 +65,13 @@ from mosaic.core.pipeline.markers import process_running
 from mosaic.core.pipeline.parallelism import ParallelLimits, host_cpus
 from mosaic.core.pipeline.preview import ArtifactPreview
 from mosaic.core.pipeline import graph as graph_package
+from mosaic.core.annotations import tag_selection as tag_selection_module
 from mosaic.core.pipeline import run_summary as run_summary_module
+from mosaic.core.pipeline.tag_reads import ResolvedTagTable
 from mosaic.core.pipeline.run_summary import RunSummaryWire
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
+from mosaic.core.typed_attribute import TypedAttributeType
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
@@ -86,15 +89,18 @@ from tests.helpers import (
     invoke_ok,
     labeled_run,
     exited_pid,
+    index_a_second_origin,
     make_dataset,
     speed_recipe,
     speed_recipe_stepping,
     store_dataset,
+    tag_table,
     track_table,
     video_store_maker,
     wait_for,
     write_division_rows,
     write_media_index,
+    write_tags,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -1569,6 +1575,258 @@ def test_get_inventory_accepts_a_groups_selector(split: Dataset) -> None:
     assert record.coverage.target == 1
 
 
+SITE_TYPES: dict[str, TypedAttributeType] = {"site": "categorical"}
+
+SITES = {
+    ("train", "s1"): {"site": "a"},
+    ("train", "s2"): {"site": "b"},
+    ("test", "s3"): {"site": "a"},
+}
+"""The sequence tag of each entry of the ``split`` dataset."""
+
+BY_SITE = {"sequence_tags": {"site": ["a"]}}
+"""The selector for the entries of site a: ``train/s1`` and ``test/s3``."""
+
+SITE_A = [["test", "s3"], ["train", "s1"]]
+"""The entries that ``BY_SITE`` selects, sorted."""
+
+
+@pytest.fixture
+def tagged(split: Dataset) -> Dataset:
+    """The ``split`` dataset with revision 1 of its sequence tags."""
+    _ = write_tags(split, tag_table(SITES, SITE_TYPES))
+    return split
+
+
+def _run_ids(plan: PlanWire) -> dict[str, str | None]:
+    return {step.step: step.run_id for step in plan.steps}
+
+
+def test_plan_recipe_by_tag_plans_the_run_ids_of_the_same_entries_and_the_submissions_fingerprint(
+    tagged: Dataset,
+) -> None:
+    backend = LocalBackend(
+        [tagged.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    uuid = _uuid(tagged)
+
+    by_tag = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+    )
+    by_name = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries=SITE_A,
+    )
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+        plan_fingerprint=by_tag.fingerprint,
+    )
+
+    assert by_tag.scope_size == 2
+    assert _run_ids(by_tag) == _run_ids(by_name)
+    assert submitted.plan_fingerprint == by_tag.fingerprint
+
+
+def test_submit_pipeline_by_tag_records_the_entries_and_the_revision_it_read(
+    tagged: Dataset,
+) -> None:
+    backend = LocalBackend(
+        [tagged.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    uuid = _uuid(tagged)
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    request = load_request(tagged.base_dir, submitted.request_id)
+    assert request.scope.entries == [("test", "s3"), ("train", "s1")]
+    assert request.tag_revision is not None
+    assert (request.tag_revision.key, request.tag_revision.revision) == ("dataset", 1)
+    assert "site" not in request_path(tagged.base_dir, submitted.request_id).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_step_narrowed_by_tag_is_planned_and_submitted_over_those_entries(
+    tagged: Dataset,
+) -> None:
+    backend = LocalBackend(
+        [tagged.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    uuid = _uuid(tagged)
+    arguments: dict[str, object] = {"dataset": uuid, "recipe": SPLIT_RECIPE}
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        **arguments,
+        step_entries={"templates": BY_SITE},
+    )
+    by_name = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        **arguments,
+        step_entries={"templates": SITE_A},
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **arguments,
+        step_entries={"templates": BY_SITE},
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    assert [step.coverage.target for step in plan.steps] == [3, 2]
+    assert plan.fingerprint == by_name.fingerprint
+    request = load_request(tagged.base_dir, submitted.request_id)
+    assert request.step_scopes == {
+        "templates": Scope(entries=[("test", "s3"), ("train", "s1")])
+    }
+    assert request.tag_revision is not None
+
+
+def test_a_plan_without_a_tag_selection_reads_no_tag_table(split: Dataset) -> None:
+    backend = LocalBackend([split.manifest_path], warm=False)
+
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        entries={"groups": ["train"]},
+    )
+
+    assert plan.scope_size == 2
+
+
+def test_sequence_tags_stand_alone_in_a_scope_selector(tagged: Dataset) -> None:
+    backend = LocalBackend([tagged.manifest_path], warm=False)
+
+    refused = _refusal(
+        backend,
+        "plan_recipe",
+        dataset=_uuid(tagged),
+        recipe=SPLIT_RECIPE,
+        entries={"sequence_tags": {"site": ["a"]}, "groups": ["train"]},
+    )
+
+    assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+    assert "sequence_tags stands alone" in str(refused.detail)
+
+
+@pytest.mark.parametrize(
+    ("selector", "named"),
+    [
+        ({"sequence_tags": {"colour": ["a"]}}, "colour"),
+        ({"sequence_tags": {"site": ["zz"]}}, "zz"),
+    ],
+)
+def test_a_selection_of_an_unknown_tag_or_no_entry_is_invalid_with_its_detail(
+    tagged: Dataset, selector: dict[str, object], named: str
+) -> None:
+    backend = LocalBackend([tagged.manifest_path], warm=False)
+
+    refused = _refusal(
+        backend,
+        "plan_recipe",
+        dataset=_uuid(tagged),
+        recipe=SPLIT_RECIPE,
+        entries=selector,
+    )
+
+    assert refused.kind == "invalid"
+    assert named in refused.message
+    assert refused.detail is not None
+    assert refused.detail["revision"] == 1
+    assert refused.detail["tags"] == selector["sequence_tags"]
+
+
+def test_a_selection_by_tag_of_a_dataset_without_tags_says_to_import_them(
+    split: Dataset,
+) -> None:
+    backend = LocalBackend([split.manifest_path], warm=False)
+
+    refused = _refusal(
+        backend,
+        "submit_pipeline",
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+    )
+
+    assert refused.kind == "invalid"
+    assert "mosaic sequence-tags import" in refused.message
+
+
+def test_a_tag_table_of_two_origins_is_a_conflict_for_a_selection(
+    tagged: Dataset,
+) -> None:
+    _ = index_a_second_origin(tagged)
+    backend = LocalBackend([tagged.manifest_path], warm=False)
+
+    refused = _refusal(
+        backend,
+        "plan_recipe",
+        dataset=_uuid(tagged),
+        recipe=SPLIT_RECIPE,
+        entries=BY_SITE,
+    )
+
+    assert (refused.kind, refused.reason) == ("conflict", "sequence_tags_unavailable")
+
+
+def test_get_inventory_by_tag_lists_the_selected_entries_artifacts(
+    tagged: Dataset,
+) -> None:
+    backend = LocalBackend([tagged.manifest_path], warm=False)
+
+    listing = _call(
+        backend,
+        "get_inventory",
+        InventoryWire,
+        dataset=_uuid(tagged),
+        kinds=["tracks-variant"],
+        entries=BY_SITE,
+        status_not=[],
+    )
+
+    (record,) = listing.artifacts
+    assert record.coverage.target == 2
+
+
 def test_a_diagnosis_says_where_allow_partial_answers_a_failure(
     backend: LocalBackend, dataset: Dataset
 ) -> None:
@@ -1938,6 +2196,280 @@ def test_a_summary_is_what_mosaic_summarize_prints(
     )
 
     assert summary.model_dump(mode="json") == json.loads(printed.stdout)
+
+
+SUMMARY_SITES = {
+    ("g", "a"): {"site": "x"},
+    ("g", "b"): {"site": "y"},
+    ("h", "c"): {"site": "x"},
+    ("h", "d"): {"site": "y"},
+}
+"""The sequence tag of each entry of the run that :func:`_labeled` makes."""
+
+
+def _tagged_run(tmp_path: Path) -> tuple[Dataset, Result[str], LocalBackend]:
+    """:func:`_labeled` with revision 1 of a ``site`` tag, ``x`` on ``g/a`` and ``h/c``."""
+    ds, result, backend = _labeled(tmp_path)
+    _ = write_tags(ds, tag_table(SUMMARY_SITES, SITE_TYPES))
+    return ds, result, backend
+
+
+def _summary_and_printed(
+    ds: Dataset,
+    result: Result[str],
+    backend: LocalBackend,
+    arguments: dict[str, object],
+    options: list[str],
+) -> tuple[RunSummaryWire, RunSummaryWire]:
+    """The summary that preview_output returns, and the one ``mosaic summarize`` prints."""
+    summary = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        **arguments,
+    )
+    printed = invoke_ok(
+        [
+            "summarize",
+            _run_ref(result),
+            "--manifest",
+            str(ds.manifest_path),
+            *options,
+            "--json",
+        ]
+    )
+    return summary, RunSummaryWire.model_validate_json(printed.stdout)
+
+
+def test_a_summary_by_a_sequence_tag_groups_by_it_and_records_the_revision(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+
+    summary = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        by=["site"],
+    )
+
+    assert summary.tag_keys == ["site"]
+    assert summary.tag_revision is not None
+    assert summary.tag_revision.revision == 1
+    assert sorted(group.key["site"] for group in summary.groups) == ["x", "y"]
+    returned, printed = _summary_and_printed(
+        ds, result, backend, {"by": ["site"]}, ["--by", "site"]
+    )
+    assert returned == printed
+
+
+@pytest.mark.parametrize(
+    ("arguments", "options", "entries"),
+    [
+        pytest.param(
+            {"sequence_tags": {"site": ["x"]}}, ["--tag", "site=x"], 2, id="tags"
+        ),
+        pytest.param(
+            {"sequence_tags": {"site": ["x"]}, "groups": ["h"]},
+            ["--tag", "site=x", "--group", "h"],
+            1,
+            id="tags beside groups",
+        ),
+    ],
+)
+def test_a_summary_by_sequence_tags_reads_the_selected_entries_of_the_groups(
+    tmp_path: Path,
+    arguments: dict[str, object],
+    options: list[str],
+    entries: int,
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    arguments = {"by": ["strain"], **arguments}
+
+    returned, printed = _summary_and_printed(
+        ds, result, backend, arguments, ["--by", "strain", *options]
+    )
+
+    assert returned.n_entries == entries
+    assert returned == printed
+    assert returned.tag_keys == []
+    assert returned.tag_revision is None
+
+
+def test_a_summary_reads_the_revision_that_tag_revision_names(tmp_path: Path) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    swapped = {
+        entry: {"site": "y" if tags["site"] == "x" else "x"}
+        for entry, tags in SUMMARY_SITES.items()
+    }
+    _ = write_tags(ds, tag_table(swapped, SITE_TYPES))
+
+    first, printed = _summary_and_printed(
+        ds,
+        result,
+        backend,
+        {"by": ["site"], "tag_revision": 1},
+        ["--by", "site", "--tag-revision", "1"],
+    )
+    latest, _printed = _summary_and_printed(
+        ds, result, backend, {"by": ["site"]}, ["--by", "site"]
+    )
+
+    assert first == printed
+    assert first.tag_revision is not None
+    assert latest.tag_revision is not None
+    assert first.tag_revision.revision == 1
+    assert latest.tag_revision.revision == 2
+    assert first.groups != latest.groups
+
+
+def test_a_tag_selection_reads_the_revision_that_tag_revision_names(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    swapped = {
+        entry: {"site": "y" if tags["site"] == "x" else "x"}
+        for entry, tags in SUMMARY_SITES.items()
+    }
+    _ = write_tags(ds, tag_table(swapped, SITE_TYPES))
+
+    returned, printed = _summary_and_printed(
+        ds,
+        result,
+        backend,
+        {"by": ["site"], "sequence_tags": {"site": ["x"]}, "tag_revision": 1},
+        ["--by", "site", "--tag", "site=x", "--tag-revision", "1"],
+    )
+
+    assert returned == printed
+    assert returned.n_entries == 2
+    assert returned.tag_revision is not None
+    assert returned.tag_revision.revision == 1
+
+
+@pytest.mark.parametrize(
+    ("arguments", "named"),
+    [
+        pytest.param({"by": ["nope"]}, "nope", id="a key that is neither"),
+        pytest.param(
+            {"by": ["site"], "tag_revision": 9}, "9", id="revision not indexed"
+        ),
+        pytest.param({"sequence_tags": {"colour": ["x"]}}, "colour", id="unknown tag"),
+        pytest.param({"sequence_tags": {"site": ["zz"]}}, "zz", id="no entry"),
+    ],
+)
+def test_a_summary_by_a_tag_that_cannot_be_read_is_invalid(
+    tmp_path: Path, arguments: dict[str, object], named: str
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        **arguments,
+    )
+
+    assert refused.kind == "invalid"
+    assert named in refused.message
+
+
+def test_a_tag_selection_of_a_dataset_without_tags_says_to_import_them(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _labeled(tmp_path)
+
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        sequence_tags={"site": ["x"]},
+    )
+
+    assert refused.kind == "invalid"
+    assert "mosaic sequence-tags import" in refused.message
+
+
+def test_a_tag_table_of_two_origins_is_a_conflict_for_a_summary(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    _ = index_a_second_origin(ds)
+
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        sequence_tags={"site": ["x"]},
+    )
+
+    assert (refused.kind, refused.reason) == ("conflict", "sequence_tags_unavailable")
+
+
+def test_a_summary_without_a_tag_reads_no_tag_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    reads: list[int | None] = []
+    real = tag_selection_module.selection_tag_table
+
+    def counted(dataset: Dataset, revision: int | None = None) -> ResolvedTagTable:
+        reads.append(revision)
+        return real(dataset, revision)
+
+    monkeypatch.setattr(tag_selection_module, "selection_tag_table", counted)
+
+    returned, printed = _summary_and_printed(
+        ds,
+        result,
+        backend,
+        {"by": ["strain"], "groups": ["h"]},
+        ["--by", "strain", "--group", "h"],
+    )
+
+    assert reads == []
+    assert returned == printed
+    assert returned.tag_keys == []
+    assert returned.tag_revision is None
+
+
+def test_a_summary_by_sequence_tags_reads_the_table_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result, backend = _tagged_run(tmp_path)
+    reads: list[int | None] = []
+    real = tag_selection_module.selection_tag_table
+
+    def counted(dataset: Dataset, revision: int | None = None) -> ResolvedTagTable:
+        reads.append(revision)
+        return real(dataset, revision)
+
+    monkeypatch.setattr(tag_selection_module, "selection_tag_table", counted)
+
+    _ = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        sequence_tags={"site": ["x"]},
+        tag_revision=1,
+    )
+
+    assert reads == [1]
 
 
 HELD_SECONDS = 0.5

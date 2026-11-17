@@ -121,9 +121,11 @@ if TYPE_CHECKING:
         ValidationReport,
     )
     from mosaic.core.pipeline.inventory import InventoryCache, InventoryWire
+    from mosaic.core.pipeline.label_series import LabelRevisionRef
     from mosaic.core.pipeline.parallelism import ParallelSettings
     from mosaic.core.pipeline.preview import ArtifactPreview
     from mosaic.core.pipeline.run_summary import RunSummaryWire
+    from mosaic.core.pipeline.tag_reads import ResolvedTagTable
     from mosaic.core.scope import Scope
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
@@ -969,7 +971,9 @@ class LocalBackend:
         held = self._dataset(args.dataset)
         recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
-        scope = _scope(args.entries)
+        tags = _tag_table(held.dataset, args.entries, args.step_entries)
+        scope = _scope(args.entries, tags)
+        step_scopes = _step_scopes(args.step_entries, tags)
         # Opened again, as ``_describe_dataset`` does, so that the manifest fields
         # (the split roles above all) are those on disk now and not at start.
         dataset = open_dataset(held.manifest, ensure_roots=False)
@@ -981,7 +985,7 @@ class LocalBackend:
                 recipe,
                 cleanup=self._cleanup(args.cleanup),
                 request=_planning_request(
-                    recipe, args, scope, _step_scopes(args.step_entries)
+                    recipe, args, scope, step_scopes, None if tags is None else tags.ref
                 ),
                 inventory=self._inventory(held),
                 catalog=catalog,
@@ -1050,8 +1054,10 @@ class LocalBackend:
             raise ToolFailure(error_envelope(refused)) from refused
         recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
-        narrowing = _scope(args.entries) or Scope()
-        step_scopes = _step_scopes(args.step_entries)
+        tags = _tag_table(dataset, args.entries, args.step_entries)
+        tag_revision = None if tags is None else tags.ref
+        narrowing = _scope(args.entries, tags) or Scope()
+        step_scopes = _step_scopes(args.step_entries, tags)
         with held.lock:
             cache = self._inventory(held)
             # Planned with the submission's binds, as submit_request plans.
@@ -1059,7 +1065,9 @@ class LocalBackend:
                 dataset,
                 recipe,
                 cleanup=cleanup,
-                request=_planning_request(recipe, args, narrowing, step_scopes),
+                request=_planning_request(
+                    recipe, args, narrowing, step_scopes, tag_revision
+                ),
                 inventory=cache,
                 catalog=catalog,
                 retire=args.retire,
@@ -1070,7 +1078,7 @@ class LocalBackend:
             reviewed = ReviewedPlan(plan, cache.generation)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
-            findings = _submission_findings(dataset, plan, args, catalog)
+            findings = _submission_findings(dataset, plan, args, catalog, narrowing)
             if findings and not args.confirm:
                 raise ToolFailure(confirmation_required("submit_pipeline", findings))
             # An unconfirmed submission is checked for open duplicates again
@@ -1094,6 +1102,7 @@ class LocalBackend:
                 cleanup=cleanup,
                 retire=args.retire,
                 tracks_run_id=args.tracks_run_id,
+                tag_revision=tag_revision,
                 pins=args.pins,
                 applies_request_id=args.applies_request_id,
                 reviewed=reviewed,
@@ -1738,11 +1747,32 @@ class LocalBackend:
 
 
 def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
-    """Summarize the feature run *args* names, over the groups it lists."""
+    """Summarize the feature run *args* names, over the entries it selects.
+
+    Sequence tags select against the revision that ``tag_revision`` names, which
+    is then the one that the summary's tag keys read.
+
+    Raises:
+        TagSelectionInvalid: The tags select no entry, or name an unknown tag or a
+            value their type refuses.
+        SequenceTagTableUnavailable: The table cannot be read as one revision of
+            one dataset.
+    """
     from mosaic.core.pipeline.run_summary import summarize_ref
     from mosaic.core.pipeline.summary_arguments import read_where
     from mosaic.core.scope import Scope
 
+    scope = None if args.groups is None else Scope(groups=args.groups)
+    tag_revision = args.tag_revision
+    if args.sequence_tags is not None:
+        from mosaic.core.annotations.tag_selection import (
+            selection_tag_table,
+            tagged_scope,
+        )
+
+        tags = selection_tag_table(dataset, tag_revision)
+        scope = tagged_scope(tags, args.sequence_tags, groups=args.groups)
+        tag_revision = tags.revision
     return summarize_ref(
         dataset,
         args.ref,
@@ -1750,8 +1780,9 @@ def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
         columns=args.columns,
         tests=args.tests,
         where=None if args.where is None else read_where(args.where),
-        scope=None if args.groups is None else Scope(groups=args.groups),
+        scope=scope,
         allow_partial=args.allow_partial,
+        tag_revision=tag_revision,
     )
 
 
@@ -1945,16 +1976,57 @@ def _recipe_file(document: object) -> str | None:
     return path if isinstance(path, str) else None
 
 
-def _scope(entries: list[tuple[str, str]] | ScopeSelector | None) -> Scope | None:
+def _tag_table(
+    dataset: Dataset,
+    entries: list[tuple[str, str]] | ScopeSelector | None,
+    step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None = None,
+) -> ResolvedTagTable | None:
+    """Read the latest tag table once when any selector names sequence tags.
+
+    Returns:
+        The table that :func:`_scope` and :func:`_step_scopes` lower against, or
+        ``None`` when no selector names a tag, so that a call without a tag
+        selection reads nothing.
+
+    Raises:
+        TagSelectionInvalid: No revision of the sequence tags is indexed.
+        SequenceTagTableUnavailable: The table cannot be read as one revision of
+            one dataset.
+    """
+    selectors = [entries, *(step_entries or {}).values()]
+    if not any(
+        isinstance(chosen, ScopeSelector) and chosen.sequence_tags is not None
+        for chosen in selectors
+    ):
+        return None
+    from mosaic.core.annotations.tag_selection import selection_tag_table
+
+    return selection_tag_table(dataset)
+
+
+def _scope(
+    entries: list[tuple[str, str]] | ScopeSelector | None,
+    tags: ResolvedTagTable | None,
+) -> Scope | None:
     """Return the scope naming *entries*, ``None`` for the whole dataset.
 
-    A bare list names entries, and a selector is the library's scope.
+    A bare list names entries, and a selector is the library's scope. Sequence
+    tags are lowered against *tags*, the table :func:`_tag_table` read.
+
+    Raises:
+        TagSelectionInvalid: The tags select no entry, or name an unknown tag or
+            a value their type refuses.
     """
     from mosaic.core.scope import Scope
 
     if entries is None:
         return None
     if isinstance(entries, ScopeSelector):
+        if entries.sequence_tags is not None:
+            from mosaic.core.annotations.tag_selection import tagged_scope
+
+            assert tags is not None
+            return tagged_scope(tags, entries.sequence_tags)
         return Scope(
             entries=None if entries.entries is None else list(entries.entries),
             groups=entries.groups,
@@ -1970,12 +2042,13 @@ def _entry_scope(
 
     The inventory narrows a tracks or labels variant by named entries alone,
     so a selector is resolved against the dataset's entries first, and every
-    kind of artifact is narrowed alike.
+    kind of artifact is narrowed alike. Sequence tags select against the latest
+    revision of the tag table.
     """
     from mosaic.core.pipeline.inventory.scan import narrow_target, reportable_universe
     from mosaic.core.scope import Scope
 
-    scope = _scope(entries)
+    scope = _scope(entries, _tag_table(dataset, entries))
     if scope is None or scope.entries is not None:
         return scope
     return Scope(entries=sorted(narrow_target(reportable_universe(dataset), scope)))
@@ -1983,11 +2056,12 @@ def _entry_scope(
 
 def _step_scopes(
     step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None,
+    tags: ResolvedTagTable | None,
 ) -> dict[str, Scope]:
     """Return the scope narrowing each step that *step_entries* names."""
     found: dict[str, Scope] = {}
     for step_id, chosen in (step_entries or {}).items():
-        narrowed = _scope(chosen)
+        narrowed = _scope(chosen, tags)
         if narrowed is not None:
             found[step_id] = narrowed
     return found
@@ -2219,6 +2293,7 @@ def _planning_request(
     args: PlanRecipeInput | SubmitPipelineInput,
     scope: Scope | None,
     step_scopes: dict[str, Scope],
+    tag_revision: LabelRevisionRef | None,
 ) -> Request:
     """Return the request that a plan and the submission after it plan with.
 
@@ -2235,6 +2310,7 @@ def _planning_request(
             bind=args.bind,
             step_scopes=step_scopes,
             tracks_run_id=args.tracks_run_id,
+            tag_revision=tag_revision,
             pins=args.pins,
         )
     except ValueError as invalid:
@@ -2255,8 +2331,9 @@ def _submission_findings(
     plan: Plan,
     args: SubmitPipelineInput,
     catalog: DeclarationCatalog,
+    scope: Scope,
 ) -> list[ConfirmationFinding]:
-    """Return each confirmation condition that submitting *plan* meets."""
+    """Return each confirmation condition that submitting *plan* over *scope* meets."""
     from mosaic.core.pipeline.graph import (
         GPU_LANES,
         computed_runs,
@@ -2265,7 +2342,6 @@ def _submission_findings(
     )
     from mosaic.core.pipeline.graph.store import open_requests_sentence
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
-    from mosaic.core.scope import Scope
 
     findings: list[ConfirmationFinding] = []
     for planned in plan.steps:
@@ -2328,7 +2404,7 @@ def _submission_findings(
     duplicates = open_duplicates(
         dataset.base_dir,
         plan.recipe_digest,
-        _scope(args.entries) or Scope(),
+        scope,
         computed_runs(plan),
         step_scopes=plan.step_scopes,
     )

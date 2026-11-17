@@ -549,6 +549,8 @@ SUMMARY_ONLY: dict[str, object] = {
     "where": {"strain": ["A"]},
     "groups": ["g"],
     "allow_partial": True,
+    "sequence_tags": {"site": ["x"]},
+    "tag_revision": 1,
 }
 
 
@@ -582,6 +584,29 @@ def test_a_summary_takes_its_arguments() -> None:
 
     assert (request.group, request.sequence) == (None, None)
     assert request.where == {"strain": ["A"]}
+    assert request.sequence_tags == {"site": ["x"]}
+    assert request.tag_revision == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param({"tag_revision": 0}, id="revision below one"),
+        pytest.param({"sequence_tags": {}}, id="no tag named"),
+    ],
+)
+def test_a_summary_refuses_a_tag_argument_that_selects_nothing(
+    arguments: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _ = PreviewOutputInput.model_validate(
+            {
+                "dataset": "d",
+                "ref": "feature/f/0.1-0000000000",
+                "mode": "summary",
+                **arguments,
+            }
+        )
 
 
 def test_a_write_tool_result_is_never_replaced_by_the_backstop() -> None:

@@ -516,21 +516,37 @@ RecipeDocument = Annotated[
 
 
 class ScopeSelector(StrictModel):
-    """Entries named as ``mosaic.core.scope.Scope`` and ``--step-scope`` name them.
-
-    ``entries`` alone, or ``groups`` and ``sequences``, which cover their cross
-    product.
-    """
+    """Entries, or groups and sequences, or sequence_tags; never two forms."""
 
     entries: list[tuple[str, str]] | None = None
     groups: list[str] | None = Field(default=None, min_length=1)
     sequences: list[str] | None = Field(default=None, min_length=1)
+    sequence_tags: dict[str, list[KeyValue]] | None = Field(
+        default=None, description="[] names a label."
+    )
 
     @model_validator(mode="after")
     def _names_entries(self) -> Self:
-        if self.entries is None and self.groups is None and self.sequences is None:
-            msg = "a scope names entries, groups or sequences"
+        named = [
+            name
+            for name, value in (
+                ("entries", self.entries),
+                ("groups", self.groups),
+                ("sequences", self.sequences),
+                ("sequence_tags", self.sequence_tags),
+            )
+            if value is not None
+        ]
+        if not named:
+            msg = "a scope names entries, groups, sequences or sequence_tags"
             raise ValueError(msg)
+        if self.sequence_tags is not None:
+            if named != ["sequence_tags"]:
+                msg = "sequence_tags stands alone in a scope"
+                raise ValueError(msg)
+            if not self.sequence_tags:
+                msg = "sequence_tags names no tag"
+                raise ValueError(msg)
         if self.entries is not None and (
             self.groups is not None or self.sequences is not None
         ):
@@ -540,17 +556,17 @@ class ScopeSelector(StrictModel):
 
 
 _SCOPE_FORMS: Final = (
-    "[[group, sequence], ...], or {entries: [[group, sequence], ...]}, or "
-    "{groups: [...], sequences: [...]} with either left out (their cross product)"
+    "[[group, sequence], ...], {groups: [...], sequences: [...]} (cross "
+    "product, either optional) or {sequence_tags: {name: [values]}}"
 )
 
 Entries = Annotated[
     list[tuple[str, str]] | ScopeSelector | None,
     Field(
         description=(
-            f"The entries to cover: {_SCOPE_FORMS}. Null covers every entry of "
-            "the dataset, and is what a request with steps scoped to different "
-            "groups takes, since a step covers only what entries also covers."
+            f"Entries to cover: {_SCOPE_FORMS}. Null covers every entry; use it "
+            "when steps are scoped to different groups, since a step covers "
+            "only what entries covers."
         )
     ),
 ]
@@ -560,11 +576,10 @@ StepEntries = Annotated[
     dict[str, list[tuple[str, str]] | ScopeSelector] | None,
     Field(
         description=(
-            f"Narrow single steps, keyed by step id, each as {_SCOPE_FORMS}: a "
-            "fit on the training groups and its scoring on the test groups in "
-            "one request. Each is intersected with entries, so leave entries "
-            "null to cover them all. A step reading another through inputs or "
-            "tracks must narrow to a subset of it."
+            "Narrow steps by step id, each as entries takes them, e.g. a fit on "
+            "training groups and scoring on test groups in one request. Each is "
+            "intersected with entries (null covers them all). A step reading "
+            "another via inputs or tracks must narrow to a subset of it."
         )
     ),
 ]
@@ -1083,9 +1098,9 @@ class PreviewOutputInput(ToolInput):
     """The arguments of ``preview_output``.
 
     ``entry`` mode takes ``group`` and ``sequence`` and none of ``by``,
-    ``tests``, ``where``, ``groups`` and ``allow_partial``. ``summary`` mode takes
-    neither ``group`` nor ``sequence``, and ignores ``max_columns``, ``listed``
-    and ``limit``.
+    ``tests``, ``where``, ``groups``, ``sequence_tags``, ``tag_revision`` and
+    ``allow_partial``. ``summary`` mode takes neither ``group`` nor
+    ``sequence``, and ignores ``max_columns``, ``listed`` and ``limit``.
     """
 
     dataset: DatasetId
@@ -1136,8 +1151,9 @@ class PreviewOutputInput(ToolInput):
     by: list[str] = Field(
         default_factory=list,
         description=(
-            "summary: the group keys, 'group', 'sequence' or a column the run "
-            "writes, such as a label kept with keep_columns. Empty: one group."
+            "summary: the group keys, 'group', 'sequence', a column the run "
+            "writes, such as a label kept with keep_columns, or a sequence tag. "
+            "Empty: one group."
         ),
     )
     tests: list[SummaryTest] = Field(
@@ -1159,6 +1175,21 @@ class PreviewOutputInput(ToolInput):
     )
     groups: list[str] | None = Field(
         default=None, description="summary: read the entries of these groups only."
+    )
+    sequence_tags: dict[str, list[KeyValue]] | None = Field(
+        default=None,
+        description=(
+            "summary: read the entries holding these sequence tags, as {name: "
+            "[values]}, [] naming a label. With groups, those groups' entries."
+        ),
+    )
+    tag_revision: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "summary: the revision of the sequence tags that sequence_tags and "
+            "a tag key of by read. Null: the latest."
+        ),
     )
     allow_partial: bool = Field(
         default=False,
@@ -1183,6 +1214,8 @@ class PreviewOutputInput(ToolInput):
                     ("tests", bool(self.tests)),
                     ("where", self.where is not None),
                     ("groups", self.groups is not None),
+                    ("sequence_tags", self.sequence_tags is not None),
+                    ("tag_revision", self.tag_revision is not None),
                     ("allow_partial", self.allow_partial),
                 )
                 if given
@@ -1202,6 +1235,9 @@ class PreviewOutputInput(ToolInput):
                     f"{' or '.join(stray)}. Narrow it with groups or where."
                 )
                 raise ValueError(msg)
+            if self.sequence_tags is not None and not self.sequence_tags:
+                msg = "sequence_tags names no tag"
+                raise ValueError(msg)
         return self
 
     @override
@@ -1210,8 +1246,8 @@ class PreviewOutputInput(ToolInput):
 
         ``entry`` mode narrows by ``columns``, ``max_columns`` and ``limit``, and
         ``summary`` mode by ``where``, ``columns`` and ``by``, all of them in
-        *declared*. ``groups`` is left out: it narrows entries, and a group of
-        key values spans many of them.
+        *declared*. ``groups`` and ``sequence_tags`` are left out: they narrow
+        entries, and a group of key values spans many of them.
         """
         if self.mode == "entry":
             return ("columns", "max_columns", "limit")
