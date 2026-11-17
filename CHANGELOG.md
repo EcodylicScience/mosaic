@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: sequence tags as a label series
+## 0.23.0: run resource costs, sequence tags and time-binned aggregates: runs record what their cost scales with and a probe measures threads and processes, sequence tags are a label series that a run records, the aggregates bin by time and choose their comparison, `event-response` writes `recovery_time_s`, the catalog searches keywords and track spaces, a parallel knob needs no `--workers`, a coverage refusal names every step to narrow, and an index lock on a caching CIFS mount warns
 
 ### The tag table is a label series
 
@@ -101,13 +101,15 @@ The MCP tool `manage_dataset` gains the actions `import_sequence_tags` (`path`, 
 `sequence_tags_refused`, `sequence_tags_moved` or `sequence_tags_unavailable`, or
 `invalid` with `sequence_tags_invalid` for a CSV or a key that cannot be read.
 
-## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns; the catalog search reads keywords and filters by track space, a parallel knob needs no `--workers`, a coverage refusal names every step to narrow, runs record the size covariates of their entries, the machine and their load by number in flight, and a probe of up to 5 entries measures threads and processes
+### An index lock on a caching CIFS mount warns
 
 `index_lock` warns with `CachingMountWarning`, once per mount, when a dataset is on a
 Linux CIFS mount without `actimeo=0,closetimeo=0`. The lock excludes writers on other
 machines there, but a client that caches reads an index another machine replaced as the
 old version and drops that machine's rows, or fails the open with `EINVAL`. Nothing on
 disk moves.
+
+### The aggregates bin by time and choose their comparison, and a missing value stays missing under a threshold
 
 `sequence-aggregate` and `individual-aggregate` take `bin_s`, the length in seconds of
 time bins. Each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the
@@ -136,6 +138,8 @@ A set `threshold` adds the key `threshold_missing` to the run identity, so every
 thresholded run of the three features has a new run id and a plan computes its step
 again. At `>`, `threshold_op` leaves the run identity as it was, and a run without a
 `threshold` keeps its run id. No feature's `version` moves.
+
+### `event-response` writes `recovery_time_s`
 
 `event-response` writes `recovery_time_s`, the survival time that goes with `recovered`:
 the latency when it recovered, the time the response was observed without recovering
