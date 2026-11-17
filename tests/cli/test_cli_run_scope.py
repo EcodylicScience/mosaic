@@ -753,7 +753,7 @@ def test_a_probe_refuses_the_flags_it_sets_itself(
     assert read_run(run_log_dir(scoped.base_dir), SUBSET_ID) is None
 
 
-@pytest.mark.parametrize("count", ["0", "4"])
+@pytest.mark.parametrize("count", ["0", "6"])
 def test_a_probe_count_out_of_range_is_a_usage_error(
     scoped: Dataset, count: str
 ) -> None:

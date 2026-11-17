@@ -23,26 +23,40 @@ from .model import GraphModel
 
 __all__ = [
     "MAX_PROBE_ENTRIES",
+    "PROBE_THREAD_ENTRIES",
     "PROBE_WORKERS",
     "NamedSubset",
     "ProbeSubset",
     "StepSubset",
 ]
 
-MAX_PROBE_ENTRIES: Final = 3
+MAX_PROBE_ENTRIES: Final = 5
 """The most entries a probe computes.
 
-With :data:`PROBE_WORKERS` workers, three entries give one alone and then one pair.
-A fourth would load while the pair computes and run beside a third entry in flight,
-so no entry after the first would have run alone or in a pair.
+Five is the least that measures levels 1 and 2 of both modes, since an entry is
+computed once: the largest alone, the next two as a thread pair
+(:data:`PROBE_WORKERS` workers), then two as a process pair. A probe of
+:data:`PROBE_THREAD_ENTRIES` or fewer runs in threads only, and so does a probe of
+four, whose fourth entry would load while the pair computes and run beside a third
+entry in flight.
+"""
+
+PROBE_THREAD_ENTRIES: Final = 3
+"""The entries a probe computes in threads: one alone and then one pair.
+
+A feature that is not process-capable computes at most this many. For a
+process-capable feature asked for :data:`MAX_PROBE_ENTRIES`, these are the largest
+entries, and the rest run as a process pair.
 """
 
 PROBE_WORKERS: Final = 2
-"""How many entries a probe computes at once, in threads.
+"""How many entries a probe computes at once, in threads and again in processes.
 
-Its first entry runs alone, because the gate has no estimate yet, and the next two
-run together once the gate admits them, so one probe measures a feature alone and
-in a pair.
+The first thread entry runs alone, because the gate has no estimate yet, and the
+next two run together once the gate admits them, so one probe measures a feature
+alone and in a pair. The process pair has no gate: both entries are admitted at
+once and the second loads right after the first, so the process phase also reports
+a short level 1.
 """
 
 

@@ -301,6 +301,15 @@ are in `graph/CLAUDE.md`.
   (`tests/core/pipeline/test_parallel_run.py`).
 - Entries go largest first (`by_rows`) only with the gate, and only the apply order
   moves. The fit reads `manifest` in its own order.
+- `run_feature(phases=...)` applies the entries in `ApplyPhase`s of one attempt, each
+  with its own workers, mode, margin and worker-base measure, through one `_apply_entries`
+  call and one `_PhaseState` each. The run assigns `_RunCost.phase`, the one attribute the
+  sampler reads, after the earlier phase's pool has closed and written its final
+  `resources` event and before the next phase's first entry enters. A phase closes its own
+  pool on every exit. The cache hit is one claim of the attempt, made after the last phase.
+  Consecutive phases that run alike (`_ApplySettings.runs_like`) are one phase, because
+  two phases that read as one mode would leave that mode's levels and peak to the later
+  phase's last event (`tests/core/pipeline/test_apply_phases.py`).
 
 ## Reading a run
 

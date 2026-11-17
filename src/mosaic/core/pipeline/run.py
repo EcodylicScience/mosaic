@@ -1552,6 +1552,28 @@ def _asked_by_now(
 
 
 @dataclass(frozen=True)
+class ApplyPhase:
+    """The entries of one phase of a run's apply, and how that phase runs them.
+
+    Attributes:
+        entries: The entries the phase computes. A phase of a run computes every
+            entry it names that the run's inputs resolve, and no other phase names
+            one of them.
+        workers: How many entries the phase computes at once.
+        mode: Whether those entries run in threads or in worker processes.
+        admission_margin: The gate's margin for the phase, 0 for no gate.
+        measure_worker_base: Whether to measure one process worker's own memory
+            once the run has ended without one, as the last phase has it.
+    """
+
+    entries: tuple[Entry, ...]
+    workers: int
+    mode: ParallelMode
+    admission_margin: float
+    measure_worker_base: bool
+
+
+@dataclass(frozen=True)
 class _ApplySettings:
     """How a phase of apply runs its entries.
 
@@ -1574,6 +1596,123 @@ class _ApplySettings:
     def entry_mode(self) -> ParallelMode:
         """The mode an entry runs in: a worker process only where there are several."""
         return "process" if self.mode == "process" and self.workers > 1 else "thread"
+
+    def runs_like(self, other: _ApplySettings) -> bool:
+        """Whether *other* runs its entries in the same way.
+
+        Entries one at a time in threads are one way to run, whatever mode was
+        asked. Two phases that run alike read the same in a run-log, so a reader
+        that takes each mode's last report would lose the earlier phase's figures.
+        """
+        return (
+            self.workers,
+            self.entry_mode,
+            self.admission_margin,
+            self.min_free_memory_fraction,
+            self.measure_worker_base,
+        ) == (
+            other.workers,
+            other.entry_mode,
+            other.admission_margin,
+            other.min_free_memory_fraction,
+            other.measure_worker_base,
+        )
+
+
+def _apply_settings(
+    feature: Feature,
+    *,
+    workers: int | None,
+    mode: str | None,
+    admission_margin: float,
+    min_free_memory_fraction: float,
+    measure_worker_base: bool,
+) -> _ApplySettings:
+    """Return the settings a phase runs with, from what was asked of it.
+
+    Several workers need a parallelizable feature, and the gate is for several
+    workers.
+    """
+    count = workers if workers is not None and workers > 1 else 1
+    if count > 1 and not feature.parallelizable:
+        count = 1
+    resolved: ParallelMode = (
+        "process" if (mode or "thread").lower() == "process" else "thread"
+    )
+    return _ApplySettings(
+        workers=count,
+        mode=resolved,
+        admission_margin=admission_margin if count > 1 else 0.0,
+        min_free_memory_fraction=min_free_memory_fraction,
+        measure_worker_base=measure_worker_base,
+    )
+
+
+def _phased_manifest(
+    feature: Feature,
+    phases: Sequence[ApplyPhase],
+    manifest: Manifest,
+    entry_map: dict[str, tuple[str, str]],
+    *,
+    min_free_memory_fraction: float,
+) -> list[tuple[_ApplySettings, Manifest]]:
+    """Split *manifest* between *phases*, each with the settings it runs under.
+
+    A phase left with no entry is dropped, and phases that run alike in turn
+    are one phase over their entries together. A manifest with no entries is one
+    empty phase under the first phase's settings.
+
+    Raises:
+        ValueError: A phase is invalid, an entry is named by two phases, or an
+            entry of the manifest is named by none.
+    """
+    if not phases:
+        raise ValueError("phases is empty; give at least one phase")
+    owner: dict[Entry, int] = {}
+    for index, phase in enumerate(phases):
+        if not valid_admission_margin(phase.admission_margin):
+            msg = (
+                "admission_margin must be 0 (off) or from 1 to 4, "
+                f"not {phase.admission_margin}"
+            )
+            raise ValueError(msg)
+        for entry in phase.entries:
+            if owner.setdefault(entry, index) != index:
+                msg = f"entry {entry} is in more than one phase"
+                raise ValueError(msg)
+    parts: list[Manifest] = [{} for _ in phases]
+    for key, value in manifest.items():
+        entry = resolve_sequence_identity(key, entry_map)
+        if entry not in owner:
+            msg = f"entry {entry} is in no phase"
+            raise ValueError(msg)
+        parts[owner[entry]][key] = value
+    settings = [
+        _apply_settings(
+            feature,
+            workers=phase.workers,
+            mode=phase.mode,
+            admission_margin=phase.admission_margin,
+            min_free_memory_fraction=min_free_memory_fraction,
+            measure_worker_base=phase.measure_worker_base,
+        )
+        for phase in phases
+    ]
+    chosen = [
+        (phase_settings, part)
+        for phase_settings, part in zip(settings, parts, strict=True)
+        if part
+    ]
+    if not chosen:
+        return [(settings[0], {})]
+    merged: list[tuple[_ApplySettings, Manifest]] = [chosen[0]]
+    for phase_settings, part in chosen[1:]:
+        last_settings, last_part = merged[-1]
+        if phase_settings.runs_like(last_settings):
+            merged[-1] = (last_settings, {**last_part, **part})
+        else:
+            merged.append((phase_settings, part))
+    return merged
 
 
 @dataclass
@@ -1800,6 +1939,7 @@ def run_feature(
     measure_worker_base: bool = False,
     admission_margin: float = 0.0,
     probe: ProbeRecord | None = None,
+    phases: Sequence[ApplyPhase] | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -1873,6 +2013,27 @@ def run_feature(
         Marks the attempt as a probe or a named subset of a pipeline step: the
         record is written as the run-log's ``probe`` event right after
         ``started``. ``None``, the default, writes none.
+    phases : Sequence[ApplyPhase] | None
+        Applies the entries in phases, each with its own workers, mode, gate and
+        worker-base measure, which replace *parallel_workers*, *parallel_mode*,
+        *admission_margin* and *measure_worker_base*. *min_free_memory_fraction*
+        applies to every phase. The phases are one attempt: one ``started``, one
+        run id, one fit, a total of every phase's entries and one final
+        ``entries_written``. Every entry the run's inputs resolve is in exactly
+        one phase, and an entry a phase names that they do not resolve is left
+        out. A phase that is left with no entry is skipped, and consecutive
+        phases that run alike (the same workers, the same way of running them,
+        the same gate and floor, as one entry at a time in threads is whatever
+        mode was asked) are one phase. Each phase has its own state: it writes
+        its own levels, peak sample, per-row estimate and worker bases in its own
+        final ``resources`` event, and a reader that takes each mode's last event
+        reads the phase of that mode. The fit, the memory and CPU of the process
+        tree, the admission waits and ``apply_wall_seconds`` span the attempt. A
+        later phase runs after the earlier phase's pool has closed. An entry lost
+        in any phase is in ``Result.failed_entries``, :class:`AllEntriesFailed`
+        is raised only when every entry the run computed was lost, and an
+        exception from a phase ends the attempt there, with the earlier phases'
+        final events kept. ``None``, the default, is one phase over every entry.
     overlap_frames : int, default 0
         Load this many frames of context from the sequences on either side, so a
         feature computing across frames -- a rolling window, a backward
@@ -1982,6 +2143,7 @@ def run_feature(
                     min_free_memory_fraction=min_free_memory_fraction,
                     measure_worker_base=measure_worker_base,
                     admission_margin=admission_margin,
+                    phases=phases,
                 )
             finally:
                 _close_feature(feature)
@@ -2009,6 +2171,7 @@ def _run_feature_impl(
     min_free_memory_fraction: float = 0.0,
     measure_worker_base: bool = False,
     admission_margin: float = 0.0,
+    phases: Sequence[ApplyPhase] | None = None,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
@@ -2086,6 +2249,32 @@ def _run_feature_impl(
     # Built once: the property rebuilds the map on each access, and the run asks
     # for it once for each entry.
     entry_map = resolved.entry_map
+
+    # How each phase of the apply runs its entries. A phased run is refused here,
+    # before anything is recorded, when the phases do not split the manifest.
+    phase_plan: list[tuple[_ApplySettings, Manifest]] = (
+        [
+            (
+                _apply_settings(
+                    feature,
+                    workers=parallel_workers,
+                    mode=parallel_mode,
+                    admission_margin=admission_margin,
+                    min_free_memory_fraction=min_free_memory_fraction,
+                    measure_worker_base=measure_worker_base,
+                ),
+                manifest,
+            )
+        ]
+        if phases is None
+        else _phased_manifest(
+            feature,
+            phases,
+            manifest,
+            entry_map,
+            min_free_memory_fraction=min_free_memory_fraction,
+        )
+    )
 
     # A planar feature handed a world-frame table would compute on two of its
     # three axes and report success, so the space is checked before anything is
@@ -2246,21 +2435,17 @@ def _run_feature_impl(
     if hasattr(feature, "cancel_token"):
         setattr(feature, "cancel_token", ctx.cancel_token)
 
-    max_workers = (
-        parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
+    asked_workers = (
+        parallel_workers
+        if phases is None
+        else max((phase.workers for phase in phases), default=1)
     )
-    parallel_mode_str: ParallelMode = (
-        "process" if (parallel_mode or "thread").lower() == "process" else "thread"
-    )
-    if max_workers > 1 and not feature.parallelizable:
+    if asked_workers is not None and asked_workers > 1 and not feature.parallelizable:
         print(
             f"[feature:{feature.name}] parallel_workers requested but feature is not parallelizable; running sequentially.",
             file=sys.stderr,
         )
-        max_workers = 1
     capable = process_capable(feature)
-    # The gate admits entries by predicted memory, for a run with several workers.
-    margin = admission_margin if max_workers > 1 else 0.0
 
     # Measuring. One watch, one estimate and one sampling thread span the fit and
     # the apply, so a fit is measured and an attempt killed mid-fit leaves its memory
@@ -2274,14 +2459,7 @@ def _run_feature_impl(
     def covariates_of(key: str) -> EntryCovariates:
         return covariates_by_key.get(key, NO_COVARIATES)
 
-    run_settings = _ApplySettings(
-        workers=max_workers,
-        mode=parallel_mode_str,
-        admission_margin=margin,
-        min_free_memory_fraction=min_free_memory_fraction,
-        measure_worker_base=measure_worker_base,
-    )
-    cost = _RunCost(phase=_new_phase_state(run_settings, watch))
+    cost = _RunCost(phase=_new_phase_state(phase_plan[0][0], watch))
     # Held while a report is written and while a phase's pool is closed, so no report
     # follows a phase's final one.
     publishing = threading.RLock()
@@ -2856,10 +3034,6 @@ def _run_feature_impl(
                 and len(entries) > 0
                 and len(skip_keys) == len(entries)
             )
-            if cache_hit:
-                # Emitted where it is decided, so the claim and its record cannot drift.
-                ctx.cache_hit()
-
             apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
 
             def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
@@ -3227,7 +3401,18 @@ def _run_feature_impl(
 
             return _PhaseOutcome(cache_hit=cache_hit, computed=len(compute_manifest))
 
-        applied = _apply_entries(manifest, cost.phase)
+        applied: list[_PhaseOutcome] = []
+        for index, (phase_settings, phase_entries) in enumerate(phase_plan):
+            if index:
+                # The earlier phase has closed its pool and written its final report.
+                cost.phase = _new_phase_state(
+                    phase_settings, watch, parent_base=cost.parent_base_bytes
+                )
+            applied.append(_apply_entries(phase_entries, cost.phase))
+        # Decided once for the attempt: every phase served every entry it held from
+        # a valid output on disk.
+        if all(outcome.cache_hit for outcome in applied):
+            ctx.cache_hit()
     finally:
         # Every exit stops the sampler. A phase closes its own pool, which holds its
         # workers' memory while it runs and records the memory the run reached, so a
@@ -3277,9 +3462,8 @@ def _run_feature_impl(
     ctx.entries_written(_total_written)
     # After the outputs are recorded, so a worker that takes the pod down leaves
     # them counted. A run that lost every entry it computed has nothing to size.
-    every_entry_failed = bool(applied.computed) and (
-        len(ctx.failed_keys) == applied.computed
-    )
+    computed = sum(outcome.computed for outcome in applied)
+    every_entry_failed = bool(computed) and len(ctx.failed_keys) == computed
     if (
         cost.phase.settings.measure_worker_base
         and capable
@@ -3329,7 +3513,7 @@ def _run_feature_impl(
         feature=storage_feature_name,
         run_id=run_id,
         execution_id=ctx.execution_id,
-        cache_hit=applied.cache_hit,
+        cache_hit=all(outcome.cache_hit for outcome in applied),
         failed_entries=failed_entries,
         entries_written=_total_written,
     )

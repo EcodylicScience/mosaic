@@ -62,7 +62,7 @@ from ..parallelism import (
 from ..definitions.scope import definition_scope
 from ..definitions.store import is_definition_slug
 from ..refusal import Refusal
-from ..run import run_feature
+from ..run import ApplyPhase, run_feature
 from .claims import FileFailureStore
 from ..gpu_lease import leased_card
 from .input_size import step_entry_sizes
@@ -92,7 +92,13 @@ from .resolve import (
     declared_version,
     unavailable_tool,
 )
-from .subset import PROBE_WORKERS, NamedSubset, ProbeSubset
+from .subset import (
+    MAX_PROBE_ENTRIES,
+    PROBE_THREAD_ENTRIES,
+    PROBE_WORKERS,
+    NamedSubset,
+    ProbeSubset,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -102,6 +108,7 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
     from ..job import CancelToken
+    from ..types.feature import Feature
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore
     from .model import Recipe, Request, Step
@@ -205,8 +212,14 @@ def execute_step(
             must not be the attempt the request assigned the step. A probe
             computes the largest ``count`` entries of this attempt, by input
             rows, in :data:`~.subset.PROBE_WORKERS` threads behind the admission
-            gate, and measures one process worker; *parallel* does not apply to
-            it. A named subset computes its entries with *parallel*. The step's
+            gate; *parallel* does not apply to it. Of a feature that may run in
+            worker processes it computes :data:`~.subset.MAX_PROBE_ENTRIES`
+            entries in two phases, the largest
+            :data:`~.subset.PROBE_THREAD_ENTRIES` in threads and the rest as a
+            pair of worker processes, which write their own levels. Of any other
+            feature it computes at most :data:`~.subset.PROBE_THREAD_ENTRIES`,
+            and measures one process worker where the feature may run in them.
+            A named subset computes its entries with *parallel*. The step's
             status reads only its own attempt, which afterward computes the rest
             and serves the subset's entries from the cache.
 
@@ -345,6 +358,9 @@ def _execute(
         parallel=_PROBE_PARALLEL if is_probe else parallel,
         measure_worker_base=is_probe,
         probe=ready.probe,
+        process_pair=(
+            is_probe and ready.process_capable and len(ready.asked) == MAX_PROBE_ENTRIES
+        ),
     )
     outcome = replace(
         outcome,
@@ -362,6 +378,15 @@ _PROBE_PARALLEL: Final = ParallelSettings(
 Behind the admission gate, which has no estimate before the first entry ends.
 """
 
+_PROBE_PROCESS_PARALLEL: Final = ParallelSettings(
+    workers=PROBE_WORKERS, mode="process", admission_margin=0
+)
+"""How a probe computes the last two of its five entries: two worker processes.
+
+With no gate, both are admitted at once and the second loads right after the first,
+so the process phase also reports a short level 1.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class _Ready:
@@ -373,6 +398,8 @@ class _Ready:
         asked: The entries this attempt computes.
         held: The inventory the plan was resolved against.
         probe: The record of a subset attempt, ``None`` for the step's own.
+        process_capable: Whether a probe's feature may compute in worker
+            processes. ``False`` for any other attempt.
     """
 
     plan: Plan
@@ -380,6 +407,7 @@ class _Ready:
     asked: tuple[Entry, ...]
     held: InventoryCache
     probe: ProbeRecord | None = None
+    process_capable: bool = False
 
 
 def _before_run(
@@ -491,8 +519,19 @@ def _before_run(
 
     if subset is None:
         return _Ready(plan, planned, asked, held)
+    capable = False
     if isinstance(subset, ProbeSubset):
-        asked = _largest(ds, planned, asked, subset.count)
+        # The step's own definition loads here, as it does where the step runs.
+        with definition_scope(ds, load=is_definition_slug(planned.spec.feature)):
+            feature = build_step_feature(planned.spec)
+        capable = process_capable(feature)
+        asked = _largest(
+            ds,
+            planned,
+            asked,
+            subset.count if capable else min(subset.count, PROBE_THREAD_ENTRIES),
+            feature,
+        )
     if not asked:
         # An empty ``asked`` runs the whole scope, which a subset never asks for.
         return _stalled(ds, planned, attempt=attempt, owner=owner, probe=marker)
@@ -502,6 +541,7 @@ def _before_run(
         asked,
         held,
         _probe_record(request, step_id, subset, asked),
+        capable,
     )
 
 
@@ -552,17 +592,20 @@ def _refuse_subset(
 
 
 def _largest(
-    ds: Dataset, planned: PlannedStep, asked: tuple[Entry, ...], count: int
+    ds: Dataset,
+    planned: PlannedStep,
+    asked: tuple[Entry, ...],
+    count: int,
+    feature: Feature,
 ) -> tuple[Entry, ...]:
     """The *count* entries of *asked* with the most input rows, largest first.
 
     Ordered by :func:`~mosaic.core.pipeline.input_size.by_rows`, the rule the
     step's input-size report and the admission gate order by. An entry whose
-    input files cannot be read counts no rows.
+    input files cannot be read counts no rows. *feature* is the one the step
+    runs.
     """
-    measured = step_entry_sizes(
-        ds, planned, asked, feature=build_step_feature(planned.spec)
-    )
+    measured = step_entry_sizes(ds, planned, asked, feature=feature)
     rows = {
         entry: measured.sizes[entry].rows if entry in measured.sizes else 0
         for entry in asked
@@ -780,8 +823,17 @@ def _run(
     parallel: ParallelSettings | None,
     measure_worker_base: bool = False,
     probe: ProbeRecord | None = None,
+    process_pair: bool = False,
 ) -> StepOutcome:
     """Do the work, and record what it lost.
+
+    With *process_pair*, *asked* is five entries largest first, and the last two run
+    as a pair of worker processes after the first three, as a second phase of the
+    one attempt (:data:`_PROBE_PROCESS_PARALLEL`). Each phase's settings pass
+    through :func:`~..parallelism.effective_parallel`, and a phase left with one
+    worker runs its entries one at a time in threads. The worker-base measure is
+    left to the process workers there, which measure themselves, and kept where the
+    process phase has no worker processes.
 
     A step whose identity the plan could not resolve is run anyway: the deferral
     blocks the *preview*, and by the time the step starts the artifact its
@@ -827,6 +879,11 @@ def _run(
             process_capable=process_capable(feature),
         )
         several = chosen.workers > 1
+        phases = (
+            _probe_phases(feature, asked, measure_worker_base=measure_worker_base)
+            if process_pair
+            else None
+        )
         result = run_feature(
             ds,
             feature,
@@ -838,6 +895,7 @@ def _run(
             admission_margin=chosen.admission_margin if several else 0.0,
             measure_worker_base=measure_worker_base,
             probe=probe,
+            phases=phases,
             scope=Scope(entries=sorted(asked)) if asked else None,
             asks_every_entry=asks_every_entry,
             overwrite=overwrite,
@@ -894,6 +952,45 @@ def _run(
         planned_run_id=planned.run_id,
         execution_id=attempt,
         failed_entries=result.failed_entries,
+    )
+
+
+def _probe_phases(
+    feature: Feature, asked: tuple[Entry, ...], *, measure_worker_base: bool
+) -> tuple[ApplyPhase, ApplyPhase]:
+    """The two phases of a probe of five entries: threads, then a process pair.
+
+    Args:
+        feature: The feature the step runs.
+        asked: The five entries, largest first.
+        measure_worker_base: Whether the probe measures a process worker's base,
+            which the process pair does itself where it runs in processes.
+    """
+    thread, process = (
+        effective_parallel(
+            settings,
+            parallelizable=feature.parallelizable,
+            process_capable=process_capable(feature),
+        )
+        for settings in (_PROBE_PARALLEL, _PROBE_PROCESS_PARALLEL)
+    )
+    in_processes = process.workers > 1 and process.mode == "process"
+    measure = measure_worker_base and not in_processes
+    return (
+        ApplyPhase(
+            entries=asked[:PROBE_THREAD_ENTRIES],
+            workers=thread.workers,
+            mode=thread.mode,
+            admission_margin=thread.admission_margin if thread.workers > 1 else 0.0,
+            measure_worker_base=measure,
+        ),
+        ApplyPhase(
+            entries=asked[PROBE_THREAD_ENTRIES:],
+            workers=process.workers,
+            mode=process.mode,
+            admission_margin=process.admission_margin if process.workers > 1 else 0.0,
+            measure_worker_base=measure,
+        ),
     )
 
 

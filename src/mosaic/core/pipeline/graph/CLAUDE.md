@@ -342,9 +342,21 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   anything is recorded. After `_plan` and before the bound and cached answers it refuses
   `subset_refused` with the `cause` `op_step`, `stand_in` (bound or pinned),
   `scope_dependent` or `outside_target`. A probe takes this attempt's entries after
-  quarantine and backoff, the largest `count` (at most `MAX_PROBE_ENTRIES`, 3: one alone
-  and one pair) by `by_rows`, and runs them in `PROBE_WORKERS` threads behind the gate,
-  measuring one worker's base. A named subset takes the caller's settings. Both write a
+  quarantine and backoff, the largest `count` (at most `MAX_PROBE_ENTRIES`, 5) by
+  `by_rows`. A feature that is not process-capable computes at most
+  `PROBE_THREAD_ENTRIES` (3), in `PROBE_WORKERS` threads behind the gate: one alone and
+  one pair, measuring one worker's base. A process-capable feature asked for 5 runs two
+  phases of one attempt (`phases` of `run_feature`): the largest 3 in threads, then the
+  last 2 as a pair of two worker processes at `admission_margin=0`, both through
+  `effective_parallel`. A probe of 4 or fewer runs threads only. The `probe` event lists
+  the entries largest first, so its last two tokens are the process pair. A phase writes
+  its own levels, peak and worker bases in its own final `resources` event, so the
+  attempt's thread levels and peak and its process ones read apart. The fit, the process
+  tree's memory and CPU, `admission_waits` and `apply_wall_seconds` span the attempt.
+  On a host of one processor both phases run one entry at a time in threads, which
+  `run_feature` takes as one phase, so the levels and the peak cover all five entries.
+  The worker-base measure is dropped when the process pair runs in processes, and kept
+  otherwise. A named subset takes the caller's settings. Both write a
   `probe` event and count failures as any attempt does. Status reads only the step's own
   attempt (`rollup._attempt`), whose run computes the remainder and serves the subset's
   entries from the cache (`test_pipeline_step_subset.py`).

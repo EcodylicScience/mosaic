@@ -95,9 +95,11 @@ def run_command(
             "--probe",
             help=(
                 "With --graph-request: compute only the N largest entries of the "
-                "step (1 to 3), the first alone and then two at once in threads, "
-                "to measure what the step costs. Three give one entry alone and "
-                "one pair. Needs --execution-id."
+                "step (1 to 5), the first alone and then two at once in threads, "
+                "to measure what the step costs. A process phase runs at 5: the "
+                "two smallest entries run as a pair of worker processes after the "
+                "three in threads. A feature that is not process-capable computes "
+                "at most 3. Needs --execution-id."
             ),
         ),
     ] = None,
