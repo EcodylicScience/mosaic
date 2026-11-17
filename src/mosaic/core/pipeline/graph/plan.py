@@ -683,10 +683,10 @@ class _TagSource:
     """The one revision of the tag table that a plan's reading steps are planned from.
 
     Resolved when the first step that reads the table is planned, from the
-    request's reference, else the payload its caller built, else the latest
-    revision. Every later step reads the same table, and the revision it names
-    is what each step's identity is then built from, so a revision written
-    while the plan is made cannot split it.
+    reference given, else the request's, else the payload its caller built,
+    else the latest revision. Every later step reads the same table, and the
+    revision it names is what each step's identity is then built from, so a
+    revision written while the plan is made cannot split it.
     """
 
     ds: Dataset
@@ -766,6 +766,7 @@ def plan_pipeline(
     step_scopes: Mapping[str, Scope] | None = None,
     bind: Mapping[str, BoundRef] | None = None,
     tracks_run_id: str | None = None,
+    tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
     ignore_unavailable: bool = False,
@@ -779,10 +780,11 @@ def plan_pipeline(
     sidecar, and its planned spec names the full digest of the version it
     resolved to.
 
-    Several datasets can each index a revision of the tag table. A request whose
-    ``tag_revision`` names none of them is a problem at ``tag_revision`` of each
-    step that reads the table, saying to name one with ``origin_uuid``, and the
-    step is left unresolved. Nothing is raised for it.
+    Several datasets can each index a revision of the tag table. A
+    ``tag_revision``, given or the request's, that names none of them is a
+    problem at ``tag_revision`` of each step that reads the table, saying to
+    name one with ``origin_uuid``, and the step is left unresolved. Nothing is
+    raised for it.
 
     Args:
         ds: The dataset. Read only -- planning writes nothing, not even a cache.
@@ -827,6 +829,11 @@ def plan_pipeline(
             tracks without a ``tracks`` reference reads. ``None`` falls back to
             the request's, and then to each entry's one variant. It also
             decides the entries the plan covers.
+        tag_revision: The revision of the tag table that each step reading it is
+            planned from. ``None`` falls back to the request's, then to the
+            tags payload in *series_payloads*, then to the latest revision. It
+            decides the identity of a step reading the table, and the plan
+            records it in ``tags_read``.
         pins: The run each pinned step serves, keyed by step id. ``None``
             falls back to the request's. A pin overrides what *recorded* says
             of its step, the step reads complete over any scope when its run
@@ -896,9 +903,11 @@ def plan_pipeline(
         catalog = declaration_catalog() if catalog is None else catalog
         reject_unless_valid(recipe, catalog, ignore_unavailable=ignore_unavailable)
         pair_reads = pair_rules(recipe, catalog)
+        if tag_revision is None and request is not None:
+            tag_revision = request.tag_revision
         tags = _TagSource(
             ds,
-            ref=request.tag_revision if request is not None else None,
+            ref=tag_revision,
             payload=(series_payloads or {}).get((TAGS_SERIES, TAG_TABLE_KEY)),
         )
 
@@ -2100,7 +2109,7 @@ def _resolve_feature_step(
             problem = Problem(
                 step.id,
                 "tag_revision",
-                f"{exc.args[0]} in the request's tag_revision",
+                f"{exc.args[0]} in tag_revision",
             )
             return _Resolution(
                 step=_unresolved_feature(step, spec, problem.message),

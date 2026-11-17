@@ -69,6 +69,7 @@ __all__ = [
     "payload_digest",
     "read_label_series",
     "read_revision_manifest",
+    "record_revision",
     "resolve_series_refs",
     "revision_export",
     "row_for_revision_file",
@@ -344,6 +345,11 @@ def _int_cell(value: str) -> int:
         return 0
 
 
+def record_revision(record: Mapping[str, str]) -> int:
+    """The revision number of an index *record*, or ``0`` when its cell is not a number."""
+    return _int_cell(record.get("revision", ""))
+
+
 def latest_revision(
     frame: pd.DataFrame, *, origin_uuid: str, key: str
 ) -> dict[str, str] | None:
@@ -351,7 +357,7 @@ def latest_revision(
     matching = _records(frame, origin_uuid=origin_uuid, key=key)
     if not matching:
         return None
-    return max(matching, key=lambda record: _int_cell(record.get("revision", "")))
+    return max(matching, key=record_revision)
 
 
 def _highest_on_disk(key_root: Path) -> int:
@@ -442,13 +448,13 @@ def write_series_revision(
                 return SeriesRevision(
                     series=spec.name,
                     key=key,
-                    revision=_int_cell(latest.get("revision", "")),
+                    revision=record_revision(latest),
                     digest=digest,
                     path=existing,
                     written=False,
                 )
 
-        indexed = _int_cell(latest.get("revision", "")) if latest is not None else 0
+        indexed = record_revision(latest) if latest is not None else 0
         revision = max(indexed, _highest_on_disk(key_root)) + 1
         revision_root = key_root / revision_dirname(revision)
         # Exclusive: an existing directory here means a number was handed out
@@ -782,19 +788,13 @@ def resolve_series_refs(
         if len(origins) > 1:
             raise SeveralOrigins(series, ref.key, origins)
         if ref.revision is None:
-            chosen = max(
-                matching, key=lambda record: _int_cell(record.get("revision", ""))
-            )
+            chosen = max(matching, key=record_revision)
         else:
             wanted = [
-                record
-                for record in matching
-                if _int_cell(record.get("revision", "")) == ref.revision
+                record for record in matching if record_revision(record) == ref.revision
             ]
             if not wanted:
-                held = sorted(
-                    _int_cell(record.get("revision", "")) for record in matching
-                )
+                held = sorted(record_revision(record) for record in matching)
                 raise IdentityDeferred(
                     kind,
                     f"revision {ref.revision} of {series} key {ref.key!r} is "
@@ -818,7 +818,7 @@ def resolve_series_refs(
                 series=series,
                 origin_uuid=origins[0],
                 key=ref.key,
-                revision=_int_cell(chosen.get("revision", "")),
+                revision=record_revision(chosen),
                 digest=measured,
                 payload=payload,
             )

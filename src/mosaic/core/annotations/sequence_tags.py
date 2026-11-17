@@ -26,7 +26,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from mosaic.core.annotations.projection import write_tag_table_revision
 from mosaic.core.annotations.sequence_tag_wire import (
@@ -46,6 +46,7 @@ from mosaic.core.annotations.tag_table import (
     reserved_name_message,
 )
 from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.index_lock import index_lock_unless_dry_run
 from mosaic.core.pipeline.label_series import (
@@ -54,15 +55,18 @@ from mosaic.core.pipeline.label_series import (
     LabelRevisionRef,
 )
 from mosaic.core.pipeline.label_series_index import (
+    LabelSeriesTamperedError,
     ResolvedRevision,
     SeveralOrigins,
     read_label_series,
     read_revision_manifest,
+    record_revision,
     resolve_series_refs,
     series_index_path,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred
 from mosaic.core.pipeline.summary_arguments import readings
+from mosaic.core.pipeline.tag_reads import ResolvedTagTable
 from mosaic.core.scan_findings import FindingLog
 from mosaic.core.typed_attribute import (
     OPTION_MAX_LENGTH,
@@ -79,12 +83,16 @@ __all__ = [
     "SequenceTagCsv",
     "SequenceTagCsvInvalid",
     "SequenceTagImportRefused",
+    "SequenceTagRevisionNotFound",
     "SequenceTagTableUnavailable",
     "SequenceTagsMoved",
     "import_sequence_tags",
     "list_sequence_tags",
     "parse_key_option",
     "read_sequence_tag_csv",
+    "read_sequence_tag_table",
+    "read_tag_text",
+    "resolve_sequence_tag_revision",
 ]
 
 KeyForm = Literal["entry", "sequence", "recording"]
@@ -116,8 +124,18 @@ class SequenceTagImportRefused(ValueError):
     """The dataset's tags are edited elsewhere, so a CSV import is refused."""
 
 
-class SequenceTagTableUnavailable(ValueError):
+class SequenceTagTableUnavailable(ClassifiedError, ValueError):
     """The tag table cannot be read as one revision of one dataset."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+    def error_reason(self) -> str:
+        """Return the reason that a service answers this state with."""
+        return "sequence_tags_unavailable"
+
+
+class SequenceTagRevisionNotFound(ValueError):
+    """A requested revision of the tag table is not indexed."""
 
 
 class SequenceTagsMoved(ValueError):
@@ -467,7 +485,7 @@ def _read_cell(
 ) -> TypedAttributeValue:
     """The value of *text* as a *type_*, or a refusal naming its line and column."""
     try:
-        value = _read_value(type_, text)
+        value = read_tag_text(type_, text)
         check_tag_value(type_, value)
     except ValueError as exc:
         msg = f"line {line}, column {column!r}: {exc}"
@@ -475,7 +493,16 @@ def _read_cell(
     return value
 
 
-def _read_value(type_: TypedAttributeType, text: str) -> TypedAttributeValue:
+def read_tag_text(type_: TypedAttributeType, text: str) -> TypedAttributeValue:
+    """The value that *text* holds as a tag of *type_*.
+
+    A ``categorical`` or ``text`` tag keeps the text as written, so ``03`` stays
+    ``03``. A ``bool``, ``int`` or ``float`` tag reads the first matching reading of
+    the text, so ``03`` is the number 3 for an ``int`` tag. A ``label`` has no value.
+
+    Raises:
+        ValueError: The text is not a value of *type_*.
+    """
     if type_ == "label":
         return None
     if type_ in ("categorical", "text"):
@@ -496,26 +523,50 @@ def _read_value(type_: TypedAttributeType, text: str) -> TypedAttributeValue:
     raise ValueError(msg)
 
 
-def _latest_revision(ds: Dataset, *, kind: str) -> ResolvedRevision | None:
-    """The revision of the tag table that a run reads now, or ``None`` for none.
+def resolve_sequence_tag_revision(
+    ds: Dataset, revision: int | None = None, *, kind: str
+) -> ResolvedRevision | None:
+    """The revision of the tag table that a run reads, or ``None`` for none.
 
-    The latest indexed revision of any dataset, resolved as a run resolves it, so
-    its digest is measured off disk.
+    Without *revision* it is the latest indexed revision of any dataset. Either
+    way it is resolved as a run resolves it, so its digest is measured off disk.
+
+    Args:
+        ds: The dataset whose ``tags`` series is read.
+        revision: The revision to resolve, or ``None`` for the latest.
+        kind: What is resolving, named in a deferral.
+
+    Returns:
+        The revision, or ``None`` when none is indexed and *revision* is ``None``.
 
     Raises:
+        SequenceTagRevisionNotFound: *revision* is not indexed.
         SequenceTagTableUnavailable: Several datasets' revisions are indexed, or
-            the latest indexed revision is not on disk.
+            the revision is not on disk.
+        LabelSeriesTamperedError: The revision's bytes changed after it was
+            indexed.
     """
     indexed = [
         record
         for record in index_records(read_label_series(ds, TAGS_SERIES))
         if record.get("key", "") == TAG_TABLE_KEY
     ]
-    if not indexed:
+    if revision is not None:
+        held = sorted({record_revision(record) for record in indexed})
+        if revision not in held:
+            msg = (
+                f"revision {revision} of the tag table is not indexed here "
+                f"(indexed: {held or 'none'})"
+            )
+            raise SequenceTagRevisionNotFound(msg)
+    elif not indexed:
         return None
     try:
         (found,) = resolve_series_refs(
-            ds, TAGS_SERIES, (LabelRevisionRef(key=TAG_TABLE_KEY),), kind=kind
+            ds,
+            TAGS_SERIES,
+            (LabelRevisionRef(key=TAG_TABLE_KEY, revision=revision),),
+            kind=kind,
         )
     except SeveralOrigins as exc:
         msg = (
@@ -528,6 +579,44 @@ def _latest_revision(ds: Dataset, *, kind: str) -> ResolvedRevision | None:
     except IdentityDeferred as exc:
         raise SequenceTagTableUnavailable(exc.because) from exc
     return found
+
+
+def read_sequence_tag_table(
+    ds: Dataset, revision: int | None = None, *, kind: str
+) -> ResolvedTagTable | None:
+    """The tag table that a user's read sees, or ``None`` when none is indexed.
+
+    Resolves the revision with :func:`resolve_sequence_tag_revision` and reads its
+    payload.
+
+    Args:
+        ds: The dataset whose ``tags`` series is read.
+        revision: The revision to read, or ``None`` for the latest.
+        kind: What is reading, named in a deferral.
+
+    Raises:
+        SequenceTagRevisionNotFound: *revision* is not indexed.
+        SequenceTagTableUnavailable: Several datasets' revisions are indexed, the
+            revision is not on disk or was edited after it was indexed, or its
+            payload is not a valid tag table.
+    """
+    try:
+        found = resolve_sequence_tag_revision(ds, revision, kind=kind)
+    except LabelSeriesTamperedError as exc:
+        raise SequenceTagTableUnavailable(str(exc)) from exc
+    if found is None:
+        return None
+    try:
+        table = read_tag_table(found.payload)
+    except ValueError as exc:
+        raise SequenceTagTableUnavailable(str(exc)) from exc
+    return ResolvedTagTable(
+        origin_uuid=found.origin_uuid,
+        revision=found.revision,
+        payload_digest=found.digest,
+        path=found.payload,
+        table=table,
+    )
 
 
 def _position(found: ResolvedRevision | None) -> tuple[str, int] | None:
@@ -591,7 +680,7 @@ def import_sequence_tags(
         )
         raise SequenceTagImportRefused(msg)
     try:
-        started = _latest_revision(ds, kind="sequence-tags import")
+        started = resolve_sequence_tag_revision(ds, kind="sequence-tags import")
     except SequenceTagTableUnavailable as exc:
         raise SequenceTagImportRefused(str(exc)) from exc
     if started is not None:
@@ -628,7 +717,9 @@ def import_sequence_tags(
     written = False
     with index_lock_unless_dry_run(series_index_path(ds, TAGS_SERIES), dry_run=dry_run):
         if not dry_run:
-            found = _position(_latest_revision(ds, kind="sequence-tags import"))
+            found = _position(
+                resolve_sequence_tag_revision(ds, kind="sequence-tags import")
+            )
             if found != started_position:
                 msg = (
                     f"the tag table was at {_named(started_position)} when the "
@@ -777,7 +868,7 @@ def list_sequence_tags(ds: Dataset) -> SequenceTagListing:
             the latest indexed revision is not on disk.
         ValueError: The latest revision's payload is not a valid tag table.
     """
-    latest = _latest_revision(ds, kind="sequence-tags list")
+    latest = resolve_sequence_tag_revision(ds, kind="sequence-tags list")
     if latest is None:
         return SequenceTagListing(revision=None, digest=None, entries=0, tags=())
     table = read_tag_table(latest.payload)

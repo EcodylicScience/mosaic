@@ -8,7 +8,8 @@ tracks variant, one row for each linked tracker id with the individual's name, i
 UID's value and its effective tags. A recording whose arenas hold individuals also
 has one ``arenas`` row for each such individual.
 
-**Stdlib only.** The module imports the standard library and
+**Stdlib only.** The module imports the standard library,
+:mod:`mosaic.core.entry`, :mod:`mosaic.core.json_value` and
 :mod:`mosaic.core.typed_attribute`, so ``core.pipeline`` reads it without a cycle and
 a reader of the table does not import pandas.
 
@@ -34,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from mosaic.core.entry import Entry
 from mosaic.core.json_value import JsonValue
 from mosaic.core.typed_attribute import (
     OPTION_MAX_LENGTH,
@@ -54,6 +56,7 @@ __all__ = [
     "TagRead",
     "TagTable",
     "check_tag_value",
+    "entries_where",
     "parse_tag_table",
     "read_tag_table",
     "reserved_name_message",
@@ -219,6 +222,67 @@ def check_tag_value(type_: TypedAttributeType, value: TypedAttributeValue) -> No
             raise ValueError(msg)
         return
     validate_typed_value(type_, {}, value)
+
+
+def entries_where(
+    table: TagTable, where: Mapping[str, Sequence[TypedAttributeValue]]
+) -> list[Entry]:
+    """The entries whose sequence tags match *where*, sorted by ``(group, sequence)``.
+
+    Names combine as AND and the values of one name as OR. Values are compared as
+    the tag's type holds them, so ``"03"`` matches a ``categorical`` value ``"03"``
+    and an ``int`` tag refuses it. An entry that holds no value of a name matches
+    none of its values.
+
+    Args:
+        table: The tag table.
+        where: The wanted values by sequence tag name. A ``label`` takes an empty
+            sequence and matches the entries it is assigned to. Any other type
+            takes at least one value.
+
+    Raises:
+        ValueError: *where* names no tag, a name is not a sequence tag of *table*
+            (the message lists the defined names), a ``label`` is given values,
+            any other type is given none, or a value is one its tag's type refuses.
+    """
+    if not where:
+        msg = "a tag selection names at least one tag"
+        raise ValueError(msg)
+    types: dict[str, TypedAttributeType] = {
+        definition.name: definition.type for definition in table.definitions.sequence
+    }
+    for name, values in where.items():
+        type_ = types.get(name)
+        if type_ is None:
+            msg = (
+                f"{name!r} is not a sequence tag of the dataset; "
+                f"the sequence tags are {sorted(types)}"
+            )
+            raise ValueError(msg)
+        if type_ == "label":
+            if values:
+                msg = f"tag {name!r} is a label and takes no values"
+                raise ValueError(msg)
+            continue
+        if not values:
+            msg = f"tag {name!r} of type {type_} needs at least one value"
+            raise ValueError(msg)
+        for value in values:
+            try:
+                check_tag_value(type_, value)
+            except ValueError as exc:
+                msg = f"tag {name!r} of type {type_} refuses the value {value!r}: {exc}"
+                raise ValueError(msg) from exc
+    return [
+        (sequence.group, sequence.sequence)
+        for sequence in sorted(
+            table.sequences, key=lambda item: (item.group, item.sequence)
+        )
+        if all(
+            name in sequence.tags and (not values or sequence.tags[name] in values)
+            for name, values in where.items()
+        )
+    ]
 
 
 def reserved_name_message(name: str) -> str:

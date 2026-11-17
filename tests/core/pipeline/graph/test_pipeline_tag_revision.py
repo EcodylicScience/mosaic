@@ -22,6 +22,7 @@ from mosaic.core.pipeline.types import Inputs, InputStream, TrackInput
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     IdentityUnresolved,
+    CleanupPolicy,
     Plan,
     PlanChanged,
     Problem,
@@ -31,6 +32,7 @@ from mosaic.core.pipeline.graph import (
     build_step_feature,
     plan_fingerprint,
     plan_pipeline,
+    plan_with_cleanup,
     request_path,
     run_pipeline,
     submit_request,
@@ -314,6 +316,29 @@ def test_two_origins_without_a_named_one_are_a_problem_of_each_reading_step(
     assert isinstance(plan.step("tags").reason, IdentityUnresolved)
 
 
+def test_a_keyword_revision_naming_no_origin_among_several_is_a_problem(
+    ds: Dataset,
+) -> None:
+    _ = write_tags(ds, _table())
+    _ = _index_a_second_origin(ds)
+
+    plan = plan_pipeline(
+        ds,
+        _recipe("treatment"),
+        tag_revision=LabelRevisionRef(key="dataset"),
+        refuse=False,
+    )
+
+    assert [(problem.step, problem.where) for problem in plan.problems] == [
+        ("tags", "tag_revision")
+    ]
+    message = plan.problems[0].message
+    assert message.endswith(" in tag_revision")
+    assert "request" not in message
+    assert "origin_uuid" in message
+    assert _run_ids(plan) == {"tags": None, "motion": None}
+
+
 def test_a_request_naming_an_origin_plans_among_several(ds: Dataset) -> None:
     _ = write_tags(ds, _table())
     other = _index_a_second_origin(ds)
@@ -526,6 +551,95 @@ def test_a_reference_naming_no_origin_among_several_is_the_plans_problem(
         (problem.step, problem.where) for problem in refused.value.plan.problems
     ] == [("tags", "tag_revision")]
     assert not list((ds.base_dir / ".mosaic" / "pipelines" / "requests").glob("*.json"))
+
+
+def test_a_keyword_revision_plans_that_revision_after_a_later_one_exists(
+    ds: Dataset,
+) -> None:
+    recipe = _recipe("treatment")
+    _ = write_tags(ds, _table("a"))
+    first = plan_pipeline(ds, recipe)
+    _ = write_tags(ds, _table("b"))
+    latest = plan_pipeline(ds, recipe)
+
+    pinned = plan_pipeline(
+        ds, recipe, tag_revision=LabelRevisionRef(key="dataset", revision=1)
+    )
+
+    assert _run_ids(pinned) == _run_ids(first)
+    assert _run_ids(pinned) != _run_ids(latest)
+    assert pinned.tags_read is not None
+    assert pinned.tags_read.revision == 1
+
+
+def test_a_keyword_revision_wins_over_the_requests(ds: Dataset) -> None:
+    recipe = _recipe("treatment")
+    _ = write_tags(ds, _table("a"))
+    _ = write_tags(ds, _table("b"))
+    request = Request(
+        request_id="R",
+        recipe_digest="0" * 16,
+        tag_revision=LabelRevisionRef(key="dataset", revision=1),
+    )
+
+    plan = plan_pipeline(
+        ds,
+        recipe,
+        request=request,
+        tag_revision=LabelRevisionRef(key="dataset", revision=2),
+    )
+
+    assert _run_ids(plan) == _planned_at(ds, recipe, 2)
+    assert _run_ids(plan) != _planned_at(ds, recipe, 1)
+    assert plan.tags_read is not None
+    assert plan.tags_read.revision == 2
+
+
+def test_the_request_revision_is_read_when_the_keyword_is_unset(ds: Dataset) -> None:
+    recipe = _recipe("treatment")
+    _ = write_tags(ds, _table("a"))
+    _ = write_tags(ds, _table("b"))
+    request = Request(
+        request_id="R",
+        recipe_digest="0" * 16,
+        tag_revision=LabelRevisionRef(key="dataset", revision=1),
+    )
+
+    plan = plan_pipeline(ds, recipe, request=request, tag_revision=None)
+
+    assert _run_ids(plan) == _planned_at(ds, recipe, 1)
+
+
+def test_a_plan_without_the_keyword_reads_the_latest_revision(ds: Dataset) -> None:
+    recipe = _recipe("treatment")
+    _ = write_tags(ds, _table("a"))
+    _ = write_tags(ds, _table("b"))
+
+    plan = plan_pipeline(ds, recipe)
+
+    assert _run_ids(plan) == _planned_at(ds, recipe, 2)
+    assert plan_fingerprint(plan) == plan_fingerprint(
+        plan_pipeline(ds, recipe, tag_revision=None)
+    )
+
+
+def test_plan_with_cleanup_passes_the_keyword_revision_on(ds: Dataset) -> None:
+    recipe = _recipe("treatment")
+    _ = write_tags(ds, _table("a"))
+    _ = write_tags(ds, _table("b"))
+    policy = CleanupPolicy(keep_newest=0, min_age_hours=0)
+
+    for cleanup in (None, policy):
+        plan = plan_with_cleanup(
+            ds,
+            recipe,
+            cleanup=cleanup,
+            tag_revision=LabelRevisionRef(key="dataset", revision=1),
+        )
+
+        assert _run_ids(plan) == _planned_at(ds, recipe, 1)
+        assert plan.tags_read is not None
+        assert plan.tags_read.revision == 1
 
 
 class TaggedFit:

@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     from ..job import CancelToken
     from ..inventory.model import AnyRecord
     from ..inventory.params import RunParams
+    from ..label_series import LabelRevisionRef
     from .compatibility import DeclarationCatalog
     from .model import BoundRef, Recipe, Request
     from .plan import Plan
@@ -221,6 +222,7 @@ def plan_with_cleanup(
     retire: Iterable[str] = (),
     bind: Mapping[str, BoundRef] | None = None,
     tracks_run_id: str | None = None,
+    tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
 ) -> Plan:
@@ -250,6 +252,7 @@ def plan_with_cleanup(
             It needs *cleanup*, and it belongs to this plan alone.
         bind: As for :func:`~.plan.plan_pipeline`.
         tracks_run_id: As for :func:`~.plan.plan_pipeline`.
+        tag_revision: As for :func:`~.plan.plan_pipeline`.
         pins: As for :func:`~.plan.plan_pipeline`.
         applies_request_id: As for :func:`~.plan.plan_pipeline`.
 
@@ -284,6 +287,7 @@ def plan_with_cleanup(
         step_scopes=step_scopes,
         bind=bind,
         tracks_run_id=tracks_run_id,
+        tag_revision=tag_revision,
         pins=pins,
         applies_request_id=applies_request_id,
     )

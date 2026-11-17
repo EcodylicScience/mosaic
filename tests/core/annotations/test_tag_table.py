@@ -27,6 +27,7 @@ from mosaic.core.annotations.tag_table import (
     TagRead,
     TagTable,
     check_tag_value,
+    entries_where,
     parse_tag_table,
     read_tag_table,
     sequence_tags_projection,
@@ -616,6 +617,113 @@ def test_a_tag_read_holds_its_renames_as_pairs_and_stays_hashable() -> None:
 
     assert read.renames == (("condition", "Condition"),)
     assert hash(read) == hash(read)
+
+
+def _selectable() -> TagTable:
+    """Four entries, listed out of order, over every kind of sequence tag."""
+
+    def entry(group: str, sequence: str, **tags: TypedAttributeValue) -> SequenceTags:
+        return SequenceTags(group, sequence, tags, {}, ())
+
+    return TagTable(
+        definitions=TagDefinitions(
+            sequence=(
+                TagDefinition("condition", "categorical"),
+                TagDefinition("place", "categorical"),
+                TagDefinition("batch", "int"),
+                TagDefinition("flagged", "label"),
+                TagDefinition("note", "text"),
+            ),
+            individual=(TagDefinition("sex", "categorical"),),
+        ),
+        sequences=(
+            entry("g2", "b", condition="control", place="3", batch=3, flagged=None),
+            entry("g1", "z", condition="treated", place="03", batch=3),
+            entry("", "a", condition="treated", place="3", flagged=None),
+            entry("g1", "c", place="03", batch=4),
+        ),
+    )
+
+
+def test_names_combine_as_and_and_the_values_of_one_name_as_or() -> None:
+    table = _selectable()
+
+    both = entries_where(table, {"condition": ["treated"], "place": ["03"]})
+    either = entries_where(table, {"condition": ["treated", "control"]})
+
+    assert both == [("g1", "z")]
+    assert either == [("", "a"), ("g1", "z"), ("g2", "b")]
+
+
+def test_a_categorical_matches_its_text_and_an_int_tag_refuses_that_text() -> None:
+    table = _selectable()
+
+    assert entries_where(table, {"place": ["03"]}) == [("g1", "c"), ("g1", "z")]
+    assert entries_where(table, {"place": ["3"]}) == [("", "a"), ("g2", "b")]
+    with pytest.raises(ValueError, match=r"batch.*int"):
+        entries_where(table, {"batch": ["03"]})
+    assert entries_where(table, {"batch": [3]}) == [("g1", "z"), ("g2", "b")]
+
+
+def test_a_label_takes_no_values_and_matches_the_entries_it_is_assigned_to() -> None:
+    table = _selectable()
+
+    assert entries_where(table, {"flagged": []}) == [("", "a"), ("g2", "b")]
+    assert entries_where(table, {"flagged": [], "condition": ["control"]}) == [
+        ("g2", "b")
+    ]
+    with pytest.raises(ValueError, match=r"flagged.*label"):
+        entries_where(table, {"flagged": ["yes"]})
+
+
+def test_an_empty_values_sequence_is_refused_for_every_type_but_label() -> None:
+    table = _selectable()
+
+    for name, type_ in (("condition", "categorical"), ("batch", "int")):
+        with pytest.raises(ValueError, match=rf"{name}.*{type_}"):
+            entries_where(table, {name: []})
+
+
+def test_an_unknown_name_is_refused_with_the_defined_sequence_names() -> None:
+    table = _selectable()
+
+    with pytest.raises(ValueError, match="nope") as unknown:
+        entries_where(table, {"nope": ["x"]})
+    with pytest.raises(ValueError, match="sex") as individual:
+        entries_where(table, {"sex": ["f"]})
+
+    for refusal in (unknown, individual):
+        message = str(refusal.value)
+        for name in ("batch", "condition", "flagged", "note", "place"):
+            assert name in message
+
+
+def test_an_entry_without_a_value_of_the_name_is_not_returned() -> None:
+    table = _selectable()
+
+    assert entries_where(table, {"batch": [3, 4]}) == [
+        ("g1", "c"),
+        ("g1", "z"),
+        ("g2", "b"),
+    ]
+    assert entries_where(table, {"note": ["anything"]}) == []
+
+
+def test_a_selection_naming_no_tag_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least one tag"):
+        entries_where(_selectable(), {})
+
+
+def test_the_selection_is_sorted_whatever_the_order_of_the_table() -> None:
+    table = _selectable()
+    wanted = {"condition": ["control", "treated"]}
+
+    forward = entries_where(table, wanted)
+    backward = entries_where(
+        TagTable(table.definitions, tuple(reversed(table.sequences))), wanted
+    )
+
+    assert forward == backward == [("", "a"), ("g1", "z"), ("g2", "b")]
 
 
 def test_importing_the_payload_module_loads_neither_pandas_nor_the_pipeline() -> None:
