@@ -2218,12 +2218,14 @@ $ mosaic arenas [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `set`: Declare a recording's arenas from a layout...
+* `set`: Declare the arenas of a recording, or of...
 * `show`: List the declared layouts, or show the one...
 
 ### `mosaic arenas set`
 
-Declare a recording's arenas from a layout file, a circle or a grid of edges.
+Declare the arenas of a recording, or of each recording that a sequence tag selects.
+
+The layout comes from a layout file, a circle or a grid of edges.
 
 **Usage**:
 
@@ -2234,7 +2236,8 @@ $ mosaic arenas set [OPTIONS]
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `-r, --recording <str>`: The recording, named as 'mosaic describe' lists it.  [required]
+* `-r, --recording <str>`: The recording, named as 'mosaic describe' lists it. Give it or --tag.
+* `--tag <str>`: Declare the layout for each recording that an entry holding a sequence tag belongs to, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. A divided recording must be selected whole. Each recording keeps the layout when the tag is edited. Give it or --recording.
 * `--layout <path>`: A JSON file holding an ArenaLayout.
 * `--xs <str>`: Grid column edges in pixels, e.g. 0,506,1012.
 * `--ys <str>`: Grid row edges in pixels, e.g. 0,170,346.

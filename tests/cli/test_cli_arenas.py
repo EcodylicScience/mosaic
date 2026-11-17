@@ -12,7 +12,14 @@ from mosaic.cli import app
 from mosaic.core.arenas import ArenaKey, ArenaLayout, Rect
 from mosaic.core.dataset import Dataset
 from mosaic.core.regions import CircleShape, RectShape, Roi
-from tests.helpers import add_track_sequences, invoke_json, invoke_ok, make_dataset
+from tests.helpers import (
+    add_track_sequences,
+    invoke_json,
+    invoke_ok,
+    make_dataset,
+    tag_table,
+    write_tags,
+)
 
 
 @pytest.fixture
@@ -273,3 +280,177 @@ def test_show_json_prints_the_boundary_and_rois(
     arena = ArenaLayout.model_validate(shown["layout"]).arenas[0]
     assert arena.boundary == CircleShape(cx=50, cy=40, r=30)
     assert [roi.name for roi in arena.rois] == ["center"]
+
+
+PLACES: dict[tuple[str, str], dict[str, str | int]] = {
+    ("g", "a"): {"place": 3},
+    ("g", "b"): {"place": 4},
+    ("h", "c"): {"place": 3},
+    ("rec", "s1"): {"place": 3},
+    ("rec", "s2"): {"place": 5},
+}
+"""The ``place`` of each entry of the dataset fixture that holds tags."""
+
+GRID = ["--xs", "0,50,100", "--ys", "0,40,80"]
+
+
+@pytest.fixture
+def tagged(tmp_path: Path) -> Dataset:
+    """A dataset of three undivided recordings and one divided, holding a ``place`` tag."""
+    ds = make_dataset(tmp_path / "tagged")
+    add_track_sequences(
+        ds, ("g", "a"), ("g", "b"), ("h", "c"), ("rec", "s1"), ("rec", "s2")
+    )
+    ds.set_continuous_groups(["rec"])
+    _ = write_tags(ds, tag_table(PLACES, {"place": "int"}))
+    return ds
+
+
+def _set_by_tag(ds: Dataset, *arguments: str) -> list[str]:
+    return ["arenas", "set", *_manifest(ds), *arguments]
+
+
+def test_a_tag_declares_one_layout_per_selected_recording(tagged: Dataset) -> None:
+    ds = tagged
+    result = invoke_ok(_set_by_tag(ds, "--tag", "place=4", *GRID))
+
+    found = ds.arena_layouts()
+    assert set(found) == {ArenaKey("g", "b", "")}
+    assert found[ArenaKey("g", "b", "")].layout == ArenaLayout.grid(
+        xs=(0, 50, 100), ys=(0, 40, 80)
+    )
+    assert len(result.stdout.strip().splitlines()) == 1
+    assert "'g:b'" in result.stdout
+
+
+def test_a_tag_declares_each_recording_under_its_own_key_and_show_finds_it(
+    tagged: Dataset,
+) -> None:
+    ds = tagged
+    wanted = ["--tag", "place=3", "--tag", "place=4", "--tag", "place=5"]
+    wanted += ["--camera", "top"]
+    result = invoke_ok(_set_by_tag(ds, *wanted, *GRID))
+
+    assert set(ds.arena_layouts()) == {
+        ArenaKey("g", "a", "top"),
+        ArenaKey("g", "b", "top"),
+        ArenaKey("h", "c", "top"),
+        ArenaKey("rec", "", "top"),
+    }
+    assert len(result.stdout.strip().splitlines()) == 4
+    for recording in ("g:a", "g:b", "h:c", "rec"):
+        shown = invoke_json(
+            ["arenas", "show", *_manifest(ds), "-r", recording, "--camera", "top"]
+            + ["--json"]
+        )
+        assert shown["recording"] == recording
+        assert shown["layout"] == ArenaLayout.grid(
+            xs=(0, 50, 100), ys=(0, 40, 80)
+        ).model_dump(mode="json")
+
+
+def test_a_tag_that_covers_a_divided_recording_whole_declares_it_once(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "whole")
+    add_track_sequences(ds, ("rec", "s1"), ("rec", "s2"))
+    ds.set_continuous_groups(["rec"])
+    _ = write_tags(
+        ds,
+        tag_table(
+            {("rec", "s1"): {"place": 3}, ("rec", "s2"): {"place": 3}}, {"place": "int"}
+        ),
+    )
+
+    _ = invoke_ok(_set_by_tag(ds, "--tag", "place=3", *GRID))
+
+    assert set(ds.arena_layouts()) == {ArenaKey("rec", "", "")}
+
+
+def test_a_divided_recording_covered_in_part_is_refused_and_nothing_is_written(
+    tagged: Dataset,
+) -> None:
+    ds = tagged
+    result = CliRunner().invoke(app, _set_by_tag(ds, "--tag", "place=3", *GRID))
+
+    assert result.exit_code == 1
+    assert "'rec'" in result.stderr
+    assert "s1=3" in result.stderr and "s2=5" in result.stderr
+    assert ds.arena_layouts() == {}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--tag", "place=9"], "no entry holds tag 'place' of '9'"),
+        (["--tag", "nowhere=1"], "not a sequence tag"),
+        (["--tag", "place=high"], "not a whole number"),
+    ],
+)
+def test_a_tag_that_selects_nothing_usable_is_refused_and_nothing_is_written(
+    tagged: Dataset, arguments: list[str], message: str
+) -> None:
+    result = CliRunner().invoke(app, _set_by_tag(tagged, *arguments, *GRID))
+
+    assert result.exit_code == 1
+    assert message in result.stderr
+    assert tagged.arena_layouts() == {}
+
+
+def test_a_tag_of_a_dataset_without_tags_says_to_import_them(
+    dataset: Dataset,
+) -> None:
+    result = CliRunner().invoke(app, _set_by_tag(dataset, "--tag", "place=3", *GRID))
+
+    assert result.exit_code == 1
+    assert "mosaic sequence-tags import" in result.stderr
+    assert dataset.arena_layouts() == {}
+
+
+def test_a_selected_entry_outside_the_recordings_is_refused_before_any_write(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ghost")
+    add_track_sequences(ds, ("g", "a"))
+    _ = write_tags(
+        ds,
+        tag_table(
+            {("g", "a"): {"place": 3}, ("g", "ghost"): {"place": 3}}, {"place": "int"}
+        ),
+    )
+
+    result = CliRunner().invoke(app, _set_by_tag(ds, "--tag", "place=3", *GRID))
+
+    assert result.exit_code == 1
+    assert "no entry of the media or tracks index" in result.stderr
+    assert ds.arena_layouts() == {}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["-r", "g:a", "--tag", "place=3"], "not both"),
+        ([], "give --recording or --tag"),
+    ],
+)
+def test_a_recording_and_a_tag_are_exclusive_and_one_is_required(
+    tagged: Dataset, arguments: list[str], message: str
+) -> None:
+    result = CliRunner().invoke(app, _set_by_tag(tagged, *arguments, *GRID))
+
+    assert result.exit_code == 1
+    assert message in result.stderr
+    assert tagged.arena_layouts() == {}
+
+
+def test_editing_the_tag_afterwards_changes_no_layout(tagged: Dataset) -> None:
+    ds = tagged
+    _ = invoke_ok(_set_by_tag(ds, "--tag", "place=4", *GRID))
+    declared = ds.arena_layouts()
+    swapped = {
+        entry: {"place": 10 - int(tags["place"])} for entry, tags in PLACES.items()
+    }
+
+    _ = write_tags(ds, tag_table(swapped, {"place": "int"}))
+
+    assert ds.arena_layouts() == declared

@@ -268,7 +268,7 @@ from .pipeline.arena_index import (
     read_arena_index_rows,
     read_arena_layouts,
     read_declared_layout,
-    write_arena_layout,
+    write_arena_layouts,
 )
 from .pipeline.entry_keys import (
     entries_kept_beside,
@@ -2477,7 +2477,7 @@ class Dataset:
         A divided recording is named by its continuous group with an empty
         *sequence*, and an undivided one by its entry. The layout applies to
         *camera*, or to every camera when it is ``""``. The write takes the
-        arenas index's lock.
+        arenas index's lock. It is :meth:`set_arena_layouts` with one key.
 
         Args:
             layout: The arenas.
@@ -2495,38 +2495,76 @@ class Dataset:
                 index, is a divided recording's sequence (reserved for a
                 per-sequence override), or holds a name that cannot be one
                 path component.
+            ArenaIndexError: If another key's layout has the key's file name.
         """
-        for value, column in ((group, "group"), (sequence, "sequence")):
-            _ = validate_entry_name(value, column)
-        if camera != camera.strip():
-            message = f"camera may not be padded: {camera!r}"
+        (path,) = self.set_arena_layouts(layout, [ArenaKey(group, sequence, camera)])
+        return path
+
+    def set_arena_layouts(
+        self, layout: ArenaLayout, keys: Sequence[ArenaKey]
+    ) -> tuple[Path, ...]:
+        """Declare *layout* under each of *keys*, replacing the layout each had.
+
+        Each key is as in :meth:`set_arena_layout`. Every key is checked before
+        a file or an index row is written, so a refused batch writes nothing.
+        The write takes the arenas index's lock once.
+
+        Args:
+            layout: The arenas, one copy of which is written for each key.
+            keys: The keys to declare it under, none named twice.
+
+        Returns:
+            Each key's layout file, in the order of *keys*.
+
+        Raises:
+            ValueError: If *keys* is empty or names a key twice, or a key
+                names no recording of the media or tracks index, is a divided
+                recording's sequence (reserved for a per-sequence override),
+                or holds a name that cannot be one path component.
+            ArenaIndexError: If another key's layout, in the index or in
+                *keys*, has a key's file name.
+        """
+        if not keys:
+            message = "name at least one key to declare the layout under."
             raise ValueError(message)
-        _ = validate_entry_name(camera, "camera")
-        divided = self.recording_kind(group) == "divided"
-        if not sequence and not divided:
+        repeated = sorted({key for key in keys if keys.count(key) > 1})
+        if repeated:
+            message = f"the keys {repeated} are named twice."
+            raise ValueError(message)
+        recordings = {self.recording_of(*entry) for entry in self.recording_entries()}
+        for key in keys:
+            self._check_arena_key(key, recordings)
+        return write_arena_layouts(self, keys, layout)
+
+    def _check_arena_key(self, key: ArenaKey, recordings: set[RecordingKey]) -> None:
+        """Raise ``ValueError`` unless *key* names a recording among *recordings*."""
+        for value, column in ((key.group, "group"), (key.sequence, "sequence")):
+            _ = validate_entry_name(value, column)
+        if key.camera != key.camera.strip():
+            message = f"camera may not be padded: {key.camera!r}"
+            raise ValueError(message)
+        _ = validate_entry_name(key.camera, "camera")
+        divided = self.recording_kind(key.group) == "divided"
+        if not key.sequence and not divided:
             message = (
-                f"group {group!r} is not a continuous group, so it names no "
+                f"group {key.group!r} is not a continuous group, so it names no "
                 "divided recording. Name an undivided recording by its "
                 "sequence too."
             )
             raise ValueError(message)
-        if sequence and divided:
+        if key.sequence and divided:
             message = (
-                f"({group!r}, {sequence!r}) is a sequence of the divided "
-                f"recording {group!r}. A layout is declared once per recording: "
+                f"({key.group!r}, {key.sequence!r}) is a sequence of the divided "
+                f"recording {key.group!r}. A layout is declared once per recording: "
                 "set it with an empty sequence."
             )
             raise ValueError(message)
-        key = RecordingKey(group, sequence)
-        if not any(
-            self.recording_of(*entry) == key for entry in self.recording_entries()
-        ):
+        if key.recording not in recordings:
             message = (
                 f"no entry of the media or tracks index belongs to the recording "
-                f"{recording_name(key)!r}. Index its media first."
+                f"{recording_name(key.recording)!r}. Index its media first."
             )
             raise ValueError(message)
-        return write_arena_layout(self, ArenaKey(group, sequence, camera), layout)
 
     def arena_layouts(self) -> dict[ArenaKey, DeclaredLayout]:
         """Return every declared arena layout by its key. Writes nothing.

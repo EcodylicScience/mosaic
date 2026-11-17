@@ -194,8 +194,10 @@ importing `mosaic.tracking` registers neither.
   `ArenaLayout.assignment_digest()` is the digest with every boundary and region of
   interest cleared. It equals `digest()` for a layout without them.
   `pipeline/arena_index.py` stores one JSON file per `(RecordingKey, camera)` and a row
-  of `arenas/index.csv` with its digest. `Dataset.set_arena_layout` writes under the
-  index lock and refuses keys that name no recording. `arena_layout` and
+  of `arenas/index.csv` with its digest. `Dataset.set_arena_layout` is
+  `Dataset.set_arena_layouts` with one key. The batch checks every key, then writes
+  every file and row under one hold of the index lock, so a refused batch writes
+  nothing. Both refuse keys that name no recording. `arena_layout` and
   `arena_layouts` write nothing (`tests/core/test_arenas.py`).
 - One lookup finds a layout in the index rows (`tests/core/pipeline/test_arena_index.py`).
   `read_arena_index_rows` reads the rows without opening a file, `entry_arena_row`

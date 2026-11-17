@@ -1292,8 +1292,9 @@ class ManageDatasetInput(ToolInput):
             "kind's files at path. remove_source: undeclare kind's source_id "
             "(its rows stay). scan: index the declared sources of kind, or all; "
             "source_id narrows it to one. set_tags: set tags, remove remove_tags. "
-            "set_arenas: declare arena_layout as the arenas of recording, for "
-            "camera or every camera. define_feature: store source as the feature "
+            "set_arenas: declare arena_layout as the arenas of recording, or of "
+            "each recording sequence_tags selects, for camera or every camera. "
+            "define_feature: store source as the feature "
             "definition name, run as def:<name>. import_sequence_tags: write "
             "the CSV at path as the next tag table revision. list_sequence_tags: "
             "show each sequence tag with its value counts."
@@ -1375,6 +1376,14 @@ class ManageDatasetInput(ToolInput):
     recording: str | None = Field(
         default=None,
         description="set_arenas: the recording, as describe_dataset names it.",
+    )
+    sequence_tags: dict[str, list[KeyValue]] | None = Field(
+        default=None,
+        description=(
+            "set_arenas: instead of recording, the entries holding these "
+            "sequence tags, as {name: [values]}, [] naming a label. A divided "
+            "recording must be selected whole."
+        ),
     )
     camera: str = Field(
         default="", description="set_arenas: the camera; '' for every camera."

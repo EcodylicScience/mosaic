@@ -16,11 +16,18 @@ import typer
 from pydantic import TypeAdapter
 
 from mosaic.cli._context import load_dataset
-from mosaic.cli._io import emit_json, fail
+from mosaic.cli._io import (
+    TAG_GRAMMAR,
+    emit_json,
+    fail,
+    tag_selection_refusals,
+    tag_wanted,
+)
 from mosaic.cli.tags import ManifestOption
 
 if TYPE_CHECKING:
-    from mosaic.core.arenas import Rect
+    from mosaic.core.arenas import ArenaLayout, Rect
+    from mosaic.core.dataset import Dataset
     from mosaic.core.regions import CircleShape, Roi
 
 arenas_app = typer.Typer(
@@ -31,11 +38,23 @@ arenas_app = typer.Typer(
 )
 
 RecordingOption = Annotated[
-    str,
+    str | None,
     typer.Option(
         "--recording",
         "-r",
-        help="The recording, named as 'mosaic describe' lists it.",
+        help="The recording, named as 'mosaic describe' lists it. Give it or --tag.",
+    ),
+]
+ArenaTagOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--tag",
+        help=(
+            "Declare the layout for each recording that an entry holding a "
+            f"sequence tag belongs to, as NAME=VALUE (repeatable). {TAG_GRAMMAR} "
+            "A divided recording must be selected whole. Each recording keeps "
+            "the layout when the tag is edited. Give it or --recording."
+        ),
     ),
 ]
 CameraOption = Annotated[
@@ -126,7 +145,8 @@ def _strip_exclusions(
 @arenas_app.command("set")
 def set_arenas(
     manifest: ManifestOption,
-    recording: RecordingOption,
+    recording: RecordingOption = None,
+    tag: ArenaTagOption = None,
     layout: Annotated[
         Path | None,
         typer.Option("--layout", help="A JSON file holding an ArenaLayout."),
@@ -187,10 +207,17 @@ def set_arenas(
     ] = None,
     camera: CameraOption = "",
 ) -> None:
-    """Declare a recording's arenas from a layout file, a circle or a grid of edges."""
+    """Declare the arenas of a recording, or of each recording that a sequence tag selects.
+
+    The layout comes from a layout file, a circle or a grid of edges.
+    """
     from mosaic.core.arenas import ArenaLayout
     from mosaic.core.strict_model import terse
 
+    if recording is not None and tag:
+        fail("give --recording or --tag, not both.")
+    if recording is None and not tag:
+        fail("give --recording or --tag.")
     sources = [layout is not None, circle is not None, xs is not None or ys is not None]
     if sum(sources) == 0 or (sources[2] and (xs is None or ys is None)):
         fail("give --layout, --circle, or --xs and --ys for a grid.")
@@ -227,6 +254,10 @@ def set_arenas(
     except (OSError, ValueError) as exc:
         fail(f"arenas set failed: {terse(exc)}")
     dataset = load_dataset(manifest)
+    if tag:
+        _set_for_tags(dataset, declared, tag, camera)
+        return
+    assert recording is not None
     try:
         key = dataset.recording_named(recording)
         path = dataset.set_arena_layout(
@@ -234,6 +265,40 @@ def set_arenas(
         )
     except ValueError as exc:
         fail(f"arenas set failed: {terse(exc)}")
+    _report_set(declared, recording, path)
+
+
+def _set_for_tags(
+    dataset: Dataset, declared: ArenaLayout, tag: list[str], camera: str
+) -> None:
+    """Declare *declared* for each recording that the ``--tag`` selection reaches.
+
+    The selection is lowered against the latest revision of the tags, and every
+    refusal comes before the one write of all the layouts.
+    """
+    from mosaic.core.annotations.tag_selection import (
+        selection_tag_table,
+        tagged_recordings,
+    )
+    from mosaic.core.arenas import ArenaKey
+    from mosaic.core.strict_model import terse
+
+    wanted = tag_wanted(tag)
+    with tag_selection_refusals(as_json=False):
+        resolved = selection_tag_table(dataset)
+        recordings = tagged_recordings(dataset, resolved, wanted)
+    keys = [ArenaKey(found.group, found.sequence, camera) for found in recordings]
+    try:
+        paths = dataset.set_arena_layouts(declared, keys)
+    except ValueError as exc:
+        fail(f"arenas set failed: {terse(exc)}")
+    names = {found.key: found.name for found in dataset.recordings()}
+    for found, path in zip(recordings, paths, strict=True):
+        _report_set(declared, names[found], path)
+
+
+def _report_set(declared: ArenaLayout, recording: str, path: Path) -> None:
+    """Print the line that says *declared* was set for *recording*."""
     names = ", ".join(declared.names)
     typer.echo(f"Set {len(declared.arenas)} arenas of {recording!r} ({names}): {path}")
 

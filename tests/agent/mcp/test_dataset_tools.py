@@ -47,7 +47,9 @@ from tests.helpers import (
     RecordingStarter,
     calms21_dataset,
     invoke_json,
+    tag_table,
     write_calms21_npy,
+    write_tags,
 )
 
 CALMS21 = {
@@ -423,6 +425,190 @@ def test_set_arenas_declares_a_layout_with_a_boundary_and_regions(
     assert changed.message == "set 1 arenas of 'pilot'"
     found = open_dataset(roots[0] / "study" / "dataset.yaml").arena_layout("", "pilot")
     assert found is not None and found.layout == layout
+
+
+PLACES: dict[tuple[str, str], dict[str, str | int]] = {
+    ("g", "a"): {"place": 3},
+    ("g", "b"): {"place": 4},
+    ("h", "c"): {"place": 3},
+    ("rec", "s1"): {"place": 3},
+    ("rec", "s2"): {"place": 4},
+}
+"""The ``place`` of each entry of :func:`_tagged`."""
+
+GRID = ArenaLayout.grid(xs=(0, 50, 100), ys=(0, 100))
+
+
+def _tagged(backend: LocalBackend, roots: tuple[Path, Path]) -> tuple[str, Dataset]:
+    """A served dataset of three undivided recordings and one divided, holding ``place``."""
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(
+        dataset, ("g", "a"), ("g", "b"), ("h", "c"), ("rec", "s1"), ("rec", "s2")
+    )
+    dataset.set_continuous_groups(["rec"])
+    _ = write_tags(dataset, tag_table(PLACES, {"place": "int"}))
+    return uuid, dataset
+
+
+def _arena_keys(roots: tuple[Path, Path]) -> set[tuple[str, str, str]]:
+    found = open_dataset(roots[0] / "study" / "dataset.yaml").arena_layouts()
+    return {(key.group, key.sequence, key.camera) for key in found}
+
+
+def test_set_arenas_declares_the_layout_of_each_recording_the_sequence_tags_select(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid, _ = _tagged(backend, roots)
+
+    changed = _call(
+        backend,
+        DatasetChange,
+        action="set_arenas",
+        dataset=uuid,
+        sequence_tags={"place": [4, "3"]},
+        camera="top",
+        arena_layout=GRID.model_dump(mode="json"),
+    )
+
+    assert _arena_keys(roots) == {
+        ("g", "a", "top"),
+        ("g", "b", "top"),
+        ("h", "c", "top"),
+        ("rec", "", "top"),
+    }
+    assert changed.message == (
+        "set 2 arenas of 4 recordings selected by sequence_tags of camera 'top'"
+    )
+
+
+def test_set_arenas_declares_a_divided_recording_the_sequence_tags_cover_whole(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid, dataset = _tagged(backend, roots)
+    _ = write_tags(
+        dataset,
+        tag_table(
+            {("rec", "s1"): {"place": 3}, ("rec", "s2"): {"place": 3}},
+            {"place": "int"},
+        ),
+    )
+
+    _ = _call(
+        backend,
+        DatasetChange,
+        action="set_arenas",
+        dataset=uuid,
+        sequence_tags={"place": [3]},
+        arena_layout=GRID.model_dump(mode="json"),
+    )
+
+    assert _arena_keys(roots) == {("rec", "", "")}
+
+
+def test_set_arenas_refuses_a_recording_with_sequence_tags_and_one_of_neither(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid, _ = _tagged(backend, roots)
+    wire = GRID.model_dump(mode="json")
+
+    both = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        recording="g:a",
+        sequence_tags={"place": [3]},
+        arena_layout=wire,
+    )
+    neither = _call(
+        backend, ErrorEnvelope, action="set_arenas", dataset=uuid, arena_layout=wire
+    )
+
+    assert both.kind == "invalid"
+    assert "recording or sequence_tags, not both" in both.message
+    assert (neither.kind, neither.reason) == ("invalid", "field_required")
+    assert _arena_keys(roots) == set()
+
+
+def test_set_arenas_refuses_a_divided_recording_the_sequence_tags_cover_in_part(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid, _ = _tagged(backend, roots)
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        sequence_tags={"place": [3]},
+        arena_layout=GRID.model_dump(mode="json"),
+    )
+
+    assert refused.kind == "invalid"
+    assert "'rec'" in refused.message
+    assert "s1=3" in refused.message and "s2=4" in refused.message
+    assert refused.detail is not None
+    assert refused.detail["tags"] == {"place": [3]}
+    assert _arena_keys(roots) == set()
+
+
+@pytest.mark.parametrize(
+    ("sequence_tags", "message"),
+    [
+        ({"place": [9]}, "no entry holds"),
+        ({"nowhere": [1]}, "not a sequence tag"),
+        ({}, "at least one tag"),
+    ],
+    ids=["no entry", "unknown tag", "no tag"],
+)
+def test_set_arenas_refuses_sequence_tags_that_select_nothing_usable(
+    backend: LocalBackend,
+    roots: tuple[Path, Path],
+    sequence_tags: dict[str, list[int]],
+    message: str,
+) -> None:
+    uuid, _ = _tagged(backend, roots)
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        sequence_tags=sequence_tags,
+        arena_layout=GRID.model_dump(mode="json"),
+    )
+
+    assert refused.kind == "invalid"
+    assert message in refused.message
+    assert refused.detail == {"revision": 1, "tags": sequence_tags}
+    assert _arena_keys(roots) == set()
+
+
+def test_set_arenas_refuses_a_key_the_dataset_does_not_hold_before_any_write(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(dataset, ("g", "a"))
+    _ = write_tags(
+        dataset,
+        tag_table(
+            {("g", "a"): {"place": 3}, ("g", "ghost"): {"place": 3}}, {"place": "int"}
+        ),
+    )
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        sequence_tags={"place": [3]},
+        arena_layout=GRID.model_dump(mode="json"),
+    )
+
+    assert refused.reason == "invalid_arenas"
+    assert _arena_keys(roots) == set()
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from mosaic.core.arenas import (
     layout_lookup_order,
 )
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import arena_index as arena_index_module
 from mosaic.core.pipeline.arena_index import (
     ArenaIndexError,
     ArenaLayoutRow,
@@ -24,6 +26,7 @@ from mosaic.core.pipeline.arena_index import (
     read_arena_index_rows,
     read_arena_layout,
     read_arena_layouts,
+    write_arena_layouts,
 )
 from mosaic.core.recording import RecordingKey
 from tests.helpers import (
@@ -262,6 +265,104 @@ class TestAbsoluteStoredPaths:
         assert list(rows) == [ArenaKey("rec", "", "")]
         with pytest.raises(ArenaIndexError, match="cannot be read as a layout"):
             _ = read_arena_layout(dataset, rows[ArenaKey("rec", "", "")])
+
+
+class TestWriteArenaLayouts:
+    @staticmethod
+    def _colliding_dataset(tmp_path: Path) -> Dataset:
+        ds = make_dataset(tmp_path / "ds")
+        add_track_sequences(ds, ("", "a.b"), ("", "a"), ("", "c"))
+        return ds
+
+    def test_three_keys_write_three_files_and_three_rows(
+        self, dataset: Dataset
+    ) -> None:
+        keys = [
+            ArenaKey("rec", "", ""),
+            ArenaKey("ns", "a", ""),
+            ArenaKey("", "solo", "top"),
+        ]
+
+        paths = write_arena_layouts(dataset, keys, _two_arenas())
+
+        arenas = dataset.get_root("arenas")
+        assert paths == (
+            arenas / "rec.json",
+            arenas / "ns__a.json",
+            arenas / "solo.top.json",
+        )
+        assert all(path.is_file() for path in paths)
+        rows = read_arena_index_rows(dataset)
+        assert list(rows) == keys
+        assert {row.digest for row in rows.values()} == {_two_arenas().digest()}
+        declared = read_arena_layouts(dataset)
+        assert {key: found.layout for key, found in declared.items()} == {
+            key: _two_arenas() for key in keys
+        }
+
+    def test_a_key_colliding_with_an_indexed_row_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        ds = self._colliding_dataset(tmp_path)
+        _ = write_arena_layouts(ds, [ArenaKey("", "a.b", "")], _two_arenas())
+        before = arena_index_path(ds).read_text()
+
+        with pytest.raises(ArenaIndexError, match="holds the layout of"):
+            _ = write_arena_layouts(
+                ds,
+                [ArenaKey("", "c", ""), ArenaKey("", "a", "b")],
+                _one_arena(),
+            )
+
+        assert arena_index_path(ds).read_text() == before
+        assert sorted(path.name for path in ds.get_root("arenas").iterdir()) == sorted(
+            ["a.b.json", "index.csv", "index.csv.lock"]
+        )
+        found = read_arena_layouts(ds)[ArenaKey("", "a.b", "")]
+        assert found.layout == _two_arenas()
+
+    def test_two_keys_of_one_batch_colliding_write_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        ds = self._colliding_dataset(tmp_path)
+
+        with pytest.raises(ArenaIndexError, match="holds the layout of"):
+            _ = write_arena_layouts(
+                ds,
+                [
+                    ArenaKey("", "c", ""),
+                    ArenaKey("", "a.b", ""),
+                    ArenaKey("", "a", "b"),
+                ],
+                _two_arenas(),
+            )
+
+        assert read_arena_index_rows(ds) == {}
+        assert not list(ds.get_root("arenas").glob("*.json"))
+
+    def test_the_index_lock_is_taken_once(
+        self, dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        taken: list[Path] = []
+        real = arena_index_module.index_lock
+
+        def spy(path: Path) -> AbstractContextManager[None]:
+            taken.append(path)
+            return real(path)
+
+        monkeypatch.setattr(arena_index_module, "index_lock", spy)
+
+        _ = write_arena_layouts(
+            dataset,
+            [
+                ArenaKey("rec", "", ""),
+                ArenaKey("ns", "a", ""),
+                ArenaKey("", "solo", ""),
+            ],
+            _two_arenas(),
+        )
+
+        assert taken == [arena_index_path(dataset)]
 
 
 def test_media_cameras_lists_each_entry_s_cameras(dataset: Dataset) -> None:

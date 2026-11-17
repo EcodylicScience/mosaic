@@ -54,17 +54,21 @@ GroupOption = Annotated[
     ),
 ]
 
+TAG_GRAMMAR: Final = (
+    "A value is read by its tag's type. The values of one name are alternatives "
+    "and different names must all match. NAME alone names a label tag and "
+    "matches the entries it is assigned to."
+)
+"""The sentences that every ``--tag NAME[=VALUE]`` option shares."""
+
 TagOption = Annotated[
     list[str] | None,
     typer.Option(
         "--tag",
         help=(
             "Narrow to the entries holding a sequence tag, as NAME=VALUE "
-            "(repeatable). A value is read by its tag's type. The values of one "
-            "name are alternatives and different names must all match. NAME "
-            "alone names a label tag and matches the entries it is assigned to. "
-            "With --group, keeps the selected entries of those groups. Not with "
-            "--entry."
+            f"(repeatable). {TAG_GRAMMAR} With --group, keeps the selected "
+            "entries of those groups. Not with --entry."
         ),
     ),
 ]
@@ -754,7 +758,7 @@ def command_line_scope(
     return scope
 
 
-def _tag_wanted(tags: list[str]) -> dict[str, tuple[KeyValue, ...]]:
+def tag_wanted(tags: list[str]) -> dict[str, tuple[KeyValue, ...]]:
     """The values wanted of each tag that repeated ``--tag NAME[=VALUE]`` tokens name.
 
     A token without ``=`` names a ``label``, which takes no values. The text of a
@@ -813,7 +817,7 @@ def entries_scope(
     if tags:
         if pairs:
             fail("Give --entry or --tag, not both.")
-        return TagChoice(where=_tag_wanted(tags), groups=tuple(groups or ()))
+        return TagChoice(where=tag_wanted(tags), groups=tuple(groups or ()))
     if pairs and groups:
         fail("Give --entry or --group, not both.")
     if groups:

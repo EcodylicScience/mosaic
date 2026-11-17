@@ -610,6 +610,41 @@ class TestDatasetLayouts:
         with pytest.raises(ArenaIndexError, match="holds the layout of"):
             _ = ds.set_arena_layout(_two_arenas(), group="", sequence="a", camera="b")
 
+    def test_a_batch_declares_one_layout_per_key(self, dataset: Dataset) -> None:
+        keys = [ArenaKey("rec", "", ""), ArenaKey("ns", "a", "top")]
+
+        paths = dataset.set_arena_layouts(_two_arenas(), keys)
+
+        arenas = dataset.get_root("arenas")
+        assert paths == (arenas / "rec.json", arenas / "ns__a.top.json")
+        assert list(dataset.arena_layouts()) == keys
+
+    def test_an_invalid_key_refuses_the_whole_batch(self, dataset: Dataset) -> None:
+        keys = [
+            ArenaKey("", "solo", ""),
+            ArenaKey("rec", "s1", ""),
+            ArenaKey("ns", "a", ""),
+        ]
+
+        with pytest.raises(ValueError, match="once per recording"):
+            _ = dataset.set_arena_layouts(_two_arenas(), keys)
+
+        assert dataset.arena_layouts() == {}
+        assert not arena_index_path(dataset).exists()
+        assert not list(dataset.get_root("arenas").glob("*.json"))
+
+    def test_an_empty_batch_is_refused(self, dataset: Dataset) -> None:
+        with pytest.raises(ValueError, match="at least one key"):
+            _ = dataset.set_arena_layouts(_two_arenas(), [])
+
+    def test_a_key_named_twice_is_refused(self, dataset: Dataset) -> None:
+        keys = [ArenaKey("rec", "", ""), ArenaKey("rec", "", "")]
+
+        with pytest.raises(ValueError, match="twice"):
+            _ = dataset.set_arena_layouts(_two_arenas(), keys)
+
+        assert dataset.arena_layouts() == {}
+
     def test_two_rows_of_one_key_are_refused_at_the_read(
         self, dataset: Dataset
     ) -> None:

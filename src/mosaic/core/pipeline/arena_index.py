@@ -2,11 +2,11 @@
 
 ``arenas/index.csv`` has one row per layout key, naming the layout's file and
 the digest of its content. A file is named
-``<recording_storage_name>[.<camera>].json``. :func:`write_arena_layout` writes
-the file and the row under the index lock. :func:`read_arena_index_rows` reads
-the rows, :func:`entry_arena_row` finds the row that one entry and its cameras
-look up, and :func:`read_arena_layout` reads that row's file. None of them takes
-the lock or writes.
+``<recording_storage_name>[.<camera>].json``. :func:`write_arena_layouts` writes
+the files and the rows of a batch of keys under one hold of the index lock.
+:func:`read_arena_index_rows` reads the rows, :func:`entry_arena_row` finds the
+row that one entry and its cameras look up, and :func:`read_arena_layout` reads
+that row's file. None of them takes the lock or writes.
 
 :func:`arenas_compositions` gives each entry's layout digest, the composition of
 the root ``arenas``. It is read only for a run whose feature declares the root in
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from functools import partial
 from pathlib import Path
@@ -64,7 +64,7 @@ __all__ = [
     "read_arena_layout",
     "read_arena_layouts",
     "read_declared_layout",
-    "write_arena_layout",
+    "write_arena_layouts",
 ]
 
 ARENAS_ROOT: Final = "arenas"
@@ -179,35 +179,47 @@ def _row_key(record: Mapping[str, str]) -> ArenaKey:
     )
 
 
-def write_arena_layout(ds: Dataset, key: ArenaKey, layout: ArenaLayout) -> Path:
-    """Write *layout* under *key*, replacing the layout the key had.
+def write_arena_layouts(
+    ds: Dataset, keys: Sequence[ArenaKey], layout: ArenaLayout
+) -> tuple[Path, ...]:
+    """Write *layout* under each of *keys*, replacing the layout each key had.
 
-    The file and the row are written under the index lock. The caller checks
-    the key against the dataset first (``Dataset.set_arena_layout``).
+    The index lock is taken once. Every key is checked against the index's rows
+    and the other keys of the batch before any file is written, so a refused
+    batch writes no file and no row. Then each file is written atomically and
+    every row is appended in one write. The caller checks the keys against the
+    dataset first (``Dataset.set_arena_layouts``).
 
     Returns:
-        The layout's file.
+        Each key's layout file, in the order of *keys*.
 
     Raises:
-        ArenaIndexError: If another key's layout has the file name of *key*,
-            as the recording ``a.b`` and the recording ``a`` of camera ``b`` do.
+        ArenaIndexError: If a key's file name is the one that another key's
+            layout has, in the index or in *keys*, as the recording ``a.b`` and
+            the recording ``a`` of camera ``b`` do.
     """
     index = arena_index(arena_index_path(ds))
-    target = ds.get_root(ARENAS_ROOT) / arena_layout_file_name(key)
-    relative = Path(ds.relative_to_root(target))
+    root = ds.get_root(ARENAS_ROOT)
+    targets = [root / arena_layout_file_name(key) for key in keys]
+    relatives = [Path(ds.relative_to_root(target)) for target in targets]
     with index_lock(index.path):
-        held = index.read_holding_lock()
-        for record in index_records(held):
-            other = _row_key(record)
-            if other != key and Path(record.get("abs_path", "")) == relative:
+        holders = {
+            Path(record.get("abs_path", "")): _row_key(record)
+            for record in index_records(index.read_holding_lock())
+        }
+        for key, relative in zip(keys, relatives, strict=True):
+            other = holders.get(relative)
+            if other is not None and other != key:
                 message = (
                     f"the layout of {key} would be written to {relative}, which "
                     f"holds the layout of {other}. Name the camera or the "
                     "recording without the dot that joins them."
                 )
                 raise ArenaIndexError(message)
+            holders[relative] = key
         text = layout.model_dump_json(indent=2) + "\n"
-        atomic_write(target, lambda path: path.write_text(text, encoding="utf-8"))
+        for target in targets:
+            atomic_write(target, lambda path: path.write_text(text, encoding="utf-8"))
         index.append_holding_lock(
             [
                 ArenaLayoutRow(
@@ -218,9 +230,10 @@ def write_arena_layout(ds: Dataset, key: ArenaKey, layout: ArenaLayout) -> Path:
                     digest=layout.digest(),
                     n_arenas=len(layout.arenas),
                 )
+                for key, relative in zip(keys, relatives, strict=True)
             ]
         )
-    return target
+    return tuple(targets)
 
 
 def read_arena_index_rows(ds: Dataset) -> dict[ArenaKey, IndexedLayout]:

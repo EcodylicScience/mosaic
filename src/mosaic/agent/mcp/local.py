@@ -2231,11 +2231,33 @@ def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:
 
 
 def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
-    """Declare the arena layout *args* names, and say what changed."""
-    from mosaic.core.arenas import ArenaLayout
+    """Declare the arena layout *args* names, and say what changed.
 
-    if args.recording is None or args.arena_layout is None:
-        raise ToolFailure(missing_field("set_arenas", "recording and arena_layout"))
+    The layout is declared for ``recording``, or for each recording that the
+    entries holding ``sequence_tags`` belong to, never both. Every refusal comes
+    before the one write.
+
+    Raises:
+        TagSelectionInvalid: The tags select no entry, name an unknown tag or a
+            value their type refuses, or cover a divided recording in part.
+        SequenceTagTableUnavailable: The table cannot be read as one revision of
+            one dataset.
+    """
+    from mosaic.core.arenas import ArenaKey, ArenaLayout
+
+    if args.recording is not None and args.sequence_tags is not None:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="invalid_arenas",
+                message="set_arenas takes recording or sequence_tags, not both",
+                detail={"recording": args.recording, "camera": args.camera},
+            )
+        )
+    if args.recording is None and args.sequence_tags is None:
+        raise ToolFailure(missing_field("set_arenas", "recording or sequence_tags"))
+    if args.arena_layout is None:
+        raise ToolFailure(missing_field("set_arenas", "arena_layout"))
     try:
         layout = ArenaLayout.model_validate(args.arena_layout)
     except ValidationError as invalid:
@@ -2253,14 +2275,23 @@ def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
                 },
             )
         ) from invalid
-    try:
-        key = dataset.recording_named(args.recording)
-        _ = dataset.set_arena_layout(
-            layout,
-            group=key.group,
-            sequence=key.sequence,
-            camera=args.camera,
+    keys: list[ArenaKey] = []
+    if args.sequence_tags is not None:
+        from mosaic.core.annotations.tag_selection import (
+            selection_tag_table,
+            tagged_recordings,
         )
+
+        tags = selection_tag_table(dataset)
+        selected = tagged_recordings(dataset, tags, args.sequence_tags)
+        keys = [
+            ArenaKey(found.group, found.sequence, args.camera) for found in selected
+        ]
+    try:
+        if args.recording is not None:
+            found = dataset.recording_named(args.recording)
+            keys = [ArenaKey(found.group, found.sequence, args.camera)]
+        _ = dataset.set_arena_layouts(layout, keys)
     except ValueError as invalid:
         raise ToolFailure(
             ErrorEnvelope(
@@ -2272,6 +2303,11 @@ def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
         ) from invalid
     where = f" of camera {args.camera!r}" if args.camera else ""
     count = len(layout.arenas)
+    if args.recording is None:
+        noun = "recording" if len(keys) == 1 else "recordings"
+        return (
+            f"set {count} arenas of {len(keys)} {noun} selected by sequence_tags{where}"
+        )
     return f"set {count} arenas of {args.recording!r}{where}"
 
 
