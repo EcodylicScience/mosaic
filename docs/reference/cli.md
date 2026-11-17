@@ -572,13 +572,18 @@ $ mosaic sweep-tracking [OPTIONS]
 
 Measure the frame axis of this dataset's tracks tables, and their media's.
 
-Four passes over ``tracks/index.csv``, none touching a table:
+Five passes over ``tracks/index.csv``, none touching a table:
 
 * the **frame extent** (``frame_min`` / ``frame_max``), read from each
   parquet into the cells that are blank. ``overlap_frames`` refuses a
   continuous group with a blank extent. A dataset converted before the
   columns existed has to be measured once before its continuous groups can
   use overlap.
+* the **pair frames and ids per frame** (``pair_frames`` / ``ids_per_frame``),
+  read from each table's ``frame`` and ``id`` columns into the rows whose
+  ``pair_frames`` cell is blank: the ordered pairs summed over the frames,
+  and the mean ids present per frame. A table with no ``id`` column records
+  ``none`` and is not opened again.
 * the **media length** (``media_frames``): how many frames the tool should
   have read, from the media index, by the rule that a producer records it
   by. A table whose run read less on purpose is given a blank cell: a frame

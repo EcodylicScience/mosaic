@@ -33,6 +33,9 @@ from mosaic.core.pipeline.tracks_index import (
     frame_axis_verdict,
     frame_extent,
     frame_tail_shortfalls,
+    read_ids_per_frame,
+    read_pair_frames,
+    records_no_ids,
     read_frame_extent,
     read_frame_extents,
     read_carries_tracklets,
@@ -169,7 +172,7 @@ def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) ->
 
 def test_the_appearance_cell_precedes_the_tracklets_cell() -> None:
     """The cell joined the end of the header, and an older index lacks only a tail."""
-    assert TRACKS_INDEX_COLUMNS[-2:] == ["appearance_abs_path", "carries_tracklets"]
+    assert TRACKS_INDEX_COLUMNS[-4:-2] == ["appearance_abs_path", "carries_tracklets"]
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["appearance_abs_path"].default == ""
 
@@ -1379,6 +1382,84 @@ def test_backfill_measures_only_the_rows_that_lack_an_extent(tmp_path: Path) -> 
     assert len(backfill_frame_extents(ds, dry_run=False)) == 0, "not idempotent"
 
 
+# --- the pair and id counts ---
+
+
+def _write_frames_and_ids(
+    ds: Dataset, name: str, table: pd.DataFrame, *, run_id: str = "v1"
+) -> pd.Series:
+    """Write *table* as an entry's tracks and return the index row recorded for it."""
+    out = ds.get_root("tracks") / f"g__{name}.parquet"
+    table.to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id=run_id,
+        group="g",
+        sequence=name,
+        out_path=out,
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=len(table),
+        carries_tracklets=None,
+    )
+    index = read_tracks_index(ds)
+    return index[index["sequence"] == name].iloc[0]
+
+
+def test_a_written_row_records_its_pair_frames_and_ids_per_frame(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    table = pd.DataFrame(
+        {"frame": [0, 0, 0, 2, 2], "id": [0, 1, 2, 0, 1], "X": [0.0] * 5}
+    )
+    row = _write_frames_and_ids(ds, "s1", table)
+
+    assert read_pair_frames(row) == 8
+    assert read_ids_per_frame(row) == pytest.approx(1.6667)
+    assert row["ids_per_frame"] == "1.6667"
+    assert not records_no_ids(row)
+
+
+def test_a_null_id_counts_in_neither_cell_and_its_frame_in_the_extent(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    table = pd.DataFrame(
+        {
+            "frame": [0, 0, 1, 5],
+            "id": pd.array([0, 1, None, None], dtype="Int64"),
+        }
+    )
+    row = _write_frames_and_ids(ds, "s1", table)
+
+    assert read_frame_extent(row) == (0, 5)
+    assert read_pair_frames(row) == 2
+    assert read_ids_per_frame(row) == pytest.approx(2 / 6, abs=1e-4)
+
+
+def test_a_table_without_ids_records_none_in_both_cells(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    row = _write_frames_and_ids(ds, "s1", pd.DataFrame({"frame": [0, 1, 2]}))
+
+    assert row["pair_frames"] == "none"
+    assert row["ids_per_frame"] == "none"
+    assert read_pair_frames(row) is None
+    assert read_ids_per_frame(row) is None
+    assert records_no_ids(row)
+
+
+def test_a_row_written_before_the_cells_reads_none(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), n_rows=4, n_ids=2)
+    (row,) = (row for _, row in read_tracks_index(ds).iterrows())
+
+    assert row["pair_frames"] == "" and row["ids_per_frame"] == ""
+    assert read_pair_frames(row) is None
+    assert read_ids_per_frame(row) is None
+    assert not records_no_ids(row)
+
+
 # --- the media axis, and the comparison it exists for -----------------------
 #
 # A table's frame axis and the axis of the media it addresses are two different
@@ -1767,11 +1848,17 @@ def _tracklets_row(
     )
 
 
-def test_the_tracklets_cell_is_the_trailing_column() -> None:
-    """The cell joins the end of the header, and an older index lacks only a tail."""
-    assert TRACKS_INDEX_COLUMNS[-1] == "carries_tracklets"
+def test_the_tracklets_cell_precedes_the_pair_cells() -> None:
+    """The pair cells join the end of the header, and an older index lacks only a tail."""
+    assert TRACKS_INDEX_COLUMNS[-3:] == [
+        "carries_tracklets",
+        "pair_frames",
+        "ids_per_frame",
+    ]
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["carries_tracklets"].default == ""
+    assert fields["pair_frames"].default == ""
+    assert fields["ids_per_frame"].default == ""
     assert "carries_tracklets" not in TRACKS_INDEX_PATH_COLUMNS
 
 

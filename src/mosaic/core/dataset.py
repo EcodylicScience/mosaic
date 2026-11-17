@@ -291,6 +291,7 @@ from .pipeline.tracks_index import (
     CellBackfill,
     adopt_legacy_columns,
     backfill_frame_extents,
+    backfill_pair_frames,
     backfill_frames_read,
     backfill_known_tail_loss,
     backfill_media_frames,
@@ -2610,6 +2611,16 @@ class Dataset:
         Returns the rows filled, with their measured values.
         """
         return backfill_frame_extents(self, dry_run=dry_run)
+
+    def measure_pair_frames(self, *, dry_run: bool = False) -> "pd.DataFrame":
+        """Record the pair frames and ids per frame of every tracks row that lacks them.
+
+        Reads the ``frame`` and ``id`` columns of each such table. A table with no
+        ``id`` column records ``none`` and is not opened again.
+        Returns the rows filled, with their measured values. See
+        :func:`backfill_pair_frames`.
+        """
+        return backfill_pair_frames(self, dry_run=dry_run)
 
     def measure_media_frames(self, *, dry_run: bool = False) -> "CellBackfill":
         """Rewrite every row's count of frames the tool should have read.

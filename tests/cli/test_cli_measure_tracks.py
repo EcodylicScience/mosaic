@@ -217,3 +217,33 @@ def test_measure_tracks_names_a_known_tail_loss_apart(
     assert "known tail loss g/s1 [v1]: trex read 18 of 20 frames" in result.stderr
     assert "the file it read is unknown or could not be probed" in result.stderr
     assert "cannot show that the missing frames are at the end" in result.stderr
+
+
+def test_measure_tracks_reports_the_pair_frames_it_would_measure(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    manifest, ds = dataset
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--json"])
+
+    assert payload["pair_frames_measured"] == 2
+    assert set(read_tracks_index(ds)["pair_frames"]) == {""}, "a dry run must not write"
+
+
+def test_measure_tracks_apply_writes_the_pair_frames(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    from mosaic.core.pipeline.tracks_index import (
+        read_ids_per_frame,
+        read_pair_frames,
+        read_tracks_index,
+    )
+
+    manifest, ds = dataset
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+
+    assert payload["pair_frames_measured"] == 2
+    for _, row in read_tracks_index(ds).iterrows():
+        assert read_pair_frames(row) == 0
+        assert read_ids_per_frame(row) == 1.0

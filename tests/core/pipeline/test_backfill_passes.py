@@ -39,8 +39,10 @@ from mosaic.core.pipeline.tracks_index import (
     backfill_frames_read,
     backfill_known_tail_loss,
     backfill_media_frames,
+    backfill_pair_frames,
     read_frames_read,
     read_media_frames,
+    read_pair_frames,
     read_tracks_index,
     tracks_index_path,
     write_tracks_row,
@@ -53,6 +55,7 @@ from mosaic.tracking.trex.pv import PvHeader
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
     MediaClip,
+    add_track_sequences,
     count_index_reads,
     install_fake_litpose,
     install_fake_pose_inference,
@@ -590,3 +593,73 @@ def test_a_row_whose_producer_is_not_registered_is_reported_apart(
     assert (len(media.written), len(media.unregistered)) == (1, 0)
     assert (len(read.written), len(read.unregistered)) == (1, 0)
     assert (len(tail.written), len(tail.unregistered)) == (0, 0)
+
+
+def _cells(ds: Dataset) -> list[tuple[str, str]]:
+    """The ``(pair_frames, ids_per_frame)`` cells of each row, in index order."""
+    frame = read_tracks_index(ds)
+    return list(zip(frame["pair_frames"], frame["ids_per_frame"], strict=True))
+
+
+def test_pair_frames_fills_a_blank_row_and_leaves_a_filled_one(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=4, n_ids=3)
+    set_tracks_cell(ds, "pair_frames", "99", entry=("g", "s2"))
+
+    filled = backfill_pair_frames(ds)
+
+    assert list(filled["sequence"]) == ["s1"]
+    assert _cells(ds) == [("24", "3.0000"), ("99", "")]
+    (second,) = (
+        row for _, row in read_tracks_index(ds).iterrows() if row["sequence"] == "s2"
+    )
+    assert read_pair_frames(second) == 99
+    assert len(backfill_pair_frames(ds)) == 0, "not idempotent"
+
+
+def test_pair_frames_does_not_reopen_a_row_without_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path)
+    out = ds.get_root("tracks") / "g__s1.parquet"
+    pd.DataFrame({"frame": [0, 1, 2]}).to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence="s1",
+        out_path=out,
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=3,
+        carries_tracklets=None,
+    )
+    assert _cells(ds) == [("none", "none")]
+
+    def refuse(path: Path) -> None:
+        raise AssertionError(f"reopened {path}")
+
+    monkeypatch.setattr("mosaic.core.pipeline.tracks_index.frame_measures", refuse)
+
+    assert len(backfill_pair_frames(ds)) == 0
+    assert _cells(ds) == [("none", "none")]
+
+
+def test_a_dry_run_of_pair_frames_writes_nothing_and_leaves_no_sidecar(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), n_rows=4, n_ids=2)
+    index = tracks_index_path(ds)
+    before = index.read_bytes()
+    sidecar = index.with_name(index.name + ".lock")
+    assert not sidecar.exists()
+
+    would = backfill_pair_frames(ds, dry_run=True)
+
+    assert len(would) == 1
+    assert read_pair_frames(would.iloc[0]) == 8
+    assert index.read_bytes() == before
+    assert not sidecar.exists()

@@ -35,6 +35,7 @@ silently rewritten by someone merely looking at it.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -91,10 +92,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DROPPED_LEGACY_COLUMNS",
+    "NO_IDS",
     "TRACKS_INDEX_COLUMNS",
     "TRACKS_INDEX_PATH_COLUMNS",
     "CellBackfill",
     "CellRow",
+    "FrameMeasures",
     "TracksIndexRow",
     "TracksMadeWith",
     "TracksMadeWithEntry",
@@ -103,6 +106,7 @@ __all__ = [
     "backfill_frames_read",
     "backfill_known_tail_loss",
     "backfill_media_frames",
+    "backfill_pair_frames",
     "consumed_composition_for",
     "consumed_compositions_for",
     "consumed_roots_for",
@@ -118,15 +122,19 @@ __all__ = [
     "frame_axis_mismatches",
     "frame_axis_verdict",
     "frame_tail_shortfalls",
+    "frame_measures",
     "legacy_view",
     "media_drift",
     "read_first_frame",
     "read_frames_read",
+    "read_ids_per_frame",
     "read_known_tail_loss",
     "read_media_frames",
+    "read_pair_frames",
     "read_tracks_index",
     "row_in_scope",
     "recorded_first_frames",
+    "records_no_ids",
     "rows_in_scope",
     "select_variant_rows",
     "tail_allowance",
@@ -295,6 +303,20 @@ class TracksIndexRow(RunIndexRowBase):
     refused. :func:`read_carries_tracklets` answers it from ``producer`` where
     the producer settles the answer, and leaves it unknown for a conversion
     that does not know and for every producer that does not settle it.
+
+    ``pair_frames`` and ``ids_per_frame`` count the animals present, measured
+    from the ``frame`` and ``id`` columns as the table is written. With ``n_f``
+    the distinct non-null ids at frame ``f``, ``pair_frames`` is the sum of
+    ``n_f * (n_f - 1)`` over the frames, the ordered pairs a pair-level feature
+    computes, and ``ids_per_frame`` is the number of distinct ``(frame, id)``
+    pairs over the frames of the extent, ``frame_max - frame_min + 1``, so a
+    frame with no row counts 0 and a tracklet is not counted as an animal. A row
+    with a null ``id`` counts in neither cell, and its frame still counts in the
+    extent. ``ids_per_frame`` is written to four decimal places. A table with no
+    ``id`` column records :data:`NO_IDS` in both cells: measured, and holding no
+    ids. Text and blank-is-unknown like the other count cells, and read by
+    :func:`read_pair_frames`, :func:`read_ids_per_frame` and
+    :func:`records_no_ids`.
     """
 
     group: str
@@ -317,6 +339,8 @@ class TracksIndexRow(RunIndexRowBase):
     first_frame: str = ""
     appearance_abs_path: str = ""
     carries_tracklets: str = ""
+    pair_frames: str = ""
+    ids_per_frame: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -342,6 +366,16 @@ _FIRST_FRAME: Final = "first_frame"
 
 _CARRIES_TRACKLETS: Final = "carries_tracklets"
 """The cell recording whether ids follow an animal, named once likewise."""
+
+_PAIR_FRAMES: Final = "pair_frames"
+_IDS_PER_FRAME: Final = "ids_per_frame"
+"""The two cells of the animals present per frame, named once likewise."""
+
+NO_IDS: Final = "none"
+"""What both cells hold for a table with no ``id`` column: measured, no ids."""
+
+_IDS_PER_FRAME_DIGITS: Final = 4
+"""The decimal places that ``ids_per_frame`` is written to."""
 
 _TRACKLETS_TRUE: Final = "true"
 _TRACKLETS_FALSE: Final = "false"
@@ -1070,10 +1104,81 @@ def frame_extent(path: Path) -> tuple[int, int] | None:
         return None
     if COLUMNS.frame_col not in column.columns:
         return None
-    frames = pd.to_numeric(column[COLUMNS.frame_col], errors="coerce").dropna()
+    return _extent_of(_numeric_frames(column[COLUMNS.frame_col]))
+
+
+def _numeric_frames(column: pd.Series) -> pd.Series:
+    """The non-null numeric values of a ``frame`` column, keeping their index."""
+    return pd.to_numeric(column, errors="coerce").dropna()
+
+
+def _extent_of(frames: pd.Series) -> tuple[int, int] | None:
+    """The ``(min, max)`` of *frames*, or ``None`` when it is empty."""
     if frames.empty:
         return None
     return int(frames.min()), int(frames.max())
+
+
+@dataclass(frozen=True, slots=True)
+class FrameMeasures:
+    """What one read of a track table's ``frame`` and ``id`` columns measures.
+
+    Attributes:
+        extent: The ``(min, max)`` of the ``frame`` column, as :func:`frame_extent`.
+        pair_frames: The sum over the frames of ``n_f * (n_f - 1)``, with ``n_f``
+            the distinct non-null ids at frame ``f``. ``None`` for a table with
+            no ``id`` column.
+        ids_per_frame: The distinct non-null ``(frame, id)`` pairs over the
+            frames of the extent, unrounded. ``None`` for a table with no ``id``
+            column.
+    """
+
+    extent: tuple[int, int]
+    pair_frames: int | None
+    ids_per_frame: float | None
+
+
+def frame_measures(path: Path) -> FrameMeasures | None:
+    """The extent, pair frames and ids per frame of a written track table.
+
+    Reads the ``frame`` and ``id`` columns once. ``None`` when the extent is
+    unknown, under the conditions of :func:`frame_extent`, which this extends and
+    whose errors it swallows for the same reason. A table with no ``id`` column
+    gives an extent and no counts. A row with a null ``id`` is left out of both
+    counts and its frame stays in the extent, so a frame with no non-null id
+    counts 0 in the mean.
+    """
+    if not path.exists():
+        return None
+    try:
+        columns = read_parquet_column_names(path)
+        if columns is None:
+            return None
+        wanted = [COLUMNS.frame_col]
+        if COLUMNS.id_col in columns:
+            wanted.append(COLUMNS.id_col)
+        table = read_parquet_table_columns(path, wanted)
+    except (OSError, ValueError, KeyError):
+        return None
+    if COLUMNS.frame_col not in table.columns:
+        return None
+    frames = _numeric_frames(table[COLUMNS.frame_col])
+    extent = _extent_of(frames)
+    if extent is None:
+        return None
+    first, last = extent
+    if COLUMNS.id_col not in table.columns:
+        return FrameMeasures(extent=extent, pair_frames=None, ids_per_frame=None)
+    pairs = pd.DataFrame(
+        {"frame": frames, "id": table.loc[frames.index, COLUMNS.id_col]}
+    )
+    pairs = pairs[pairs["id"].notna()].drop_duplicates()
+    per_frame = pairs.groupby("frame").size().to_numpy(dtype="int64")
+    return FrameMeasures(
+        extent=extent,
+        pair_frames=int((per_frame * (per_frame - 1)).sum()),
+        ids_per_frame=len(pairs) / (last - first + 1),
+    )
 
 
 class CellRow(Protocol):
@@ -1101,6 +1206,57 @@ def read_frame_extent(row: CellRow) -> tuple[int, int] | None:
         return int(float(raw_min)), int(float(raw_max))
     except ValueError:
         return None
+
+
+def read_pair_frames(row: CellRow) -> int | None:
+    """The recorded ordered pairs summed over one row's frames, or ``None``.
+
+    The only reader of the cell, under the rule :func:`read_media_frames` applies.
+    ``None`` covers a blank cell, a table with no ids (:func:`records_no_ids`)
+    and a value that will not parse.
+    """
+    return count_cell(row.get(_PAIR_FRAMES))
+
+
+def read_ids_per_frame(row: CellRow) -> float | None:
+    """The recorded mean ids present per frame of one row, or ``None``.
+
+    The only reader of the cell, under the rule :func:`read_pair_frames` applies.
+    """
+    raw = text_cell(row.get(_IDS_PER_FRAME))
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def records_no_ids(row: CellRow) -> bool:
+    """Whether one row records a table with no ``id`` column.
+
+    The only reader of that answer. A blank cell is not it: a blank cell means
+    the table was not measured.
+    """
+    return (
+        _recorded_cell(row.get(_PAIR_FRAMES)) == NO_IDS
+        and _recorded_cell(row.get(_IDS_PER_FRAME)) == NO_IDS
+    )
+
+
+def _recorded_cell(value: object) -> str:
+    """One cell as it was recorded: ``""`` when blank, else its trimmed text.
+
+    Unlike :func:`~mosaic.core.helpers.text_cell` it does not read
+    :data:`NO_IDS` as an absent spelling.
+    """
+    if (
+        value is None
+        or value is pd.NA
+        or (isinstance(value, float) and math.isnan(value))
+    ):
+        return ""
+    return str(value).strip()
 
 
 def read_media_frames(row: CellRow) -> int | None:
@@ -1663,6 +1819,54 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
         return measured
 
 
+def backfill_pair_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame:
+    """Measure and record the pair frames and ids per frame of every row that lacks them.
+
+    The migration path for a dataset indexed before the two cells existed. A row
+    is filled when its ``pair_frames`` cell is blank, so a row that records
+    :data:`NO_IDS` is not opened again, and a table that cannot be measured stays
+    blank. Opens the ``frame`` and ``id`` columns of each such table.
+
+    Locked for the whole read-measure-write, as :func:`backfill_frame_extents`
+    is. A dry run writes nothing and takes no lock.
+
+    Returns the rows it filled (or would fill), with the measured values.
+    """
+    path = tracks_index_path(ds)
+    if not path.exists():
+        return empty_tracks_frame()
+    with index_lock_unless_dry_run(path, dry_run=dry_run):
+        df = read_tracks_index(ds)
+        if df.empty:
+            return df.iloc[0:0]
+        filled: list[int] = []
+        for position, row in df.iterrows():
+            if _recorded_cell(row.get(_PAIR_FRAMES)):
+                continue
+            measures = frame_measures(ds.resolve_path(str(row["abs_path"])))
+            if measures is None:
+                continue
+            df.at[position, _PAIR_FRAMES] = _pair_frames_cell(measures)
+            df.at[position, _IDS_PER_FRAME] = _ids_per_frame_cell(measures)
+            filled.append(cast("int", position))
+        measured = df.loc[filled].reset_index(drop=True)
+        if filled and not dry_run:
+            atomic_write(path, lambda p: df.to_csv(p, index=False))
+        return measured
+
+
+def _pair_frames_cell(measures: FrameMeasures) -> str:
+    """The ``pair_frames`` cell of *measures*."""
+    return NO_IDS if measures.pair_frames is None else str(measures.pair_frames)
+
+
+def _ids_per_frame_cell(measures: FrameMeasures) -> str:
+    """The ``ids_per_frame`` cell of *measures*."""
+    if measures.ids_per_frame is None:
+        return NO_IDS
+    return f"{measures.ids_per_frame:.{_IDS_PER_FRAME_DIGITS}f}"
+
+
 @dataclass(frozen=True, slots=True)
 class CellBackfill:
     """The rows that one pass over a count cell of the tracks index changed or kept.
@@ -2184,7 +2388,7 @@ def _tracks_row(
     # An unknown extent is recorded as a blank pair, never as (0, 0): frame 0 is
     # a real and common value, so a substituted zero would read as the start of a
     # recording rather than as the absence of an answer.
-    extent = frame_extent(out_path)
+    measures = frame_measures(out_path)
     return TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
         run_id=draft.run_id,
@@ -2200,8 +2404,8 @@ def _tracks_row(
         n_keypoints=count_keypoints(out_path),
         consumed_composition=consumed_composition,
         consumed_media_composition=media_composition,
-        frame_min="" if extent is None else str(extent[0]),
-        frame_max="" if extent is None else str(extent[1]),
+        frame_min="" if measures is None else str(measures.extent[0]),
+        frame_max="" if measures is None else str(measures.extent[1]),
         media_frames=(
             "" if draft.media_frames is None else str(int(draft.media_frames))
         ),
@@ -2220,6 +2424,8 @@ def _tracks_row(
             if draft.carries_tracklets is None
             else (_TRACKLETS_TRUE if draft.carries_tracklets else _TRACKLETS_FALSE)
         ),
+        pair_frames="" if measures is None else _pair_frames_cell(measures),
+        ids_per_frame="" if measures is None else _ids_per_frame_cell(measures),
     )
 
 

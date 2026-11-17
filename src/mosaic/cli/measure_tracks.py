@@ -31,13 +31,18 @@ def measure_tracks_command(
 ) -> None:
     """Measure the frame axis of this dataset's tracks tables, and their media's.
 
-    Four passes over ``tracks/index.csv``, none touching a table:
+    Five passes over ``tracks/index.csv``, none touching a table:
 
     * the **frame extent** (``frame_min`` / ``frame_max``), read from each
       parquet into the cells that are blank. ``overlap_frames`` refuses a
       continuous group with a blank extent. A dataset converted before the
       columns existed has to be measured once before its continuous groups can
       use overlap.
+    * the **pair frames and ids per frame** (``pair_frames`` / ``ids_per_frame``),
+      read from each table's ``frame`` and ``id`` columns into the rows whose
+      ``pair_frames`` cell is blank: the ordered pairs summed over the frames,
+      and the mean ids present per frame. A table with no ``id`` column records
+      ``none`` and is not opened again.
     * the **media length** (``media_frames``): how many frames the tool should
       have read, from the media index, by the rule that a producer records it
       by. A table whose run read less on purpose is given a blank cell: a frame
@@ -96,6 +101,7 @@ def measure_tracks_command(
     try:
         with stdout_to_stderr():
             extents = ds.measure_frame_extents(dry_run=not apply)
+            pairs = ds.measure_pair_frames(dry_run=not apply)
             media = ds.measure_media_frames(dry_run=not apply)
             read = ds.measure_frames_read(dry_run=not apply)
             tail = ds.measure_known_tail_loss(dry_run=not apply)
@@ -137,6 +143,7 @@ def measure_tracks_command(
                 "status": "ok",
                 "applied": apply,
                 "frame_extents_measured": len(extents),
+                "pair_frames_measured": len(pairs),
                 "media_frames_measured": len(media.written),
                 "media_frames_cleared": len(media.cleared),
                 "media_frames_not_established": len(media.not_established),
@@ -157,8 +164,9 @@ def measure_tracks_command(
 
     verb = "measured" if apply else "would measure"
     typer.echo(
-        f"{verb} {len(extents)} frame extent(s), {len(media.written)} media "
-        f"length(s), {len(read.written)} frame count(s) read and "
+        f"{verb} {len(extents)} frame extent(s), {len(pairs)} pair frame "
+        f"count(s), {len(media.written)} media length(s), "
+        f"{len(read.written)} frame count(s) read and "
         f"{len(tail.written)} known tail loss(es)"
     )
     cleared = len(media.cleared) + len(read.cleared) + len(tail.cleared)
@@ -220,6 +228,7 @@ def measure_tracks_command(
         )
     if not apply and (
         len(extents)
+        or len(pairs)
         or len(media.written)
         or len(read.written)
         or len(tail.written)
