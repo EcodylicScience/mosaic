@@ -1489,8 +1489,16 @@ Plans the step as it plans itself when it starts and reads each input file's
 footer, so no table is read and nothing is written. The report gives the
 step's entries and rows, those a plain attempt would compute, and every entry
 to compute with its rows, largest first. Each entry's token is the
-``group:sequence`` form that names an entry on a command line. A complete,
-bound or pinned step computes nothing. An entry held back after repeated
+``group:sequence`` form that names an entry on a command line. Each entry
+also carries the covariates its work scales with, read from the tracks and
+media indexes: ``ids_per_frame``, ``pair_frames`` (``pair_frames_bound`` marks
+the lower bound that a row without a recorded pair count gives), ``frames``,
+``keypoints`` and ``fps``, each null where it cannot be read. For a feature
+step the report gives the feature's ``feature_version``, the level it
+``emits``, the ``params_digest`` of the step's params as they enter its run
+id and whether they equal the feature's defaults (``params_default``), also
+for a step whose inputs are not ready, and null for an op. A complete, bound
+or pinned step computes nothing. An entry held back after repeated
 failures is left out, and the step reports ``inputs_ready`` false unless the
 request proceeds without such entries. A step that cannot be measured yet (an
 op, or a step whose inputs are not written) also reports ``inputs_ready``

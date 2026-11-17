@@ -21,15 +21,27 @@ a bound or pinned step gives the run it serves.
 
 from __future__ import annotations
 
+import dataclasses
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from mosaic.core.entry import Entry, entry_token
 from mosaic.core.scope import Scope
 
 from ..definitions.scope import definition_scope
-from ..input_size import EntryInputSize, by_rows, manifest_input_sizes
+from ..feature_levels import EmitsLevel
+from ..input_size import (
+    NO_COVARIATES,
+    EntryCovariates,
+    EntryInputSize,
+    by_rows,
+    manifest_input_sizes,
+    step_tracks_variants,
+    tracks_covariates,
+)
 from ..loading import resolve_sequence_identity, stacks_inputs
 from ..manifest import UnrunFeatureInput, build_manifest
+from ..params_facts import params_equal_defaults, params_identity_digest
 from ..resolve import resolve_references
 from .claims import FileFailureStore
 from .model import GraphModel
@@ -37,17 +49,25 @@ from .parents import pinned_parents
 from .plan import asked_of, plan_pipeline, step_target
 from .quarantine import narrow_by_quarantine
 from .request import load_recipe_for_request
-from .resolve import build_step_feature
+from .resolve import StepBuildError, build_step_feature
 
 if TYPE_CHECKING:
     from collections.abc import Collection
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.types.feature import Feature
 
+    from .._utils import ResolvedScope
     from .model import Request
     from .plan import Plan, PlannedStep
 
-__all__ = ["EntryRowsWire", "StepInputSizeWire", "step_entry_sizes", "step_input_size"]
+__all__ = [
+    "EntryRowsWire",
+    "StepEntrySizes",
+    "StepInputSizeWire",
+    "step_entry_sizes",
+    "step_input_size",
+]
 
 
 class EntryRowsWire(GraphModel):
@@ -60,12 +80,34 @@ class EntryRowsWire(GraphModel):
             ``--step-entries`` takes.
         rows: The footer rows of the entry's input files. 0 for an entry the
             step's inputs do not hold, or whose footers cannot be read.
+        ids_per_frame: Distinct non-null ``(frame, id)`` pairs over the frames
+            of the entry's extent, or ``None``.
+        pair_frames: Ordered pairs summed over the frames, or ``None``. The
+            lower bound that the rows and frames give when ``pair_frames_bound``
+            is true.
+        pair_frames_bound: Whether ``pair_frames`` is that lower bound, because
+            the entry's tracks row records no pair count.
+        frames: The length of the entry's frame extent, or ``None``.
+        keypoints: The keypoints of the entry's tracks, or ``None``.
+        fps: The frame rate that the entry's indexed media measured, or
+            ``None``.
+
+    The covariates are the tracks index row's, in the variants the step reads.
+    A step whose inputs cannot be resolved yet, and an entry with no row or two
+    variants to choose between, leave them ``None`` and ``pair_frames_bound``
+    false.
     """
 
     group: str
     sequence: str
     token: str
     rows: int
+    ids_per_frame: float | None = None
+    pair_frames: int | None = None
+    pair_frames_bound: bool = False
+    frames: int | None = None
+    keypoints: int | None = None
+    fps: float | None = None
 
 
 class StepInputSizeWire(GraphModel):
@@ -100,6 +142,18 @@ class StepInputSizeWire(GraphModel):
         run_id: The run the plan names for the step, or ``None`` while an op of
             the recipe has not written what it reads. A prediction: the step
             plans its identity again when it starts.
+        feature_version: The feature's ``version``, or ``None`` for an op step
+            and for a step the plan refuses whose feature cannot be built.
+            Reported whether or not the step's inputs are ready.
+        emits: The level the feature declares its output at, which is
+            ``as-input`` for a feature that passes its input's level through.
+            ``None`` where ``feature_version`` is.
+        params_digest: The params term of the step's run id, 10 hex characters,
+            which leaves out the fields that do not enter a run's identity.
+            ``None`` where ``feature_version`` is.
+        params_default: Whether the step's params equal the feature's defaults,
+            by the same dump. False for a feature whose params have a required
+            field. ``None`` where ``feature_version`` is.
     """
 
     request_id: str
@@ -117,6 +171,10 @@ class StepInputSizeWire(GraphModel):
     columns_max: int
     entries_to_compute_by_rows: tuple[EntryRowsWire, ...]
     run_id: str | None
+    feature_version: str | None
+    emits: EmitsLevel | None
+    params_digest: str | None
+    params_default: bool | None
 
 
 def step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSizeWire:
@@ -202,13 +260,16 @@ def _step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSi
     target = step_target(planned, plan)
 
     reason = _unready(planned, plan)
-    sizes: dict[Entry, EntryInputSize] = {}
-    if not reason:
-        sizes, reason = step_entry_sizes(ds, planned, target)
-    reason = reason or held_back
+    feature = _step_feature(planned, tolerate_failure=bool(reason))
+    measured = StepEntrySizes(sizes={}, resolved=None, reason=reason)
+    if feature is not None and not reason:
+        measured = step_entry_sizes(ds, planned, target, feature=feature)
+    sizes = measured.sizes
+    reason = measured.reason or held_back
 
     rows_of = {entry: (sizes[entry].rows if entry in sizes else 0) for entry in asked}
     ordered = by_rows(rows_of)
+    covariates = _covariates(ds, planned, measured.resolved, ordered)
     return StepInputSizeWire(
         request_id=request.request_id,
         step=step_id,
@@ -229,10 +290,58 @@ def _step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSi
                 sequence=sequence,
                 token=entry_token(group, sequence),
                 rows=rows_of[(group, sequence)],
+                **dataclasses.asdict(covariates[(group, sequence)]),
             )
             for group, sequence in ordered
         ),
         run_id=planned.run_id,
+        feature_version=None if feature is None else feature.version,
+        emits=None if feature is None else feature.emits,
+        params_digest=None
+        if feature is None
+        else params_identity_digest(feature.params),
+        params_default=None
+        if feature is None
+        else params_equal_defaults(feature.params),
+    )
+
+
+def _step_feature(planned: PlannedStep, *, tolerate_failure: bool) -> Feature | None:
+    """Return the feature a feature step runs, or ``None`` for an op step.
+
+    Args:
+        planned: The step.
+        tolerate_failure: Whether a step the plan refuses reads as ``None`` when
+            its feature cannot be built, instead of raising.
+
+    Raises:
+        StepBuildError: The feature cannot be built, and *tolerate_failure* is
+            false.
+    """
+    if planned.kind == "op":
+        return None
+    try:
+        return build_step_feature(planned.spec)
+    except StepBuildError:
+        if not tolerate_failure:
+            raise
+        return None
+
+
+def _covariates(
+    ds: Dataset,
+    planned: PlannedStep,
+    resolved: ResolvedScope | None,
+    entries: list[Entry],
+) -> dict[Entry, EntryCovariates]:
+    """Return the covariates of *entries*, none where the step's inputs did not resolve."""
+    if resolved is None:
+        return {entry: NO_COVARIATES for entry in entries}
+    return tracks_covariates(
+        ds,
+        entries,
+        tracks_run_id=planned.spec.tracks_run_id,
+        variants=step_tracks_variants(ds, resolved),
     )
 
 
@@ -246,25 +355,41 @@ def _unready(planned: PlannedStep, plan: Plan) -> str:
     return ""
 
 
+@dataclass(frozen=True, slots=True)
+class StepEntrySizes:
+    """What a step's input files hold per entry.
+
+    Attributes:
+        sizes: Each entry the step's inputs hold, with its size.
+        resolved: What the inputs resolved to, or ``None`` wherever *reason* is
+            set.
+        reason: Why the sizes could not be read, ``""`` when they were.
+    """
+
+    sizes: dict[Entry, EntryInputSize]
+    resolved: ResolvedScope | None
+    reason: str
+
+
 def step_entry_sizes(
-    ds: Dataset, planned: PlannedStep, target: Collection[Entry]
-) -> tuple[dict[Entry, EntryInputSize], str]:
+    ds: Dataset, planned: PlannedStep, target: Collection[Entry], *, feature: Feature
+) -> StepEntrySizes:
     """Return the input size of each entry of *target* that the step's inputs hold.
 
     Args:
         ds: The dataset, which may be opened read-only.
         planned: The feature step, as its plan resolved it.
         target: The entries to measure.
+        feature: The step's feature, built from ``planned.spec``.
 
     Returns:
-        The sizes keyed by entry, and the reason they could not be read, which is
-        ``""`` when they were.
+        The sizes keyed by entry and what the inputs resolved to, or the reason
+        they could not be read.
     """
-    feature = build_step_feature(planned.spec)
     if feature.inputs.is_empty:
-        return {}, f"step {planned.step_id!r} reads no inputs"
+        return _unmeasured(f"step {planned.step_id!r} reads no inputs")
     if not target:
-        return {}, f"step {planned.step_id!r} covers no entries yet"
+        return _unmeasured(f"step {planned.step_id!r} covers no entries yet")
     _ = resolve_references(ds, feature)
     try:
         manifest, resolved = build_manifest(
@@ -275,10 +400,23 @@ def step_entry_sizes(
             stack=stacks_inputs(feature),
         )
     except UnrunFeatureInput as exc:
-        return {}, f"an input of step {planned.step_id!r} is not written: {exc}"
+        return _unmeasured(
+            f"an input of step {planned.step_id!r} is not written: {exc}"
+        )
     if not manifest:
-        return {}, f"the inputs of step {planned.step_id!r} hold none of its entries"
-    return {
-        resolve_sequence_identity(key, resolved.entry_map): size
-        for key, size in manifest_input_sizes(manifest).items()
-    }, ""
+        return _unmeasured(
+            f"the inputs of step {planned.step_id!r} hold none of its entries"
+        )
+    return StepEntrySizes(
+        sizes={
+            resolve_sequence_identity(key, resolved.entry_map): size
+            for key, size in manifest_input_sizes(manifest).items()
+        },
+        resolved=resolved,
+        reason="",
+    )
+
+
+def _unmeasured(reason: str) -> StepEntrySizes:
+    """Return the sizes of a step whose inputs could not be read, for *reason*."""
+    return StepEntrySizes(sizes={}, resolved=None, reason=reason)

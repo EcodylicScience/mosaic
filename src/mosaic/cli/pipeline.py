@@ -1427,8 +1427,16 @@ def input_size_command(
     footer, so no table is read and nothing is written. The report gives the
     step's entries and rows, those a plain attempt would compute, and every entry
     to compute with its rows, largest first. Each entry's token is the
-    ``group:sequence`` form that names an entry on a command line. A complete,
-    bound or pinned step computes nothing. An entry held back after repeated
+    ``group:sequence`` form that names an entry on a command line. Each entry
+    also carries the covariates its work scales with, read from the tracks and
+    media indexes: ``ids_per_frame``, ``pair_frames`` (``pair_frames_bound`` marks
+    the lower bound that a row without a recorded pair count gives), ``frames``,
+    ``keypoints`` and ``fps``, each null where it cannot be read. For a feature
+    step the report gives the feature's ``feature_version``, the level it
+    ``emits``, the ``params_digest`` of the step's params as they enter its run
+    id and whether they equal the feature's defaults (``params_default``), also
+    for a step whose inputs are not ready, and null for an op. A complete, bound
+    or pinned step computes nothing. An entry held back after repeated
     failures is left out, and the step reports ``inputs_ready`` false unless the
     request proceeds without such entries. A step that cannot be measured yet (an
     op, or a step whose inputs are not written) also reports ``inputs_ready``
@@ -1459,7 +1467,12 @@ def input_size_command(
 
 def _render_input_size(report: "StepInputSizeWire") -> None:
     """Print a step's sizes and its entries to compute, largest first."""
-    typer.echo(f"step {report.step} ({report.kind}) of request {report.request_id}")
+    step_line = f"step {report.step} ({report.kind}) of request {report.request_id}"
+    if report.feature_version is not None:
+        step_line += (
+            f", version {report.feature_version}, params {report.params_digest}"
+        )
+    typer.echo(step_line)
     if not report.inputs_ready:
         typer.echo(f"inputs not ready: {report.reason}")
     typer.echo(
@@ -1472,11 +1485,25 @@ def _render_input_size(report: "StepInputSizeWire") -> None:
     if report.entries_to_compute_by_rows:
         render_table(
             [
-                {"entry": row.token, "rows": row.rows}
+                {
+                    "entry": row.token,
+                    "rows": row.rows,
+                    "pair_frames": _covariate_cell(
+                        row.pair_frames, bound=row.pair_frames_bound
+                    ),
+                    "frames": _covariate_cell(row.frames),
+                }
                 for row in report.entries_to_compute_by_rows
             ],
-            ["entry", "rows"],
+            ["entry", "rows", "pair_frames", "frames"],
         )
+
+
+def _covariate_cell(value: int | None, *, bound: bool = False) -> str:
+    """Return a covariate for a table cell: ``-`` when unknown, ``>=`` when a bound."""
+    if value is None:
+        return "-"
+    return f">={value}" if bound else str(value)
 
 
 def _render_request_status(report: RequestStatusWire) -> None:

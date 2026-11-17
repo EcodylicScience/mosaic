@@ -560,8 +560,13 @@ def _largest(
     step's input-size report and the admission gate order by. An entry whose
     input files cannot be read counts no rows.
     """
-    sizes, _ = step_entry_sizes(ds, planned, asked)
-    rows = {entry: sizes[entry].rows if entry in sizes else 0 for entry in asked}
+    measured = step_entry_sizes(
+        ds, planned, asked, feature=build_step_feature(planned.spec)
+    )
+    rows = {
+        entry: measured.sizes[entry].rows if entry in measured.sizes else 0
+        for entry in asked
+    }
     return tuple(by_rows(rows)[:count])
 
 

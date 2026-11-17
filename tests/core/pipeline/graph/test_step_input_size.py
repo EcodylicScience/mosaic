@@ -7,6 +7,7 @@ can name an attempt's entries or cut an array balanced by rows. It writes nothin
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
     BoundRef,
     Recipe,
+    Request,
     build_step_feature,
     execute_step,
     plan_pipeline,
@@ -27,12 +29,19 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.failures import QUARANTINE_AFTER
+from mosaic.core.pipeline.graph.resolve import StepBuildError
+from mosaic.core.pipeline.graph import input_size as input_size_module
 from mosaic.core.pipeline.graph.input_size import (
     EntryRowsWire,
     StepInputSizeWire,
     step_input_size,
 )
-from mosaic.core.pipeline.input_size import manifest_input_sizes
+from mosaic.core.pipeline.params_facts import params_identity_digest
+from mosaic.core.pipeline.input_size import (
+    NO_COVARIATES,
+    manifest_input_sizes,
+    tracks_covariates,
+)
 from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Inputs
@@ -42,6 +51,7 @@ from tests.helpers import (
     add_tracks_variant,
     calms21_dataset,
     chain_recipe,
+    chain_with_sibling_recipe,
     converting_recipe,
     invoke_ok,
     make_dataset,
@@ -52,6 +62,13 @@ VARIANT = "convert-trex.0.2-1111111111"
 
 SIZES = {"seq_a": 10, "seq_b": 30, "seq_c": 20, "seq_d": 20}
 """Each sequence's table length. ``seq_c`` and ``seq_d`` tie, to read the tie-break."""
+
+ARHMM_STEP: dict[str, JsonValue] = {
+    "id": "arhmm",
+    "type": "feature",
+    "feature": "arhmm",
+    "inputs": [{"step": "speed"}],
+}
 
 TEMPLATES_STEP: dict[str, JsonValue] = {
     "id": "templates",
@@ -326,6 +343,164 @@ def test_an_op_step_reports_that_it_has_no_input_size(tmp_path: Path) -> None:
     assert "op" in report.reason
     assert report.rows == report.rows_to_compute == report.largest_entry_rows == 0
     assert report.entries_to_compute_by_rows == ()
+
+
+def test_a_feature_step_reports_its_version_emits_and_params(tracked: Dataset) -> None:
+    recipe = chain_recipe()
+    request = submit_request(tracked, recipe).request
+    feature = build_step_feature(plan_pipeline(tracked, recipe).step("speed").spec)
+
+    report = step_input_size(tracked, request, "speed")
+
+    assert report.feature_version == feature.version == "0.3"
+    assert report.emits == feature.emits == "individual"
+    assert report.params_digest == params_identity_digest(feature.params)
+    assert report.params_default is True
+
+
+def test_params_default_is_true_at_defaults_and_false_with_an_override(
+    tracked: Dataset,
+) -> None:
+    recipe = chain_with_sibling_recipe()
+    request = submit_request(tracked, recipe).request
+
+    at_defaults = step_input_size(tracked, request, "speed")
+    overridden = step_input_size(tracked, request, "sibling")
+
+    assert at_defaults.params_default is True
+    assert overridden.params_default is False
+    assert at_defaults.params_digest != overridden.params_digest
+
+
+def test_a_hash_excluded_field_leaves_the_params_digest(tracked: Dataset) -> None:
+    excluded: dict[str, JsonValue] = {
+        **ARHMM_STEP,
+        "id": "other",
+        "params": {"backend": "numpy"},
+    }
+    changed: dict[str, JsonValue] = {
+        **ARHMM_STEP,
+        "id": "changed",
+        "params": {"n_iter": 10},
+    }
+    recipe = chain_recipe().model_dump()
+    recipe["steps"] = [*recipe["steps"], ARHMM_STEP, excluded, changed]
+    request = submit_request(tracked, Recipe.model_validate(recipe)).request
+
+    plain = step_input_size(tracked, request, "arhmm")
+    with_backend = step_input_size(tracked, request, "other")
+    with_iterations = step_input_size(tracked, request, "changed")
+
+    assert plain.params_digest is not None
+    assert with_backend.params_digest == plain.params_digest
+    assert with_backend.params_default is True
+    assert with_iterations.params_digest != plain.params_digest
+    assert with_iterations.params_default is False
+
+
+def test_an_op_step_reports_no_version_or_params(tmp_path: Path) -> None:
+    dataset = calms21_dataset(
+        tmp_path / "ds", {"train": {"a": {"s1": 40}}}, seed=3, n_classes=2
+    )
+    request = submit_request(dataset, converting_recipe()).request
+
+    report = step_input_size(dataset, request, "tracks")
+
+    assert report.feature_version is None
+    assert report.emits is None
+    assert report.params_digest is None
+    assert report.params_default is None
+
+
+def test_each_entry_to_compute_carries_its_covariates(tracked: Dataset) -> None:
+    request = submit_request(tracked, chain_recipe()).request
+
+    report = step_input_size(tracked, request, "speed")
+
+    expected = tracks_covariates(
+        tracked, _entries(report), tracks_run_id=None, variants=(VARIANT,)
+    )
+    assert len(report.entries_to_compute_by_rows) == len(SIZES)
+    for row in report.entries_to_compute_by_rows:
+        covariates = expected[(row.group, row.sequence)]
+        assert covariates != NO_COVARIATES
+        assert covariates.keypoints == 7
+        assert row.model_dump(include=set(dataclasses.asdict(covariates))) == (
+            dataclasses.asdict(covariates)
+        )
+
+
+def test_a_step_whose_inputs_are_not_ready_still_reports_its_params(
+    tracked: Dataset,
+) -> None:
+    recipe = chain_recipe()
+    request = submit_request(tracked, recipe).request
+    feature = build_step_feature(plan_pipeline(tracked, recipe).step("templates").spec)
+
+    report = step_input_size(tracked, request, "templates")
+
+    assert report.inputs_ready is False
+    assert report.feature_version == feature.version
+    assert report.emits == feature.emits
+    assert report.params_digest == params_identity_digest(feature.params)
+    assert report.params_default is False
+    for row in report.entries_to_compute_by_rows:
+        assert row.model_dump(include=set(dataclasses.asdict(NO_COVARIATES))) == (
+            dataclasses.asdict(NO_COVARIATES)
+        )
+
+
+def _losing_its_tracklets(dataset: Dataset) -> Request:
+    """Submit the chain recipe, then record tracks that carry no tracklets.
+
+    The plan then refuses ``speed``, which follows ids, at its inputs.
+    """
+    request = submit_request(dataset, chain_recipe()).request
+    for sequence in SIZES:
+        add_tracks_variant(
+            dataset,
+            VARIANT,
+            sequence,
+            n_rows=SIZES[sequence],
+            std_format="mosaic_v1",
+            carries_tracklets=False,
+        )
+    return request
+
+
+def test_a_step_the_plan_refuses_still_reports_its_facts(tracked: Dataset) -> None:
+    request = _losing_its_tracklets(tracked)
+    plan = plan_pipeline(tracked, chain_recipe(), refuse=False)
+    assert [problem.step for problem in plan.problems] == ["speed"]
+    feature = build_step_feature(plan.step("speed").spec)
+
+    report = step_input_size(tracked, request, "speed")
+
+    assert report.inputs_ready is False
+    assert plan.problems[0].message in report.reason
+    assert report.feature_version == feature.version
+    assert report.emits == feature.emits
+    assert report.params_digest == params_identity_digest(feature.params)
+    assert report.params_default is True
+
+
+def test_a_step_the_plan_refuses_whose_feature_cannot_be_built_reports_no_facts(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _losing_its_tracklets(tracked)
+
+    def unbuildable(_spec: object) -> object:
+        raise StepBuildError("params", "speed-angvel", "cannot be built")
+
+    monkeypatch.setattr(input_size_module, "build_step_feature", unbuildable)
+
+    report = step_input_size(tracked, request, "speed")
+
+    assert report.inputs_ready is False
+    assert report.feature_version is None
+    assert report.emits is None
+    assert report.params_digest is None
+    assert report.params_default is None
 
 
 def test_an_unknown_step_is_a_key_error(tracked: Dataset) -> None:
