@@ -167,7 +167,10 @@ class TestTheValuesAreReadByTheTagsType:
     def test_text_that_is_not_a_number_is_refused_for_an_int_tag(
         self, resolved: ResolvedTagTable
     ) -> None:
-        with pytest.raises(TagSelectionInvalid, match="a whole number"):
+        with pytest.raises(
+            TagSelectionInvalid,
+            match=r"tag 'n' of type int refuses the value 'three': .*a whole number",
+        ):
             _ = tagged_scope(resolved, {"n": ["three"]})
 
     def test_an_unknown_tag_is_refused_listing_the_defined_names(

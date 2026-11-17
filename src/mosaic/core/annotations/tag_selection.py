@@ -204,7 +204,8 @@ def _typed(
     are left for :func:`entries_where` to check.
 
     Raises:
-        ValueError: A text value is not a value of its tag's type.
+        ValueError: A text value is not a value of its tag's type, naming the tag
+            and its type.
     """
     types: dict[str, TypedAttributeType] = {
         definition.name: definition.type for definition in table.definitions.sequence
@@ -213,12 +214,21 @@ def _typed(
     for name, values in where.items():
         type_ = types.get(name)
         typed[name] = [
-            read_tag_text(type_, value)
+            _read_text(name, type_, value)
             if isinstance(value, str) and type_ is not None and type_ != "label"
             else value
             for value in values
         ]
     return typed
+
+
+def _read_text(name: str, type_: TypedAttributeType, value: str) -> TypedAttributeValue:
+    """*value* read as tag *name*'s type, refused naming the tag and its type."""
+    try:
+        return read_tag_text(type_, value)
+    except ValueError as exc:
+        msg = f"tag {name!r} of type {type_} refuses the value {value!r}: {exc}"
+        raise ValueError(msg) from exc
 
 
 def _described(where: Mapping[str, Sequence[TypedAttributeValue]]) -> str:
