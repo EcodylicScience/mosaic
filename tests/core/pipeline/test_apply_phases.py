@@ -8,8 +8,10 @@ own levels and peak and writes its own final ``resources`` event.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pydantic import TypeAdapter
 
@@ -17,7 +19,12 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.run import ApplyPhase, run_feature
 from mosaic.runlog import read_run, run_log_dir, run_log_path
-from tests.helpers import ParallelFeature, add_tracks_variant, make_dataset
+from tests.helpers import (
+    ParallelFeature,
+    add_tracks_variant,
+    make_dataset,
+    raise_high_water_mark_once_applied,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 SEQUENCES = ("seq_a", "seq_b", "seq_c", "seq_d")
@@ -164,3 +171,66 @@ def test_a_cache_hit_is_one_claim_of_the_whole_attempt(tmp_path: Path) -> None:
     assert third.cache_hit is False
     assert len(_events(ds, "THIRD", "cache_hit")) == 0
     assert third.entries_written == 4
+
+
+class _SlowFirstFeature(ParallelFeature):
+    """A feature whose entry ``seq_d`` takes a fixed time to apply."""
+
+    name = "prov-slow-first"
+    delay_seconds = 0.5
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) == "seq_d":
+            time.sleep(self.delay_seconds)
+        return df
+
+
+def test_each_phase_reports_the_apply_time_of_its_own_entries(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+
+    _ = run_feature(
+        ds,
+        _SlowFirstFeature(),
+        phases=(_phase("seq_d"), _phase("seq_a", "seq_b", "seq_c", workers=3)),
+        execution_id="SPANS",
+    )
+
+    reports = _events(ds, "SPANS", "resources")
+    first = [report for report in reports if report["workers"] == 1][-1]
+    last = reports[-1]
+    assert last["workers"] == 3
+    assert float(str(first["apply_wall_seconds"])) >= _SlowFirstFeature.delay_seconds
+    assert float(str(last["apply_wall_seconds"])) < _SlowFirstFeature.delay_seconds
+    assert float(str(last["wall_seconds"])) >= (
+        float(str(first["apply_wall_seconds"])) + float(str(last["apply_wall_seconds"]))
+    )
+
+
+def test_a_later_phase_never_lowers_the_attempts_peak_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A phase in threads counts the process's high-water mark and one in processes does not."""
+    ds = _dataset(tmp_path)
+    high_water = 1 << 50
+    raise_high_water_mark_once_applied(monkeypatch, ParallelFeature, high_water)
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        phases=(
+            _phase("seq_d"),
+            _phase("seq_a", "seq_b", "seq_c", workers=2, mode="process"),
+        ),
+        execution_id="PEAKS",
+    )
+
+    reports = _events(ds, "PEAKS", "resources")
+    peaks = [int(str(report["peak_rss_bytes"])) for report in reports]
+    assert reports[-1]["parallel_mode"] == "process"
+    assert max(peaks) >= high_water
+    assert peaks == sorted(peaks)
+    snapshot = read_run(run_log_dir(ds.base_dir), "PEAKS")
+    assert snapshot is not None
+    assert snapshot["peak_rss_bytes"] >= high_water

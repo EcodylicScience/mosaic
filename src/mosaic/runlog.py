@@ -75,9 +75,10 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, Literal, TypedDict, TypeIs, cast
 
 __all__ = [
+    "is_record",
     "ALIVE_EVENT",
     "ERROR_MESSAGE_LIMIT",
     "LIVENESS_INTERVAL_SECONDS",
@@ -328,7 +329,7 @@ class ResourceReport:
         worker_base_nonreclaimable_bytes: One process worker's own anonymous and
             shared memory, the largest seen, 0 when not measured.
         apply_wall_seconds: The wall time from the first entry's load start to the
-            last output written.
+            last output written, within the phase the event reports.
         nonreclaimable_bytes: The memory the kernel cannot reclaim at the latest
             sample, 0 when not measured. The cgroup's figure where one limit
             applies, else the sum over the process tree.
@@ -1545,8 +1546,8 @@ def read_run_log(run_dir: Path | str, execution_id: str) -> RunRecordsRead:
         except json.JSONDecodeError:
             skipped += 1
             continue
-        if isinstance(rec, dict):
-            records.append(cast("dict[str, Any]", rec))
+        if is_record(rec):
+            records.append(rec)
         else:
             skipped += 1
     return RunRecordsRead(records=records, skipped_lines=skipped)
@@ -1586,10 +1587,9 @@ def read_machine(records: Sequence[Mapping[str, object]]) -> MachineFacts | None
     for rec in reversed(records):
         if rec.get("ev") != "started":
             continue
-        machine = rec.get("machine")
-        if not isinstance(machine, dict):
+        fields = rec.get("machine")
+        if not is_record(fields):
             continue
-        fields = cast("dict[str, object]", machine)
         return MachineFacts(
             cpu_model=record_text(fields, "cpu_model"),
             logical_cpus=record_count(fields, "logical_cpus"),
@@ -2255,6 +2255,11 @@ def read_run_progress(
                 }
             )
     return out
+
+
+def is_record(value: object) -> TypeIs[dict[str, object]]:
+    """Whether a value parsed from JSON is an object, read as a run-log record."""
+    return isinstance(value, dict)
 
 
 def record_count(rec: Mapping[str, object], key: str) -> int:

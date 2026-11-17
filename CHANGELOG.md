@@ -176,14 +176,17 @@ measured. Nothing here changes how the admission gate predicts.
 `PROBE_THREAD_ENTRIES` is 3. `mosaic run --probe N` and `ProbeSubset` take 1 to 5. A probe
 of 5 over a feature that can run in processes computes its 3 largest entries in threads as
 before, the first alone and then two behind the gate, and then its 2 smallest as a pair of
-two worker processes, started together without the gate, in the same attempt. The attempt
+worker processes admitted at once without the gate, in the same attempt. The attempt
 writes a `resources` event for each phase, so the thread levels and peak and the process
-ones read apart in `RunCost.levels` and `peak_points`, and the second worker of the pair
-loads just after the first, so the process phase also reports a short level 1 beside level
-2. A probe of 4 or fewer runs threads only, and a feature that cannot run in processes
-computes at most 3 entries whatever it asks. On a host of one processor both phases run
-one entry at a time in threads and read as one phase. The `probe` event lists the entries
-largest first. A probe's settings still enter no recipe, request or run id.
+ones read apart in `RunCost.levels` and `peak_points`. The second worker of the pair loads
+just after the first, so the process phase also reports a short level 1 beside level 2.
+Each phase's event carries its own `apply_wall_seconds`, so `RunCost.rows_per_second` is
+the process pair's rows over the pair's own apply time, and the attempt's `peak_rss_bytes`
+does not fall in a later phase. A probe of 4 or fewer runs threads only, and a feature
+that cannot run in processes computes at most 3 entries whatever it asks. On a host of
+one processor both phases run one entry at a time in threads and read as one phase. The
+`probe` event lists the entries largest first. A probe's settings still enter no recipe,
+request or run id.
 
 ### Smaller changes
 

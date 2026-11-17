@@ -1728,6 +1728,10 @@ class _PhaseState:
         estimate: The memory an input row in flight has cost.
         worker_bases: What a process worker holds before it applies an entry.
         peak_sample: The largest sample taken with an entry in flight.
+        apply_started: When the phase's first entry began to load, on the
+            monotonic clock, ``None`` before it.
+        apply_ended: When the phase's latest output was written, on the
+            monotonic clock, ``None`` before it.
         closed: Whether the phase's pool has written its final report, after
             which the run publishes no further report for the phase.
     """
@@ -1737,8 +1741,16 @@ class _PhaseState:
     estimate: RowCostEstimate
     worker_bases: WorkerBases = field(default_factory=WorkerBases)
     peak_sample: PeakSample | None = None
+    apply_started: float | None = None
+    apply_ended: float | None = None
     _peak_lock: threading.Lock = field(default_factory=threading.Lock)
     closed: bool = False
+
+    def apply_wall_seconds(self) -> float:
+        """From the phase's first load start to its last output written, 0 before both."""
+        if self.apply_started is None or self.apply_ended is None:
+            return 0.0
+        return max(0.0, self.apply_ended - self.apply_started)
 
     def consider_peak(
         self,
@@ -1825,8 +1837,7 @@ class _RunCost:
     base_nonreclaimable_bytes: int = 0
     parent_base_bytes: int | None = None
     nonreclaimable: bool = False
-    apply_started: float | None = None
-    apply_ended: float | None = None
+    peak_rss_bytes: int = 0
     admission_waits: int = 0
     entries_with_rows_written: int = 0
     last_report: ResourceReport | None = None
@@ -1850,11 +1861,15 @@ class _RunCost:
             return sample.nonreclaimable_bytes
         return sample.tree_rss_bytes
 
-    def apply_wall_seconds(self) -> float:
-        """From the first entry's load start to the last output written, 0 before both."""
-        if self.apply_started is None or self.apply_ended is None:
-            return 0.0
-        return max(0.0, self.apply_ended - self.apply_started)
+    def reported_peak(self, peak: int) -> int:
+        """Return the largest resident memory reported so far, *peak* included.
+
+        A phase that does not count the process's high-water mark reports a lower
+        figure than one that does, and the attempt's peak never falls below what
+        an earlier report gave.
+        """
+        self.peak_rss_bytes = max(self.peak_rss_bytes, peak)
+        return self.peak_rss_bytes
 
 
 def _report_worker_base(
@@ -2028,7 +2043,9 @@ def run_feature(
         its own levels, peak sample, per-row estimate and worker bases in its own
         final ``resources`` event, and a reader that takes each mode's last event
         reads the phase of that mode. The fit, the memory and CPU of the process
-        tree, the admission waits and ``apply_wall_seconds`` span the attempt. A
+        tree and the admission waits span the attempt, and the peak resident
+        memory never falls below an earlier report's. ``apply_wall_seconds`` is the
+        phase's own, from its first entry's load start to its last output written. A
         later phase runs after the earlier phase's pool has closed. An entry lost
         in any phase is in ``Result.failed_entries``, :class:`AllEntriesFailed`
         is raised only when every entry the run computed was lost, and an
@@ -2472,6 +2489,7 @@ def _run_feature_impl(
         if settings.mode == "thread" or settings.workers == 1:
             # One process: its high-water mark counts once it rises past the fit.
             peak = max(peak, watch.high_water_mark_since(cost.high_water_after_fit))
+        peak = cost.reported_peak(peak)
         per_row = phase.estimate.bytes_per_row
         peak_sample = phase.peak_sample
         return ResourceReport(
@@ -2496,7 +2514,7 @@ def _run_feature_impl(
             fit_input_rows=cost.fit_input_rows,
             worker_base_rss_bytes=phase.worker_bases.rss_bytes,
             worker_base_nonreclaimable_bytes=phase.worker_bases.nonreclaimable_bytes,
-            apply_wall_seconds=cost.apply_wall_seconds(),
+            apply_wall_seconds=phase.apply_wall_seconds(),
             admission_margin=settings.admission_margin,
             admission_waits=cost.admission_waits,
             nonreclaimable_bytes=watch.nonreclaimable_bytes,
@@ -2710,7 +2728,7 @@ def _run_feature_impl(
                 measure: EntryMeasure | None = None
                 if span is not None:
                     written = time.monotonic()
-                    cost.apply_ended = written
+                    state.apply_ended = written
                     if span.rows > 0:
                         cost.entries_with_rows_written += 1
                     grown = (
@@ -3272,8 +3290,8 @@ def _run_feature_impl(
                         _admit(key, rows)
                     active.wait_for_memory()
                 started = time.monotonic()
-                if cost.apply_started is None:
-                    cost.apply_started = started
+                if state.apply_started is None:
+                    state.apply_started = started
                 covariates = covariates_of(key)
                 state.in_flight.enter(
                     key,

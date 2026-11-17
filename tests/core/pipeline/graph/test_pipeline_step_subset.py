@@ -53,7 +53,11 @@ from mosaic.runlog import (
     run_log_dir,
     run_log_path,
 )
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import (
+    add_tracks_variant,
+    make_dataset,
+    raise_high_water_mark_once_applied,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 SPEED_STORAGE = "speed-angvel__from__tracks"
@@ -415,7 +419,11 @@ BY_SIZE = ("seq_e", "seq_d", "seq_c", "seq_b", "seq_a")
 def test_a_probe_of_five_measures_both_modes(
     five: Dataset, process_fault: pytest.MonkeyPatch
 ) -> None:
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+
     _measures_non_reclaimable_memory(process_fault)
+    high_water = 1 << 50
+    raise_high_water_mark_once_applied(process_fault, SpeedAngvel, high_water)
     request = submit_request(five, _recipe(SPEED)).request
 
     outcome = execute_step(
@@ -457,6 +465,18 @@ def test_a_probe_of_five_measures_both_modes(
     assert snapshot is not None
     assert snapshot["entries_written"] == 5
     assert snapshot["progress_total"] == 5
+    resources = _events(five, "PROBEATTEMPT", "resources")
+    process_reports = [r for r in resources if r["parallel_mode"] == "process"]
+    thread_reports = [r for r in resources if r["parallel_mode"] == "thread"]
+    process_apply = float(str(process_reports[-1]["apply_wall_seconds"]))
+    process_rows = sum(float(str(event["input_rows"])) for event in ends[3:])
+    assert process_apply > 0
+    assert cost.rows_per_second == pytest.approx(process_rows / process_apply)
+    thread_peak = int(str(thread_reports[-1]["peak_rss_bytes"]))
+    assert thread_peak >= high_water
+    assert int(str(resources[-1]["peak_rss_bytes"])) >= thread_peak
+    assert snapshot["peak_rss_bytes"] >= thread_peak
+    assert cost.peak_rss_bytes >= thread_peak
 
 
 def _not_process_capable(feature: object) -> bool:

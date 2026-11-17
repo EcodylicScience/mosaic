@@ -24,6 +24,7 @@ from mosaic.runlog import (
     MachineFacts,
     error_fields,
     fold_run_records,
+    is_record,
     last_attempt_records,
     parse_instant,
     read_machine,
@@ -502,11 +503,8 @@ def _levels(
             cpu_seconds=record_seconds(level, "cpu_seconds"),
             rebuilt=False,
         )
-        for level in (
-            cast("dict[str, object]", item)
-            for item in cast("list[object]", written)
-            if isinstance(item, dict)
-        )
+        for level in cast("list[object]", written)
+        if is_record(level)
     ]
     return tuple(
         sorted((level for level in levels if level.in_flight >= 1), key=_by_count)

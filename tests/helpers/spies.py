@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar
 
@@ -46,3 +47,28 @@ def count_property_reads(
 
     monkeypatch.setattr(owner, name, property(counting))
     return reads
+
+
+def raise_high_water_mark_once_applied(
+    monkeypatch: pytest.MonkeyPatch, owner: type[object], amount: int
+) -> None:
+    """Make the process's high-water mark read *amount* bytes higher once *owner* applies.
+
+    ``owner.apply`` is wrapped to note that it ran in this process. From then on
+    :func:`mosaic.core.pipeline.memory_watch.max_rss_bytes` reads *amount* more than
+    the real figure, so a run's watch sees its mark rise past the figure it read
+    when it began. Both patches last until the test ends and *monkeypatch*
+    restores them. A worker process, which imports its own copy of the module,
+    is unaffected.
+    """
+    from mosaic.core.pipeline import memory_watch
+
+    applied = threading.Event()
+    real_max_rss_bytes = memory_watch.max_rss_bytes
+
+    def raised() -> int:
+        return real_max_rss_bytes() + (amount if applied.is_set() else 0)
+
+    monkeypatch.setattr(memory_watch, "max_rss_bytes", raised)
+    apply = getattr(owner, "apply")
+    monkeypatch.setattr(owner, "apply", observed(apply, lambda *_args: applied.set()))

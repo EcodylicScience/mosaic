@@ -352,9 +352,11 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   the entries largest first, so its last two tokens are the process pair. A phase writes
   its own levels, peak and worker bases in its own final `resources` event, so the
   attempt's thread levels and peak and its process ones read apart. The fit, the process
-  tree's memory and CPU, `admission_waits` and `apply_wall_seconds` span the attempt.
-  The pair starts together, with no gate and no first entry alone, but the second loads
-  just after the first, so the process phase reports a short level 1 beside level 2. On
+  tree's memory and CPU and `admission_waits` span the attempt, and `peak_rss_bytes` never
+  falls below an earlier report's. `apply_wall_seconds` is the phase's own, so
+  `rows_per_second` is the process pair's rows over the pair's own apply time. The pair
+  starts together, with no gate and no first entry alone, but the second loads just
+  after the first, so the process phase reports a short level 1 beside level 2. On
   a host of one processor both phases run one entry at a time in threads, which
   `run_feature` takes as one phase, so the levels and the peak cover all five entries.
   The worker-base measure is dropped when the process pair runs in processes, and kept

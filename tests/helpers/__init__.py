@@ -89,7 +89,8 @@ What lives where:
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
 - ``spies`` -- a function with its own signature that calls a watcher first, and
-  a property that records its reads, for the tests that count what a run calls.
+  a property that records its reads, for the tests that count what a run calls, and
+  a process high-water mark that rises once a feature has applied.
 - ``source_scan`` -- reads a module's source as a tree, for the tests that
   assert what a code path reads, calls and imports.
 - ``pyproject_requirements``: the requirements a ``pyproject.toml`` declares,
@@ -356,7 +357,11 @@ from tests.helpers.aggregates import (
     without_time_in_mixed,
 )
 from tests.helpers.scope import resolved_scope, scope_over
-from tests.helpers.spies import count_property_reads, observed
+from tests.helpers.spies import (
+    count_property_reads,
+    observed,
+    raise_high_water_mark_once_applied,
+)
 from tests.helpers.pyproject_requirements import (
     SELF_REFERENCE,
     distribution_names,
@@ -795,6 +800,7 @@ __all__ = [
     "requirements_reaching",
     "count_property_reads",
     "observed",
+    "raise_high_water_mark_once_applied",
     "resolved_scope",
     "result_outputs",
     "result_run_root",
