@@ -210,6 +210,24 @@ entries at once (its run id is its set of entries, as for a template or a global
 op, and a step the request binds or pins to a run refuse a subset with the reason
 `subset_refused`, and its `cause` says which.
 
+A scheduler that drives steps itself can skip the job for a step with nothing to
+compute:
+
+```bash
+mosaic pipeline settle -m dataset.yaml --request <request id> --step <step> --json
+```
+
+`settle` measures the step as `input-size` does and prints the same report with a
+`settle` object. Its `outcome` is one of three. `settled` means the step had nothing to
+compute. Its attempt is recorded under the step's execution id as a cache hit or a bound
+run (`state`), and its children pin that run. `declined` means the step passed the size
+checks and was left unwritten, because an attempt would compute or refuse it or the step
+already has a run-log. `not_attempted` means the step has entries to compute, its inputs
+are not ready or it is an op. For either outcome, `reason` names the cause and the
+scheduler runs the step. `settle` does not compute and writes nothing unless it settles.
+Do not call it for a step that runs with `--overwrite`. `mosaic --version` prints the
+installed release. A scheduler can check it before calling `settle`.
+
 Every feature attempt records what it cost. `mosaic.run_cost.read_run_cost` reads it:
 
 ```python

@@ -8,6 +8,35 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `mosaic pipeline settle` records a step that has nothing to compute, and `mosaic --version` prints the release
+
+### `mosaic pipeline settle`
+
+`mosaic pipeline settle --manifest <path> --request <rid> --step <id> [--owner <owner>] --json`
+measures a step as `mosaic pipeline input-size` does and records it when it has nothing
+to compute. A complete step, or one that the request binds to a run, gets a run-log
+under the step's execution id, as an ordinary attempt that finds the work done writes
+it. Its children pin that run, and the request's rollup and status read the step as
+finished. The verb does not compute. It writes nothing unless it settles, and it takes
+neither `--execution-id` nor `--overwrite`. Do not call it for a step that runs with
+`--overwrite`.
+
+The `--json` report is the `input-size` report, unchanged, plus a `settle` object with
+`outcome` (`settled`, `declined` or `not_attempted`), `reason`, `refusal`,
+`execution_id`, `state` (`cached` or `bound` for `settled`, else null) and `run_id` (the
+run the record names for `settled`, else null). `reason` is `would_compute`, `refused`
+or `attempt_recorded` for `declined`, and `entries_to_compute`, `inputs_not_ready` or
+`op_step` for `not_attempted`. `refusal` is the refusal reason of a `refused` decline,
+else `""`. The exit code is 0 whenever the report is printed, 65 when the size read
+refuses the step, 1 for an unknown request or step or any other error, 2 for a usage
+error and 130 when a signal cancels the verb. No path, index or run id moves, and
+`runlog.TERMINAL_STATUSES` and the refusal reasons are unchanged.
+
+### `mosaic --version`
+
+`mosaic --version` prints the installed release and exits 0. A scheduler reads it to
+learn whether the installed mosaic has `mosaic pipeline settle`.
+
 ## 0.23.0: run resource costs, sequence tags and time-binned aggregates: runs record what their cost scales with and a probe measures threads and processes, sequence tags are a label series that a run records, the aggregates bin by time and choose their comparison, `event-response` writes `recovery_time_s`, the catalog searches keywords and track spaces, a parallel knob needs no `--workers`, a coverage refusal names every step to narrow, and an index lock on a caching CIFS mount warns
 
 ### The tag table is a label series

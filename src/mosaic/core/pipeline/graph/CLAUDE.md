@@ -378,6 +378,16 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   is every variant, an empty set the unlabeled tables). An entry with no row or two
   candidate rows reads every covariate `None`
   (`tests/core/pipeline/graph/test_step_input_size.py`).
+- `settle_step` (`settle.py`) sizes a step with `step_input_size`, then records a step
+  that has nothing to compute through `execute_step(settle_only=True)`. Its checks run
+  in this order: an op step, inputs not ready, entries to compute, an existing run-log
+  of the step's execution id, a cancelled token, then the attempt. The first four return
+  `not_attempted` or `declined` before `execute_step` is called. A settle-only attempt
+  answers `_bound` or `_cached` and raises `SettleDeclined` otherwise. `SettleDeclined`
+  is not a `Refusal`: it is raised before any run-log opens, and every `Refusal` of the
+  attempt becomes one with reason `refused`. A settle calls neither `preflight`, a run
+  nor `run_feature`. A refusal, a decline and a cancel write nothing
+  (`tests/core/pipeline/graph/test_step_settle.py`).
 - A request is one-shot, and a driver does not drive one whose rollup has ended. A
   failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
   reads a failed request with an unstarted step `running` while its driver lease file
