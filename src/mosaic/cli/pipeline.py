@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Eleven verbs, and the split between them is the split the library makes.
+Twelve verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -17,6 +17,8 @@ then says how far that submission got, reading only the attempts' own logs.
 ``list`` reports a page of the dataset's submissions the same way.
 ``input-size`` reports how much one step of a submission reads and which of its
 entries a plain attempt would compute, largest first, and writes nothing.
+``settle`` sizes a step the same way and, when the step needs no work, records
+its attempt for a scheduler without starting a job.
 
 ``verify`` fits the fitting steps of a finished recipe again in a scratch directory
 and compares them with the stored runs (``core/pipeline/verify.py``). It writes
@@ -1465,6 +1467,67 @@ def input_size_command(
     _render_input_size(report)
 
 
+def settle_command(
+    manifest: ManifestOption,
+    request_id: Annotated[
+        str, typer.Option("--request", help="Which submission the step belongs to.")
+    ],
+    step: Annotated[str, typer.Option("--step", help="Which step of its recipe.")],
+    owner: Annotated[
+        str, typer.Option("--owner", help="Recorded on the attempt.")
+    ] = "",
+    as_json: JsonOption = False,
+) -> None:
+    """Record a step that needs no work, after sizing it as ``input-size`` does.
+
+    The report is the step's input size and a ``settle`` object. A complete or
+    bound step is settled: its attempt is recorded under the step's own execution
+    id, as an ordinary attempt that finds the work done records it, so the
+    step's children, the request's rollup and its status read it as finished.
+    The command never computes. A step with entries to compute, one that quarantine
+    narrowing alone would leave complete, one that an attempt would refuse, one
+    whose inputs are not ready, an op and one whose run-log exists are left as they
+    are, and the report says why. Only a settled step leaves a file: its run-log.
+    A refusal, a cancel and any other error write nothing.
+
+    The command records under the step's own execution id and treats the step as
+    one that does not overwrite. Do not call it for an overwrite step. It opens
+    the dataset without creating the declared root directories.
+
+    Exit status is 0 whenever the report is printed, 65 when the size read
+    refuses, 130 when a signal cancels it and 1 for an unknown request or step.
+    """
+    from mosaic.core.pipeline.graph import load_recipe_for_request, load_request
+    from mosaic.core.pipeline.graph.settle import settle_step
+    from mosaic.core.pipeline.job import Cancelled, CancelToken, install_signal_handler
+
+    ds = load_dataset(manifest, ensure_roots=False)
+    try:
+        request = load_request(ds.base_dir, request_id)
+    except FileNotFoundError as exc:
+        fail(str(exc))
+    if step not in load_recipe_for_request(ds.base_dir, request).ids:
+        fail(f"request {request_id!r} has no step {step!r}")
+    token = CancelToken()
+    install_signal_handler(token)
+    try:
+        with stdout_to_stderr():
+            report = settle_step(ds, request, step, owner=owner, cancel_token=token)
+    except Refusal as refusal:
+        exit_refused("", refusal, step_id=step, as_json=as_json)
+    except Cancelled:
+        raise typer.Exit(code=130) from None
+    if as_json:
+        emit_json(report.model_dump(mode="json"))
+        return
+    _render_input_size(report)
+    settle = report.settle
+    line = f"{settle.outcome}: {settle.reason}" if settle.reason else settle.outcome
+    if settle.outcome == "settled":
+        line += f" as {settle.state}, run {settle.run_id}"
+    typer.echo(line)
+
+
 def _render_input_size(report: "StepInputSizeWire") -> None:
     """Print a step's sizes and its entries to compute, largest first."""
     step_line = f"step {report.step} ({report.kind}) of request {report.request_id}"
@@ -1803,3 +1866,4 @@ _ = pipeline_app.command(name="run")(run_command)
 _ = pipeline_app.command(name="status")(status_command)
 _ = pipeline_app.command(name="list")(list_command)
 _ = pipeline_app.command(name="input-size")(input_size_command)
+_ = pipeline_app.command(name="settle")(settle_command)

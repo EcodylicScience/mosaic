@@ -1150,6 +1150,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `status`: Say how far one submission got, from its...
 * `list`: List the dataset's pipeline requests...
 * `input-size`: Say how much one step of a submission...
+* `settle`: Record a step that needs no work, after...
 * `score`: Score a finished recipe on held-out data...
 
 ### `mosaic pipeline catalog`
@@ -1519,6 +1520,42 @@ $ mosaic pipeline input-size [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--request <str>`: Which submission the step belongs to.  [required]
 * `--step <str>`: Which step of its recipe.  [required]
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline settle`
+
+Record a step that needs no work, after sizing it as ``input-size`` does.
+
+The report is the step's input size and a ``settle`` object. A complete or
+bound step is settled: its attempt is recorded under the step's own execution
+id, as an ordinary attempt that finds the work done records it, so the
+step's children, the request's rollup and its status read it as finished.
+The command never computes. A step with entries to compute, one that quarantine
+narrowing alone would leave complete, one that an attempt would refuse, one
+whose inputs are not ready, an op and one whose run-log exists are left as they
+are, and the report says why. Only a settled step leaves a file: its run-log.
+A refusal, a cancel and any other error write nothing.
+
+The command records under the step's own execution id and treats the step as
+one that does not overwrite. Do not call it for an overwrite step. It opens
+the dataset without creating the declared root directories.
+
+Exit status is 0 whenever the report is printed, 65 when the size read
+refuses, 130 when a signal cancels it and 1 for an unknown request or step.
+
+**Usage**:
+
+```console
+$ mosaic pipeline settle [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--request <str>`: Which submission the step belongs to.  [required]
+* `--step <str>`: Which step of its recipe.  [required]
+* `--owner <str>`: Recorded on the attempt.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

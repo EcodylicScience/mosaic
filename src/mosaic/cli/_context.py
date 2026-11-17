@@ -20,7 +20,9 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
-def load_dataset(manifest: Path, *, read_only: bool = False) -> "Dataset":
+def load_dataset(
+    manifest: Path, *, read_only: bool = False, ensure_roots: bool = True
+) -> "Dataset":
     """Load the dataset at *manifest*, reporting a failure as a clean exit.
 
     The opening itself is :func:`~mosaic.core.dataset.open_dataset`. What stays
@@ -32,6 +34,10 @@ def load_dataset(manifest: Path, *, read_only: bool = False) -> "Dataset":
         read_only: Open without creating the declared root directories. Every
             verb that writes nothing passes it, and so does a dry run, so that
             reading a dataset leaves its tree unchanged.
+        ensure_roots: Create the declared root directories. A verb that writes
+            something other than the roots passes ``False`` to open the dataset
+            without creating them and without declaring itself a read.
+            ``read_only`` implies ``False``.
     """
     from mosaic.core.dataset import open_dataset
 
@@ -42,7 +48,7 @@ def load_dataset(manifest: Path, *, read_only: bool = False) -> "Dataset":
     if not manifest.exists():
         fail(f"Manifest not found: {manifest}")
     try:
-        return open_dataset(manifest, ensure_roots=not read_only)
+        return open_dataset(manifest, ensure_roots=ensure_roots and not read_only)
     except Exception as exc:  # noqa: BLE001 - surface any load failure cleanly
         fail(f"Failed to load dataset from {manifest}: {exc}")
 
