@@ -11,11 +11,13 @@ from mosaic.core.annotations.pose_annotations import PoseAnnotationSet, PoseFram
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import LabelsScanSource
-from mosaic.core.pipeline.label_series_index import LabelSeriesTamperedError
+from mosaic.core.pipeline.label_series_index import (
+    LabelSeriesTamperedError,
+    ResolvedRevision,
+)
 from mosaic.tracking import register_ops
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
-    ResolvedSet,
     read_resolved_set,
     resolve_keypoint_sets,
     revision_image_root,
@@ -104,8 +106,8 @@ def test_prepare_reads_each_set_through_read_resolved_set(
     read: list[str] = []
     real = prepare.read_resolved_set
 
-    def spy(item: ResolvedSet) -> PoseAnnotationSet:
-        read.append(item.set_key)
+    def spy(item: ResolvedRevision) -> PoseAnnotationSet:
+        read.append(item.key)
         return real(item)
 
     monkeypatch.setattr(prepare, "read_resolved_set", spy)

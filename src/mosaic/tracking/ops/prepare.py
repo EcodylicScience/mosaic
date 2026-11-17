@@ -67,6 +67,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.label_series_index import ResolvedRevision
 from mosaic.core.pipeline.models import (
     SPLIT_RECORD_FILENAME,
     model_index_path,
@@ -77,7 +78,6 @@ from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
-    ResolvedSet,
     consumed_sets_cell,
     in_identity_order,
     keypoint_schema_cell,
@@ -341,7 +341,7 @@ def prepare_training_data_run_id(
     kind: str,
     version: str,
     params: PrepareTrainingDataParams,
-    sets: tuple[ResolvedSet, ...],
+    sets: tuple[ResolvedRevision, ...],
     holdout_units: Collection[str] = (),
 ) -> str:
     """Mint a preparation run identifier.
@@ -368,7 +368,7 @@ def prepare_training_data_run_id(
     _ = dumped.pop("holdout", None)
     payload: dict[str, object] = {
         "params": dumped,
-        "sets": sorted([item.origin_uuid, item.set_key, item.digest] for item in sets),
+        "sets": sorted([item.origin_uuid, item.key, item.digest] for item in sets),
     }
     if holdout_units:
         payload["holdout"] = sorted(holdout_units)
@@ -458,11 +458,11 @@ class ReadSets:
         states: The saved state of each revision, keyed by its ``set_label``.
     """
 
-    sets: list[ResolvedSet]
+    sets: list[ResolvedRevision]
     states: dict[str, PoseAnnotationSet]
 
 
-def _read_sets(sets: Sequence[ResolvedSet]) -> ReadSets:
+def _read_sets(sets: Sequence[ResolvedRevision]) -> ReadSets:
     """Order *sets* as the run identifier sorts them, and read each saved state."""
     ordered = in_identity_order(sets)
     return ReadSets(
@@ -483,7 +483,7 @@ class HoldOut:
             narrowed to the training pose.
     """
 
-    sets: tuple[ResolvedSet, ...] = ()
+    sets: tuple[ResolvedRevision, ...] = ()
     states: dict[str, PoseAnnotationSet] = field(
         default_factory=dict[str, PoseAnnotationSet]
     )
@@ -507,7 +507,7 @@ class SplitUnits:
 
 
 def _recorded(
-    ds: Dataset, item: ResolvedSet, annotations: AnnotationSet
+    ds: Dataset, item: ResolvedRevision, annotations: AnnotationSet
 ) -> tuple[VideoFrame, ...]:
     """Return the recorded frame behind each frame of *annotations*, of *item*."""
     return video_frames_of(
@@ -522,7 +522,7 @@ def _resolve_holdout(
     ds: Dataset,
     params: PrepareTrainingDataParams,
     pose: PoseDefinition,
-    sets: Sequence[ResolvedSet],
+    sets: Sequence[ResolvedRevision],
 ) -> HoldOut:
     """Resolve ``holdout``, narrow it to the training pose, and read its frames.
 
@@ -547,11 +547,11 @@ def _resolve_holdout(
     if not params.holdout:
         return HoldOut()
     resolved = resolve_keypoint_sets(ds, params.holdout, kind=PREPARE_KIND)
-    trained = {(item.origin_uuid, item.set_key) for item in sets}
+    trained = {(item.origin_uuid, item.key) for item in sets}
     for item in resolved:
-        if (item.origin_uuid, item.set_key) in trained:
+        if (item.origin_uuid, item.key) in trained:
             msg = (
-                f"keypoint set {item.set_key!r} is named in both sets and holdout. "
+                f"keypoint set {item.key!r} is named in both sets and holdout. "
                 "Train on it or hold it out."
             )
             raise ValueError(msg)
@@ -564,8 +564,7 @@ def _resolve_holdout(
     for item in ordered:
         if not any(frame.usable for frame in states[set_label(item)].frames):
             msg = (
-                f"hold-out set {item.set_key!r} has no usable frames for pose "
-                f"{pose.name!r}"
+                f"hold-out set {item.key!r} has no usable frames for pose {pose.name!r}"
             )
             raise ValueError(msg)
     narrowed = narrow_pose_sets(states, pose=params.pose)
@@ -579,7 +578,7 @@ def _resolve_holdout(
 
 def _state_frames(
     ds: Dataset,
-    revisions: Sequence[ResolvedSet],
+    revisions: Sequence[ResolvedRevision],
     states: Mapping[str, PoseAnnotationSet],
 ) -> list[tuple[PoseFrame, VideoFrame]]:
     """Return every frame of each revision's saved state, and the recorded frame behind it.
@@ -671,7 +670,7 @@ def _split(
             every frame, or a target that trains on this split draws fewer than two
             units or has a validation or training share of 0.
     """
-    placed: list[tuple[ResolvedSet, AnnotationFrame, VideoFrame, str]] = []
+    placed: list[tuple[ResolvedRevision, AnnotationFrame, VideoFrame, str]] = []
     for item in training.sets:
         annotations = narrowed[set_label(item)]
         placed.extend(
@@ -711,7 +710,7 @@ def _split(
     rows = [
         SplitRow(
             origin_uuid=item.origin_uuid,
-            set_key=item.set_key,
+            set_key=item.key,
             revision=item.revision,
             image=frame.image_path.as_posix(),
             video_frame=video_frame,
@@ -859,7 +858,7 @@ def _narrowed(
 
 
 def _placed_name(
-    item: ResolvedSet, frame: AnnotationFrame, video_frame: VideoFrame
+    item: ResolvedRevision, frame: AnnotationFrame, video_frame: VideoFrame
 ) -> str:
     """A file name no other frame in the union can have.
 
@@ -881,7 +880,7 @@ def _placed_name(
     origin = (item.origin_uuid or "local")[:8]
     entry = make_entry_key(video_frame.group, video_frame.sequence)
     camera = f"__{to_safe_name(video_frame.camera)}" if video_frame.camera else ""
-    stem = f"{origin}__{to_safe_name(item.set_key)}__{entry}{camera}__frame_{index}"
+    stem = f"{origin}__{to_safe_name(item.key)}__{entry}{camera}__frame_{index}"
     return f"{stem}{frame.image_path.suffix.lower() or '.png'}"
 
 
@@ -1181,7 +1180,7 @@ def _register(
     run_id: str,
     kind: str,
     params: PrepareTrainingDataParams,
-    sets: tuple[ResolvedSet, ...],
+    sets: tuple[ResolvedRevision, ...],
     out: Path,
     artifact: Path,
     *,

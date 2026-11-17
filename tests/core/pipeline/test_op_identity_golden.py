@@ -51,6 +51,7 @@ from mosaic_media import CHROME_149
 from mosaic_media.transcode import ANALYSIS_ENCODING
 
 from mosaic.behavior.label_library.predictions_table import PredictionsTableParams
+from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.annotations.keypoint_map import KeypointMap, resolve_keypoint_map
 from mosaic.core.annotations.model import KeypointSchema
 from mosaic.core.pipeline._utils import hash_params
@@ -66,6 +67,7 @@ from mosaic.core.pipeline.composition import (
     media_composition,
     tracks_raw_composition,
 )
+from mosaic.core.pipeline.label_series_index import ResolvedRevision
 from mosaic.core.pipeline.labels_identity import (
     clocked_label_identity_params,
     label_convert_variant_payload,
@@ -92,7 +94,6 @@ from mosaic.core.params import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
 from mosaic.tracking.frame_predictions.params import PredictFramesParams
-from mosaic.tracking.keypoint_sets import ResolvedSet
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 from mosaic.tracking.ops.assign_identities import (
     AssignIdentitiesParams,
@@ -788,20 +789,22 @@ def _train_sleap_run_id() -> str:
     )
 
 
-def _prepared_sets() -> tuple[ResolvedSet, ...]:
+def _prepared_sets() -> tuple[ResolvedRevision, ...]:
     # Two sets from two datasets, given out of order on purpose: the minter sorts
     # them, so the order sets are named in is not a difference.
     return (
-        ResolvedSet(
+        ResolvedRevision(
+            series=KEYPOINTS_SERIES,
             origin_uuid="uuid-b",
-            set_key="21-rats",
+            key="21-rats",
             revision=4,
             digest="bbbbbbbbbbbbbbbb",
             payload=Path("labels_raw/keypoints/21-rats/rev4/annotations.mosaic.json"),
         ),
-        ResolvedSet(
+        ResolvedRevision(
+            series=KEYPOINTS_SERIES,
             origin_uuid="uuid-a",
-            set_key="17-mice",
+            key="17-mice",
             revision=12,
             digest="aaaaaaaaaaaaaaaa",
             payload=Path("labels_raw/keypoints/17-mice/rev12/annotations.mosaic.json"),

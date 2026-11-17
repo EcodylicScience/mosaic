@@ -41,7 +41,10 @@ from mosaic.core.entry import make_entry_key
 from mosaic.core.manifest import LabelsScanSource, LibraryLink
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
-from mosaic.core.pipeline.label_series_index import write_series_revision
+from mosaic.core.pipeline.label_series_index import (
+    ResolvedRevision,
+    write_series_revision,
+)
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.graph import IdentityUnresolved, Recipe, plan_pipeline
 from mosaic.core.pipeline.models import (
@@ -53,7 +56,7 @@ from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
 from mosaic.core.recording import RecordingKey
 from mosaic.tracking import register_ops
-from mosaic.tracking.keypoint_sets import ResolvedSet, resolve_keypoint_sets
+from mosaic.tracking.keypoint_sets import resolve_keypoint_sets
 from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops._common import (
     fingerprint_dataset,
@@ -1725,9 +1728,10 @@ def test_a_hold_out_names_the_preparation_by_its_units(held_out: Dataset) -> Non
 def test_the_hold_out_enters_the_identity_only_by_its_units() -> None:
     """Without units the payload is the one minted before the hold-out existed."""
     sets = (
-        ResolvedSet(
+        ResolvedRevision(
+            series=KEYPOINTS_SERIES,
             origin_uuid="uuid-a",
-            set_key="train",
+            key="train",
             revision=1,
             digest="aaaaaaaaaaaaaaaa",
             payload=Path("train.json"),

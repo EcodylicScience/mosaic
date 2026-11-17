@@ -63,6 +63,7 @@ from mosaic.core.pipeline.entry_claim import (
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline.label_series_index import ResolvedRevision
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -88,7 +89,6 @@ from mosaic.tracking.frame_predictions.read import (
 )
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
-    ResolvedSet,
     consumed_sets_cell,
     in_identity_order,
     read_resolved_set,
@@ -578,7 +578,7 @@ class _ScoreInputs:
     """
 
     model: _PredictionRun
-    sets: tuple[ResolvedSet, ...]
+    sets: tuple[ResolvedRevision, ...]
     pose: PoseDefinition
     truth: tuple[TruthFrame, ...]
     origin: str
@@ -592,9 +592,7 @@ class _ScoreInputs:
     @property
     def labels(self) -> tuple[tuple[str, str, str], ...]:
         """``(origin_uuid, set_key, digest)`` of each revision."""
-        return tuple(
-            (item.origin_uuid, item.set_key, item.digest) for item in self.sets
-        )
+        return tuple((item.origin_uuid, item.key, item.digest) for item in self.sets)
 
     @property
     def seen_digest(self) -> str | None:
@@ -846,7 +844,7 @@ def _json_text(value: JsonValue) -> str:
 
 
 def _truth(
-    sets: Sequence[ResolvedSet], narrowed: Mapping[str, AnnotationSet]
+    sets: Sequence[ResolvedRevision], narrowed: Mapping[str, AnnotationSet]
 ) -> tuple[TruthFrame, ...]:
     """Return every narrowed frame of *sets* as a truth frame of its revision's origin.
 
@@ -859,12 +857,12 @@ def _truth(
     for item in sets:
         for frame in narrowed[set_label(item)].frames:
             found = TruthFrame(origin_uuid=item.origin_uuid, frame=frame)
-            holder = holders.setdefault((found.origin_uuid, found.image), item.set_key)
-            if holder != item.set_key:
+            holder = holders.setdefault((found.origin_uuid, found.image), item.key)
+            if holder != item.key:
                 message = (
                     f"The image {found.image} of dataset {found.origin_uuid!r} is a "
                     f"usable frame of the scored pose in both {holder!r} and "
-                    f"{item.set_key!r}. A set pair that shares an annotated image "
+                    f"{item.key!r}. A set pair that shares an annotated image "
                     "is scored in separate runs."
                 )
                 raise ScorePredictionsConflict(message)
@@ -953,7 +951,7 @@ def _covering(
     files: Mapping[str, Sequence[_PredictionFile]],
     *,
     origin: str,
-    sets: Sequence[ResolvedSet],
+    sets: Sequence[ResolvedRevision],
 ) -> tuple[_PredictionFile, ...]:
     """Return the files that predict an annotated image.
 
@@ -1083,7 +1081,7 @@ def _summary(
         "labels": [
             LabelRevision(
                 origin_uuid=item.origin_uuid,
-                set_key=item.set_key,
+                set_key=item.key,
                 revision=item.revision,
                 digest=item.digest,
             )

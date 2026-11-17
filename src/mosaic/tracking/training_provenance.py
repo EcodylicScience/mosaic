@@ -39,6 +39,7 @@ from mosaic.core.annotations.split import Subset, frame_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import (
+    ResolvedRevision,
     read_label_series,
     read_revision_manifest,
 )
@@ -52,7 +53,6 @@ from mosaic.core.pipeline.models import (
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from mosaic.tracking.keypoint_sets import (
-    ResolvedSet,
     read_keypoint_schema_cell,
     read_resolved_set,
     revision_image_root,
@@ -337,13 +337,14 @@ def _keypoint_schema(
     return None
 
 
-def _resolved(item: ConsumedRevision) -> ResolvedSet | None:
+def _resolved(item: ConsumedRevision) -> ResolvedRevision | None:
     """*item* as :func:`read_resolved_set` takes it, or ``None`` when it is not on disk."""
     if item.path is None or not item.reachable:
         return None
-    return ResolvedSet(
+    return ResolvedRevision(
+        series=KEYPOINTS_SERIES,
         origin_uuid=item.origin_uuid,
-        set_key=item.set_key,
+        key=item.set_key,
         revision=item.revision,
         digest=item.digest,
         payload=item.path,

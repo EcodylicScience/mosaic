@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
@@ -29,18 +28,19 @@ from mosaic.core.annotations.pose_annotations import (
 )
 from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.params import Declared, Params
+from mosaic.core.pipeline.label_series import LabelRevisionRef
 from mosaic.core.pipeline.label_series_index import (
+    ResolvedRevision,
     read_revision_manifest,
     resolve_series_refs,
 )
-from mosaic.core.pipeline.label_series import LabelRevisionRef
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
     "KeypointSetRef",
-    "ResolvedSet",
+    "consumed_set",
     "consumed_sets_cell",
     "in_identity_order",
     "keypoint_schema_cell",
@@ -74,28 +74,9 @@ class KeypointSetRef(Params):
     ] = None
 
 
-@dataclass(frozen=True, slots=True)
-class ResolvedSet:
-    """A set reference, resolved to one revision on disk."""
-
-    origin_uuid: str
-    set_key: str
-    revision: int
-    digest: str
-    payload: Path
-
-    def consumed(self) -> dict[str, str | int]:
-        return {
-            "origin_uuid": self.origin_uuid,
-            "set_key": self.set_key,
-            "revision": self.revision,
-            "digest": self.digest,
-        }
-
-
 def resolve_keypoint_sets(
     ds: Dataset, refs: tuple[KeypointSetRef, ...], *, kind: str
-) -> tuple[ResolvedSet, ...]:
+) -> tuple[ResolvedRevision, ...]:
     """Each reference as one revision file, with its digest measured off disk.
 
     The index says which file a reference means. The file says what is in it:
@@ -124,50 +105,52 @@ def resolve_keypoint_sets(
         ],
         kind=kind,
     )
-    resolved: list[ResolvedSet] = []
-    for revision in revisions:
+    for position, revision in enumerate(revisions):
         if any(
-            (item.origin_uuid, item.set_key) == (revision.origin_uuid, revision.key)
-            for item in resolved
+            (item.origin_uuid, item.key) == (revision.origin_uuid, revision.key)
+            for item in revisions[:position]
         ):
             msg = (
                 f"keypoint set {revision.key!r} is named twice; one dataset reads one "
                 "revision of a set, because two revisions show the same images"
             )
             raise ValueError(msg)
-        resolved.append(
-            ResolvedSet(
-                origin_uuid=revision.origin_uuid,
-                set_key=revision.key,
-                revision=revision.revision,
-                digest=revision.digest,
-                payload=revision.payload,
-            )
-        )
-    return tuple(resolved)
+    return revisions
 
 
-def in_identity_order(sets: Sequence[ResolvedSet]) -> list[ResolvedSet]:
+def in_identity_order(
+    sets: Sequence[ResolvedRevision],
+) -> list[ResolvedRevision]:
     """*sets* in the order a run identifier sorts them."""
-    return sorted(sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest))
+    return sorted(sets, key=lambda item: (item.origin_uuid, item.key, item.digest))
 
 
-def set_label(item: ResolvedSet) -> str:
+def set_label(item: ResolvedRevision) -> str:
     """How a set is named in an error: which dataset, which set, which revision."""
-    return f"{item.origin_uuid or 'local'}:{item.set_key}@rev{item.revision}"
+    return f"{item.origin_uuid or 'local'}:{item.key}@rev{item.revision}"
 
 
-def consumed_sets_cell(sets: Sequence[ResolvedSet]) -> str:
+def consumed_set(revision: ResolvedRevision) -> dict[str, str | int]:
+    """The record of one revision that enters an index cell and a run identifier."""
+    return {
+        "origin_uuid": revision.origin_uuid,
+        "set_key": revision.key,
+        "revision": revision.revision,
+        "digest": revision.digest,
+    }
+
+
+def consumed_sets_cell(sets: Sequence[ResolvedRevision]) -> str:
     """The JSON list that names revisions in an index cell, in identity order."""
     return json.dumps(
         sorted(
-            (item.consumed() for item in sets),
+            (consumed_set(item) for item in sets),
             key=lambda entry: (str(entry["origin_uuid"]), str(entry["set_key"])),
         )
     )
 
 
-def read_resolved_set(item: ResolvedSet) -> PoseAnnotationSet:
+def read_resolved_set(item: ResolvedRevision) -> PoseAnnotationSet:
     """One revision's saved state, its images anchored where they are.
 
     A relative image path is relative to the manifest's ``image_root``, which is
