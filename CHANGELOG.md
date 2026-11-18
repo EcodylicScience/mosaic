@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: saved selections, selecting by sequence tag, tag keys in summaries, arena layouts for many recordings, the raw report, shared source folders, `mosaic pipeline settle` and `mosaic --version`
+## 0.24.0: saved selections, selecting by sequence tag, the raw report, shared source folders, `mosaic pipeline settle` and `mosaic --version`
 
 No run id or output byte moves. A feature run, an op run and a plan's fingerprint are
 what they were. The dataset summary gains `selections` and `raw_report`. Every item
