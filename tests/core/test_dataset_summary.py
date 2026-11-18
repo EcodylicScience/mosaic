@@ -18,6 +18,7 @@ from mosaic.core.dataset_summary import (
     FrameRateCount,
     DividedRecordingSummary,
     RecordingDivisionSummary,
+    SelectionSummary,
     TrackSchemaCount,
     UndividedRecordingSummary,
     dataset_summary,
@@ -33,6 +34,7 @@ from mosaic.core.pipeline.media_index import (
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline import tracks_index as tracks_index_module
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.selections import save_selection
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
     add_track_sequences,
@@ -419,7 +421,9 @@ def test_a_summary_without_splits_still_validates() -> None:
         "frame_rates": [],
         "inventory_errors": [],
     }
-    assert DatasetSummary.model_validate(old).splits == {}
+    summary = DatasetSummary.model_validate(old)
+    assert summary.splits == {}
+    assert summary.selections == ()
 
 
 def test_the_version_on_disk_is_reported_before_migration(tmp_path: Path) -> None:
@@ -567,3 +571,40 @@ def test_a_garbled_arenas_index_is_an_inventory_error(tmp_path: Path) -> None:
 
     assert summary.arena_layouts == ()
     assert [error.split(":")[0] for error in summary.inventory_errors] == ["arenas"]
+
+
+def test_the_summary_lists_each_selection_by_name_count_date_and_note(
+    populated: Dataset,
+) -> None:
+    first = save_selection(populated, "day2", [("", "seq_c")], note="late")
+    second = save_selection(populated, "day1", [("", "seq_a"), ("", "seq_b")])
+
+    summary = dataset_summary(populated)
+
+    assert summary.selections == (
+        SelectionSummary(
+            name="day1", n_entries=2, created_at=second.created_at, note=""
+        ),
+        SelectionSummary(
+            name="day2", n_entries=1, created_at=first.created_at, note="late"
+        ),
+    )
+
+
+def test_a_dataset_without_selections_summarizes_none(populated: Dataset) -> None:
+    assert dataset_summary(populated).selections == ()
+
+
+def test_an_unreadable_selection_file_is_reported_among_the_errors(
+    populated: Dataset,
+) -> None:
+    _ = save_selection(populated, "day1", [("", "seq_a")])
+    directory = populated.base_dir / ".mosaic" / "selections"
+    _ = (directory / "day1 (1).json").write_text("{", encoding="utf-8")
+
+    summary = dataset_summary(populated)
+
+    assert [item.name for item in summary.selections] == ["day1"]
+    assert len(summary.inventory_errors) == 1
+    assert summary.inventory_errors[0].startswith("selections: ")
+    assert "day1 (1).json" in summary.inventory_errors[0]

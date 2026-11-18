@@ -73,6 +73,7 @@ from .index import feature_index, feature_index_path, feature_run_root
 from .loading import (
     CROSS_JOIN_FEATURES,
     expands_individuals,
+    input_projection,
     resolve_sequence_identity,
     stacks_inputs,
 )
@@ -643,6 +644,7 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
             tracks_run_id=spec.tracks_run_id,
             stack=stacks_inputs(feature),
             consumed_roots=feature.consumed_roots,
+            projection=input_projection(feature),
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, spec.labels_run_id)
     # The revision the plan read, resolved once: the same table gives the term of

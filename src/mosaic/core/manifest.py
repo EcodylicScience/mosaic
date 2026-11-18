@@ -107,6 +107,7 @@ __all__ = [
     "is_mosaic_manifest",
     "overlapping_sources",
     "parse_manifest",
+    "paths_nest",
     "read_manifest",
     "resolve_manifest_path",
     "validate_root_inside",
@@ -866,6 +867,8 @@ class ScanSources(StrictModel):
 def overlapping_sources(
     sources: Sequence[AnyScanSource],
     resolve: Callable[[str], Path],
+    *,
+    walk: Callable[[AnyScanSource, AnyScanSource], bool | None] | None = None,
 ) -> tuple[str, str] | None:
     """The first pair of sources whose claimed files could intersect, or ``None``.
 
@@ -877,9 +880,12 @@ def overlapping_sources(
 
     The three cases, and why they differ:
 
-    - **directory against directory** -- refused when either path contains the
-      other. A recursive walk's set cannot be enumerated without touching disk,
-      so containment is the conservative test.
+    - **directory against directory** -- when either path contains the other,
+      decided by *walk* where it answers, and refused otherwise. *walk* answers
+      for two sources whose files a walk can tell apart, such as two tracks
+      sources over one existing folder: whether a file is taken by both walks.
+      Without an answer, containment is the conservative test, because a walk's
+      set cannot be known without touching disk.
     - **files against files** -- refused only on a shared resolved file. Several
       import batches under one directory are legal and expected; that is the
       case selective import produces.
@@ -890,6 +896,9 @@ def overlapping_sources(
     Args:
         sources: The sources of one kind, including the candidate.
         resolve: Turns a declared path into an absolute one.
+        walk: Given two directory sources whose paths nest, ``True`` when they
+            share a file, ``False`` when they share none, and ``None`` when a
+            walk cannot tell.
 
     Returns:
         The ids of the first overlapping pair, or ``None``.
@@ -897,9 +906,14 @@ def overlapping_sources(
     resolved = [(source, resolve(source.path)) for source in sources]
     for index, (left, left_path) in enumerate(resolved):
         for right, right_path in resolved[index + 1 :]:
-            if _claims_intersect(left, left_path, right, right_path):
+            if _claims_intersect(left, left_path, right, right_path, walk):
                 return (left.id, right.id)
     return None
+
+
+def paths_nest(left: Path, right: Path) -> bool:
+    """Whether *left* and *right* are equal or one contains the other."""
+    return _under_or_equal(left, right) or _under_or_equal(right, left)
 
 
 def _under_or_equal(inner: Path, outer: Path) -> bool:
@@ -907,7 +921,11 @@ def _under_or_equal(inner: Path, outer: Path) -> bool:
 
 
 def _claims_intersect(
-    left: AnyScanSource, left_path: Path, right: AnyScanSource, right_path: Path
+    left: AnyScanSource,
+    left_path: Path,
+    right: AnyScanSource,
+    right_path: Path,
+    walk: Callable[[AnyScanSource, AnyScanSource], bool | None] | None,
 ) -> bool:
     if left.mode == "files" and right.mode == "files":
         left_files = {left_path / entry for entry in left.files}
@@ -917,9 +935,10 @@ def _claims_intersect(
         return _under_or_equal(left_path, right_path)
     if right.mode == "files":
         return _under_or_equal(right_path, left_path)
-    return _under_or_equal(left_path, right_path) or _under_or_equal(
-        right_path, left_path
-    )
+    if not paths_nest(left_path, right_path):
+        return False
+    shared = None if walk is None else walk(left, right)
+    return shared is None or shared
 
 
 # ---------------------------------------------------------------- tags

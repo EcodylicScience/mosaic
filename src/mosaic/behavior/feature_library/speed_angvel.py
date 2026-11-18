@@ -125,6 +125,10 @@ class SpeedAngvel:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    # Its input is read for the columns below alone: ``apply`` reads the id,
+    # position, time and order columns, ``ANGLE`` where present, and the
+    # identity columns it keeps (``declares_every_read`` in ``loading.py``).
+    declares_every_read: ClassVar[bool] = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.x_col),

@@ -36,6 +36,7 @@ from mosaic.core.pipeline.graph.score import (
 )
 from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.scope import Scope
+from mosaic.core.selections import save_selection
 from tests.helpers import (
     assert_tree_unchanged,
     calms21_dataset,
@@ -161,6 +162,52 @@ def test_a_held_out_file_is_scored_on_a_copy_and_the_study_is_left_alone(
 
 
 HELD = ["--multi-sequences-per-file", "--group-from", "filename"]
+
+
+def test_a_step_scope_naming_a_selection_scores_as_the_recipe_ran(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    _ = save_selection(
+        study, "training", [("train", "s1"), ("train", "s2"), ("train", "s3")]
+    )
+
+    result = _score(
+        study,
+        tmp_path,
+        "--step-scope",
+        'labeled={"selection": "training"}',
+        "--heldout",
+        str(heldout),
+        "--multi-sequences-per-file",
+        "--group-from",
+        "filename",
+        "--out",
+        str(tmp_path / "scored"),
+        scopes=False,
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["moved"] == []
+
+
+def test_a_step_scope_naming_a_missing_selection_is_refused(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    result = _score(
+        study,
+        tmp_path,
+        "--step-scope",
+        'labeled={"selection": "nope"}',
+        "--heldout",
+        str(heldout),
+        "--out",
+        str(tmp_path / "scored"),
+        scopes=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason"] == "selection_not_found"
+    assert not (tmp_path / "scored").exists()
 
 
 def _evaluation_params(out: Path) -> dict[str, Any]:

@@ -61,7 +61,11 @@ from mosaic.core.pipeline.graph import (
     resolved_columns,
     topological_order,
 )
-from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES, load_entry_data
+from mosaic.core.pipeline.loading import (
+    CROSS_JOIN_FEATURES,
+    input_projection,
+    load_entry_data,
+)
 from mosaic.core.pipeline.track_space import (
     DEFAULT_TRACK_SPACES,
     feature_track_spaces,
@@ -686,6 +690,23 @@ def test_a_feature_writes_the_columns_it_declares(slug: str, tmp_path: Path) -> 
     assert_writes_declared_columns(
         slug, predicted, output, passed, declares_empty=provides.is_empty
     )
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_a_feature_writes_the_same_output_from_the_columns_it_is_read_for(
+    slug: str, tmp_path: Path
+) -> None:
+    """A run reads only the columns that ``input_projection`` selects."""
+    _skip_unless_runnable(slug)
+    feature, merged, output = _run(_chain(slug), tmp_path, slug)[slug]
+    projection = input_projection(feature)
+    if projection is None:
+        return
+    read = projection.select([str(column) for column in merged.columns])
+
+    projected = feature.apply(merged[read])
+
+    pd.testing.assert_frame_equal(projected, output)
 
 
 @pytest.mark.parametrize("slug", SLUGS)

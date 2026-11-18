@@ -41,7 +41,6 @@ from mosaic.core.media.facts_columns import (
     transcode_required,
 )
 from mosaic.core.pipeline.composition import composition_drift
-from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.media_index import read_media_index
 from mosaic.core.pipeline.preprocess_index import read_media_variant_index
 from mosaic.core.pipeline.preprocess_layout import (
@@ -53,7 +52,7 @@ from mosaic.core.pipeline.preprocess_layout import (
 )
 from mosaic.core.pipeline.sequence_index import media_compositions_for
 
-from ._runs import finish_state, run_ids
+from ._runs import finish_state, run_records
 from .model import (
     ArtifactRecord,
     Coverage,
@@ -232,29 +231,33 @@ def media_variant_records(
     if not ds.has_root(MEDIA_ROOT_KEY):
         return []
     frame = _variant_index(ds, reader)
-    variants = run_ids(frame)
+    variants = run_records(frame)
     if not variants:
         return []
     wanted = scope.selector.entry_pairs
-    rows = _wanted_rows(frame, wanted)
+    scoped = {
+        run_id: _wanted_rows(all_rows, wanted) for run_id, all_rows in variants.items()
+    }
     media_entries = _media_entries(ds, wanted, reader)
-    compositions = media_compositions_for(ds, _entries_of(rows))
+    compositions = media_compositions_for(
+        ds, {entry for rows in scoped.values() for entry in _entries_of(rows)}
+    )
     return [
         _variant_record(
             ds,
-            frame,
+            all_rows,
             run_id,
-            [record for record in rows if record.get("run_id", "") == run_id],
+            scoped[run_id],
             media_entries,
             compositions,
         )
-        for run_id in variants
+        for run_id, all_rows in variants.items()
     ]
 
 
 def _variant_record(
     ds: Dataset,
-    frame: pd.DataFrame,
+    all_rows: list[dict[str, str]],
     run_id: str,
     run_rows: list[dict[str, str]],
     media_entries: frozenset[CameraEntry],
@@ -264,7 +267,8 @@ def _variant_record(
 
     Args:
         ds: The dataset.
-        frame: The whole variant index, for when the run started and finished.
+        all_rows: The variant's rows in the whole index, for when the run
+            started and finished.
         run_id: The variant.
         run_rows: The variant's rows within the scope.
         media_entries: Every entry and camera that the media index names within
@@ -295,7 +299,7 @@ def _variant_record(
         },
         compositions,
     )
-    started_at, finished_at, finished = finish_state(frame, run_id)
+    started_at, finished_at, finished = finish_state(all_rows)
     return ArtifactRecord[CameraEntry](
         ref=MediaVariantRef(run_id=run_id),
         name=PREPROCESS_KIND,
@@ -331,12 +335,12 @@ def _variant_index(ds: Dataset, reader: IndexReader) -> pd.DataFrame:
 
 
 def _wanted_rows(
-    frame: pd.DataFrame, wanted: set[Entry] | None
+    records: list[dict[str, str]], wanted: set[Entry] | None
 ) -> list[dict[str, str]]:
-    """Return the rows of *frame* whose entry is in *wanted*, or every row if unset."""
+    """Return the *records* whose entry is in *wanted*, or every one if unset."""
     return [
         record
-        for record in index_records(frame)
+        for record in records
         if wanted is None
         or (record.get("group", ""), record.get("sequence", "")) in wanted
     ]

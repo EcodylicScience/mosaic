@@ -13,6 +13,7 @@ from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.inventory import ARTIFACT_KINDS, InventoryWire
+from mosaic.core.selections import save_selection
 from tests.helpers import invoke_ok
 
 runner = CliRunner()
@@ -222,6 +223,37 @@ def test_status_not_and_entry_narrow_the_listing(scenario_dataset: Dataset) -> N
 
     assert narrowed.artifacts[0].coverage.target == 1
     assert without.artifacts == ()
+
+
+def test_a_selection_token_narrows_the_listing_to_its_entries(
+    scenario_dataset: Dataset,
+) -> None:
+    _ = scenario_dataset.run_feature(build_feature("speed-angvel", None, None))
+    _ = save_selection(scenario_dataset, "a-only", [("", "seq_a")])
+
+    narrowed = _wire(scenario_dataset, "--kind", "feature", "--entry", "@a-only")
+
+    assert narrowed.artifacts[0].coverage.target == 1
+
+
+def test_a_missing_selection_is_refused_by_inventory(
+    scenario_dataset: Dataset,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "inventory",
+            "--manifest",
+            str(scenario_dataset.manifest_path),
+            "--entry",
+            "@nope",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    envelope = ErrorEnvelope.model_validate_json(result.stdout)
+    assert envelope.reason == "selection_not_found"
 
 
 def test_an_unknown_status_is_refused(scenario_dataset: Dataset) -> None:

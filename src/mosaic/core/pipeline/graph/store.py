@@ -207,10 +207,11 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
 def save_request(base_dir: Path | str, request: Request) -> Path:
     """Write one submission's request file, and return its path.
 
-    A request without step scopes, a tracks variant, a tag revision, pins, feature
-    definitions, an applied request, locked steps, a cleanup, or a cleanup that
-    retires no recipe is written without those keys. Its file is then what an older mosaic
-    wrote, and reads there.
+    A request without step scopes, selections, a tracks variant, a tag revision,
+    pins, feature definitions, an applied request, locked steps, a cleanup, or a
+    cleanup that retires no recipe is written without those keys. Its file is then
+    what an older mosaic wrote, and reads there. An older mosaic refuses a request
+    file that records a selection, as it refuses one with a cleanup.
 
     Raises:
         RequestIdMalformed: The request's id is not a ULID.
@@ -219,6 +220,8 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
     exclude: dict[str, bool | dict[str, bool]] = {}
     if not request.step_scopes:
         exclude["step_scopes"] = True
+    if not request.selections:
+        exclude["selections"] = True
     if request.tracks_run_id is None:
         exclude["tracks_run_id"] = True
     if request.tag_revision is None:

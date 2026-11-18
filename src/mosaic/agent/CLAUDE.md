@@ -98,6 +98,15 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   served without a restart (`_serve_new_datasets`), and `mosaic agent serve` starts with
   none when it has a root. A change reopens the served dataset (`_reopened`)
   (`tests/agent/mcp/test_dataset_tools.py`).
+- `manage_dataset`'s `save_selection` action writes a saved selection through
+  `save_selection` (`core/selections.py`), which takes the selections directory's lock,
+  after `_changeable`, so a managed dataset refuses it unless `allow_managed_writes`. It
+  asks no confirmation, and returns the selection without its entries in
+  `DatasetChange.selection`. Null `entries` save every entry of `reportable_universe`.
+  A selection is frozen and deleting one is the user's. `{"selection": name}` in
+  `entries`, `step_entries` and a summary-mode `preview_output` resolves through
+  `selection_scope` inside `_scope`, `_entry_scope` and `_step_scopes`, which take the
+  dataset, and a submission records the names in `Request.selections`.
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and the other manifest writes. Do not
   add a tool for one. The one deletion the tools make is removing superseded feature runs: the

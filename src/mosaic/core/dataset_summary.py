@@ -42,6 +42,7 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     select_variant_rows,
 )
+from mosaic.core.raw_report import RawReport, raw_report
 from mosaic.core.recording import (
     OrderFacts,
     Recording,
@@ -51,6 +52,12 @@ from mosaic.core.recording import (
     utc_text,
 )
 from mosaic.core.schema import LEGACY_SCHEMA
+from mosaic.core.selections import (
+    SelectionSummary,
+    UnreadableSelection,
+    list_selections,
+    unreadable_selections,
+)
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -67,12 +74,14 @@ __all__ = [
     "FrameRateCount",
     "RecordingDivisionSummary",
     "RecordingSummary",
+    "SelectionSummary",
     "TrackSchemaCount",
     "UndividedRecordingSummary",
     "arena_layout_summaries",
     "dataset_next_steps",
     "raw_label_rows",
     "dataset_summary",
+    "selection_summaries",
 ]
 
 SUMMARY_KINDS: Final[tuple[ArtifactKind, ...]] = (
@@ -247,6 +256,23 @@ def arena_layout_summaries(ds: Dataset) -> tuple[ArenaLayoutSummary, ...]:
     )
 
 
+def selection_summaries(
+    ds: Dataset,
+) -> tuple[tuple[SelectionSummary, ...], tuple[UnreadableSelection, ...]]:
+    """Return the saved selections of *ds*, and the files that hold none.
+
+    Nothing is written.
+
+    Returns:
+        The readable selections, by name, and the files of the selections
+        directory that cannot be read, by file name.
+    """
+    return (
+        tuple(selection.summary() for selection in list_selections(ds)),
+        tuple(unreadable_selections(ds)),
+    )
+
+
 class DatasetSummary(StrictModel):
     """What a dataset is and how much it holds.
 
@@ -275,12 +301,17 @@ class DatasetSummary(StrictModel):
         track_schemas: The schemas of the tracks tables, by name.
         frame_rates: The frame rates of the indexed videos, ascending, one per
             file. Rows with a blank or non-positive rate are left out.
+        selections: The saved selections, by name.
         inventory_errors: The inventory's read failures, one per kind, each
-            prefixed with its kind. That kind's count omits what failed.
+            prefixed with its kind, and one per selection file that cannot be
+            read, prefixed ``selections``. That kind's count omits what failed.
         next_steps: What the dataset needs before a pipeline reads its tracks
             or labels, from its declared sources, its raw indexes and its
             converted tables (:func:`dataset_next_steps`). Empty when nothing
             is missing.
+        raw_report: What the raw indexes, the tracks index and the run-logs
+            record about the raw data (:func:`~mosaic.core.raw_report.raw_report`).
+            ``None`` unless the summary was asked for it.
     """
 
     manifest: str
@@ -298,15 +329,17 @@ class DatasetSummary(StrictModel):
     managed_by: JsonValue
     api_managed: bool
     splits: dict[str, SplitRole] = Field(default_factory=dict)
+    selections: tuple[SelectionSummary, ...] = ()
     counts: DatasetCounts
     track_schemas: tuple[TrackSchemaCount, ...]
     frame_rates: tuple[FrameRateCount, ...]
     inventory_errors: tuple[str, ...]
     next_steps: tuple[str, ...] = ()
+    raw_report: RawReport | None = None
 
 
 def dataset_summary(
-    ds: Dataset, *, found: DatasetInventory | None = None
+    ds: Dataset, *, found: DatasetInventory | None = None, raw: bool = False
 ) -> DatasetSummary:
     """Describe *ds*: its manifest fields, counts, track schemas and frame rates.
 
@@ -316,6 +349,8 @@ def dataset_summary(
             ``mosaic.tracking.dataset_inventory`` returns. ``None`` reads
             :data:`SUMMARY_KINDS` with the contributors already registered, so
             ``counts.models`` is ``None`` unless the tracking contributors are.
+        raw: Whether to fill ``raw_report``, which reads the run-logs and lists
+            the directories of the declared tracks and labels sources.
 
     Returns:
         The summary.
@@ -340,6 +375,11 @@ def dataset_summary(
     except ArenaIndexError as exc:
         layouts = ()
         layout_errors = (f"arenas: {exc}",)
+    saved, unreadable = selection_summaries(ds)
+    selection_errors = tuple(
+        f"selections: the file {file.file} cannot be read: {file.reason}"
+        for file in unreadable
+    )
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),
         name=manifest.name,
@@ -358,6 +398,7 @@ def dataset_summary(
             for recording in every_recording
         ),
         arena_layouts=layouts,
+        selections=saved,
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
@@ -385,8 +426,9 @@ def dataset_summary(
             for fps in (positive_rate(row.get("fps") or "") for row in media)
             if fps is not None
         ),
-        inventory_errors=(*held.errors, *layout_errors),
+        inventory_errors=(*held.errors, *layout_errors, *selection_errors),
         next_steps=dataset_next_steps(ds, converted_tracks=len(tracks)),
+        raw_report=raw_report(ds) if raw else None,
     )
 
 

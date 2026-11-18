@@ -411,18 +411,16 @@ def remove_source(
     dataset = load_dataset(manifest)
     checked = _check_kind(kind)
     try:
-        matched = next(s for s in dataset.scan_sources(checked) if s.id == source_id)
-        claim = dataset.source_claim(matched)
-    except StopIteration:
+        # Built once: it walks the sources, and the count and the drop share it.
+        removal = dataset.source_removal(checked, source_id)
+    except KeyError:
         declared = sorted(s.id for s in dataset.scan_sources(checked))
         fail(f"no {checked} source named {source_id!r}; declared: {declared or 'none'}")
-    orphaned = dataset.remove_scan_source(checked, source_id)
-    # A series source's rows are in that series' own index, not the root's.
-    from mosaic.core.manifest import LabelsScanSource
-
-    claimed_series = matched.series if isinstance(matched, LabelsScanSource) else None
+    orphaned = dataset.remove_scan_source(checked, source_id, removal=removal)
     dropped = (
-        dataset.drop_claimed_rows(checked, claim, series=claimed_series)
+        dataset.drop_claimed_rows(
+            checked, removal.claim, series=removal.series, spared=removal.spared
+        )
         if drop_rows
         else 0
     )
@@ -435,8 +433,20 @@ def remove_source(
     typer.echo(f"Undeclared {checked} source {source_id!r}.")
     if drop_rows:
         typer.echo(f"Dropped {dropped} index row(s).")
+    elif orphaned and removal.series is not None:
+        typer.echo(
+            f"{orphaned} index row(s) of the label series {removal.series!r} are "
+            "kept. Every scan keeps a series' rows. To drop them, declare the "
+            "source again with 'mosaic sources add' and remove it with "
+            "'mosaic sources remove --drop-rows'."
+        )
     elif orphaned:
+        beside = (
+            ", and so does a later scan of a source over the same folder"
+            if checked != "media"
+            else ""
+        )
         typer.echo(
             f"{orphaned} index row(s) are now claimed by no source. They are kept; "
-            "'mosaic reindex' and 'mosaic prune-media' are the passes that clean up."
+            f"'mosaic scan --prune-unsourced' drops every row no source claims{beside}."
         )

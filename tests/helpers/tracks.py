@@ -706,6 +706,56 @@ def calms21_dataset(
     return ds
 
 
+def add_raw_track_files(
+    ds: Dataset,
+    *,
+    named: Sequence[str] = (),
+    unnamed: Sequence[str] = (),
+    trex: Sequence[str] = (),
+) -> None:
+    """Declare and scan raw tracks files that a dataset has not converted.
+
+    Each kind sits in a folder of its own under ``more/`` in the dataset, with a
+    source of its own, so it adds to a dataset that already holds sources.
+
+    Args:
+        ds: The dataset to add the files to.
+        named: Stems of CalMS21 files whose raw rows name the stem as their
+            sequence, in the empty group. They are indexed, not meant to be
+            converted.
+        unnamed: Stems of CalMS21 files holding several sequences, which name no
+            sequence in the raw index.
+        trex: Stems of TREx exports, one sequence each, whose group is empty.
+    """
+    from mosaic.core.manifest import TracksScanSource
+
+    more = ds.base_dir / "more"
+    kinds = (
+        ("named", "calms21_npy", "*.npy", False, named),
+        ("unnamed", "calms21_npy", "*.npy", True, unnamed),
+        ("trex", "trex_npz", "*.npz", False, trex),
+    )
+    for folder, src_format, pattern, multi, stems in kinds:
+        if not stems:
+            continue
+        for stem in stems:
+            if src_format == "trex_npz":
+                write_trex_npz(more / folder / f"{stem}_fish0.npz")
+            else:
+                write_calms21_npy(more / folder / f"{stem}.npy", {"g": {"s": 4}})
+        ds.add_scan_source(
+            TracksScanSource(
+                id=f"more-{folder}",
+                path=str(more / folder),
+                patterns=(pattern,),
+                src_format=src_format,
+                multi_sequences_per_file=multi,
+                group_from="filename" if multi else None,
+            )
+        )
+    _ = ds.scan_tracks()
+
+
 def write_dlc_csv(
     path: Path,
     bodyparts: Sequence[str],

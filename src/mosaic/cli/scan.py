@@ -71,7 +71,9 @@ def scan_command(
             "--prune-unsourced",
             help=(
                 "Also drop rows no scanned source claims. Off by default: those "
-                "are usually an assignment or a reference to a file elsewhere."
+                "are usually an assignment or a reference to a file elsewhere. "
+                "With --only, refused when a source left out shares a folder "
+                "with one scanned."
             ),
         ),
     ] = False,

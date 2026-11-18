@@ -24,7 +24,7 @@ from mosaic.core.pipeline.inventory.model import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
@@ -32,29 +32,36 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory._read import IndexReader
     from mosaic.core.pipeline.inventory.model import InventoryScope
 
-__all__ = ["finish_state", "keyed_run_records", "run_ids", "run_keyed_record"]
+__all__ = ["finish_state", "keyed_run_records", "run_keyed_record", "run_records"]
 
 
-def finish_state(frame: pd.DataFrame, run_id: str) -> tuple[str, str, bool]:
+def finish_state(records: Iterable[Mapping[str, str]]) -> tuple[str, str, bool]:
     """Return ``(started_at, finished_at, finished)`` for one run, from its rows.
 
-    Each value is the first non-empty cell of its column. A run re-entered for more
+    Each value is the first non-empty cell of its column among *records*, the
+    run's rows in index order (:func:`run_records`). A run re-entered for more
     entries reads as finished once any of its rows recorded a finish.
     """
     started, finished = "", ""
-    for record in index_records(frame):
-        if str(record.get("run_id", "")) != run_id:
-            continue
+    for record in records:
         started = started or str(record.get("started_at", ""))
         finished = finished or str(record.get("finished_at", ""))
     return started, finished, bool(finished)
 
 
-def run_ids(frame: pd.DataFrame) -> list[str]:
-    """Return every run identifier in an index, sorted, or an empty list."""
+def run_records(frame: pd.DataFrame) -> dict[str, list[dict[str, str]]]:
+    """Return the rows of each run in an index, by run identifier, sorted by it.
+
+    One pass over *frame*, which a caller makes once for all its runs rather
+    than once for each. Each run's rows keep their index order. An index with
+    no ``run_id`` column holds no run.
+    """
     if frame.empty or "run_id" not in frame.columns:
-        return []
-    return sorted({record.get("run_id", "") for record in index_records(frame)})
+        return {}
+    by_run: dict[str, list[dict[str, str]]] = {}
+    for record in index_records(frame):
+        by_run.setdefault(record.get("run_id", ""), []).append(record)
+    return dict(sorted(by_run.items()))
 
 
 def keyed_run_records[KeyT](

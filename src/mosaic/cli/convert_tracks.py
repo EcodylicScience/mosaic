@@ -103,17 +103,22 @@ def convert_tracks_command(
             {
                 "status": status,
                 "converted": outcome.converted,
+                "written": outcome.converted - outcome.current,
+                "current": outcome.current,
                 "failed": outcome.failed,
                 "variants": list(outcome.variants),
             }
         )
-    elif status == "ok":
-        typer.echo(f"Converted {outcome.converted} sequence(s).")
     else:
-        typer.echo(
-            f"Converted {outcome.converted} sequence(s); {outcome.failed} failed.",
-            err=status == "failed",
+        converted = (
+            f"Converted {outcome.converted} sequence(s): "
+            f"{outcome.converted - outcome.current} written, "
+            f"{outcome.current} current"
         )
+        if status == "ok":
+            typer.echo(f"{converted}.")
+        else:
+            typer.echo(f"{converted}; {outcome.failed} failed.", err=status == "failed")
     if status == "failed":
         # Losing every entry is the AllEntriesFailed rule: the exit status says so.
         raise typer.Exit(code=1)

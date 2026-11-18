@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import functools
 import hashlib
 import itertools
 import json
@@ -23,6 +24,7 @@ from typing import (
     Mapping,
     Optional,
     Tuple,
+    TypeGuard,
     cast,
     overload,
 )
@@ -165,6 +167,7 @@ from .manifest import (
     new_manifest,
     now_stamp,
     overlapping_sources,
+    paths_nest,
     read_manifest,
     resolve_manifest_path,
     validate_root_inside,
@@ -180,8 +183,9 @@ from .pipeline._utils import (
 )
 from .pipeline.placement import place_converted
 from .pipeline.appearance import recorded_appearance_path
-from .pipeline.scan_claim import ScanClaim
+from .pipeline.scan_claim import ScanClaim, Unclaimed
 from .scan_findings import (
+    MISSED_SAMPLE,
     FindingLog,
     ScanFinding,
     merged as merged_findings,
@@ -322,10 +326,14 @@ from .pipeline.tracks_raw_index import (
     TracksRawIndexScope,
     build_tracks_raw_row,
     frame_from_rows as _tracks_frame_from_rows,
+    group_for_path,
     iter_track_files,
     load_tracks_raw_index_frame,
     read_tracks_raw_index as _read_tracks_raw_index,
+    source_file_filter,
     source_members_from_rows,
+    stem_as_sequence,
+    walked_files,
     write_tracks_raw_index_rows,
 )
 from mosaic.core.pipeline._utils import atomic_savez
@@ -434,14 +442,6 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
 # imported the registry to dispatch was the cycle. The typed ``labels/<kind>/``
 # schema lives on ``LabelsIndexRow`` in ``labels_index`` -- there is no
 # ``LABEL_INDEX_COLUMNS`` list to keep in step with it any more.
-
-
-def _path_below(root: Path, path: Path) -> str:
-    """*path* relative to *root* with ``/`` separators, or its name if elsewhere."""
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.name
 
 
 def _md5(path: Path, chunk=1 << 20) -> str:
@@ -707,17 +707,6 @@ def _refuse_shared_entry_key(
         "or sequence."
     )
     raise ValueError(msg)
-
-
-def _stem_as_sequence(stem: str) -> str:
-    """One file is one sequence, and the stem names it.
-
-    The naming rule for a source that has no rule of its own -- every label
-    source, and every track format whose converter does not declare otherwise.
-    Named rather than inlined so that both callers of ``_index_raw`` state their
-    rule the same way and neither carries a branch about which one it is.
-    """
-    return stem
 
 
 def _dataset_base_dir(ds) -> Path:
@@ -1568,6 +1557,34 @@ class MediaIndexResult:
 
 
 @dataclass(frozen=True)
+class SourceRemoval:
+    """The rows a removal of one declared source counts and may drop.
+
+    A row is the source's when :attr:`claim` covers its file and :attr:`spared`,
+    what the kind's other declared sources claim, does not. Built by
+    :meth:`Dataset.source_removal`, which walks the sources, so a caller that
+    counts and then drops builds it once.
+
+    Attributes:
+        kind: The source's kind.
+        declared: The kind's declared sources when it was built. A removal built
+            from other declarations is built again.
+        source: The source removed.
+        claim: What the source claims (:meth:`Dataset.source_claim`).
+        spared: What the kind's other declared sources claim.
+        series: The label series the source claims, whose rows are in that
+            series' own index, or ``None``.
+    """
+
+    kind: SourceKind
+    declared: tuple[AnyScanSource, ...]
+    source: AnyScanSource
+    claim: ScanClaim
+    spared: ScanClaim
+    series: str | None
+
+
+@dataclass(frozen=True)
 class RawScanResult:
     """The raw index a tracks or labels scan wrote, and what it dropped.
 
@@ -1677,6 +1694,10 @@ class ConversionOutcome:
     """The tracks variants this call minted, sorted. One per converter and
     correction revision it reached, whether its tables were written or skipped
     as current."""
+    current: int = 0
+    """The entries counted in ``converted`` that the call found current and did
+    not write a table for under any variant. ``converted - current`` is the count
+    written."""
 
     @property
     def ok(self) -> bool:
@@ -1706,6 +1727,7 @@ class TrackFileOutcome:
         variant: The tracks variant minted for the file.
         covered: The ``(group, sequence)`` entries the file names, written or
             skipped as already current.
+        current: The entries of *covered* that were skipped as already current.
         tables: The tables written under staging names, with the index rows that
             describe them. The process that owns the index publishes them.
         failure: Why the file failed, when it did.
@@ -1715,6 +1737,7 @@ class TrackFileOutcome:
     path: Path | None = None
     variant: str = ""
     covered: list[tuple[str, str]] = field(default_factory=list)
+    current: list[tuple[str, str]] = field(default_factory=list)
     tables: list[StagedTrackTable] = field(default_factory=list)
     failure: EntryFailure | None = None
     warning: str = ""
@@ -1955,6 +1978,108 @@ class LinkedLibrary:
 def _series_of(source: ScanSource) -> str | None:
     """The label series *source* claims, or ``None`` for every other source."""
     return source.series if isinstance(source, LabelsScanSource) else None
+
+
+SHARED_SAMPLE: Final = 5
+"""How many shared files a :class:`SourcesShareFiles` message names."""
+
+
+class SourcesShareFiles(ValueError):
+    """Two declared sources of one kind both take a file.
+
+    Each file would be indexed by two recipes, so which one identifies it would
+    depend on declaration order. Raised when a source is declared and when a
+    scan finds such a file, before the scan writes any index.
+
+    Attributes:
+        kind: The sources' kind.
+        left: The source declared first.
+        right: The source declared second.
+        files: The resolved paths both take, sorted.
+    """
+
+    def __init__(
+        self, kind: SourceKind, left: str, right: str, files: Sequence[Path]
+    ) -> None:
+        self.kind: SourceKind = kind
+        self.left = left
+        self.right = right
+        self.files = tuple(files)
+        count = len(self.files)
+        named = ", ".join(str(path) for path in self.files[:SHARED_SAMPLE])
+        more = f", and {count - SHARED_SAMPLE} more" if count > SHARED_SAMPLE else ""
+        super().__init__(
+            f"{kind} sources {left!r} and {right!r} both take "
+            f"{count} file{'' if count == 1 else 's'}, which makes it ambiguous "
+            f"which recipe identifies them: {named}{more}. Narrow the patterns "
+            "of one source, or add exclude_patterns, so the two take no file in "
+            "common."
+        )
+
+
+def _walks_its_files(source: AnyScanSource) -> TypeGuard[RawScanSource]:
+    """Whether *source* is a tracks or labels directory source without ``series``."""
+    return (
+        isinstance(source, RawScanSource)
+        and source.mode != "files"
+        and _series_of(source) is None
+    )
+
+
+def shared_source_files(
+    ds: Dataset, sources: Sequence[AnyScanSource]
+) -> dict[tuple[str, str], list[Path]]:
+    """The files that both sources of each pair over one tree take.
+
+    A pair is two tracks or labels directory sources without ``series``, in the
+    order of *sources*, whose paths are equal or one contains the other, and
+    whose shared tree, the inner path, exists. Each source of a pair is walked
+    once, by the walk its scan makes
+    (:func:`~mosaic.core.pipeline.tracks_raw_index.walked_files`), and a file
+    is shared when both walks reach its resolved path. A file symlink is
+    therefore judged by its target: a link one source takes and a target, or
+    another link to it, that the other takes are one shared file, since both
+    scans would index that target.
+
+    Args:
+        ds: The dataset that resolves the sources' paths.
+        sources: Sources of one kind.
+
+    Returns:
+        A key ``(left id, right id)`` for every pair, holding the shared
+        resolved paths, sorted, and empty when the two share none. A pair of
+        other sources, or over a tree that does not exist, has no key: a walk
+        cannot tell their files apart.
+    """
+    walkable = [
+        (source, ds.resolve_source_path(source))
+        for source in sources
+        if _walks_its_files(source)
+    ]
+    walks: dict[str, frozenset[Path]] = {}
+
+    def walk(source: RawScanSource, base: Path) -> frozenset[Path]:
+        if source.id not in walks:
+            walks[source.id] = walked_files(
+                base,
+                source.patterns,
+                recursive=source.recursive,
+                exclude_patterns=source.exclude_patterns,
+            )
+        return walks[source.id]
+
+    shared: dict[tuple[str, str], list[Path]] = {}
+    for index, (left, left_path) in enumerate(walkable):
+        for right, right_path in walkable[index + 1 :]:
+            if not paths_nest(left_path, right_path):
+                continue
+            inner = max(left_path, right_path, key=lambda path: len(path.parts))
+            if not inner.is_dir():
+                continue
+            shared[(left.id, right.id)] = sorted(
+                walk(left, left_path) & walk(right, right_path)
+            )
+    return shared
 
 
 _REPEATED_ROW_REMEDY: Final = (
@@ -3108,11 +3233,18 @@ class Dataset:
         that replaced an outside root. Its directory is never created either --
         a scan discovers whether it is there.
 
+        Two tracks or labels directory sources without ``series`` whose paths
+        are equal or nested are refused only for a file both take
+        (:func:`shared_source_files`), when their shared tree exists. Other
+        sources whose paths nest are refused by their paths
+        (:func:`~mosaic.core.manifest.overlapping_sources`).
+
         Args:
             source: The source to declare. Its ``kind`` picks the list.
             save: Write the manifest. Pass ``False`` to batch several changes.
 
         Raises:
+            SourcesShareFiles: If the source and a declared one both take a file.
             ValueError: If the id is already taken for this kind, or the source
                 would claim files another source of the same kind already claims.
         """
@@ -3123,9 +3255,34 @@ class Dataset:
             raise ValueError(msg)
         stamped = source.model_copy(update={"added_at": source.added_at or now_stamp()})
         proposed = [*existing, stamped]
-        overlap = overlapping_sources(proposed, self._resolve_declared_path)
+        where = self._resolve_declared_path(stamped.path)
+        shared = shared_source_files(
+            self,
+            [
+                candidate
+                for candidate in proposed
+                if paths_nest(self._resolve_declared_path(candidate.path), where)
+            ],
+        )
+
+        def walk(left: AnyScanSource, right: AnyScanSource) -> bool | None:
+            # Two such sources the candidate is not one of were accepted when
+            # declared, also while their tree is unmounted, and a scan checks
+            # the files they have since.
+            if stamped.id not in (left.id, right.id):
+                return (
+                    False
+                    if _walks_its_files(left) and _walks_its_files(right)
+                    else None
+                )
+            files = shared.get((left.id, right.id))
+            return None if files is None else bool(files)
+
+        overlap = overlapping_sources(proposed, self._resolve_declared_path, walk=walk)
         if overlap is not None:
             left, right = overlap
+            if shared.get(overlap):
+                raise SourcesShareFiles(kind, left, right, shared[overlap])
             msg = (
                 f"{kind} sources {left!r} and {right!r} would claim the same "
                 "files, which makes it ambiguous which recipe identifies them. "
@@ -3137,29 +3294,71 @@ class Dataset:
         if save:
             self.save()
 
+    def source_removal(self, kind: SourceKind, source_id: str) -> SourceRemoval:
+        """What removing the declared source *source_id* would count and drop.
+
+        The source's own claim, less what the kind's other declared sources
+        claim, so a file two sources reach, such as a symlink target both hold,
+        stays with the other. Building it walks the tracks and labels sources.
+
+        Raises:
+            KeyError: If *kind* declares no source with that id.
+        """
+        declared = tuple(self.manifest.sources.of_kind(kind))
+        match = next((s for s in declared if s.id == source_id), None)
+        if match is None:
+            listed = sorted(s.id for s in declared)
+            msg = f"no {kind} source named {source_id!r}; declared: {listed or 'none'}"
+            raise KeyError(msg)
+        return SourceRemoval(
+            kind=kind,
+            declared=declared,
+            source=match,
+            claim=self.source_claim(match),
+            spared=self._other_sources_claim(kind, match, {}),
+            series=_series_of(match),
+        )
+
     def remove_scan_source(
-        self, kind: SourceKind, source_id: str, *, save: bool = True
+        self,
+        kind: SourceKind,
+        source_id: str,
+        *,
+        save: bool = True,
+        removal: SourceRemoval | None = None,
     ) -> int:
         """Undeclare a source. Returns how many index rows it was claiming.
 
         The rows stay. Undeclaring is a statement about future scans; dropping
         rows would delete composition membership and move downstream identity
-        hashes, which is a repair worth asking for explicitly (``mosaic reindex``
-        and ``mosaic prune-media`` both exist and both default to a dry run).
+        hashes, which is a repair worth asking for explicitly
+        (:meth:`drop_claimed_rows`). A full scan with ``prune_unsourced`` drops
+        them as rows no source claims, and so does a scan of a tracks or labels
+        source over their folder, which claims what no other source does.
+
+        A row counts when the source claims its file and no other declared source
+        of *kind* does (:meth:`source_removal`).
+
+        Args:
+            kind: The source's kind.
+            source_id: The source to undeclare.
+            save: Whether to write the manifest.
+            removal: The :meth:`source_removal` of this source, when the caller
+                has built it. One built for other declarations is built again.
 
         Raises:
             KeyError: If *kind* declares no source with that id.
         """
-        existing = list(self.manifest.sources.of_kind(kind))
-        match = next((s for s in existing if s.id == source_id), None)
-        if match is None:
-            declared = sorted(s.id for s in existing)
-            msg = (
-                f"no {kind} source named {source_id!r}; declared: {declared or 'none'}"
-            )
-            raise KeyError(msg)
+        existing = tuple(self.manifest.sources.of_kind(kind))
+        if (
+            removal is None
+            or removal.kind != kind
+            or removal.source.id != source_id
+            or removal.declared != existing
+        ):
+            removal = self.source_removal(kind, source_id)
         orphaned = self._rows_claimed_by(
-            kind, self.source_claim(match), series=_series_of(match)
+            kind, removal.claim, series=removal.series, spared=removal.spared
         )
         remaining = [s for s in existing if s.id != source_id]
         self.manifest.sources = self.manifest.sources.with_kind(kind, remaining)
@@ -3189,8 +3388,16 @@ class Dataset:
         Raises:
             KeyError: If *kind* declares no source with that id.
         """
+        # The walks happen before the lock. Under it the manifest is read again,
+        # and a removal built from other declarations is built again there.
+        try:
+            removal = self.source_removal(kind, source_id)
+        except KeyError:
+            removal = None
         return self._edit_manifest_locked(
-            lambda: self.remove_scan_source(kind, source_id, save=False)
+            lambda: self.remove_scan_source(
+                kind, source_id, save=False, removal=removal
+            )
         )
 
     def update_tags(
@@ -3288,7 +3495,12 @@ class Dataset:
         return removed
 
     def drop_claimed_rows(
-        self, kind: SourceKind, claim: ScanClaim, *, series: str | None = None
+        self,
+        kind: SourceKind,
+        claim: ScanClaim,
+        *,
+        series: str | None = None,
+        spared: ScanClaim | None = None,
     ) -> int:
         """Remove every row of *kind*'s index inside *claim*. Returns the count.
 
@@ -3297,7 +3509,7 @@ class Dataset:
 
         *series* names the label series the source claimed. Its rows are in that
         series' index, and dropping them touches no composition, because a series
-        row never entered one.
+        row never entered one. A row whose file *spared* claims stays.
         """
         if series is not None:
             index_path = series_index_path(self, series)
@@ -3306,7 +3518,9 @@ class Dataset:
             with index_lock(index_path):
                 revisions = index_records(read_label_series(self, series))
                 remaining = [
-                    row for row in revisions if not self._row_claimed(row, claim)
+                    row
+                    for row in revisions
+                    if not self._row_claimed(row, claim, spared)
                 ]
                 if len(remaining) == len(revisions):
                     return 0
@@ -3317,7 +3531,9 @@ class Dataset:
             with index_lock(index_path):
                 committed = _read_media_index(index_path)
                 kept: list[dict[str, object]] = [
-                    dict(row) for row in committed if not self._row_claimed(row, claim)
+                    dict(row)
+                    for row in committed
+                    if not self._row_claimed(row, claim, spared)
                 ]
                 if len(kept) == len(committed):
                     return 0
@@ -3329,7 +3545,9 @@ class Dataset:
         with index_lock(index_path):
             committed = _read_tracks_raw_index(index_path)
             raw_kept: list[dict[str, object]] = [
-                dict(row) for row in committed if not self._row_claimed(row, claim)
+                dict(row)
+                for row in committed
+                if not self._row_claimed(row, claim, spared)
             ]
             if len(raw_kept) == len(committed):
                 return 0
@@ -3563,6 +3781,11 @@ class Dataset:
         Raises:
             KeyError: If *only* names a source that is not declared.
             ValueError: If no source of this kind is declared.
+            SourcesShareFiles: If a selected source and a declared source of
+                *kind* over one folder both take a file. Nothing is written.
+            ValueError: If *prune_unsourced* restricts the scan to *only* and a
+                source it leaves out shares a folder with a source it scans.
+                Nothing is written.
         """
         selected = self.scan_sources(kind, only=only)
         if not selected:
@@ -3571,10 +3794,14 @@ class Dataset:
                 f"rescan. Declare one with add_scan_source()."
             )
             raise ValueError(msg)
+        self._refuse_shared_files(kind, selected)
+        if prune_unsourced:
+            self._refuse_restricted_prune(kind, selected)
         scan = self.index_tracks_raw if kind == "tracks" else self.index_labels_raw
         written = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / index_filename
         position = 0
         logs: list[FindingLog] = []
+        claimed: dict[str, ScanClaim] = {}
         for source in selected:
             if not isinstance(source, RawScanSource):
                 continue
@@ -3593,6 +3820,9 @@ class Dataset:
                 written = self.index_label_series(source, findings=log)
                 continue
             position += 1
+            others = Unclaimed(
+                functools.partial(self._other_sources_claim, kind, source, claimed)
+            )
             written = scan(
                 self._search_paths(source, log),
                 patterns=list(source.patterns),
@@ -3606,8 +3836,9 @@ class Dataset:
                 group_path_root=self.resolve_source_path(source),
                 exclude_patterns=list(source.exclude_patterns),
                 compute_md5=source.md5,
-                claim=self.scan_claim(source),
+                claim=self._rescan_claim(source, others),
                 findings=log,
+                other_sources=others.claim,
                 # Only the first pass may prune: a later one would see the
                 # earlier sources' rows as unclaimed and delete what this same
                 # scan had just written. Counted over the per-sequence sources
@@ -3615,6 +3846,97 @@ class Dataset:
                 prune_unsourced=prune_unsourced and position == 1,
             )
         return RawScanResult(path=written, findings=merged_findings(logs))
+
+    def _refuse_shared_files(
+        self, kind: SourceKind, selected: Sequence[AnyScanSource]
+    ) -> None:
+        """Refuse a scan of *selected* when a file is taken by two sources.
+
+        Checks each pair of the kind's declared sources over one folder that
+        holds a selected source (:func:`shared_source_files`), so a restricted
+        scan is refused as a full one is.
+
+        Raises:
+            SourcesShareFiles: For the first such pair that shares a file.
+        """
+        scanned = {source.id for source in selected}
+        paths = [self._resolve_declared_path(source.path) for source in selected]
+        near = [
+            source
+            for source in self.scan_sources(kind)
+            if source.id in scanned
+            or any(
+                paths_nest(self._resolve_declared_path(source.path), path)
+                for path in paths
+            )
+        ]
+        for (left, right), files in shared_source_files(self, near).items():
+            if files and scanned & {left, right}:
+                raise SourcesShareFiles(kind, left, right, files)
+
+    def _refuse_restricted_prune(
+        self, kind: SourceKind, selected: Sequence[AnyScanSource]
+    ) -> None:
+        """Refuse a pruning scan of *selected* that leaves out a source beside one.
+
+        A prune drops every row that no scanned source claims. A declared source
+        over one folder with a scanned source, equal or nested, owns rows the scan
+        does not walk, and the prune would drop them as rows of no source.
+
+        Raises:
+            ValueError: Naming the unscanned source and the scanned one it shares
+                a folder with.
+        """
+        scanned = {source.id for source in selected}
+        for left in self.scan_sources(kind):
+            if left.id in scanned:
+                continue
+            where = self._resolve_declared_path(left.path)
+            for right in selected:
+                if paths_nest(where, self._resolve_declared_path(right.path)):
+                    msg = (
+                        f"pruning unsourced rows on a restricted scan would drop "
+                        f"the rows of {kind} source {left.id!r}, which shares a "
+                        f"folder with {right.id!r} and is not scanned: they would "
+                        f"read as claimed by no source. Scan both sources, or "
+                        "scan every source."
+                    )
+                    raise ValueError(msg)
+
+    def _other_sources_claim(
+        self, kind: SourceKind, source: ScanSource, claimed: dict[str, ScanClaim]
+    ) -> ScanClaim:
+        """What the dataset's declared sources of *kind* other than *source* claim.
+
+        Each source's :meth:`source_claim`, also for a source whose path is
+        missing, so its rows are spared while its share is unmounted. A scan
+        leaves these paths to their sources, and a removal does not drop them.
+
+        *claimed* keeps each source's claim by id, so the passes of one scan walk
+        each other source once at most.
+        """
+        claim = ScanClaim()
+        for other in self.scan_sources(kind):
+            if other.id != source.id:
+                if other.id not in claimed:
+                    claimed[other.id] = self.source_claim(other)
+                claim = claim | claimed[other.id]
+        return claim
+
+    def _rescan_claim(self, source: RawScanSource, others: Unclaimed) -> ScanClaim:
+        """What a scan of the tracks or labels *source* replaces before its walk.
+
+        A directory source claims its whole subtree less what *others* claims, so a
+        rescan after its patterns narrowed drops the rows of the files it no longer
+        takes, while another source over the same folder keeps its rows. A row whose
+        file is gone is claimed without building *others*, so a removed file leaves
+        without walking the other sources. The indexer adds the targets of its own
+        walk. A file source claims its listed files, and a source whose path is
+        missing claims nothing (:meth:`scan_claim`).
+        """
+        if source.mode == "files" or not self.resolve_source_path(source).exists():
+            return self.scan_claim(source)
+        return ScanClaim.over_filtered(self.resolve_source_path(source), others)
 
     def _search_paths(self, source: ScanSource, log: FindingLog) -> list[str | Path]:
         """What to walk for *source*: its directory, or each listed file.
@@ -3655,9 +3977,14 @@ class Dataset:
         return present
 
     def _rows_claimed_by(
-        self, kind: SourceKind, claim: ScanClaim, *, series: str | None = None
+        self,
+        kind: SourceKind,
+        claim: ScanClaim,
+        *,
+        series: str | None = None,
+        spared: ScanClaim | None = None,
     ) -> int:
-        """How many rows of *kind*'s index fall inside *claim*.
+        """How many rows of *kind*'s index fall inside *claim* and outside *spared*.
 
         *series* names the label series a source claimed, whose rows live in that
         series' own index rather than in ``labels_raw/index.csv``.
@@ -3665,7 +3992,9 @@ class Dataset:
         if series is not None:
             frame = read_label_series(self, series)
             return sum(
-                1 for row in index_records(frame) if self._row_claimed(row, claim)
+                1
+                for row in index_records(frame)
+                if self._row_claimed(row, claim, spared)
             )
         try:
             rows = (
@@ -3677,7 +4006,7 @@ class Dataset:
             )
         except KeyError:
             return 0
-        return sum(1 for row in rows if self._row_claimed(row, claim))
+        return sum(1 for row in rows if self._row_claimed(row, claim, spared))
 
     # ---- Load and save ----
 
@@ -7410,8 +7739,13 @@ class Dataset:
         resolved = self.resolve_path(key.abs_path).resolve()
         return dataclasses.replace(key, abs_path=str(resolved))
 
-    def _row_claimed(self, row: Mapping[str, object], claim: ScanClaim) -> bool:
-        """True if *row*'s ``abs_path`` falls inside *claim*.
+    def _row_claimed(
+        self,
+        row: Mapping[str, object],
+        claim: ScanClaim,
+        spared: ScanClaim | None = None,
+    ) -> bool:
+        """True if *row*'s ``abs_path`` falls inside *claim* and outside *spared*.
 
         Resolve the stored path first (it may be root-relative), then ask the
         claim -- the resolver decoupling that keeps the check correct whether
@@ -7424,7 +7758,10 @@ class Dataset:
         abs_cell = str(row.get("abs_path", "") or "").strip()
         if not abs_cell:
             return False
-        return claim.claims(self.resolve_path(abs_cell).resolve())
+        resolved = self.resolve_path(abs_cell).resolve()
+        if spared is not None and spared.claims(resolved):
+            return False
+        return claim.claims(resolved)
 
     def walked_claim(self, rows: Iterable[Mapping[str, object]]) -> ScanClaim:
         """The claim over the files a scan actually walked, by stored path.
@@ -7509,11 +7846,40 @@ class Dataset:
         return self._resolve_declared_path(source.path)
 
     def source_claim(self, source: ScanSource) -> ScanClaim:
-        """What *source* is responsible for, whether or not its path is there."""
+        """What *source* is responsible for, whether or not its path is there.
+
+        A file source claims its listed files. A tracks source, and a labels
+        source without ``series``, claim the paths below their directory that
+        their patterns, ``recursive`` and ``exclude_patterns`` accept
+        (:func:`~mosaic.core.pipeline.tracks_raw_index.source_file_filter`),
+        and the resolved path of each file a walk of the source finds. The walk
+        is what claims a symlink whose target has another name or lies outside
+        the directory, since the filter judges the target by its own name and
+        place. Two such sources over one folder then claim their own files. A
+        media source and a series source claim their whole subtree.
+
+        This is what a removal of the source drops. A scan of it replaces more
+        (:meth:`_rescan_claim`).
+        """
         base = self.resolve_source_path(source)
         if source.mode == "files":
             return ScanClaim.over_files(base / entry for entry in source.files)
-        return ScanClaim.over_directories([base])
+        if not isinstance(source, RawScanSource) or _series_of(source) is not None:
+            return ScanClaim.over_directories([base])
+        file_filter = source_file_filter(
+            base,
+            source.patterns,
+            recursive=source.recursive,
+            exclude_patterns=source.exclude_patterns,
+        )
+        return ScanClaim.over_filtered(base, file_filter) | ScanClaim(
+            files=walked_files(
+                base,
+                source.patterns,
+                recursive=source.recursive,
+                exclude_patterns=source.exclude_patterns,
+            )
+        )
 
     def scan_claim(self, source: ScanSource) -> ScanClaim:
         """What a scan of *source* may replace: nothing while its path is missing.
@@ -8811,6 +9177,7 @@ class Dataset:
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
+        other_sources: Callable[[], ScanClaim] | None = None,
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
@@ -8915,6 +9282,7 @@ class Dataset:
             group_path_pattern=group_path_pattern,
             group_path_root=group_path_root,
             findings=findings,
+            other_sources=other_sources,
         )
 
     def _index_raw(
@@ -8939,6 +9307,7 @@ class Dataset:
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
+        other_sources: Callable[[], ScanClaim] | None = None,
     ) -> Path:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
@@ -8960,6 +9329,12 @@ class Dataset:
         seam ``group_from_path`` is on the branch below. Required rather than
         defaulted, because a default is where a third caller would silently get
         the wrong answer.
+
+        *other_sources* returns what the dataset's other sources of this kind
+        claim. A skipped file whose target one of them claims leaves that source's
+        row alone. It is called only when the scan skips a file, because building
+        those claims walks the other sources. A scan passes the claim its *claim*
+        filters its folder by, so the two agree.
         """
         out_csv = self.get_root(target_root) / index_filename
         rows: list[TracksRawIndexRow] = []
@@ -9004,9 +9379,6 @@ class Dataset:
             if findings is not None
             else FindingLog("tracks" if target_root == "tracks_raw" else "labels", "")
         )
-        stem_matched = False
-        path_matched = False
-
         skipped_listed: list[Path] = []
         files = iter_track_files(
             search,
@@ -9024,37 +9396,23 @@ class Dataset:
                 path=listed,
             )
 
+        missed: list[Path] = []
         for p, st in files:
-            if multi_sequences_per_file:
-                # put file-level grouping into 'group', leave sequence blank
-                if group_from == "filename":
-                    grp = p.stem
-                elif group_from == "parent":
-                    grp = p.parent.name
-                else:
-                    grp = ""
-                seq = ""
-            else:
-                seq = sequence_from_stem(p.stem)
-
-                # Extract group from sequence using pattern
-                if group_re:
-                    m = group_re.search(seq)
-                    stem_matched = stem_matched or m is not None
-                    grp = m.group(1) if m else ""
-                else:
-                    grp = ""
-
-            if path_re is not None and path_root is not None:
-                found = path_re.search(_path_below(path_root, p))
-                path_matched = path_matched or found is not None
-                grp = (found.group(1) or "") if found else ""
-
-            # Last, so it supersedes both branches above: a caller that supplies a
-            # rule has said the derivations here do not express their grouping.
-            if group_from_path is not None:
-                grp = str(group_from_path(p))
-
+            grp = group_for_path(
+                p,
+                sequence_from_stem=sequence_from_stem,
+                multi_sequences_per_file=multi_sequences_per_file,
+                group_from=group_from,
+                group_re=group_re,
+                path_re=path_re,
+                path_root=path_root,
+                group_from_path=group_from_path,
+            )
+            if grp is None:
+                missed.append(p)
+                continue
+            # A multi-sequence file leaves the sequence blank: its group names it.
+            seq = "" if multi_sequences_per_file else sequence_from_stem(p.stem)
             rows.append(
                 build_tracks_raw_row(
                     path=p,
@@ -9067,23 +9425,14 @@ class Dataset:
                 )
             )
 
-        if files and group_re is not None and not multi_sequences_per_file:
-            if not stem_matched:
-                log.report(
-                    "group_pattern_unmatched",
-                    f"group_pattern {group_pattern!r} matched none of the "
-                    f"{len(files)} file stems, so each entry has an empty group. "
-                    "It searches the file stem, not the folders; "
-                    "group_path_pattern searches the path below the source",
-                    pattern=group_pattern,
-                )
-        if files and path_re is not None and not path_matched:
-            log.report(
-                "group_path_pattern_unmatched",
-                f"group_path_pattern {group_path_pattern!r} matched none of the "
-                f"{len(files)} file paths below {path_root}, so each entry has an "
-                "empty group",
-                pattern=group_path_pattern,
+        if missed:
+            self._report_missed_files(
+                log,
+                missed,
+                total=len(files),
+                group_pattern=group_pattern,
+                group_path_pattern=group_path_pattern,
+                path_root=path_root,
             )
 
         # iter_track_files already deduped by resolved path and sorted. The scan
@@ -9099,7 +9448,22 @@ class Dataset:
         # The same widening the media scan applies, for the same reason: a
         # symlinked raw file records its target, which the directory claim does
         # not cover, and the scan would preserve the row it had just written.
-        claim = claim | self.walked_claim(rows)
+        # A skipped file was walked too, and an earlier scan may have stored it
+        # under its target, so its row is claimed the same way and dropped.
+        # A target another source claims is that source's row to keep.
+        spared = (
+            other_sources() if missed and other_sources is not None else ScanClaim()
+        )
+        claim = claim | self.walked_claim(
+            [
+                *rows,
+                *(
+                    {"abs_path": self.relative_to_root(p)}
+                    for p in missed
+                    if not spared.claims(p.resolve())
+                ),
+            ]
+        )
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         with index_lock(out_csv):
             committed = _read_tracks_raw_index(out_csv)
@@ -9126,6 +9490,56 @@ class Dataset:
         composition_writer(df.to_dict("records"))
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
+
+    @staticmethod
+    def _report_missed_files(
+        log: FindingLog,
+        missed: list[Path],
+        *,
+        total: int,
+        group_pattern: str | None,
+        group_path_pattern: str | None,
+        path_root: Path | None,
+    ) -> None:
+        """Report the files a scan skipped because its group pattern missed them.
+
+        A pattern that missed every file is reported as that, and only that: the
+        source indexes no file, and each file listed would say the same.
+        """
+        if group_path_pattern is not None:
+            name, pattern = "group_path_pattern", group_path_pattern
+            where = f"file paths below {path_root}"
+        else:
+            name, pattern = "group_pattern", group_pattern
+            where = "file stems"
+        if len(missed) == total:
+            hint = (
+                ""
+                if group_path_pattern is not None
+                else " (it searches the file stem, not the folders; "
+                "group_path_pattern searches the path below the source)"
+            )
+            log.report(
+                "group_path_pattern_unmatched"
+                if group_path_pattern is not None
+                else "group_pattern_unmatched",
+                f"{name} {pattern!r} matched none of the {total} {where}{hint}, "
+                "so no file is indexed",
+                pattern=pattern,
+            )
+            return
+        sample = missed[:MISSED_SAMPLE]
+        listed = ", ".join(str(path) for path in sample)
+        more = len(missed) - len(sample)
+        log.report(
+            "group_pattern_missed",
+            f"{name} {pattern!r} matched {total - len(missed)} of {total} {where}, "
+            f"so {len(missed)} {'file is' if len(missed) == 1 else 'files are'} "
+            f"not indexed: {listed}" + (f" and {more} more" if more else ""),
+            pattern=pattern,
+            count=len(missed),
+            sample=sample,
+        )
 
     def index_label_series(
         self, source: LabelsScanSource, findings: FindingLog | None = None
@@ -9227,6 +9641,7 @@ class Dataset:
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
+        other_sources: Callable[[], ScanClaim] | None = None,
     ) -> Path:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
@@ -9266,7 +9681,7 @@ class Dataset:
             # A label file is one sequence, and no label converter says
             # otherwise, so there is no rule to resolve from the converter the
             # way the tracks side does.
-            sequence_from_stem=_stem_as_sequence,
+            sequence_from_stem=stem_as_sequence,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
@@ -9280,6 +9695,7 @@ class Dataset:
             group_path_pattern=group_path_pattern,
             group_path_root=group_path_root,
             findings=findings,
+            other_sources=other_sources,
         )
 
     def write_tracks_raw_index(
@@ -9460,8 +9876,13 @@ class Dataset:
         covered: set[tuple[str, str]] | None,
         variants: set[str] | None,
         committer: TableCommitter,
+        current: set[tuple[str, str]] | None = None,
+        written: set[tuple[str, str]] | None = None,
     ) -> list[EntryFailure]:
         """Add the tables of *outcome* to *committer*, and what it reached to the sets.
+
+        *current* collects the entries the file skipped as already current, and
+        *written* those it wrote a table for.
 
         The caller flushes the committer when it has added the last outcome.
 
@@ -9470,6 +9891,12 @@ class Dataset:
         """
         if covered is not None:
             covered.update(outcome.covered)
+        if current is not None:
+            current.update(outcome.current)
+        if written is not None:
+            written.update(
+                (staged.row.group, staged.row.sequence) for staged in outcome.tables
+            )
         if variants is not None and outcome.variant:
             variants.add(outcome.variant)
         return committer.add(outcome.tables)
@@ -9555,6 +9982,7 @@ class Dataset:
                         variant, out_group_canon, canon_seq, facts
                     )
                 ):
+                    outcome.current.append((out_group_canon, canon_seq))
                     continue
 
                 # Which entry to produce -- passed beside the params, never
@@ -9633,6 +10061,7 @@ class Dataset:
             and not overwrite
             and self._conversion_is_current(variant, group_value, seq_value, facts)
         ):
+            outcome.current.append((group_value, seq_value))
             outcome.path = out_path
             return
 
@@ -9953,6 +10382,8 @@ class Dataset:
         # is indexed but absent from this is an old spelling -- see
         # ``_warn_superseded_entries``.
         covered: set[tuple[str, str]] = set()
+        current: set[tuple[str, str]] = set()
+        written: set[tuple[str, str]] = set()
         minted: set[str] = set()
         # The keys of the covered entries that did not convert, so that the count
         # of converted entries leaves them out while ``covered`` keeps naming them.
@@ -9982,7 +10413,9 @@ class Dataset:
                 # A refusal under ``strict_schema``, or a failure that no file's
                 # own handler took: the run ends here, after every file before it.
                 raise result
-            for lost in self._commit_track_outcome(result, covered, minted, committer):
+            for lost in self._commit_track_outcome(
+                result, covered, minted, committer, current, written
+            ):
                 report_lost(lost)
             if result.failure is not None:
                 print(result.warning, file=sys.stderr)
@@ -10027,7 +10460,7 @@ class Dataset:
             for _, result in ordered.held():
                 if not isinstance(result, Exception):
                     for lost in self._commit_track_outcome(
-                        result, covered, minted, committer
+                        result, covered, minted, committer, current, written
                     ):
                         report_lost(lost)
             for lost in committer.flush():
@@ -10043,6 +10476,11 @@ class Dataset:
             ),
             failed=len(failures),
             variants=tuple(sorted(minted)),
+            current=sum(
+                1
+                for entry in current - written
+                if entry in covered and make_entry_key(*entry) not in unconverted
+            ),
         )
         if failures and merging:
             print(
@@ -10303,6 +10741,7 @@ class Dataset:
             and not overwrite
             and self._conversion_is_current(variant, group, sequence, facts)
         ):
+            outcome.current.append((text_cell(group), text_cell(sequence)))
             return outcome
 
         hints = _placed_hints(

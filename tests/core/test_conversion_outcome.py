@@ -1,7 +1,8 @@
 """``ConversionOutcome.converted`` counts the entries written or current.
 
 An entry that failed is not one of them, and a run that converts none of what it
-attempted is lost whole."""
+attempted is lost whole. ``current`` counts the entries among them that the call
+found current and did not write."""
 
 from __future__ import annotations
 
@@ -14,7 +15,12 @@ from mosaic.core.dataset import ConversionOutcome, Dataset
 from mosaic.core.track_converter import EntryHints
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from tests.helpers import calms21_dataset, make_dataset, write_trex_npz
+from tests.helpers import (
+    calms21_dataset,
+    make_dataset,
+    write_tracktor_recording,
+    write_trex_npz,
+)
 
 
 def _dataset(tmp_path: Path, good: tuple[str, ...], bad: tuple[str, ...]) -> Dataset:
@@ -55,6 +61,44 @@ def test_a_rerun_counts_the_entries_that_are_already_current(tmp_path: Path) -> 
     outcome = ds.convert_all_tracks()
 
     assert (outcome.converted, outcome.failed) == (1, 1)
+    assert outcome.current == 1
+
+
+def test_a_second_conversion_keeps_the_tables_of_the_first(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path, good=("a", "b", "c"), bad=())
+    first = ds.convert_all_tracks()
+    tables = sorted(ds.get_root("tracks").rglob("*.parquet"))
+    assert len(tables) == 3
+    kept = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in tables}
+    raw = ds.base_dir / "raw"
+    for name in ("d", "e"):
+        write_trex_npz(raw / f"{name}_fish0.npz")
+    _ = ds.index_tracks_raw([raw], patterns=["*.npz"], src_format="trex_npz")
+
+    second = ds.convert_all_tracks()
+
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in tables
+    } == kept
+    assert (first.converted, first.current) == (3, 0)
+    assert (second.converted, second.current) == (5, 3)
+    assert second.converted - second.current == 2
+
+
+def test_a_file_per_sequence_format_counts_its_current_entry(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = write_tracktor_recording(ds.base_dir / "raw")
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked_fixed_final.tsv"],
+        src_format="tracktor_corrected_tsv",
+    )
+    first = ds.convert_all_tracks()
+
+    second = ds.convert_all_tracks()
+
+    assert (first.converted, first.current) == (1, 0)
+    assert (second.converted, second.current) == (1, 1)
 
 
 def test_nothing_to_convert_is_not_a_loss() -> None:

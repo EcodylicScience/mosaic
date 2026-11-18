@@ -12,9 +12,10 @@ measures its root-relative ``abs_path`` against ``base_dir`` -- which an unsaved
 manifest resolves to the manifest path rather than its parent.
 """
 
+import fnmatch
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -22,14 +23,20 @@ import pandas as pd
 import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz converter
+from mosaic.core.pipeline.definitions.store import is_under_definitions_root
+from mosaic.core.pipeline.label_series import is_under_label_series
+from mosaic.core.pipeline.tracking_roots import is_under_tracking_root
 from mosaic.core.pipeline.tracks_raw_index import (
     TRACKS_RAW_INDEX_COLUMNS,
     TracksRawIndexScope,
     build_tracks_raw_row,
     frame_from_rows,
+    group_for_path,
     iter_track_files,
     load_tracks_raw_index_frame,
     read_tracks_raw_index,
+    source_file_filter,
+    stem_as_sequence,
     write_tracks_raw_index_rows,
 )
 
@@ -427,6 +434,280 @@ def test_iter_track_files_dedups_skips_resource_forks_excludes_and_sorts(
     assert all(isinstance(st, os.stat_result) for _, st in results)
 
 
+# --- iter_track_files: the walk and the per-file predicate agree ------------
+
+
+def _reference_walk(
+    search_dirs: list[Path],
+    patterns: list[str],
+    *,
+    recursive: bool,
+    exclude_patterns: list[str],
+) -> list[tuple[Path, os.stat_result]]:
+    """The walk as it was: one ``rglob(pattern)`` or ``glob(pattern)`` per pattern."""
+    by_resolved: dict[Path, tuple[Path, os.stat_result]] = {}
+    for directory in search_dirs:
+        for pattern in patterns:
+            matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
+            for path in matches:
+                if not path.is_file():
+                    continue
+                if path.name.startswith("._"):
+                    continue
+                if any(fnmatch.fnmatch(path.name, ex) for ex in exclude_patterns):
+                    continue
+                if is_under_tracking_root(path.parts):
+                    continue
+                if is_under_definitions_root(path.parts):
+                    continue
+                if is_under_label_series(path):
+                    continue
+                by_resolved.setdefault(path.resolve(), (path, path.stat()))
+    return [by_resolved[key] for key in sorted(by_resolved)]
+
+
+def _fixture_tree(root: Path) -> list[Path]:
+    """A tree that exercises every rule of the walk; returns every file in it."""
+    files = [
+        "top.csv",
+        "top.npz",
+        "top.h5",
+        "xray.h5",
+        "xray.csv",
+        "._top.csv",
+        "skip_me.csv",
+        ".hidden.csv",
+        "a/one.csv",
+        "a/two.npz",
+        "a/._fork.csv",
+        "a/skip_me.csv",
+        "a/b/three.csv",
+        "a/b/three.npz",
+        "a/b/four.h5",
+        "b/five.npz",
+        "b/five.csv",
+        "b/deep/six.npz",
+        "b/deep/b/seven.npz",
+        "b/deep/b/seven.csv",
+        "x1/eight.h5",
+        "x1/eight.csv",
+        "x2/nine/ten.h5",
+        "xx/eleven.h5",
+        "docs/readme.txt",
+        "docs/.dot/twelve.csv",
+        "_tracking/trex/run/data/thirteen.npz",
+        "_tracking/fourteen.csv",
+        "a/_tracking/fifteen.csv",
+        "feature_definitions/sixteen.csv",
+        "a/feature_definitions/seventeen.csv",
+        "series/.mosaic-series",
+        "series/index.csv",
+        "series/key/rev1/manifest.json",
+        "series/key/rev1/labels.csv",
+        "series/key/rev1/b/deep.npz",
+        "series/other.csv",
+        "_trackingx/eighteen.csv",
+        "keypoints/mine.csv",
+    ]
+    for name in files:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_bytes(name.encode())
+    return [root / name for name in files]
+
+
+_WALK_PATTERNS: list[list[str]] = [
+    ["*.csv"],
+    ["*.csv", "*.npz"],
+    ["a/*.csv"],
+    ["**/b/*.npz", "*.csv"],
+    ["x*/*.h5"],
+    ["*/*.h5"],
+    ["b/*/*.npz"],
+    ["*.h5", "*.H5"],
+    ["**/*.npz"],
+    ["x?/*/*.h5"],
+]
+_WALK_EXCLUDES: list[list[str]] = [[], ["skip_me.*"], ["skip_me.*", "*.h5"]]
+
+
+@pytest.mark.parametrize("exclude_patterns", _WALK_EXCLUDES, ids=str)
+@pytest.mark.parametrize("recursive", [True, False], ids=["recursive", "flat"])
+@pytest.mark.parametrize("patterns", _WALK_PATTERNS, ids=str)
+def test_the_walk_returns_what_the_rglob_walk_returned(
+    tmp_path: Path,
+    patterns: list[str],
+    recursive: bool,
+    exclude_patterns: list[str],
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    _ = _fixture_tree(base)
+
+    expected = _reference_walk(
+        [base], patterns, recursive=recursive, exclude_patterns=exclude_patterns
+    )
+    found = iter_track_files(
+        [base], patterns, recursive=recursive, exclude_patterns=exclude_patterns
+    )
+
+    assert [(p, s.st_ino, s.st_size, s.st_mtime_ns) for p, s in found] == [
+        (p, s.st_ino, s.st_size, s.st_mtime_ns) for p, s in expected
+    ]
+
+
+def test_the_reference_walk_has_files_to_compare(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    _ = _fixture_tree(base)
+
+    names = [
+        path.relative_to(base).as_posix()
+        for path, _stat in iter_track_files([base], ["*.csv"])
+    ]
+
+    assert {
+        ".hidden.csv",
+        "a/b/three.csv",
+        "docs/.dot/twelve.csv",
+        "keypoints/mine.csv",
+        "_trackingx/eighteen.csv",
+    } <= set(names)
+    assert "top.csv" in names
+    assert "._top.csv" not in names
+    assert "_tracking/fourteen.csv" not in names
+    assert "series/other.csv" not in names
+    assert "feature_definitions/sixteen.csv" not in names
+
+
+@pytest.mark.parametrize("exclude_patterns", _WALK_EXCLUDES, ids=str)
+@pytest.mark.parametrize("recursive", [True, False], ids=["recursive", "flat"])
+@pytest.mark.parametrize("patterns", _WALK_PATTERNS, ids=str)
+def test_the_filter_accepts_what_the_walk_returns(
+    tmp_path: Path,
+    patterns: list[str],
+    recursive: bool,
+    exclude_patterns: list[str],
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    files = _fixture_tree(base)
+    walked = {
+        path.resolve()
+        for path, _stat in _reference_walk(
+            [base], patterns, recursive=recursive, exclude_patterns=exclude_patterns
+        )
+    }
+
+    accepts = source_file_filter(
+        base, patterns, recursive=recursive, exclude_patterns=exclude_patterns
+    )
+
+    assert {path.resolve() for path in files if accepts.accepts(path.resolve())} == (
+        walked
+    )
+
+
+@pytest.mark.parametrize("recursive", [True, False], ids=["recursive", "flat"])
+@pytest.mark.parametrize(
+    "patterns", [["*.csv"], ["a/*.csv"], ["link/*.csv"], ["*/*.csv"]], ids=str
+)
+def test_the_walk_follows_a_symlinked_folder_as_the_rglob_walk_did(
+    tmp_path: Path, patterns: list[str], recursive: bool
+) -> None:
+    real = tmp_path / "real"
+    (real / "a").mkdir(parents=True)
+    _ = (real / "a" / "one.csv").write_bytes(b"one")
+    _ = (real / "top.csv").write_bytes(b"top")
+    base = (tmp_path / "ds").resolve()
+    base.mkdir()
+    (base / "link").symlink_to(real, target_is_directory=True)
+    (base / "a").symlink_to(real / "a", target_is_directory=True)
+
+    expected = _reference_walk(
+        [base], patterns, recursive=recursive, exclude_patterns=[]
+    )
+    found = iter_track_files([base], patterns, recursive=recursive)
+
+    assert [path for path, _stat in found] == [path for path, _stat in expected]
+    if patterns != ["*.csv"]:
+        assert found, "the symlinked folder must give the comparison something"
+
+
+@pytest.mark.parametrize("recursive", [True, False], ids=["recursive", "flat"])
+def test_the_walk_lists_only_what_a_pattern_matches(
+    tmp_path: Path, recursive: bool
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    for folder in ("", "a/", "a/b/"):
+        for number in range(30):
+            path = base / f"{folder}noise{number}.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _ = path.write_bytes(b"")
+    matching = [base / "one.npz", base / "a" / "two.npz", base / "a" / "b" / "3.npz"]
+    for path in matching:
+        _ = path.write_bytes(b"")
+    accepts = source_file_filter(
+        base, ["*.npz"], recursive=recursive, exclude_patterns=[]
+    )
+
+    listed = [path for path in accepts.candidates(base) if path.is_file()]
+
+    expected = matching if recursive else matching[:1]
+    assert sorted(listed) == sorted(expected)
+    assert len(list(accepts.candidates(base))) == len(expected)
+
+
+def test_the_walk_of_a_symlinked_root_agrees_with_the_filter_on_resolved_paths(
+    tmp_path: Path,
+) -> None:
+    real = (tmp_path / "real").resolve()
+    _ = _fixture_tree(real)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    found = iter_track_files([link], ["**/b/*.npz", "*.csv"])
+    accepts = source_file_filter(link, ["**/b/*.npz", "*.csv"], recursive=True)
+
+    assert found
+    assert all(path.is_relative_to(link) for path, _stat in found)
+    assert [path.resolve() for path, _stat in found] == [
+        path.resolve()
+        for path, _stat in _reference_walk(
+            [link], ["**/b/*.npz", "*.csv"], recursive=True, exclude_patterns=[]
+        )
+    ]
+    assert all(accepts.accepts(path.resolve()) for path, _stat in found)
+
+
+def test_the_filter_rejects_a_path_outside_its_base(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    _ = _fixture_tree(base)
+    sibling = tmp_path / "ds2" / "top.csv"
+    sibling.parent.mkdir()
+    _ = sibling.write_bytes(b"")
+
+    accepts = source_file_filter(base, ["*.csv"], recursive=True, exclude_patterns=[])
+
+    assert accepts.accepts(base / "top.csv")
+    assert not accepts.accepts(sibling.resolve())
+    assert not accepts.accepts(base.parent / "top.csv")
+
+
+def test_the_walk_keeps_a_listed_file_whatever_the_patterns_say(
+    tmp_path: Path,
+) -> None:
+    listed = tmp_path / "calls.json"
+    _ = listed.write_bytes(b"{}")
+    forked = tmp_path / "._calls.json"
+    _ = forked.write_bytes(b"{}")
+    skipped: list[Path] = []
+
+    found = iter_track_files(
+        [listed, forked], ["*.csv"], recursive=False, listed_skipped=skipped
+    )
+
+    assert [path for path, _stat in found] == [listed]
+    assert skipped == [forked]
+
+
 # --- Dataset.write_tracks_raw_index: the assignment-driven projection ----------
 
 
@@ -818,3 +1099,59 @@ def test_group_from_path_rejects_a_group_with_a_separator(tmp_path: Path) -> Non
             src_format="trex_npz",
             group_from_path=lambda p: "control/baseline",
         )
+
+
+class TestGroupForPath:
+    """The one rule that decides a file's group, and whether the pattern missed it."""
+
+    @staticmethod
+    def decide(
+        path: str,
+        *,
+        group_re: str | None = None,
+        path_re: str | None = None,
+        multi: bool = False,
+        group_from: str | None = None,
+        group_from_path: Callable[[Path], str] | None = None,
+        sequence_from_stem: Callable[[str], str] = stem_as_sequence,
+    ) -> str | None:
+        return group_for_path(
+            Path("/src") / path,
+            sequence_from_stem=sequence_from_stem,
+            multi_sequences_per_file=multi,
+            group_from=group_from,
+            group_re=None if group_re is None else re.compile(group_re),
+            path_re=None if path_re is None else re.compile(path_re),
+            path_root=Path("/src"),
+            group_from_path=group_from_path,
+        )
+
+    def test_no_pattern_is_the_empty_group_and_not_a_miss(self) -> None:
+        assert self.decide("a/x.npy") == ""
+
+    def test_a_stem_pattern_lifts_its_group_or_misses(self) -> None:
+        assert self.decide("hex_1.npy", group_re=r"^(hex)_") == "hex"
+        assert self.decide("plain.npy", group_re=r"^(hex)_") is None
+
+    def test_a_stem_pattern_searches_the_converters_sequence(self) -> None:
+        def strip(stem: str) -> str:
+            return stem.removesuffix("_fish0")
+
+        assert (
+            self.decide("hex_fish0.npz", group_re=r"^(hex)$", sequence_from_stem=strip)
+            == "hex"
+        )
+
+    def test_a_path_pattern_searches_the_path_below_the_root(self) -> None:
+        assert self.decide("g1/x.npy", path_re=r"^([^/]+)/") == "g1"
+        assert self.decide("x.npy", path_re=r"^([^/]+)/") is None
+
+    def test_a_multi_sequence_file_takes_the_group_from_its_name_or_folder(
+        self,
+    ) -> None:
+        assert self.decide("s1/x.npy", multi=True, group_from="parent") == "s1"
+        assert self.decide("s1/x.npy", multi=True, group_from="filename") == "x"
+        assert self.decide("s1/x.npy", multi=True) == ""
+
+    def test_a_group_rule_never_misses(self) -> None:
+        assert self.decide("x.npy", group_from_path=lambda path: "g") == "g"

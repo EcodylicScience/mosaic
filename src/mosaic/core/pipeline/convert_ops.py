@@ -145,7 +145,7 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
     """Convert one format's raw tracks into a tracks variant.
 
     Its progress counts the raw files of the format, and ``entries_written``
-    counts the entries they produce.
+    counts the entries they produce, those it found current included.
     """
 
     kind = "convert-tracks"
@@ -203,8 +203,17 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
         )
         # No ``tracks_variant`` event: it records the variants an attempt read,
         # and a conversion reads raw files. The variant it wrote is its run id.
-        # ``converted`` counts the entries written; ``failed`` counts raw files.
+        # ``converted`` counts the entries written or found current, so
+        # ``entries_written`` is coverage, as it is for a feature run. A call that
+        # wrote nothing, failed nothing and found a table for every entry of a
+        # non-empty source is a cache hit. ``failed`` counts raw files.
         ctx.entries_written(outcome.converted)
+        if (
+            outcome.converted > 0
+            and outcome.converted - outcome.current == 0
+            and outcome.failed == 0
+        ):
+            ctx.cache_hit()
         if outcome.lost_everything:
             msg = (
                 f"every raw file of format {params.source_format!r} failed to "

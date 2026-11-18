@@ -10,14 +10,21 @@ of them is true any more.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.manifest import MediaScanSource, TracksScanSource
+from mosaic.core.manifest import (
+    LabelsScanSource,
+    MediaScanSource,
+    RawScanSource,
+    TracksScanSource,
+)
 from mosaic.core.pipeline.scan_claim import ScanClaim
+from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
 VideoWriter = Callable[..., None]
 
@@ -597,3 +604,726 @@ class TestTracksSources:
         rows = dataset.read_tracks_raw_index()
         by_name = {Path(str(r["abs_path"])).name: str(r["src_format"]) for r in rows}
         assert by_name == {"a.npz": "trex_npz", "b.npy": "calms21_npy"}
+
+
+def touch_files(*paths: Path) -> None:
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ = path.write_bytes(b"\x00")
+
+
+def raw_names(dataset: Dataset) -> set[str]:
+    return {
+        Path(str(row["abs_path"])).name
+        for row in dataset.read_tracks_raw_index()
+        if row.get("abs_path")
+    }
+
+
+def declare_tracks(dataset: Dataset, *sources: TracksScanSource) -> None:
+    """Declare *sources* as the dataset's tracks sources, past the overlap check."""
+    dataset.manifest.sources = dataset.manifest.sources.with_kind("tracks", sources)
+
+
+def count_walks(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record the base of every walk a claim makes."""
+    from mosaic.core import dataset as dataset_module
+
+    walked: list[Path] = []
+    real = dataset_module.walked_files
+
+    def counting(
+        base: Path,
+        patterns: Sequence[str],
+        *,
+        recursive: bool,
+        exclude_patterns: Sequence[str] = (),
+    ) -> frozenset[Path]:
+        walked.append(base)
+        return real(
+            base, patterns, recursive=recursive, exclude_patterns=exclude_patterns
+        )
+
+    monkeypatch.setattr(dataset_module, "walked_files", counting)
+    return walked
+
+
+class TestASourceClaimFollowsItsFilter:
+    """A tracks or labels directory source claims the files its walk would take.
+
+    Two sources may share a folder with disjoint patterns, so a claim over the
+    whole subtree would replace or drop the other source's rows.
+    """
+
+    @pytest.mark.parametrize(
+        "source_type", [TracksScanSource, LabelsScanSource], ids=["tracks", "labels"]
+    )
+    def test_a_directory_source_claims_what_its_patterns_accept(
+        self, tmp_path: Path, source_type: type[RawScanSource]
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.csv", base / "deep" / "b.csv", base / "c.npz")
+        source = source_type(
+            id="s", path=str(base), patterns=("*.csv",), src_format="any"
+        )
+
+        claim = dataset.source_claim(source)
+
+        assert claim.claims((base / "a.csv").resolve())
+        assert claim.claims((base / "deep" / "b.csv").resolve())
+        assert claim.claims((base / "gone.csv").resolve())
+        assert not claim.claims((base / "c.npz").resolve())
+        assert not claim.claims((base / "._a.csv").resolve())
+
+    def test_exclude_patterns_and_recursion_narrow_the_claim(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.csv", base / "skip.csv", base / "deep" / "b.csv")
+        source = TracksScanSource(
+            id="s",
+            path=str(base),
+            patterns=("*.csv",),
+            recursive=False,
+            exclude_patterns=("skip*",),
+        )
+
+        claim = dataset.source_claim(source)
+
+        assert claim.claims((base / "a.csv").resolve())
+        assert not claim.claims((base / "skip.csv").resolve())
+        assert not claim.claims((base / "deep" / "b.csv").resolve())
+
+    @pytest.mark.parametrize("which", ["media", "series"])
+    def test_a_media_or_series_source_keeps_the_whole_subtree(
+        self, tmp_path: Path, which: str
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        base.mkdir()
+        source = (
+            MediaScanSource(id="s", path=str(base))
+            if which == "media"
+            else LabelsScanSource(id="s", path=str(base), series="keypoints")
+        )
+
+        claim = dataset.source_claim(source)
+
+        assert claim.claims((base / "anything.txt").resolve())
+
+    def test_a_row_stored_relative_is_judged_by_the_filter(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        inbox = dataset.base_dir / "inbox"
+        touch_files(inbox / "a.csv", inbox / "b.npz")
+        _ = dataset.index_tracks_raw([inbox], patterns=["*.csv", "*.npz"])
+        dataset.add_scan_source(
+            TracksScanSource(id="s", path="inbox", patterns=("*.csv",))
+        )
+        stored = {str(row["abs_path"]) for row in dataset.read_tracks_raw_index()}
+        assert stored == {"inbox/a.csv", "inbox/b.npz"}
+
+        assert dataset.remove_scan_source("tracks", "s", save=False) == 1
+
+    @pytest.mark.parametrize(
+        "narrowed",
+        [
+            {"patterns": ("*.npz",)},
+            {"patterns": ("*.npy", "*.npz"), "exclude_patterns": ("a*",)},
+        ],
+        ids=["patterns", "exclude"],
+    )
+    def test_a_rescan_drops_a_row_its_narrowed_filter_rejects(
+        self, tmp_path: Path, narrowed: dict[str, tuple[str, ...]]
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "b.npz")
+        source = TracksScanSource(id="s", path=str(base), patterns=("*.npy", "*.npz"))
+        dataset.add_scan_source(source)
+        _ = dataset.scan_tracks()
+        assert raw_names(dataset) == {"a.npy", "b.npz"}
+        declare_tracks(dataset, source.model_copy(update=narrowed))
+
+        _ = dataset.scan_tracks()
+
+        assert raw_names(dataset) == {"b.npz"}
+
+    def test_sources_over_one_folder_keep_each_others_rows(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "deep" / "b.npz", base / "other.txt")
+        declare_tracks(
+            dataset,
+            TracksScanSource(id="npy", path=str(base), patterns=("*.npy",)),
+            TracksScanSource(id="npz", path=str(base), patterns=("*.npz",)),
+        )
+
+        for only in ([], ["npy"], ["npz"], [], ["npy"]):
+            _ = dataset.scan_tracks(only=only)
+
+            assert raw_names(dataset) == {"a.npy", "b.npz"}
+
+    def test_a_deleted_file_walks_no_unrelated_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        touch_files(tmp_path / "a" / "x.npy", tmp_path / "a" / "y.npy")
+        touch_files(tmp_path / "b" / "z.npy")
+        for name in ("a", "b"):
+            dataset.add_scan_source(
+                TracksScanSource(
+                    id=name, path=str(tmp_path / name), patterns=("*.npy",)
+                )
+            )
+        _ = dataset.scan_tracks()
+        (tmp_path / "a" / "x.npy").unlink()
+        walked = count_walks(monkeypatch)
+
+        _ = dataset.scan_tracks(only=["a"])
+
+        assert raw_names(dataset) == {"y.npy", "z.npy"}
+        assert walked == []
+
+    def test_a_scan_with_no_sibling_walks_no_other_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "old.npz")
+        source = TracksScanSource(id="s", path=str(base), patterns=("*.npy", "*.npz"))
+        dataset.add_scan_source(source)
+        _ = dataset.scan_tracks()
+        declare_tracks(dataset, source.model_copy(update={"patterns": ("*.npy",)}))
+        walked = count_walks(monkeypatch)
+
+        _ = dataset.scan_tracks()
+
+        assert raw_names(dataset) == {"a.npy"}
+        assert walked == []
+
+    def test_walked_claim_is_the_resolved_stored_paths(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        target = tmp_path / "data" / "a.csv"
+        touch_files(target)
+
+        claim = dataset.walked_claim([{"abs_path": str(target)}, {"abs_path": ""}])
+
+        assert claim == ScanClaim.over_files([target.resolve()])
+
+
+class TestASymlinkTheWalkFindsIsTheSourcesRow:
+    """The filter judges a path by its own name and place, which a symlink hides.
+
+    A file symlink whose target has another name, and a file reached through a
+    symlinked folder, are walked under the source and stored by their target.
+    The claim covers each target the walk reaches, so removing the source counts
+    and drops their rows.
+    """
+
+    @pytest.mark.parametrize("outside", [True, False], ids=["outside", "inside"])
+    def test_a_file_symlink_to_another_name(
+        self, tmp_path: Path, outside: bool
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        target = (tmp_path / "elsewhere" if outside else base / "store") / "t.dat"
+        touch_files(base / "a.npy", target)
+        (base / "link.npy").symlink_to(target)
+        dataset.add_scan_source(
+            TracksScanSource(id="s", path=str(base), patterns=("*.npy",))
+        )
+        _ = dataset.scan_tracks()
+        assert raw_names(dataset) == {"a.npy", "t.dat"}
+        source = dataset.scan_sources("tracks")[0]
+
+        assert dataset.remove_scan_source("tracks", "s", save=False) == 2
+        assert dataset.drop_claimed_rows("tracks", dataset.source_claim(source)) == 2
+        assert raw_names(dataset) == set()
+
+    def test_a_file_through_a_symlinked_folder_outside_the_base(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        outside = tmp_path / "elsewhere"
+        touch_files(base / "own" / "a.npy", outside / "x.npy")
+        (base / "linked").symlink_to(outside, target_is_directory=True)
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="s", path=str(base), patterns=("*/*.npy",), recursive=False
+            )
+        )
+        _ = dataset.scan_tracks()
+        assert raw_names(dataset) == {"a.npy", "x.npy"}
+        source = dataset.scan_sources("tracks")[0]
+
+        assert dataset.remove_scan_source("tracks", "s", save=False) == 2
+        assert dataset.drop_claimed_rows("tracks", dataset.source_claim(source)) == 2
+        assert raw_names(dataset) == set()
+
+    def test_a_rescan_keeps_a_symlinked_row_once(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        target = tmp_path / "elsewhere" / "t.dat"
+        touch_files(target)
+        base.mkdir()
+        (base / "link.npy").symlink_to(target)
+        dataset.add_scan_source(
+            TracksScanSource(id="s", path=str(base), patterns=("*.npy",))
+        )
+
+        for _ in range(2):
+            _ = dataset.scan_tracks()
+
+        assert len(dataset.read_tracks_raw_index()) == 1
+
+
+class TestARemovalSparesItsSiblings:
+    """Removing a source drops only what no other source of its kind claims."""
+
+    @staticmethod
+    def two_sources_sharing_a_target(tmp_path: Path) -> Dataset:
+        dataset = make_dataset(tmp_path)
+        target = tmp_path / "elsewhere" / "t.dat"
+        touch_files(tmp_path / "a" / "x.npy", tmp_path / "b" / "y.npy", target)
+        for name in ("a", "b"):
+            (tmp_path / name / "link.npy").symlink_to(target)
+            dataset.add_scan_source(
+                TracksScanSource(
+                    id=name, path=str(tmp_path / name), patterns=("*.npy",)
+                )
+            )
+        _ = dataset.scan_tracks()
+        assert raw_names(dataset) == {"x.npy", "y.npy", "t.dat"}
+        return dataset
+
+    def test_a_shared_target_keeps_its_row(self, tmp_path: Path) -> None:
+        dataset = self.two_sources_sharing_a_target(tmp_path)
+        removal = dataset.source_removal("tracks", "a")
+
+        assert dataset.remove_scan_source("tracks", "a", removal=removal) == 1
+        assert (
+            dataset.drop_claimed_rows(
+                "tracks", removal.claim, series=removal.series, spared=removal.spared
+            )
+            == 1
+        )
+        assert raw_names(dataset) == {"y.npy", "t.dat"}
+
+    def test_the_count_alone_spares_the_shared_target(self, tmp_path: Path) -> None:
+        dataset = self.two_sources_sharing_a_target(tmp_path)
+
+        assert dataset.undeclare_scan_source("tracks", "a") == 1
+
+    def test_a_removal_built_before_a_sibling_was_declared_is_built_again(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        target = tmp_path / "elsewhere" / "t.dat"
+        touch_files(tmp_path / "a" / "x.npy", tmp_path / "b" / "y.npy", target)
+        for name in ("a", "b"):
+            (tmp_path / name / "link.npy").symlink_to(target)
+        dataset.add_scan_source(
+            TracksScanSource(id="a", path=str(tmp_path / "a"), patterns=("*.npy",))
+        )
+        _ = dataset.scan_tracks()
+        old = dataset.source_removal("tracks", "a")
+        dataset.add_scan_source(
+            TracksScanSource(id="b", path=str(tmp_path / "b"), patterns=("*.npy",))
+        )
+
+        assert dataset.remove_scan_source("tracks", "a", save=False, removal=old) == 1
+
+
+RawKind = Literal["tracks", "labels"]
+
+
+def raw_source(
+    kind: RawKind,
+    source_id: str,
+    path: Path,
+    patterns: tuple[str, ...],
+    src_format: str | None = None,
+) -> TracksScanSource | LabelsScanSource:
+    """A tracks or labels directory source, with its kind's default format."""
+    if kind == "tracks":
+        return TracksScanSource(
+            id=source_id,
+            path=str(path),
+            patterns=patterns,
+            src_format=src_format or "calms21_npy",
+        )
+    return LabelsScanSource(
+        id=source_id,
+        path=str(path),
+        patterns=patterns,
+        src_format=src_format or "boris_aggregated_csv",
+    )
+
+
+def raw_rows(dataset: Dataset, kind: RawKind) -> list[dict[str, object]]:
+    index = dataset.get_root(f"{kind}_raw") / "index.csv"
+    return [dict(row) for row in read_tracks_raw_index(index)]
+
+
+def raw_index_bytes(dataset: Dataset, kind: RawKind) -> bytes:
+    return (dataset.get_root(f"{kind}_raw") / "index.csv").read_bytes()
+
+
+def scan_kind(dataset: Dataset, kind: RawKind, only: Sequence[str] = ()) -> object:
+    if kind == "tracks":
+        return dataset.scan_tracks(only=only)
+    return dataset.scan_labels(only=only)
+
+
+@pytest.mark.parametrize("kind", ["tracks", "labels"])
+class TestSourcesOverOneFolder:
+    """Two tracks or labels sources over one folder are refused only for shared files.
+
+    A file both sources' walks take would be indexed by two recipes, so it is
+    refused at declaration and again at a scan, before any index write. Sources
+    that take disjoint files share the folder.
+    """
+
+    def test_disjoint_patterns_declare_and_each_scans_its_own(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "deep" / "b.npz")
+        npy, npz = (
+            ("calms21_npy", "trex_npz")
+            if kind == "tracks"
+            else ("calms21_npy", "boris_aggregated_csv")
+        )
+        dataset.add_scan_source(raw_source(kind, "npy", base, ("*.npy",), npy))
+        dataset.add_scan_source(raw_source(kind, "npz", base, ("*.npz",), npz))
+
+        _ = scan_kind(dataset, kind, ["npz"])
+        assert {
+            (Path(str(row["abs_path"])).name, row["src_format"])
+            for row in raw_rows(dataset, kind)
+        } == {("b.npz", npz)}
+
+        _ = scan_kind(dataset, kind)
+        _ = scan_kind(dataset, kind, ["npy"])
+
+        assert {
+            (Path(str(row["abs_path"])).name, row["src_format"])
+            for row in raw_rows(dataset, kind)
+        } == {("a.npy", npy), ("b.npz", npz)}
+
+    def test_overlapping_patterns_are_refused_naming_the_shared_files(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        from mosaic.core.dataset import SourcesShareFiles
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        shared = [base / f"x{n}.npy" for n in range(7)]
+        touch_files(base / "a.npy", *shared)
+        dataset.add_scan_source(raw_source(kind, "all", base, ("*.npy",)))
+
+        with pytest.raises(SourcesShareFiles) as refused:
+            dataset.add_scan_source(raw_source(kind, "xs", base, ("x*.npy",)))
+
+        message = str(refused.value)
+        assert isinstance(refused.value, ValueError)
+        assert "'all'" in message and "'xs'" in message
+        assert "7 files" in message
+        named = [path.name for path in shared if path.name in message]
+        assert named == [f"x{n}.npy" for n in range(5)]
+        assert "a.npy" not in message
+        assert [s.id for s in dataset.scan_sources(kind)] == ["all"]
+
+    def test_a_nested_path_follows_the_same_rule(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        from mosaic.core.dataset import SourcesShareFiles
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "day2" / "b.npz", base / "day2" / "c.npy")
+        dataset.add_scan_source(raw_source(kind, "outer", base, ("*.npy",)))
+
+        dataset.add_scan_source(raw_source(kind, "inner", base / "day2", ("*.npz",)))
+        with pytest.raises(SourcesShareFiles, match="c.npy"):
+            dataset.add_scan_source(
+                raw_source(kind, "clash", base / "day2", ("*.npy",))
+            )
+
+    def test_a_path_that_does_not_exist_keeps_the_structural_refusal(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        from mosaic.core.dataset import SourcesShareFiles
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        dataset.add_scan_source(raw_source(kind, "npy", base, ("*.npy",)))
+
+        with pytest.raises(ValueError, match="'npy'.*'npz'") as refused:
+            dataset.add_scan_source(raw_source(kind, "npz", base / "day2", ("*.npz",)))
+
+        assert not isinstance(refused.value, SourcesShareFiles)
+
+    def test_an_unmounted_pair_does_not_refuse_another_source(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        import shutil
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy")
+        for name in ("npy", "npz"):
+            dataset.add_scan_source(raw_source(kind, name, base, (f"*.{name}",)))
+        shutil.rmtree(base)
+
+        dataset.add_scan_source(
+            raw_source(kind, "other", tmp_path / "other", ("*.npy",))
+        )
+
+        assert [s.id for s in dataset.scan_sources(kind)] == ["npy", "npz", "other"]
+
+    def test_a_symlink_both_walks_reach_is_a_shared_file(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        from mosaic.core.dataset import SourcesShareFiles
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "t.dat")
+        (base / "link.npy").symlink_to(base / "t.dat")
+        dataset.add_scan_source(raw_source(kind, "dat", base, ("*.dat",)))
+
+        with pytest.raises(SourcesShareFiles, match="t.dat"):
+            dataset.add_scan_source(raw_source(kind, "npy", base, ("*.npy",)))
+
+    def test_a_rescan_of_one_source_keeps_the_others_rows(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "b.npz")
+        for name in ("npy", "npz"):
+            dataset.add_scan_source(raw_source(kind, name, base, (f"*.{name}",)))
+        _ = scan_kind(dataset, kind)
+        (base / "c.npy").write_bytes(b"\x00")
+
+        _ = scan_kind(dataset, kind, ["npy"])
+
+        assert {Path(str(row["abs_path"])).name for row in raw_rows(dataset, kind)} == {
+            "a.npy",
+            "b.npz",
+            "c.npy",
+        }
+
+    @pytest.mark.parametrize("only", [[], ["all"], ["xs"]], ids=["full", "A", "B"])
+    def test_a_later_file_both_take_is_refused_at_scan_before_any_write(
+        self, tmp_path: Path, kind: RawKind, only: list[str]
+    ) -> None:
+        from mosaic.core.dataset import SourcesShareFiles
+
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy")
+        dataset.add_scan_source(raw_source(kind, "all", base, ("*.npy",)))
+        dataset.add_scan_source(raw_source(kind, "xs", base, ("x*.npy",)))
+        _ = scan_kind(dataset, kind)
+        before = raw_index_bytes(dataset, kind)
+        touch_files(base / "b.npy", base / "x1.npy")
+
+        with pytest.raises(SourcesShareFiles, match="'all'.*'xs'.*x1.npy"):
+            _ = scan_kind(dataset, kind, only)
+
+        assert raw_index_bytes(dataset, kind) == before
+
+
+class TestTheStructuralRefusalStays:
+    """Media sources and label series over one folder are refused whatever they hold."""
+
+    def test_two_media_sources_over_one_existing_folder(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.mp4", base / "b.avi")
+        dataset.add_scan_source(
+            MediaScanSource(id="mp4", path=str(base), extensions=(".mp4",))
+        )
+
+        with pytest.raises(ValueError, match="'mp4'.*'avi'"):
+            dataset.add_scan_source(
+                MediaScanSource(id="avi", path=str(base), extensions=(".avi",))
+            )
+
+    def test_a_series_source_beside_a_labels_source(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.csv")
+        dataset.add_scan_source(
+            LabelsScanSource(id="files", path=str(base), patterns=("*.npy",))
+        )
+
+        with pytest.raises(ValueError, match="'files'.*'series'"):
+            dataset.add_scan_source(
+                LabelsScanSource(id="series", path=str(base), series="keypoints")
+            )
+
+
+def raw_file_names(dataset: Dataset, kind: RawKind) -> set[str]:
+    return {Path(str(row["abs_path"])).name for row in raw_rows(dataset, kind)}
+
+
+def prune_kind(dataset: Dataset, kind: RawKind, only: Sequence[str]) -> object:
+    if kind == "tracks":
+        return dataset.scan_tracks(only=only, prune_unsourced=True)
+    return dataset.scan_labels(only=only, prune_unsourced=True)
+
+
+@pytest.mark.parametrize("kind", ["tracks", "labels"])
+class TestARestrictedPruneBesideASibling:
+    """``prune_unsourced`` on a restricted scan is refused beside an unscanned sibling.
+
+    A source over one folder with another owns rows the restricted scan does not
+    walk, and a prune would read them as claimed by no source.
+    """
+
+    @staticmethod
+    def two_sources_over_one_folder(
+        tmp_path: Path, kind: RawKind, nested: bool
+    ) -> Dataset:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        other = base / "day2" if nested else base
+        touch_files(base / "a.npy", other / "b.npz")
+        dataset.add_scan_source(raw_source(kind, "npy", base, ("*.npy",)))
+        dataset.add_scan_source(raw_source(kind, "npz", other, ("*.npz",)))
+        _ = scan_kind(dataset, kind)
+        assert raw_file_names(dataset, kind) == {"a.npy", "b.npz"}
+        return dataset
+
+    @pytest.mark.parametrize("nested", [False, True], ids=["equal", "nested"])
+    def test_it_is_refused_and_the_index_is_unchanged(
+        self, tmp_path: Path, kind: RawKind, nested: bool
+    ) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind, nested)
+        before = raw_index_bytes(dataset, kind)
+
+        with pytest.raises(ValueError, match="'npz'.*'npy'|'npy'.*'npz'") as raised:
+            _ = prune_kind(dataset, kind, ["npy"])
+
+        assert "pruning unsourced" in str(raised.value)
+        assert raw_index_bytes(dataset, kind) == before
+
+    def test_the_other_source_scanned_alone_is_refused_too(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind, nested=False)
+        before = raw_index_bytes(dataset, kind)
+
+        with pytest.raises(ValueError, match="pruning unsourced"):
+            _ = prune_kind(dataset, kind, ["npz"])
+
+        assert raw_index_bytes(dataset, kind) == before
+
+    def test_scanning_both_sources_prunes(self, tmp_path: Path, kind: RawKind) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind, nested=False)
+        touch_files(tmp_path / "far" / "c.npy")
+        dataset.add_scan_source(raw_source(kind, "far", tmp_path / "far", ("*.npy",)))
+        _ = scan_kind(dataset, kind)
+        assert "c.npy" in raw_file_names(dataset, kind)
+
+        _ = prune_kind(dataset, kind, ["npy", "npz"])
+
+        assert raw_file_names(dataset, kind) == {"a.npy", "b.npz"}
+
+    def test_a_full_scan_prunes(self, tmp_path: Path, kind: RawKind) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind, nested=False)
+
+        _ = prune_kind(dataset, kind, [])
+
+        assert raw_file_names(dataset, kind) == {"a.npy", "b.npz"}
+
+    def test_without_a_sibling_it_prunes_as_before(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        touch_files(tmp_path / "one" / "a.npy", tmp_path / "two" / "b.npy")
+        for name in ("one", "two"):
+            dataset.add_scan_source(raw_source(kind, name, tmp_path / name, ("*.npy",)))
+        _ = scan_kind(dataset, kind)
+        assert raw_file_names(dataset, kind) == {"a.npy", "b.npy"}
+
+        _ = prune_kind(dataset, kind, ["one"])
+
+        assert raw_file_names(dataset, kind) == {"a.npy"}
+
+    def test_a_sibling_of_the_other_kind_does_not_count(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy")
+        other: RawKind = "labels" if kind == "tracks" else "tracks"
+        dataset.add_scan_source(raw_source(kind, "mine", base, ("*.npy",)))
+        dataset.add_scan_source(raw_source(other, "theirs", base, ("*.npy",)))
+        _ = scan_kind(dataset, kind)
+
+        _ = prune_kind(dataset, kind, ["mine"])
+
+        assert raw_file_names(dataset, kind) == {"a.npy"}
+
+
+@pytest.mark.parametrize("kind", ["tracks", "labels"])
+class TestARemovalBesideASiblingOverOneFolder:
+    """A removal counts and drops the removed source's rows, not its sibling's."""
+
+    @staticmethod
+    def two_sources_over_one_folder(tmp_path: Path, kind: RawKind) -> Dataset:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        touch_files(base / "a.npy", base / "a2.npy", base / "b.npz")
+        dataset.add_scan_source(raw_source(kind, "npy", base, ("*.npy",)))
+        dataset.add_scan_source(raw_source(kind, "npz", base, ("*.npz",)))
+        _ = scan_kind(dataset, kind)
+        assert raw_file_names(dataset, kind) == {"a.npy", "a2.npy", "b.npz"}
+        return dataset
+
+    def test_the_count_is_the_removed_sources_rows_alone(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind)
+
+        assert dataset.remove_scan_source(kind, "npy") == 2
+
+        assert raw_file_names(dataset, kind) == {"a.npy", "a2.npy", "b.npz"}
+
+    def test_the_drop_removes_the_removed_sources_rows_alone(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind)
+        removal = dataset.source_removal(kind, "npz")
+
+        assert dataset.remove_scan_source(kind, "npz", removal=removal) == 1
+        assert (
+            dataset.drop_claimed_rows(
+                kind, removal.claim, series=removal.series, spared=removal.spared
+            )
+            == 1
+        )
+
+        assert raw_file_names(dataset, kind) == {"a.npy", "a2.npy"}
+
+    def test_rows_kept_under_a_sibling_go_on_its_next_scan(
+        self, tmp_path: Path, kind: RawKind
+    ) -> None:
+        dataset = self.two_sources_over_one_folder(tmp_path, kind)
+        _ = dataset.remove_scan_source(kind, "npz")
+
+        _ = scan_kind(dataset, kind)
+
+        assert raw_file_names(dataset, kind) == {"a.npy", "a2.npy"}

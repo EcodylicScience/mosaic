@@ -36,7 +36,10 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
-from mosaic.core.pipeline.sequence_index import read_entry_compositions
+from mosaic.core.pipeline.sequence_index import (
+    compositions_within,
+    read_entry_compositions,
+)
 from mosaic.core.recording import RecordingKey, recording_storage_name
 from mosaic.core.strict_model import terse
 
@@ -521,6 +524,7 @@ def entry_compositions(
     roots: Collection[str],
     *,
     lookup: ArenaLookup | None = None,
+    recorded: Mapping[Entry, Mapping[str, str]] | None = None,
 ) -> dict[Entry, dict[str, str]]:
     """Return each entry's compositions, with its layout digest when *roots* asks.
 
@@ -533,9 +537,16 @@ def entry_compositions(
         entries: The entries to read.
         roots: The roots in play, such as a feature's ``consumed_roots``.
         lookup: The lookup to read, :func:`cached_arena_lookup` when ``None``.
+        recorded: Every entry's source root compositions, already read with
+            :func:`~.sequence_index.recorded_compositions`, or ``None`` to read
+            them for this call.
     """
     wanted = list(entries)
-    compositions = read_entry_compositions(ds, wanted)
+    compositions = (
+        read_entry_compositions(ds, wanted)
+        if recorded is None
+        else compositions_within(recorded, wanted)
+    )
     if ARENAS_ROOT not in roots:
         return compositions
     for entry, digest in arenas_compositions(ds, wanted, lookup=lookup).items():

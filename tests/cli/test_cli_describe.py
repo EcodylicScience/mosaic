@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,6 +10,9 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.dataset_summary import SUMMARY_KINDS, DatasetSummary, dataset_summary
+from mosaic.core.manifest import TracksScanSource
+from mosaic.core.raw_report import raw_report
+from mosaic.core.selections import save_selection
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
     DIVISION_CREATED_UTC,
@@ -128,3 +132,110 @@ def test_the_plain_output_states_each_divided_recording_s_rule(
         "none, from 2021-02-19T19:22:53.000000+00:00 to "
         "2021-02-19T19:22:58.000000+00:00, 0 breaks"
     ) in result.stdout.splitlines()
+
+
+def test_the_plain_output_lists_the_selections(dataset: Dataset) -> None:
+    saved = save_selection(dataset, "day1", [("", "seq_a")], note="first day")
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "name\tentries\tcreated_at\tnote" in result.stdout
+    assert f"day1\t1\t{saved.created_at}\tfirst day" in result.stdout
+
+
+def test_the_json_lists_the_selections(dataset: Dataset) -> None:
+    _ = save_selection(dataset, "day1", [("", "seq_a"), ("", "seq_b")])
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir), "--json"])
+
+    printed = DatasetSummary.model_validate_json(result.stdout)
+    assert [(item.name, item.n_entries) for item in printed.selections] == [("day1", 2)]
+
+
+def test_the_plain_output_names_a_selection_file_that_cannot_be_read(
+    dataset: Dataset,
+) -> None:
+    _ = save_selection(dataset, "day1", [("", "seq_a")])
+    broken = dataset.base_dir / ".mosaic" / "selections" / "day1 (1).json"
+    _ = broken.write_text("{", encoding="utf-8")
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "day1 (1).json" in result.stderr
+
+
+def test_the_plain_output_without_selections_prints_no_selection_table(
+    dataset: Dataset,
+) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "created_at" not in result.stdout
+
+
+def _declare_duplicated_tracks(ds: Dataset, folder: Path) -> None:
+    folder.mkdir(parents=True)
+    for name in ("one.npy", "two.npy"):
+        _ = (folder / name).write_bytes(b"same bytes")
+    ds.add_scan_source(
+        TracksScanSource.model_validate(
+            {"id": "cams", "path": str(folder), "patterns": ["*.npy"]}
+        )
+    )
+    _ = ds.scan_tracks()
+
+
+def test_raw_json_prints_the_raw_report(dataset: Dataset, tmp_path: Path) -> None:
+    _declare_duplicated_tracks(dataset, tmp_path / "cams")
+
+    result = invoke_ok(
+        ["describe", "--manifest", str(dataset.manifest_path), "--raw", "--json"]
+    )
+
+    printed = DatasetSummary.model_validate_json(result.stdout)
+    assert printed.raw_report == raw_report(dataset)
+    assert printed.raw_report is not None
+    assert printed.raw_report.duplicate_sets == 1
+
+
+def test_the_json_without_raw_prints_null_for_the_report(dataset: Dataset) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.manifest_path), "--json"])
+
+    assert json.loads(result.stdout)["raw_report"] is None
+    assert DatasetSummary.model_validate_json(result.stdout).raw_report is None
+
+
+def test_the_plain_output_without_raw_prints_no_report(dataset: Dataset) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "duplicate_sets" not in result.stdout
+
+
+def test_the_plain_output_with_raw_prints_the_report_counts(
+    dataset: Dataset, tmp_path: Path
+) -> None:
+    _declare_duplicated_tracks(dataset, tmp_path / "cams")
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir), "--raw"])
+
+    assert "duplicate_sets: 1" in result.stdout
+    assert "pattern_miss_sources: 0" in result.stdout
+    assert "frame_axis_tables: 0" in result.stdout
+    assert "span_outlier_tables: 0" in result.stdout
+    assert "time_irregular_entries: 0" in result.stdout
+    assert "missing_source_paths: 0" in result.stdout
+
+
+def test_the_plain_output_with_raw_names_a_missing_source(
+    dataset: Dataset, tmp_path: Path
+) -> None:
+    dataset.add_scan_source(
+        TracksScanSource.model_validate(
+            {"id": "gone", "path": str(tmp_path / "unmounted"), "patterns": ["*.npy"]}
+        )
+    )
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir), "--raw"])
+
+    assert "missing_source_paths: 1" in result.stdout
+    assert "tracks\tgone\t" in result.stdout
+    assert not (tmp_path / "unmounted").exists()

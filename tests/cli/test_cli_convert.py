@@ -9,7 +9,13 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from tests.helpers import calms21_dataset, invoke_json, make_dataset, write_trex_npz
+from tests.helpers import (
+    calms21_dataset,
+    invoke_json,
+    make_dataset,
+    write_calms21_npy,
+    write_trex_npz,
+)
 
 
 def test_convert_labels_json_reports_variant_and_counts(tmp_path: Path) -> None:
@@ -54,9 +60,31 @@ def test_convert_tracks_json_reports_variants(tmp_path: Path) -> None:
     assert payload == {
         "status": "ok",
         "converted": 1,
+        "written": 1,
+        "current": 0,
         "failed": 0,
         "variants": [planned],
     }
+
+
+def test_convert_tracks_names_the_written_and_the_current_entries(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    args = ["convert-tracks", "-m", str(ds.manifest_path), "--source-format"]
+    args.append("calms21_npy")
+    first = CliRunner().invoke(app, args)
+    assert first.stdout.strip() == "Converted 1 sequence(s): 1 written, 0 current."
+    raw = ds.base_dir / "raw"
+    write_calms21_npy(raw / "test.npy", {"a": {"s2": 4}})
+    ds.scan_tracks()
+
+    second = CliRunner().invoke(app, [*args, "--json"])
+
+    payload = json.loads(second.stdout)
+    assert (payload["converted"], payload["written"], payload["current"]) == (2, 1, 1)
+    text = CliRunner().invoke(app, args)
+    assert text.stdout.strip() == "Converted 2 sequence(s): 0 written, 2 current."
 
 
 def _trex_dataset(

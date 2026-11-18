@@ -71,6 +71,7 @@ from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.recording import RecordingKey
 from mosaic.core.scope import Scope
+from mosaic.core.selections import save_selection
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
 from mosaic.tracking.frame_extraction.selection_index import selected_frames
 from mosaic.tracking.frame_predictions.read import (
@@ -266,6 +267,7 @@ def populated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReadDataset:
     )
     _lose_an_entity(dataset.base_dir)
     _ = define_feature(dataset, CANARY_NAME, CANARY_SOURCE)
+    _ = save_selection(dataset, "day1", [("", "seq_a"), ("", "seq_b")])
     canary = tmp_path / "canary.jsonl"
     monkeypatch.setenv(CANARY_VARIABLE, str(canary))
     _ = write_tags(
@@ -382,6 +384,7 @@ CLI_READS: dict[str, CliArguments] = {
     "arenas show": lambda _: ["arenas", "show"],
     "arenas show --recording": lambda _: ["arenas", "show", "--recording", "seq_a"],
     "describe": lambda _: ["describe"],
+    "describe --raw": lambda _: ["describe", "--raw"],
     "features describe": lambda _: ["features", "describe", f"def:{CANARY_NAME}"],
     "features list": lambda _: ["features", "list"],
     "inventory": lambda _: ["inventory"],
@@ -508,6 +511,8 @@ CLI_READS: dict[str, CliArguments] = {
     "runs": lambda _: ["runs"],
     "runs --limit": lambda _: ["runs", "--limit", "1"],
     "runs errors": lambda f: ["runs", "errors", f.lossy_execution_id],
+    "selection list": lambda _: ["selection", "list"],
+    "selection show": lambda _: ["selection", "show", "day1"],
     "sequence-tags import --dry-run": lambda f: [
         "sequence-tags",
         "import",
@@ -551,6 +556,7 @@ CLI_READS: dict[str, CliArguments] = {
 CLI_READS_OF_NOTHING = (
     "arenas show",
     "describe",
+    "describe --raw",
     "features list",
     "inventory",
     "inventory --limit",
@@ -566,6 +572,7 @@ CLI_READS_OF_NOTHING = (
     "reindex --dry-run",
     "runs",
     "runs --limit",
+    "selection list",
     "sequence-tags list",
     "sources list",
     "splits list",

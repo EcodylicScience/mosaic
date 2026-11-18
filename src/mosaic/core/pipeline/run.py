@@ -104,6 +104,7 @@ from .loading import (
     CROSS_JOIN_FEATURES,
     PairRowsMissing,
     expands_individuals,
+    input_projection,
     stacks_inputs,
     build_nn_lookup,
     labels_for_rows,
@@ -182,6 +183,8 @@ from .writers import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+
+    from .plan_reads import PlanReads
 
 
 def build_output_path(group: str, sequence: str, run_root: Path) -> Path:
@@ -1307,6 +1310,7 @@ def resolve_feature_identity(
     time_window: TimeWindow = TimeWindow(),
     tag_revision: LabelRevisionRef | None = None,
     tag_payload: bytes | None = None,
+    reads: PlanReads | None = None,
 ) -> tuple[str, ResolvedScope]:
     """What a run of *feature* over *scope* will be called, without running it.
 
@@ -1347,6 +1351,8 @@ def resolve_feature_identity(
             that reads no tags.
         tag_payload: A tag table that has not been written, read in place of the
             latest revision when *tag_revision* names none.
+        reads: The compositions and tracks variants that the other steps of a
+            plan read too, or ``None`` to read them for this call.
 
     Returns:
         The ``run_id`` and the ``ResolvedScope`` it was computed from, so a
@@ -1377,21 +1383,29 @@ def resolve_feature_identity(
         # Hashed only for a scope-dependent feature (`_scope_term`), so another
         # feature's identity reads no arenas index.
         compositions = entry_compositions(
-            ds, wanted, feature.consumed_roots if feature.scope_dependent else ()
+            ds,
+            wanted,
+            feature.consumed_roots if feature.scope_dependent else (),
+            recorded=None if reads is None else reads.compositions(),
         )
+        # Set only by a ``tracks`` input, which is the rule the manifest
+        # applies: a feature reading another feature's output inherits no
+        # variant, because its upstream already hashed the one it read. A
+        # pinned variant is taken as given, so an edge from a producer that
+        # has not run yet still resolves.
+        variants: tuple[str, ...] = ()
+        if reads_tracks and tracks_run_id:
+            variants = (tracks_run_id,)
+        elif reads_tracks:
+            variants = (
+                tracks_variants_for(ds, None)
+                if reads is None
+                else reads.tracks_variants()
+            )
         resolved = ResolvedScope(
             entries=wanted,
             selector=scope,
-            # Set only by a ``tracks`` input, which is the rule the manifest
-            # applies: a feature reading another feature's output inherits no
-            # variant, because its upstream already hashed the one it read. A
-            # pinned variant is taken as given, so an edge from a producer that
-            # has not run yet still resolves.
-            tracks_variants=(
-                ((tracks_run_id,) if tracks_run_id else tracks_variants_for(ds, None))
-                if reads_tracks
-                else ()
-            ),
+            tracks_variants=variants,
             # From the source roots and the arena layouts, which exist before any
             # of this runs, so the term is exact rather than predicted.
             compositions=compositions,
@@ -2343,6 +2357,7 @@ def _run_feature_impl(
             tracks_run_id=tracks_run_id,
             stack=stacks_inputs(feature),
             consumed_roots=feature.consumed_roots,
+            projection=input_projection(feature),
         )
 
     # Built once: the property rebuilds the map on each access, and the run asks

@@ -335,10 +335,10 @@ def _read_feature_frame(path: Path) -> pd.DataFrame:
 class DriftReads:
     """The index reads that several :func:`drifted_entries` calls share.
 
-    An inventory scan builds one and passes it to the call for every run: each
-    feature storage's index is read once, the tracks cells of each set of
-    variants are computed once, and the arenas lookup is taken once. A call
-    given none builds one for itself.
+    An inventory scan builds one and passes it to the call for every run: each feature
+    storage's index is read once and divided by run once, the tracks cells of each set
+    of variants are computed once, each root's ``sequences.csv`` is read once, and the
+    arenas lookup is taken once. A call given none builds one for itself.
 
     Args:
         ds: The dataset whose indexes are read.
@@ -354,19 +354,25 @@ class DriftReads:
     ) -> None:
         self._ds: Dataset = ds
         self._feature_frame: Callable[[Path], pd.DataFrame] = feature_frame
-        self._frames: dict[str, pd.DataFrame] = {}
+        self._runs: dict[str, dict[str, pd.DataFrame]] = {}
         self._tracks: dict[tuple[str, ...], dict[Entry, str]] = {}
         self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
         self._arena_lookup: ArenaLookup | None = None
+        self._recorded: dict[Entry, dict[str, str]] | None = None
 
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
-        frame = self._frames.get(storage)
-        if frame is None:
+        runs = self._runs.get(storage)
+        if runs is None:
             frame = self._feature_frame(feature_index_path(self._ds, storage))
-            self._frames[storage] = frame
-        if frame.empty or "run_id" not in frame.columns:
-            return pd.DataFrame()
-        return frame[frame["run_id"] == run_id]
+            runs = (
+                {}
+                if frame.empty or "run_id" not in frame.columns
+                else {
+                    str(key): rows for key, rows in frame.groupby("run_id", sort=False)
+                }
+            )
+            self._runs[storage] = runs
+        return runs.get(run_id, pd.DataFrame())
 
     def tracks_reads(
         self, storage: str, run_id: str
@@ -390,6 +396,14 @@ class DriftReads:
             cells = tracks_compositions(self._ds, key)
             self._tracks[key] = cells
         return cells
+
+    def recorded_compositions(self) -> dict[Entry, dict[str, str]]:
+        """Every entry's :func:`~.sequence_index.recorded_compositions`, read once."""
+        from .sequence_index import recorded_compositions
+
+        if self._recorded is None:
+            self._recorded = recorded_compositions(self._ds)
+        return self._recorded
 
     def arena_lookup(self) -> ArenaLookup:
         """The :func:`~.arena_index.cached_arena_lookup` of the dataset, taken once."""
@@ -492,7 +506,9 @@ def drifted_entries(
         return ()
     in_play = set(declared).union(*(roots for roots, _ in recorded_roots.values()))
     lookup = shared.arena_lookup() if ARENAS_ROOT in in_play else None
-    current_roots = entry_compositions(ds, entries, in_play, lookup=lookup)
+    current_roots = entry_compositions(
+        ds, entries, in_play, lookup=lookup, recorded=shared.recorded_compositions()
+    )
     tracks_now, inputs_now, held = (
         _current_input_cells(shared, run_params)
         if run_params

@@ -7,13 +7,15 @@ where the dataset draws from, then rescan exactly that with no arguments at all.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.manifest import TracksScanSource
 
 runner = CliRunner()
 VideoWriter = Callable[..., None]
@@ -774,3 +776,201 @@ class TestTagsAndNotes:
         )
         assert result.exit_code == 0, result.output
         assert Dataset(manifest_path=manifest).load().notes == "line one\nline two\n"
+
+
+class TestRemoveATracksSource:
+    """``sources remove --drop-rows`` drops what no other tracks source claims."""
+
+    @staticmethod
+    def two_sources_sharing_a_target(tmp_path: Path) -> Path:
+        manifest = make_dataset(tmp_path)
+        dataset = Dataset(manifest_path=manifest).load()
+        target = tmp_path / "elsewhere" / "t.dat"
+        for path in (tmp_path / "a" / "x.npy", tmp_path / "b" / "y.npy", target):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _ = path.write_bytes(b"\x00")
+        for name in ("a", "b"):
+            (tmp_path / name / "link.npy").symlink_to(target)
+            dataset.add_scan_source(
+                TracksScanSource(
+                    id=name, path=str(tmp_path / name), patterns=("*.npy",)
+                )
+            )
+        _ = dataset.scan_tracks()
+        return manifest
+
+    @staticmethod
+    def remove(manifest: Path, source_id: str) -> dict[str, object]:
+        result = runner.invoke(
+            app,
+            ["sources", "remove", "-m", str(manifest), "--kind", "tracks",
+             "--id", source_id, "--drop-rows", "--json"],
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        payload: dict[str, object] = json.loads(result.output)
+        return payload
+
+    def test_drop_rows_keeps_a_target_another_source_shares(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = self.two_sources_sharing_a_target(tmp_path)
+
+        payload = self.remove(manifest, "a")
+
+        assert payload["unclaimed_rows"] == 1
+        assert payload["dropped_rows"] == 1
+        dataset = Dataset(manifest_path=manifest).load()
+        names = {Path(str(r["abs_path"])).name for r in dataset.read_tracks_raw_index()}
+        assert names == {"y.npy", "t.dat"}
+
+    def test_a_removal_walks_each_source_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest = self.two_sources_sharing_a_target(tmp_path)
+        from mosaic.core import dataset as dataset_module
+
+        walked: list[Path] = []
+        real = dataset_module.walked_files
+
+        def counting(
+            base: Path,
+            patterns: Sequence[str],
+            *,
+            recursive: bool,
+            exclude_patterns: Sequence[str] = (),
+        ) -> frozenset[Path]:
+            walked.append(base)
+            return real(
+                base, patterns, recursive=recursive, exclude_patterns=exclude_patterns
+            )
+
+        monkeypatch.setattr(dataset_module, "walked_files", counting)
+
+        _ = self.remove(manifest, "a")
+
+        assert sorted(walked) == [tmp_path / "a", tmp_path / "b"]
+
+
+class TestSourcesOverOneFolder:
+    def test_scan_only_refuses_a_file_two_sources_take(self, tmp_path: Path) -> None:
+        manifest = make_dataset(tmp_path)
+        base = tmp_path / "data"
+        base.mkdir()
+        _ = (base / "a.npy").write_bytes(b"\x00")
+        for source_id, pattern in (("all", "*.npy"), ("xs", "x*.npy")):
+            added = runner.invoke(
+                app,
+                [
+                    "sources",
+                    "add",
+                    "-m",
+                    str(manifest),
+                    "--kind",
+                    "tracks",
+                    "--path",
+                    str(base),
+                    "--id",
+                    source_id,
+                    "--patterns",
+                    pattern,
+                ],
+            )
+            assert added.exit_code == 0, added.output
+        _ = (base / "x1.npy").write_bytes(b"\x00")
+
+        result = runner.invoke(app, ["scan", "-m", str(manifest), "--only", "all"])
+
+        assert result.exit_code != 0
+        assert "x1.npy" in result.output
+        dataset = Dataset(manifest_path=manifest).load()
+        assert dataset.read_tracks_raw_index() == []
+
+    def test_scan_only_with_prune_is_refused_beside_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = self.two_sources_over_one_folder(tmp_path)
+        index = (
+            Dataset(manifest_path=manifest).load().get_root("tracks_raw") / "index.csv"
+        )
+        before = index.read_bytes()
+
+        result = runner.invoke(
+            app,
+            ["scan", "-m", str(manifest), "--only", "npy", "--prune-unsourced"],
+        )
+
+        assert result.exit_code != 0
+        assert "'npz'" in result.output
+        assert index.read_bytes() == before
+
+    def test_scan_only_with_prune_prunes_without_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        dataset = Dataset(manifest_path=manifest).load()
+        for name in ("one", "two"):
+            (tmp_path / name).mkdir()
+            _ = (tmp_path / name / f"{name}.npy").write_bytes(b"\x00")
+            dataset.add_scan_source(
+                TracksScanSource(
+                    id=name, path=str(tmp_path / name), patterns=("*.npy",)
+                )
+            )
+        _ = dataset.scan_tracks()
+
+        result = runner.invoke(
+            app, ["scan", "-m", str(manifest), "--only", "one", "--prune-unsourced"]
+        )
+
+        assert result.exit_code == 0, result.output
+        rows = Dataset(manifest_path=manifest).load().read_tracks_raw_index()
+        assert {Path(str(r["abs_path"])).name for r in rows} == {"one.npy"}
+
+    @staticmethod
+    def two_sources_over_one_folder(tmp_path: Path) -> Path:
+        manifest = make_dataset(tmp_path)
+        dataset = Dataset(manifest_path=manifest).load()
+        base = tmp_path / "data"
+        base.mkdir()
+        for name in ("a.npy", "a2.npy", "b.npz"):
+            _ = (base / name).write_bytes(b"\x00")
+        for source_id, pattern in (("npy", "*.npy"), ("npz", "*.npz")):
+            dataset.add_scan_source(
+                TracksScanSource(id=source_id, path=str(base), patterns=(pattern,))
+            )
+        _ = dataset.scan_tracks()
+        return manifest
+
+    def test_drop_rows_beside_a_sibling_over_one_folder_drops_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = self.two_sources_over_one_folder(tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["sources", "remove", "-m", str(manifest), "--kind", "tracks",
+             "--id", "npz", "--drop-rows", "--json"],
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        payload: dict[str, object] = json.loads(result.output)
+        assert payload["unclaimed_rows"] == 1
+        assert payload["dropped_rows"] == 1
+        rows = Dataset(manifest_path=manifest).load().read_tracks_raw_index()
+        assert {Path(str(r["abs_path"])).name for r in rows} == {"a.npy", "a2.npy"}
+
+    def test_keeping_rows_names_the_passes_that_drop_them(self, tmp_path: Path) -> None:
+        manifest = self.two_sources_over_one_folder(tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["sources", "remove", "-m", str(manifest), "--kind", "tracks",
+             "--id", "npz"],
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        assert "1 index row(s) are now claimed by no source" in result.output
+        assert "mosaic scan --prune-unsourced" in result.output
+        assert "over the same folder" in result.output
+        assert "reindex" not in result.output
+        assert "prune-media" not in result.output

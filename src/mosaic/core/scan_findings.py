@@ -23,6 +23,7 @@ from typing import Literal
 from .strict_model import StrictModel
 
 __all__ = [
+    "MISSED_SAMPLE",
     "FindingKind",
     "FindingLog",
     "ScanFinding",
@@ -30,6 +31,9 @@ __all__ = [
     "merged",
     "missing_path_finding",
 ]
+
+MISSED_SAMPLE = 5
+"""How many of a source's skipped paths a ``group_pattern_missed`` finding names."""
 
 FindingKind = Literal["media", "tracks", "labels"]
 """The raw root a source feeds, as ``mosaic.core.manifest.SourceKind`` spells it."""
@@ -40,17 +44,20 @@ ScanProblem = Literal[
     "listed_file_skipped",
     "group_pattern_unmatched",
     "group_path_pattern_unmatched",
+    "group_pattern_missed",
     "row_unmatched",
 ]
-"""Why a source's files were dropped or left ungrouped.
+"""Why a source's files were dropped, or a row it imports names no entry.
 
 ``path_missing``: the source's directory does not exist, or is a link to one that
 does not. ``listed_file_missing``: a file source lists a file that is not there.
 ``listed_file_skipped``: a file source lists a file that a rule skips, such as a
-resource fork. ``group_pattern_unmatched`` and
-``group_path_pattern_unmatched``: the pattern matched none of the files the
-source indexed, so each has an empty group. ``row_unmatched``: a row of a CSV
-the dataset imports names no entry.
+resource fork. ``group_pattern_missed``: the source declares a group pattern that
+some of its files miss, and a missed file is skipped, not indexed.
+``group_pattern_unmatched`` and ``group_path_pattern_unmatched``: the pattern
+missed every file, so no file is indexed, and the source reports no
+``group_pattern_missed``. ``row_unmatched``: a row of a CSV the dataset imports
+names no entry.
 """
 
 
@@ -67,6 +74,8 @@ class ScanFinding(StrictModel):
         pattern: The pattern it concerns, when it concerns one.
         line: The line of the file it concerns, counting the header as line 1,
             when it concerns one.
+        count: How many files it concerns, when it counts them.
+        sample: Up to ``MISSED_SAMPLE`` of those files' paths, in scan order.
     """
 
     kind: FindingKind
@@ -76,6 +85,8 @@ class ScanFinding(StrictModel):
     path: str | None = None
     pattern: str | None = None
     line: int | None = None
+    count: int | None = None
+    sample: tuple[str, ...] = ()
 
 
 def missing_path_finding(
@@ -137,6 +148,8 @@ class FindingLog:
         path: Path | None = None,
         pattern: str | None = None,
         line: int | None = None,
+        count: int | None = None,
+        sample: Sequence[Path] = (),
     ) -> None:
         """Make a finding of this source's, and record and print it."""
         self.add(
@@ -148,6 +161,8 @@ class FindingLog:
                 path=None if path is None else str(path),
                 pattern=pattern,
                 line=line,
+                count=count,
+                sample=tuple(str(item) for item in sample),
             )
         )
 

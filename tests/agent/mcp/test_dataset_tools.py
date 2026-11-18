@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import anyio
+import pandas as pd
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
@@ -19,6 +20,7 @@ from mosaic.agent.mcp.spec import (
     DatasetChange,
     DatasetList,
     ManageDatasetInput,
+    SubmittedPipeline,
     call_tool,
 )
 from mosaic.core.annotations import sequence_tags
@@ -36,18 +38,31 @@ from mosaic.core.annotations.sequence_tags import (
 from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import DatasetSummary
+from mosaic.core.entry import Entry
 from mosaic.core.json_value import JsonValue
+from mosaic.core.manifest import TracksScanSource
+from mosaic.core.pipeline.cancel import read_request
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import PlanWire
+from mosaic.core.pipeline.graph import PlanWire, submit_request
+from mosaic.core.pipeline.inventory import InventoryWire
+from mosaic.core.pipeline.run_summary import RunSummaryWire
 from mosaic.core.regions import CircleShape, RectShape, Roi
+from mosaic.core.scope import Scope
+from mosaic.core.selections import read_selection, save_selection
 from tests.helpers import (
+    add_raw_track_files,
     add_track_sequences,
     CONVERT_TRACKS_STEP,
     SPEED_OF_CONVERTED_STEP,
+    SPEED_RECIPE,
     RecordingStarter,
     calms21_dataset,
     invoke_json,
     tag_table,
+    invoke_ok,
+    labeled_run,
+    make_dataset,
+    speed_recipe,
     write_calms21_npy,
     write_tags,
 )
@@ -787,6 +802,197 @@ def test_a_plan_over_a_dataset_with_no_tracks_says_to_convert_first(
     assert not any("covers all 0" in caution.message for caution in plan.cautions)
 
 
+def _convert_step(step_id: str, source_format: str) -> dict[str, JsonValue]:
+    return {
+        "id": step_id,
+        "type": "op",
+        "kind": "convert-tracks",
+        "params": {"source_format": source_format},
+    }
+
+
+def test_a_rescan_that_adds_raw_files_is_counted_by_the_whole_dataset_caution(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["x", "y"], unnamed=["late"])
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [_convert_step("convert", "calms21_npy")],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == (
+        "the plan covers the 3 converted entries of the dataset and the 2 entries "
+        "that step 'convert' adds and the entries step 'convert' converts from 1 "
+        "raw file without a sequence name"
+    )
+
+
+def test_two_converting_steps_are_named_in_turn_and_a_shared_entry_counts_once(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["both", "x"], trex=["both", "y"])
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                _convert_step("a", "calms21_npy"),
+                _convert_step("b", "trex_npz"),
+            ],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == (
+        "the plan covers the 3 converted entries of the dataset and 3 entries "
+        "that its converters add: 2 from step 'a', 2 from step 'b'"
+    )
+
+
+def test_a_step_converting_only_unnamed_files_says_so_and_adds_no_entry_count(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, unnamed=["late", "later"])
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [_convert_step("convert", "calms21_npy")],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == (
+        "the plan covers the 3 converted entries of the dataset and the entries "
+        "step 'convert' converts from 2 raw files without a sequence name"
+    )
+
+
+def test_the_unnamed_file_clause_follows_the_step_it_applies_to(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["x"], unnamed=["late"], trex=["y"])
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                _convert_step("a", "calms21_npy"),
+                _convert_step("b", "trex_npz"),
+            ],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == (
+        "the plan covers the 3 converted entries of the dataset and 2 entries "
+        "that its converters add: 1 from step 'a' and the entries step 'a' "
+        "converts from 1 raw file without a sequence name, 1 from step 'b'"
+    )
+
+
+def test_two_steps_converting_only_unnamed_files_are_joined_with_and(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, unnamed=["late"])
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                _convert_step("a", "calms21_npy"),
+                _convert_step("b", "calms21_npy"),
+            ],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == (
+        "the plan covers the 3 converted entries of the dataset and the entries "
+        "step 'a' converts from 1 raw file without a sequence name and the "
+        "entries step 'b' converts from 1 raw file without a sequence name"
+    )
+
+
+def test_a_dataset_with_nothing_to_convert_keeps_the_plain_caution(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    _ = _sourced(backend, uuid)
+    _ = _call(backend, DatasetChange, action="scan", dataset=uuid)
+    ds = Dataset(roots[0] / "study" / "dataset.yaml").load()
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+
+    plan = _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=uuid,
+        recipe={
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [_convert_step("convert", "calms21_npy")],
+        },
+    )
+
+    [caution] = [item.message for item in plan.cautions if item.where == "scope"]
+    assert caution == "the plan covers all 3 entries of the dataset"
+
+
 @pytest.mark.parametrize(
     "extra",
     [
@@ -1350,3 +1556,570 @@ def test_an_unreadable_tag_table_fails_the_listing_as_a_conflict(
     )
 
     assert (answered.kind, answered.reason) == ("conflict", "sequence_tags_unavailable")
+
+
+GROUPED: list[Entry] = [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]
+"""The entries of the ``grouped`` dataset."""
+
+DAY1: list[Entry] = [("g1", "s1"), ("g1", "s2")]
+FIRST: list[Entry] = [("g1", "s1")]
+TRAIN: list[Entry] = [("g2", "s1")]
+
+
+@pytest.fixture
+def grouped(tmp_path: Path) -> Dataset:
+    """Three tracked entries of two groups, and the selection ``day1``."""
+    ds = make_dataset(tmp_path / "grouped", name="grouped")
+    add_track_sequences(ds, *GROUPED)
+    _ = save_selection(ds, "day1", DAY1)
+    return ds
+
+
+@pytest.fixture
+def starter() -> RecordingStarter:
+    return RecordingStarter()
+
+
+@pytest.fixture
+def served(grouped: Dataset, starter: RecordingStarter) -> LocalBackend:
+    return LocalBackend([grouped.manifest_path], warm=False, start_driver=starter)
+
+
+def _uuid(dataset: Dataset) -> str:
+    uuid = dataset.manifest.uuid
+    assert uuid is not None
+    return uuid
+
+
+def _pairs(entries: list[Entry]) -> list[list[str]]:
+    return [list(entry) for entry in entries]
+
+
+def _plan(backend: LocalBackend, dataset: Dataset, **arguments: object) -> PlanWire:
+    return _tool(
+        backend,
+        PlanWire,
+        "plan_recipe",
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+        **arguments,
+    )
+
+
+def _refused(
+    backend: LocalBackend, tool: str, dataset: Dataset, **arguments: object
+) -> ErrorEnvelope:
+    return _tool(backend, ErrorEnvelope, tool, dataset=_uuid(dataset), **arguments)
+
+
+def _problems(refused: ErrorEnvelope) -> str:
+    """The text of every field problem that an invalid-arguments refusal lists."""
+    assert refused.kind == "invalid"
+    assert refused.reason == "invalid_arguments"
+    assert refused.detail is not None
+    return str(refused.detail["errors"])
+
+
+def _save(
+    backend: LocalBackend, dataset: Dataset, **arguments: object
+) -> DatasetChange:
+    return _call(
+        backend,
+        DatasetChange,
+        action="save_selection",
+        dataset=_uuid(dataset),
+        **arguments,
+    )
+
+
+class TestEntriesThroughASelection:
+    def test_plan_recipe_plans_over_the_entries_of_a_selection(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        through = _plan(served, grouped, entries={"selection": "day1"})
+        listed = _plan(served, grouped, entries=_pairs(DAY1))
+
+        assert through.scope_size == len(DAY1)
+        assert through.fingerprint == listed.fingerprint
+
+    def test_a_step_selection_narrows_that_step(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = save_selection(grouped, "train", TRAIN)
+
+        plan = _plan(served, grouped, step_entries={"speed": {"selection": "train"}})
+
+        assert plan.steps[0].coverage.target == len(TRAIN)
+
+    @pytest.mark.parametrize(
+        "beside",
+        [{"groups": ["g1"]}, {"sequences": ["s1"]}, {"entries": [["g1", "s1"]]}],
+    )
+    def test_a_selection_beside_another_key_is_invalid(
+        self, served: LocalBackend, grouped: Dataset, beside: dict[str, object]
+    ) -> None:
+        refused = _refused(
+            served,
+            "plan_recipe",
+            grouped,
+            recipe=SPEED_RECIPE,
+            entries={"selection": "day1", **beside},
+        )
+
+        assert "alone" in _problems(refused)
+
+    def test_a_missing_selection_is_refused_naming_the_present_ones(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _refused(
+            served,
+            "plan_recipe",
+            grouped,
+            recipe=SPEED_RECIPE,
+            entries={"selection": "nope"},
+        )
+
+        assert (refused.kind, refused.reason) == ("not_found", "selection_not_found")
+        assert refused.detail == {"name": "nope", "selections": ["day1"]}
+
+    def test_a_missing_step_selection_is_refused(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _refused(
+            served,
+            "plan_recipe",
+            grouped,
+            recipe=SPEED_RECIPE,
+            step_entries={"speed": {"selection": "nope"}},
+        )
+
+        assert refused.reason == "selection_not_found"
+
+    def test_get_inventory_reads_the_entries_of_a_selection(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        def inventory(entries: object) -> InventoryWire:
+            return _tool(
+                served,
+                InventoryWire,
+                "get_inventory",
+                dataset=_uuid(grouped),
+                entries=entries,
+                status_not=[],
+            )
+
+        through = inventory({"selection": "day1"})
+
+        assert through == inventory(_pairs(DAY1))
+        assert through != inventory(None)
+
+    def test_get_inventory_refuses_a_missing_selection(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _refused(
+            served, "get_inventory", grouped, entries={"selection": "nope"}
+        )
+
+        assert refused.reason == "selection_not_found"
+
+
+class TestSubmittingThroughASelection:
+    def test_the_request_records_the_selections_and_the_entries(
+        self, served: LocalBackend, grouped: Dataset, starter: RecordingStarter
+    ) -> None:
+        _ = save_selection(grouped, "first", FIRST)
+
+        submitted = _tool(
+            served,
+            SubmittedPipeline,
+            "submit_pipeline",
+            dataset=_uuid(grouped),
+            recipe=SPEED_RECIPE,
+            entries={"selection": "day1"},
+            step_entries={"speed": {"selection": "first"}},
+        )
+
+        request = read_request(grouped.base_dir, submitted.request_id)
+        assert request.selections == {"": "day1", "speed": "first"}
+        assert request.scope == Scope(entries=DAY1)
+        assert request.step_scopes == {"speed": Scope(entries=FIRST)}
+        assert starter.started == [submitted.request_id]
+
+    def test_a_request_without_a_selection_records_none(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        submitted = _tool(
+            served,
+            SubmittedPipeline,
+            "submit_pipeline",
+            dataset=_uuid(grouped),
+            recipe=SPEED_RECIPE,
+            entries=_pairs(DAY1),
+        )
+
+        assert read_request(grouped.base_dir, submitted.request_id).selections == {}
+
+    def test_a_missing_selection_submits_nothing(
+        self, served: LocalBackend, grouped: Dataset, starter: RecordingStarter
+    ) -> None:
+        refused = _refused(
+            served,
+            "submit_pipeline",
+            grouped,
+            recipe=SPEED_RECIPE,
+            entries={"selection": "nope"},
+        )
+
+        assert refused.reason == "selection_not_found"
+        assert starter.started == []
+
+    def test_the_open_duplicate_check_counts_the_resolved_entries(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = submit_request(grouped, speed_recipe(), scope=Scope(entries=TRAIN))
+
+        disjoint = _tool(
+            served,
+            SubmittedPipeline,
+            "submit_pipeline",
+            dataset=_uuid(grouped),
+            recipe=SPEED_RECIPE,
+            entries={"selection": "day1"},
+        )
+        _ = save_selection(grouped, "again", TRAIN)
+        overlapping = _refused(
+            served,
+            "submit_pipeline",
+            grouped,
+            recipe=SPEED_RECIPE,
+            entries={"selection": "again"},
+        )
+
+        assert disjoint.request_id
+        assert overlapping.reason == "confirmation_required"
+        assert overlapping.detail is not None
+        assert overlapping.detail["conditions"] == ["open_duplicate"]
+
+
+class TestSummaryThroughASelection:
+    @pytest.fixture
+    def labeled(self, tmp_path: Path) -> tuple[Dataset, str, LocalBackend]:
+        rows = {
+            ("g", "a"): {"strain": ["A", "B"], "value": [1.0, 2.5]},
+            ("g", "b"): {"strain": ["A", "A"], "value": [2.0, 3.0]},
+            ("h", "c"): {"strain": ["B", "B"], "value": [6.0, 7.0]},
+        }
+        ds, result = labeled_run(
+            tmp_path, {entry: pd.DataFrame(table) for entry, table in rows.items()}
+        )
+        _ = save_selection(ds, "pair", [("g", "a"), ("h", "c")])
+        ref = f"feature/{result.feature}/{result.run_id}"
+        return ds, ref, LocalBackend([ds.manifest_path], warm=False)
+
+    def test_summary_mode_reads_the_entries_of_a_selection(
+        self, labeled: tuple[Dataset, str, LocalBackend]
+    ) -> None:
+        ds, ref, backend = labeled
+
+        summary = _tool(
+            backend,
+            RunSummaryWire,
+            "preview_output",
+            dataset=_uuid(ds),
+            ref=ref,
+            mode="summary",
+            selection="pair",
+        )
+        listed = _tool(
+            backend,
+            RunSummaryWire,
+            "preview_output",
+            dataset=_uuid(ds),
+            ref=ref,
+            mode="summary",
+            by=["group"],
+        )
+
+        assert summary.n_entries == 2
+        assert listed.n_entries == 3
+
+    def test_a_missing_selection_is_refused(
+        self, labeled: tuple[Dataset, str, LocalBackend]
+    ) -> None:
+        ds, ref, backend = labeled
+
+        refused = _refused(
+            backend, "preview_output", ds, ref=ref, mode="summary", selection="nope"
+        )
+
+        assert refused.reason == "selection_not_found"
+
+    def test_a_selection_beside_groups_is_invalid(
+        self, labeled: tuple[Dataset, str, LocalBackend]
+    ) -> None:
+        ds, ref, backend = labeled
+
+        refused = _refused(
+            backend,
+            "preview_output",
+            ds,
+            ref=ref,
+            mode="summary",
+            selection="pair",
+            groups=["g"],
+        )
+
+        assert "groups" in _problems(refused)
+        assert "selection" in _problems(refused)
+
+    def test_entry_mode_takes_no_selection(
+        self, labeled: tuple[Dataset, str, LocalBackend]
+    ) -> None:
+        ds, ref, backend = labeled
+
+        refused = _refused(
+            backend,
+            "preview_output",
+            ds,
+            ref=ref,
+            group="g",
+            sequence="a",
+            selection="pair",
+        )
+
+        assert "summary mode" in _problems(refused)
+
+
+class TestSavingASelection:
+    def test_it_saves_the_entries_and_returns_the_selection(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        saved = _save(
+            served,
+            grouped,
+            selection_name="kept",
+            entries=_pairs(FIRST),
+            note="first sequence",
+        )
+
+        assert saved.selection is not None
+        assert (saved.selection.name, saved.selection.n_entries) == ("kept", 1)
+        assert saved.selection.note == "first sequence"
+        assert read_selection(grouped, "kept").entries == FIRST
+
+    def test_null_entries_save_every_entry_of_the_dataset(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = _save(served, grouped, selection_name="all")
+
+        assert read_selection(grouped, "all").entries == GROUPED
+
+    def test_a_groups_selector_is_enumerated(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = _save(served, grouped, selection_name="g1", entries={"groups": ["g1"]})
+
+        assert read_selection(grouped, "g1").entries == DAY1
+
+    def test_a_selection_of_entries_is_copied_under_the_new_name(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = _save(served, grouped, selection_name="copy", entries={"selection": "day1"})
+
+        assert read_selection(grouped, "copy").entries == DAY1
+
+    def test_it_asks_no_confirmation(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        saved = _save(served, grouped, selection_name="kept", entries=_pairs(FIRST))
+
+        assert saved.action == "save_selection"
+
+    def test_a_missing_name_is_invalid(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _tool(
+            served,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            entries=_pairs(FIRST),
+        )
+
+        assert (refused.reason, refused.detail) == (
+            "field_required",
+            {"action": "save_selection", "field": "selection_name"},
+        )
+
+    def test_a_name_that_exists_is_refused_and_the_selection_kept(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _tool(
+            served,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            selection_name="day1",
+            entries=_pairs(FIRST),
+        )
+
+        assert refused.reason == "selection_exists"
+        assert read_selection(grouped, "day1").entries == DAY1
+
+    def test_an_entry_the_dataset_lacks_is_refused(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _tool(
+            served,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            selection_name="stray",
+            entries=[["g9", "s9"]],
+        )
+
+        assert refused.kind == "invalid"
+        assert "g9:s9" in refused.message
+
+    def test_a_bad_name_is_refused(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _tool(
+            served,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            selection_name="a:b",
+            entries=None,
+        )
+
+        assert (refused.kind, refused.reason) == ("invalid", "invalid_selection")
+
+    def test_a_missing_selection_to_copy_is_refused(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        refused = _tool(
+            served,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            selection_name="copy",
+            entries={"selection": "nope"},
+        )
+
+        assert refused.reason == "selection_not_found"
+
+    def test_a_managed_dataset_is_refused_unless_managed_writes_are_allowed(
+        self, grouped: Dataset
+    ) -> None:
+        with grouped.manifest_path.open("a", encoding="utf-8") as manifest:
+            _ = manifest.write("managed_by: mosaic-api\n")
+        refusing = LocalBackend([grouped.manifest_path], warm=False)
+        allowing = LocalBackend([grouped.manifest_path], warm=False, allow_managed=True)
+
+        refused = _tool(
+            refusing,
+            ErrorEnvelope,
+            "manage_dataset",
+            action="save_selection",
+            dataset=_uuid(grouped),
+            selection_name="kept",
+            entries=_pairs(FIRST),
+        )
+        saved = _save(allowing, grouped, selection_name="kept", entries=_pairs(FIRST))
+
+        assert refused.reason == "dataset_managed"
+        assert saved.selection is not None
+
+    def test_describe_dataset_lists_the_selections(
+        self, served: LocalBackend, grouped: Dataset
+    ) -> None:
+        _ = _save(
+            served, grouped, selection_name="kept", entries=_pairs(FIRST), note="n"
+        )
+
+        described = _tool(
+            served, DatasetSummary, "describe_dataset", dataset=_uuid(grouped)
+        )
+
+        assert [
+            (item.name, item.n_entries, item.note) for item in described.selections
+        ] == [("day1", 2, ""), ("kept", 1, "n")]
+
+
+class TestDescribeDatasetRaw:
+    @pytest.fixture
+    def duplicated(self, grouped: Dataset, tmp_path: Path) -> Dataset:
+        folder = tmp_path / "cams"
+        folder.mkdir()
+        for name in ("one.npy", "two.npy"):
+            _ = (folder / name).write_bytes(b"same bytes")
+        grouped.add_scan_source(
+            TracksScanSource.model_validate(
+                {"id": "cams", "path": str(folder), "patterns": ["*.npy"]}
+            )
+        )
+        _ = grouped.scan_tracks()
+        return grouped
+
+    def test_raw_returns_the_report_the_cli_prints(
+        self, served: LocalBackend, duplicated: Dataset
+    ) -> None:
+        described = _tool(
+            served,
+            DatasetSummary,
+            "describe_dataset",
+            dataset=_uuid(duplicated),
+            raw=True,
+        )
+        printed = invoke_ok(
+            ["describe", "--manifest", str(duplicated.manifest_path), "--raw", "--json"]
+        )
+
+        assert described.raw_report is not None
+        assert described.raw_report.duplicate_sets == 1
+        assert (
+            described.raw_report
+            == DatasetSummary.model_validate_json(printed.stdout).raw_report
+        )
+
+    def test_without_raw_the_report_is_null(
+        self, served: LocalBackend, duplicated: Dataset
+    ) -> None:
+        described = _tool(
+            served, DatasetSummary, "describe_dataset", dataset=_uuid(duplicated)
+        )
+
+        assert described.raw_report is None
+
+    def test_raw_names_a_missing_source_and_creates_nothing(
+        self, served: LocalBackend, grouped: Dataset, tmp_path: Path
+    ) -> None:
+        grouped.add_scan_source(
+            TracksScanSource.model_validate(
+                {
+                    "id": "gone",
+                    "path": str(tmp_path / "unmounted"),
+                    "patterns": ["*.npy"],
+                }
+            )
+        )
+
+        described = _tool(
+            served,
+            DatasetSummary,
+            "describe_dataset",
+            dataset=_uuid(grouped),
+            raw=True,
+        )
+
+        assert described.raw_report is not None
+        assert [gone.source for gone in described.raw_report.missing_sources] == [
+            "gone"
+        ]
+        assert not (tmp_path / "unmounted").exists()

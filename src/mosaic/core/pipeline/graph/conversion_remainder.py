@@ -39,10 +39,13 @@ class ConversionRemainder:
         target: Every entry that the raw rows of the step's format name, and a
             stand-in for each file that names no sequence and has no table yet.
         missing: The part of *target* that no table of the variant answers for.
+        unnamed: The stand-ins of *target*, one for each pending file that names
+            no sequence.
     """
 
     target: frozenset[Entry]
     missing: frozenset[Entry]
+    unnamed: frozenset[Entry]
 
 
 def conversion_remainder(
@@ -72,6 +75,7 @@ def conversion_remainder(
     return ConversionRemainder(
         target=entries | unconverted,
         missing=(entries - held_entries) | unconverted,
+        unnamed=unconverted,
     )
 
 

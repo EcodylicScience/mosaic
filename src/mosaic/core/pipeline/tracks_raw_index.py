@@ -53,10 +53,11 @@ from __future__ import annotations
 import csv
 import fnmatch
 import os
+import re
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal, TypedDict
 
 import pandas as pd
@@ -214,6 +215,103 @@ def _skip_reason(
     return None
 
 
+@dataclass(frozen=True)
+class SourceFileFilter:
+    """The per-file rule of a tracks or labels scan, for one declared base.
+
+    A recursive filter accepts a file whose path below :attr:`base` matches
+    ``**/<pattern>`` for some pattern, which is what ``base.rglob(pattern)``
+    returns. A non-recursive one accepts a path that matches ``<pattern>``,
+    which is what ``base.glob(pattern)`` returns. A pattern may carry path
+    parts (``a/*.csv``, ``**/b/*.npz``). The skips apply on top: a basename that
+    matches an exclude pattern, a macOS resource fork, a path through
+    ``_tracking`` or ``feature_definitions``, and a file inside a label series.
+
+    The walk (:func:`iter_track_files`) lists each pattern's glob and keeps the
+    candidates :meth:`matches_below` accepts. :meth:`accepts` answers for a
+    resolved path by its own name and against :attr:`base`, so a file symlink
+    whose target has another name, or a file reached through a symlinked folder
+    outside :attr:`base`, is walked but not accepted.
+
+    Attributes:
+        base: The source's declared directory, resolved by
+            :func:`source_file_filter`. A path is judged relative to it.
+        patterns: The globs of the source.
+        recursive: Whether a pattern is searched at every depth below *base*.
+        exclude_patterns: Basename globs the scan leaves out.
+    """
+
+    base: Path
+    patterns: tuple[str, ...]
+    recursive: bool
+    exclude_patterns: tuple[str, ...]
+
+    def matches_below(self, relative: PurePath) -> bool:
+        """Whether *relative*, a path below :attr:`base`, fits a pattern.
+
+        Looks at the path's text only. The skips need the file system and
+        belong to :meth:`accepts` and the walk.
+        """
+        return any(
+            relative.full_match(f"**/{pattern}" if self.recursive else pattern)
+            for pattern in self.patterns
+        )
+
+    def accepts(self, resolved: Path) -> bool:
+        """Whether a scan of this source indexes *resolved*.
+
+        Args:
+            resolved: An absolute, resolved path. One outside :attr:`base` is
+                not accepted.
+        """
+        try:
+            relative = resolved.relative_to(self.base)
+        except ValueError:
+            return False
+        return (
+            self.matches_below(relative)
+            and _skip_reason(resolved, self.exclude_patterns) is None
+        )
+
+    def candidates(self, directory: Path) -> Iterator[Path]:
+        """The paths below *directory* that a glob of a pattern lists.
+
+        Each pattern is listed by its own glob, ``rglob`` for a recursive filter
+        and ``glob`` for a non-recursive one, so only the paths a pattern can
+        match are listed and a glob walks through a symlinked folder as it
+        always has. A path matched by several patterns is listed once per
+        pattern. :meth:`matches_below` is the filter over what this yields.
+        """
+        for pattern in self.patterns:
+            yield from (
+                directory.rglob(pattern) if self.recursive else directory.glob(pattern)
+            )
+
+
+def source_file_filter(
+    base: Path,
+    patterns: Sequence[str],
+    *,
+    recursive: bool,
+    exclude_patterns: Sequence[str] = (),
+) -> SourceFileFilter:
+    """The per-file rule of a source declared over *base*.
+
+    Args:
+        base: The source's declared directory. The filter keeps it resolved,
+            because :meth:`SourceFileFilter.accepts` takes resolved paths.
+        patterns: The source's globs.
+        recursive: Whether the patterns are searched at every depth.
+        exclude_patterns: Basename globs to leave out.
+    """
+    return SourceFileFilter(
+        base=base.resolve(),
+        patterns=tuple(patterns),
+        recursive=recursive,
+        exclude_patterns=tuple(exclude_patterns),
+    )
+
+
 def iter_track_files(
     search_dirs: Iterable[Path],
     patterns: Sequence[str],
@@ -224,9 +322,10 @@ def iter_track_files(
 ) -> list[tuple[Path, os.stat_result]]:
     """Scan *search_dirs* for raw-track files, deterministically.
 
-    Yields ``(path, stat)`` for every file under *search_dirs* matching any glob
-    in *patterns*, skipping macOS resource forks (``._*``) and any basename
-    matching *exclude_patterns*. A file matched by several patterns appears once
+    Yields ``(path, stat)`` for every file under *search_dirs* that
+    :class:`SourceFileFilter` accepts for *patterns*: a match of any glob,
+    skipping macOS resource forks (``._*``) and any basename matching
+    *exclude_patterns*. A file matched by several patterns appears once
     (deduped by resolved path), and the result is sorted by resolved path so the
     written index is order-stable regardless of filesystem iteration order. The
     identity-free scan shared by :meth:`Dataset.index_tracks_raw` (scan-and-
@@ -265,50 +364,186 @@ def iter_track_files(
     scan that quietly returns less than the caller expected is the thing worth
     noticing.
     """
+    walk = _walk_track_files(
+        search_dirs,
+        patterns,
+        recursive=recursive,
+        exclude_patterns=exclude_patterns,
+        listed_skipped=listed_skipped,
+    )
+    if walk.tracking_skipped:
+        print(
+            f"[INFO] skipped {walk.tracking_skipped} generated file(s) under "
+            f"{TRACKING_ROOT}/ -- tracker intermediates are not raw tracks",
+            file=sys.stderr,
+        )
+    if walk.series_skipped:
+        print(
+            f"[INFO] skipped {walk.series_skipped} file(s) inside a versioned label "
+            "series -- those are indexed per revision, by a source that declares "
+            "`series`",
+            file=sys.stderr,
+        )
+    return [walk.by_resolved[key] for key in sorted(walk.by_resolved)]
+
+
+def walked_files(
+    base: Path,
+    patterns: Sequence[str],
+    *,
+    recursive: bool,
+    exclude_patterns: Sequence[str] = (),
+) -> frozenset[Path]:
+    """The resolved paths of the files a walk of *base* finds.
+
+    The walk of :func:`iter_track_files` for one directory source, without its stderr
+    report. A file symlink resolves to its target, so a target with another name or
+    outside *base* is in the set, which :meth:`SourceFileFilter.accepts` alone would not
+    cover.
+    """
+    walk = _walk_track_files(
+        [base], patterns, recursive=recursive, exclude_patterns=exclude_patterns
+    )
+    return frozenset(walk.by_resolved)
+
+
+def walked_paths(
+    search_dirs: Iterable[Path],
+    patterns: Sequence[str],
+    *,
+    recursive: bool,
+    exclude_patterns: Sequence[str] = (),
+) -> list[Path]:
+    """The paths a scan of *search_dirs* walks, sorted by resolved path.
+
+    The files :func:`iter_track_files` returns, as the paths the walk found
+    them at and without its stderr report, so a caller can ask of each what a
+    scan would ask without writing an index.
+    """
+    walk = _walk_track_files(
+        search_dirs, patterns, recursive=recursive, exclude_patterns=exclude_patterns
+    )
+    return [walk.by_resolved[key][0] for key in sorted(walk.by_resolved)]
+
+
+@dataclass
+class _TrackFileWalk:
+    by_resolved: dict[Path, tuple[Path, os.stat_result]]
+    tracking_skipped: int = 0
+    series_skipped: int = 0
+
+
+def _walk_track_files(
+    search_dirs: Iterable[Path],
+    patterns: Sequence[str],
+    *,
+    recursive: bool,
+    exclude_patterns: Sequence[str],
+    listed_skipped: list[Path] | None = None,
+) -> _TrackFileWalk:
+    """The files :func:`iter_track_files` returns, by resolved path, and its skips."""
     by_resolved: dict[Path, tuple[Path, os.stat_result]] = {}
     skipped = 0
     series_skipped = 0
     for directory in search_dirs:
         listed = directory.is_file()
         if listed:
-            matches_by_pattern = [[directory]]
+            matches: Iterable[Path] = [directory]
         else:
-            matches_by_pattern = [
-                directory.rglob(pattern) if recursive else directory.glob(pattern)
-                for pattern in patterns
-            ]
-        for matches in matches_by_pattern:
-            for path in matches:
-                if not path.is_file():
-                    continue
-                skip = _skip_reason(path, exclude_patterns)
-                if skip is not None:
-                    if listed:
-                        if listed_skipped is not None:
-                            listed_skipped.append(path)
-                    elif skip == "tracking":
-                        skipped += 1
-                    elif skip == "series":
-                        series_skipped += 1
-                    continue
-                resolved = path.resolve()
-                if resolved in by_resolved:
-                    continue
-                by_resolved[resolved] = (path, path.stat())
-    if skipped:
-        print(
-            f"[INFO] skipped {skipped} generated file(s) under {TRACKING_ROOT}/ "
-            "-- tracker intermediates are not raw tracks",
-            file=sys.stderr,
-        )
-    if series_skipped:
-        print(
-            f"[INFO] skipped {series_skipped} file(s) inside a versioned label "
-            "series -- those are indexed per revision, by a source that declares "
-            "`series`",
-            file=sys.stderr,
-        )
-    return [by_resolved[key] for key in sorted(by_resolved)]
+            file_filter = source_file_filter(
+                directory,
+                patterns,
+                recursive=recursive,
+                exclude_patterns=exclude_patterns,
+            )
+            matches = (
+                path
+                for path in file_filter.candidates(directory)
+                if file_filter.matches_below(path.relative_to(directory))
+            )
+        for path in matches:
+            if not path.is_file():
+                continue
+            skip = _skip_reason(path, exclude_patterns)
+            if skip is not None:
+                if listed:
+                    if listed_skipped is not None:
+                        listed_skipped.append(path)
+                elif skip == "tracking":
+                    skipped += 1
+                elif skip == "series":
+                    series_skipped += 1
+                continue
+            resolved = path.resolve()
+            if resolved in by_resolved:
+                continue
+            by_resolved[resolved] = (path, path.stat())
+    return _TrackFileWalk(
+        by_resolved=by_resolved,
+        tracking_skipped=skipped,
+        series_skipped=series_skipped,
+    )
+
+
+def _path_below(root: Path, path: Path) -> str:
+    """*path* relative to *root* with ``/`` separators, or its name if elsewhere."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.name
+
+
+def stem_as_sequence(stem: str) -> str:
+    """One file is one sequence, and the stem names it.
+
+    The naming rule for a source that has no rule of its own: every label source,
+    and every track format whose converter does not declare otherwise.
+    """
+    return stem
+
+
+def group_for_path(
+    path: Path,
+    *,
+    sequence_from_stem: Callable[[str], str],
+    multi_sequences_per_file: bool,
+    group_from: str | None,
+    group_re: re.Pattern[str] | None,
+    path_re: re.Pattern[str] | None,
+    path_root: Path | None,
+    group_from_path: Callable[[Path], str] | None,
+) -> str | None:
+    """The group a scan gives *path*, or ``None`` when its declared pattern misses it.
+
+    A scan indexes a file whose group is a string and skips one whose group is
+    ``None``. At most one rule applies, in this order:
+
+    * *group_from_path*, when given, names the group and never misses.
+    * *path_re*, when given, searches the path of *path* below *path_root*.
+    * Under *multi_sequences_per_file*, the group is the file's stem or its
+      parent folder's name per *group_from*, or empty, and *group_re* does not
+      apply.
+    * *group_re*, when given, searches the sequence that *sequence_from_stem*
+      names for the stem.
+    * Otherwise the group is empty.
+
+    A declared pattern that finds nothing is a miss.
+    """
+    if group_from_path is not None:
+        return str(group_from_path(path))
+    if path_re is not None and path_root is not None:
+        found = path_re.search(_path_below(path_root, path))
+        return None if found is None else found.group(1) or ""
+    if multi_sequences_per_file:
+        if group_from == "filename":
+            return path.stem
+        if group_from == "parent":
+            return path.parent.name
+        return ""
+    if group_re is not None:
+        found = group_re.search(sequence_from_stem(path.stem))
+        return None if found is None else found.group(1) or ""
+    return ""
 
 
 def write_tracks_raw_index_rows(index_path: Path, df: pd.DataFrame) -> None:

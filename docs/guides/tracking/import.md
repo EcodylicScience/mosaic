@@ -27,7 +27,10 @@ tracks variants the conversion wrote into.
 
 A run in which some entries fail reports `partial` and exits 0. A run in which every
 entry fails reports `failed` and exits 1; `converted` counts only the entries written
-or already current.
+or already current. `--json` also gives `written`, the tables this call wrote, and
+`current`, the entries it found current and left as they were, so converting a second
+day into a dataset that holds the first reports the first day as `current`. A
+`convert-tracks` step that wrote nothing is a cache hit.
 
 ## Convert as a recipe step
 

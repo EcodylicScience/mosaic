@@ -175,3 +175,43 @@ def test_removing_a_series_source_can_drop_its_rows(tmp_path: Path) -> None:
     assert json.loads(removed.output)["dropped_rows"] == 1
     fresh = Dataset(manifest_path=library.manifest_path).load()
     assert read_label_series(fresh, "keypoints").empty
+
+
+def test_keeping_a_series_sources_rows_names_the_steps_that_drop_them(
+    tmp_path: Path,
+) -> None:
+    project = _project_with_revisions(tmp_path, 2)
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    manifest = str(library.manifest_path)
+    set_dir = str(project.get_root("labels_raw") / "keypoints" / "17-mice")
+    add = [
+        "sources", "add", "-m", manifest, "--kind", "labels", "--id", "p52-17",
+        "--path", set_dir, "--series", "keypoints", "--file", revision_file(1),
+    ]  # fmt: skip
+    remove = [
+        "sources", "remove", "-m", manifest, "--kind", "labels", "--id", "p52-17",
+    ]  # fmt: skip
+    _ = runner.invoke(app, add)
+    _ = runner.invoke(app, ["scan", "-m", manifest, "--kind", "labels"])
+
+    removed = runner.invoke(app, remove)
+
+    assert removed.exit_code == 0, removed.output
+    assert "1 index row(s)" in removed.output
+    assert "Every scan keeps" in removed.output
+    assert "declare the source again with 'mosaic sources add'" in removed.output
+    assert "'mosaic sources remove --drop-rows'" in removed.output
+    assert "--prune-unsourced" not in removed.output
+    assert "same folder" not in removed.output
+    kept = read_label_series(
+        Dataset(manifest_path=library.manifest_path).load(), "keypoints"
+    )
+    assert len(kept) == 1
+
+    assert runner.invoke(app, add).exit_code == 0
+    dropped = runner.invoke(app, [*remove, "--drop-rows", "--json"])
+
+    assert dropped.exit_code == 0, dropped.output
+    assert json.loads(dropped.output)["dropped_rows"] == 1
+    fresh = Dataset(manifest_path=library.manifest_path).load()
+    assert read_label_series(fresh, "keypoints").empty

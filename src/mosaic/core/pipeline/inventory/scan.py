@@ -41,7 +41,7 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.core.scope import Scope
 
 from ._read import IndexReader, ParquetFooterMemo
-from ._runs import finish_state, run_ids
+from ._runs import finish_state, run_records
 from .contributors import inventory_contributor, registered_inventory_kinds
 from .label_series import label_series_records
 from .media import media_derivative_record, media_variant_records
@@ -79,6 +79,7 @@ __all__ = [
     "inventory",
     "narrow_target",
     "reportable_universe",
+    "run_covered_entries",
     "run_covers",
 ]
 
@@ -247,15 +248,6 @@ def run_covers(
     return Coverage(target=target, present=frozenset(held))
 
 
-def _rows_of(frame: pd.DataFrame, run_id: str) -> frozenset[Entry]:
-    """The ``(group, sequence)`` pairs one run's index rows name."""
-    if frame.empty or "run_id" not in frame.columns:
-        return frozenset()
-    return _entries_of(
-        record for record in index_records(frame) if record.get("run_id", "") == run_id
-    )
-
-
 def _orphan_rows(
     coverage: Coverage[Entry], rows: frozenset[Entry], files: frozenset[Entry]
 ) -> frozenset[Entry]:
@@ -366,6 +358,24 @@ def feature_run_target(
     return within or asked
 
 
+def run_covered_entries(
+    params: RunParams | None, rows: frozenset[Entry], within: frozenset[Entry]
+) -> frozenset[Entry]:
+    """The entries a feature run covers, among the *within* ones.
+
+    A run covers the entries its invocations asked for
+    (:meth:`~.params.RunParams.asked_scope`) and the entries its index *rows*
+    name. It is not measured over *within* the way :func:`feature_run_target`
+    measures it, since that returns the whole target for a run recorded as asked
+    for every entry, which is the run a growth caution looks for. An entry the
+    run covered and *within* no longer holds counts for nothing.
+    """
+    covered = rows
+    if params is not None:
+        covered = covered | frozenset(params.asked_scope())
+    return covered & within
+
+
 def _feature_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[Entry]]:
@@ -389,9 +399,9 @@ def _feature_records(
         frame = reader.frame(index_path, lambda p=index_path: feature_index(p).read())
         if frame.empty or "run_id" not in frame.columns:
             continue
-        for run_id in run_ids(frame):
+        for run_id, run_rows in run_records(frame).items():
             run_root = feature_run_root(ds, name, run_id)
-            rows = _rows_of(frame, run_id)
+            rows = _entries_of(run_rows)
             read = read_run_params(run_root)
             # The run's own index rows are what make its outputs recognisable
             # when the target cannot name them -- see ``run_covers``.
@@ -402,7 +412,7 @@ def _feature_records(
                 present=on_disk.present,
                 covers_all=on_disk.covers_all,
             )
-            started, finished_at, finished = finish_state(frame, run_id)
+            started, finished_at, finished = finish_state(run_rows)
             drift = drifted_entries(ds, name, run_id, read.params, drift_reads)
             records.append(
                 ArtifactRecord[Entry](
@@ -464,13 +474,13 @@ def _variant_records(
     records: list[ArtifactRecord[Entry]] = []
     findings = frame_axis_findings(frame)
     on_disk = _tables_on_disk(ds, frame)
-    for run_id in run_ids(frame):
-        rows = _rows_of(frame, run_id)
+    for run_id, run_rows in run_records(frame).items():
+        rows = _entries_of(run_rows)
         wanted = scope.selector.entry_pairs
         target = frozenset(rows if wanted is None else rows & wanted)
         files = rows & on_disk.get(run_id, frozenset())
         coverage = Coverage(target=target, present=files)
-        started, finished_at, finished = finish_state(frame, run_id)
+        started, finished_at, finished = finish_state(run_rows)
         drift = media_drift(ds, frame[frame["run_id"].astype(str) == run_id])
         mismatched = frozenset(
             make_entry_key(m.group, m.sequence)
@@ -531,13 +541,13 @@ def _labels_records(
         if frame.empty or "run_id" not in frame.columns:
             continue
         on_disk = _tables_on_disk(ds, frame)
-        for run_id in run_ids(frame):
-            rows = _rows_of(frame, run_id)
+        for run_id, run_rows in run_records(frame).items():
+            rows = _entries_of(run_rows)
             wanted = scope.selector.entry_pairs
             target = frozenset(rows if wanted is None else rows & wanted)
             files = rows & on_disk.get(run_id, frozenset())
             coverage = Coverage(target=target, present=files)
-            started, finished_at, finished = finish_state(frame, run_id)
+            started, finished_at, finished = finish_state(run_rows)
             records.append(
                 ArtifactRecord[Entry](
                     ref=LabelsVariantRef(label_kind=kind, run_id=run_id),

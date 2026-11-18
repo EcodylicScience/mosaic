@@ -25,9 +25,11 @@ from mosaic.core.pipeline.joined_export import JoinedExportParams, joined_run_id
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.store_export import StoreExportParams
 from mosaic.core.scope import Scope
+from mosaic.core.selections import save_selection
 from mosaic.tracking import PrerequisiteKind, RefusalCause
 from mosaic.tracking.litpose.params import LitposeParams
 from tests.helpers import (
+    add_tracks_variant_in_bulk,
     MediaClip,
     assert_tree_unchanged,
     entry_clips,
@@ -235,6 +237,41 @@ def test_a_scope_flag_scopes_the_op_command_by_entry(
     assert (answer.refusals, answer.entries) == ([], [("", "sess")])
     assert answer.command is not None
     assert _scope_of(ds, _run_back(answer.command, monkeypatch)) == [("", "sess")]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--entries", "@sessions"],
+        ["--scope", json.dumps({"selection": "sessions"})],
+    ],
+    ids=["token", "scope"],
+)
+def test_a_selection_scopes_the_op_command_by_its_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]
+) -> None:
+    ds = _dataset(tmp_path, [*entry_clips("sess"), *_UNJOINABLE])
+    add_tracks_variant_in_bulk(ds, "variant-a", ["sess"])
+    _ = save_selection(ds, "sessions", [("", "sess")])
+
+    answer = _answer(ds, "--kind", "trex", *flags)
+
+    assert (answer.refusals, answer.entries) == ([], [("", "sess")])
+    assert answer.command is not None
+    assert _scope_of(ds, _run_back(answer.command, monkeypatch)) == [("", "sess")]
+
+
+def test_a_missing_selection_is_refused_by_prerequisites(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path, entry_clips("sess"))
+
+    result = CliRunner().invoke(
+        app,
+        ["prerequisites", "-m", str(ds.manifest_path), "--kind", "trex"]
+        + ["--entries", "@nope", "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason"] == "selection_not_found"
 
 
 def test_the_op_command_reads_the_variant_that_the_plan_makes(

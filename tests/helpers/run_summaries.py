@@ -69,3 +69,26 @@ def rewrite_index(
     path = feature_index_path(ds, result.feature)
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
     edit(frame).to_csv(path, index=False)
+
+
+def grown_run(
+    tmp_path: Path, earlier: int = 3, added: int = 2
+) -> tuple[Dataset, Result[str]]:
+    """A run recorded for every entry of *earlier* sequences, and *added* more after it.
+
+    The run is scope-free and was asked for the whole dataset, so it covers the
+    *earlier* entries while the dataset now holds *earlier* plus *added*.
+    """
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("", f"seq_{index}"): pd.DataFrame({"value": [1.0, 2.0]})
+            for index in range(earlier)
+        },
+    )
+    add_track_sequences(
+        ds,
+        *[("", f"seq_{index}") for index in range(earlier, earlier + added)],
+        n_rows=4,
+    )
+    return ds, result

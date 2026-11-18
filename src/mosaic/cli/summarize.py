@@ -291,3 +291,5 @@ def _note_what_is_left_out(wire: RunSummaryWire) -> None:
             typer.echo(f"note: {label}: {named}", err=True)
     if not wire.finished:
         typer.echo("note: the run is not finished", err=True)
+    for caution in wire.cautions:
+        typer.echo(f"note: {caution}", err=True)

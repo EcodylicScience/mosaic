@@ -194,6 +194,8 @@ class RunSummary:
         rows_without_key: The rows left out because a ``by`` or ``where`` key is
             null on them, counted before ``where``.
         max_rows_per_entry: The most rows that one entry contributes to the groups.
+        cautions: What the caller should know about the entries the read left out,
+            one sentence each, as :attr:`~.run_matrix.RunRead.cautions`.
         groups: One row per group, sorted by the keys: the ``by`` keys,
             ``n_rows`` and ``n_entries``, the distinct ``(group, sequence)`` of
             the group's rows.
@@ -240,6 +242,7 @@ class RunSummary:
     mann_whitney: pd.DataFrame
     tag_keys: tuple[str, ...]
     tag_revision: TagRevisionRead | None
+    cautions: tuple[str, ...] = ()
 
 
 class GroupWire(StrictModel):
@@ -366,6 +369,8 @@ class RunSummaryWire(StrictModel):
         tag_revision: The revision of the tag table read by the tag keys or by
             the tag selection that chose the entries, ``None`` when neither read
             one.
+        cautions: What the caller should know about the entries the read left out,
+            one sentence each.
     """
 
     ref: str
@@ -383,6 +388,7 @@ class RunSummaryWire(StrictModel):
     mann_whitney: tuple[MannWhitneyWire, ...]
     tag_keys: list[str]
     tag_revision: TagRevisionRead | None
+    cautions: tuple[str, ...] = ()
 
 
 class PreviewOutput(RootModel[ArtifactPreview | RunSummaryWire]):
@@ -628,6 +634,7 @@ def summarize_run(
         ),
         tag_keys=split.tag_keys,
         tag_revision=_tag_revision_read(split, tag_table),
+        cautions=read.cautions,
     )
 
 
@@ -713,6 +720,7 @@ def run_summary_wire(summary: RunSummary, ref: str) -> RunSummaryWire:
         ),
         tag_keys=list(summary.tag_keys),
         tag_revision=summary.tag_revision,
+        cautions=summary.cautions,
     )
 
 

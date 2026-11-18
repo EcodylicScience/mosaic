@@ -53,7 +53,7 @@ from mosaic.cli._io import (
     refuse_scope_named_twice,
     resolve_scope_choice,
     stdout_to_stderr,
-    tag_selection_refusals,
+    scope_choice_refusals,
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
@@ -270,7 +270,7 @@ def run_command(
     # The --feature arm and the --kind arm read one selector. A tag selection is
     # lowered against the revision that the feature run then reads.
     scope_choice = command_line_scope(entries, groups, sequences, scope_json)
-    with tag_selection_refusals(as_json=as_json):
+    with scope_choice_refusals(as_json=as_json):
         tags = choices_tag_table(ds, scope_choice, {})
         scope = resolve_scope_choice(ds, scope_choice, tags=tags)
 

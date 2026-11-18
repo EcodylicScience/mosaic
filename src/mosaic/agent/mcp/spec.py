@@ -75,6 +75,7 @@ from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
 from mosaic.core.scan_findings import ScanFinding
 from mosaic.core.spaces import TrackSpace
+from mosaic.core.selections import SelectionSummary
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.typed_attribute import TypedAttributeType
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -516,11 +517,12 @@ RecipeDocument = Annotated[
 
 
 class ScopeSelector(StrictModel):
-    """Entries, or groups and sequences, or sequence_tags; never two forms."""
+    """Entries, groups and sequences, a selection, or sequence_tags; never two forms."""
 
     entries: list[tuple[str, str]] | None = None
     groups: list[str] | None = Field(default=None, min_length=1)
     sequences: list[str] | None = Field(default=None, min_length=1)
+    selection: str | None = Field(default=None, description="A saved selection's name.")
     sequence_tags: dict[str, list[KeyValue]] | None = Field(
         default=None, description="[] names a label."
     )
@@ -533,12 +535,18 @@ class ScopeSelector(StrictModel):
                 ("entries", self.entries),
                 ("groups", self.groups),
                 ("sequences", self.sequences),
+                ("selection", self.selection),
                 ("sequence_tags", self.sequence_tags),
             )
             if value is not None
         ]
         if not named:
-            msg = "a scope names entries, groups, sequences or sequence_tags"
+            msg = (
+                "a scope names entries, groups, sequences, a selection or sequence_tags"
+            )
+            raise ValueError(msg)
+        if self.selection is not None and named != ["selection"]:
+            msg = "a selection stands alone in a scope"
             raise ValueError(msg)
         if self.sequence_tags is not None:
             if named != ["sequence_tags"]:
@@ -557,18 +565,13 @@ class ScopeSelector(StrictModel):
 
 _SCOPE_FORMS: Final = (
     "[[group, sequence], ...], {groups: [...], sequences: [...]} (cross "
-    "product, either optional) or {sequence_tags: {name: [values]}}"
+    "product, either optional), {selection: name} or {sequence_tags: {name: "
+    "[values]}}"
 )
 
 Entries = Annotated[
     list[tuple[str, str]] | ScopeSelector | None,
-    Field(
-        description=(
-            f"Entries to cover: {_SCOPE_FORMS}. Null covers every entry; use it "
-            "when steps are scoped to different groups, since a step covers "
-            "only what entries covers."
-        )
-    ),
+    Field(description=f"Entries to cover: {_SCOPE_FORMS}. Null covers every entry."),
 ]
 """The entries a plan or a submission covers."""
 
@@ -670,6 +673,15 @@ class DescribeDatasetInput(ToolInput):
     """The arguments of ``describe_dataset``."""
 
     dataset: DatasetId
+    raw: bool = Field(
+        default=False,
+        description=(
+            "Add raw_report: duplicate raw files, files with no checksum, files a "
+            "group pattern misses, tracks tables with an odd frame count or span, "
+            "uneven time steps and missing source paths. Reads run-logs and lists "
+            "source folders."
+        ),
+    )
 
 
 class ListSequencesInput(ToolInput):
@@ -1098,9 +1110,10 @@ class PreviewOutputInput(ToolInput):
     """The arguments of ``preview_output``.
 
     ``entry`` mode takes ``group`` and ``sequence`` and none of ``by``,
-    ``tests``, ``where``, ``groups``, ``sequence_tags``, ``tag_revision`` and
-    ``allow_partial``. ``summary`` mode takes neither ``group`` nor
-    ``sequence``, and ignores ``max_columns``, ``listed`` and ``limit``.
+    ``tests``, ``where``, ``groups``, ``selection``, ``sequence_tags``,
+    ``tag_revision`` and ``allow_partial``. ``summary`` mode takes neither
+    ``group`` nor ``sequence``, takes ``selection`` without ``groups`` or
+    ``sequence_tags``, and ignores ``max_columns``, ``listed`` and ``limit``.
     """
 
     dataset: DatasetId
@@ -1176,6 +1189,10 @@ class PreviewOutputInput(ToolInput):
     groups: list[str] | None = Field(
         default=None, description="summary: read the entries of these groups only."
     )
+    selection: str | None = Field(
+        default=None,
+        description="summary: read the entries of this saved selection only.",
+    )
     sequence_tags: dict[str, list[KeyValue]] | None = Field(
         default=None,
         description=(
@@ -1214,6 +1231,7 @@ class PreviewOutputInput(ToolInput):
                     ("tests", bool(self.tests)),
                     ("where", self.where is not None),
                     ("groups", self.groups is not None),
+                    ("selection", self.selection is not None),
                     ("sequence_tags", self.sequence_tags is not None),
                     ("tag_revision", self.tag_revision is not None),
                     ("allow_partial", self.allow_partial),
@@ -1237,6 +1255,13 @@ class PreviewOutputInput(ToolInput):
                 raise ValueError(msg)
             if self.sequence_tags is not None and not self.sequence_tags:
                 msg = "sequence_tags names no tag"
+                raise ValueError(msg)
+            if self.selection is not None and (
+                self.groups is not None or self.sequence_tags is not None
+            ):
+                msg = (
+                    "a selection stands alone: give it without groups or sequence_tags"
+                )
                 raise ValueError(msg)
         return self
 
@@ -1273,6 +1298,7 @@ type DatasetAction = Literal[
     "define_feature",
     "import_sequence_tags",
     "list_sequence_tags",
+    "save_selection",
 ]
 """What ``manage_dataset`` does to a dataset."""
 
@@ -1297,7 +1323,8 @@ class ManageDatasetInput(ToolInput):
             "define_feature: store source as the feature "
             "definition name, run as def:<name>. import_sequence_tags: write "
             "the CSV at path as the next tag table revision. list_sequence_tags: "
-            "show each sequence tag with its value counts."
+            "show each sequence tag with its value counts. save_selection: keep "
+            "entries as the saved selection selection_name, which never changes."
         )
     )
     dataset: str | None = Field(
@@ -1429,6 +1456,13 @@ class ManageDatasetInput(ToolInput):
         default=False,
         description="import_sequence_tags: report the changes and write nothing.",
     )
+    selection_name: str | None = Field(
+        default=None, description="save_selection: the selection's name."
+    )
+    entries: Entries = None
+    note: str = Field(
+        default="", description="save_selection: free text kept with the selection."
+    )
     confirm: bool = Field(
         default=False,
         description=(
@@ -1476,6 +1510,7 @@ class DatasetChange(StrictModel):
             latest tag table revision.
         tag_import: Under ``import_sequence_tags``, the revision written and the
             change to each tag. Its rows that named no entry are in ``findings``.
+        selection: Under ``save_selection``, the selection saved.
         next_steps: What the dataset needs before a pipeline runs on it.
     """
 
@@ -1493,6 +1528,7 @@ class DatasetChange(StrictModel):
     definition: DefinitionRecord | None = None
     sequence_tags: SequenceTagListing | None = None
     tag_import: SequenceTagImport | None = None
+    selection: SelectionSummary | None = None
     next_steps: tuple[str, ...] = ()
 
 
@@ -1917,9 +1953,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Describe one dataset: its manifest fields, notes and tags, the counts "
             "of sequences, recordings, videos, tracks variants, feature runs and "
-            "trained models, each recording with its kind and a divided one with "
+            "trained models, the saved selections, each recording with its kind and a divided one with "
             "its number of sequences and its first and last sequence, the track "
-            "schemas of its tables and the frame rates of its videos. "
+            "schemas of its tables and the frame rates of its videos. With raw "
+            "true it also returns raw_report, a check of the raw files and the "
+            "tracks tables against the indexes. "
             "list_sequences with group set to a divided recording's name lists its "
             "sequences with their tracks tables and frame extents, a page at a time."
         ),
@@ -2169,7 +2207,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "/report. mode 'summary' instead counts a feature run's rows by group "
             "across entries, with each value column's statistics and the tests "
             "asked for, for a run of one row per entry or individual such as "
-            "sequence-aggregate. A design too large for one result is read whole "
+            "sequence-aggregate. In summary mode selection reads one saved "
+            "selection's entries. A design too large for one result is read whole "
             "with mosaic summarize or summarize_run."
         ),
         input_model=PreviewOutputInput,
@@ -2182,9 +2221,10 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Manage a dataset",
         description=(
             "Create a dataset, declare or remove a source of raw files, scan the "
-            "sources into the raw indexes, set the dataset's tags, or import or "
-            "list its sequence tags from a CSV. Paths must "
-            "lie inside the roots the server's operator allows. Converting is a "
+            "sources into the raw indexes, set the dataset's tags, import or "
+            "list its sequence tags from a CSV, or save a set of entries as a "
+            "named selection that later calls take as {selection: name}. Paths "
+            "must lie inside the roots the server's operator allows. Converting is a "
             "recipe step (convert-tracks, convert-labels), and next_steps says "
             "what a dataset still needs. Creating a dataset or changing its "
             "sources, or an import that replaces sequence tags, asks the user to "

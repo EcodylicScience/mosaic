@@ -490,6 +490,35 @@ class TestOverlap:
         )
         assert pair == ("walked", "picked")
 
+    def test_a_walk_decides_two_directory_sources(self) -> None:
+        sources = [
+            MediaScanSource(id="outer", path="/nas"),
+            MediaScanSource(id="inner", path="/nas/clips"),
+        ]
+
+        assert (
+            overlapping_sources(sources, self.resolve, walk=lambda a, b: False) is None
+        )
+        assert overlapping_sources(sources, self.resolve, walk=lambda a, b: True) == (
+            "outer",
+            "inner",
+        )
+        assert overlapping_sources(sources, self.resolve, walk=lambda a, b: None) == (
+            "outer",
+            "inner",
+        )
+
+    def test_a_walk_does_not_decide_a_file_source(self) -> None:
+        pair = overlapping_sources(
+            [
+                MediaScanSource(id="walked", path="/nas"),
+                MediaScanSource(id="picked", path="/nas/sub", files=("a.mp4",)),
+            ],
+            self.resolve,
+            walk=lambda a, b: False,
+        )
+        assert pair == ("walked", "picked")
+
 
 class TestTags:
     def test_an_unknown_key_in_a_tag_raises(self) -> None:

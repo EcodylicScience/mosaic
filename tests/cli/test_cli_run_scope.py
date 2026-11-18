@@ -39,6 +39,7 @@ from mosaic.core.pipeline.types.feature import Feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope, camera_grain_refusal
 from mosaic.runlog import read_run, run_log_dir
+from mosaic.core.selections import save_selection
 from tests.helpers import (
     MediaClip,
     make_dataset,
@@ -479,6 +480,124 @@ def test_a_tag_selection_of_a_dataset_without_tags_says_how_to_import_them(
     assert payload["kind"] == "invalid"
     assert "mosaic sequence-tags import" in payload["message"]
     assert payload["detail"] is None
+
+
+# --- a saved selection ---------------------------------------------------------
+
+
+@pytest.fixture
+def day1(scoped: Dataset) -> Dataset:
+    """The scoped dataset with ``day1`` saved over its two ``A`` entries."""
+    _ = save_selection(scoped, "day1", [("A", "one"), ("A", "two")])
+    return scoped
+
+
+def test_a_selection_token_runs_a_feature_over_the_selection(day1: Dataset) -> None:
+    result = _feature_run(day1, "--entries", "@day1")
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["entries_written"] == 2
+    storage = day1.get_root("features") / "speed-angvel__from__tracks"
+    written = sorted(path.name for path in storage.rglob("*.parquet"))
+    assert written == ["A__one.parquet", "A__two.parquet"]
+
+
+def test_a_selection_token_makes_the_run_id_of_the_entries_it_holds(
+    day1: Dataset,
+) -> None:
+    """An op's run id carries its scope, and the selection leaves the id alone."""
+    named = _regrid(day1, "--entries", "A:one", "--entries", "A:two", "--json")
+    selected = _regrid(day1, "--entries", "@day1", "--json")
+
+    assert named.exit_code == 0, named.output
+    assert selected.exit_code == 0, selected.output
+    assert json.loads(selected.stdout)["run_id"] == json.loads(named.stdout)["run_id"]
+    assert _regridded(day1) == [("A", "one"), ("A", "two")]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--entries", "@day1", "--entries", "A:one"),
+        ("--entries", "@day1", "--groups", "A"),
+        ("--entries", "@day1", "--sequences", "one"),
+    ],
+    ids=["entry-token", "groups", "sequences"],
+)
+def test_a_selection_token_excludes_every_other_scope_flag(
+    day1: Dataset, flags: tuple[str, ...]
+) -> None:
+    result = _regrid(day1, *flags)
+
+    assert result.exit_code == 1
+    assert "@day1" in result.output
+    assert _regridded(day1) == [], "a refused run must write nothing"
+
+
+def test_a_colon_makes_the_token_a_sequence_name(day1: Dataset) -> None:
+    """``:@day1`` is the sequence ``@day1`` of the empty group, not the selection."""
+    result = _regrid(day1, "--entries", ":@day1")
+
+    assert result.exit_code != 0
+    assert "No selection named" not in result.output
+    assert _regridded(day1) == []
+
+
+def test_scope_json_naming_a_selection_runs_over_its_entries(day1: Dataset) -> None:
+    result = _regrid(day1, "--scope", json.dumps({"selection": "day1"}))
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(day1) == [("A", "one"), ("A", "two")]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"selection": "day1", "groups": ["g"]},
+        {"selection": "day1", "entries": [["A", "one"]]},
+        {"selection": ["day1"]},
+    ],
+    ids=["groups", "entries", "not-a-name"],
+)
+def test_a_selection_key_stands_alone_in_a_scope(day1: Dataset, scope: object) -> None:
+    result = _regrid(day1, "--scope", json.dumps(scope))
+
+    assert result.exit_code == 1
+    assert "selection" in result.output
+    assert _regridded(day1) == []
+
+
+def test_a_missing_selection_is_refused_naming_the_selections_present(
+    day1: Dataset,
+) -> None:
+    result = _regrid(day1, "--entries", "@nope", "--json")
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["reason"] == "selection_not_found"
+    assert "day1" in payload["message"]
+    assert _regridded(day1) == []
+
+
+def test_an_entry_list_in_params_is_not_resolved_as_a_selection(
+    day1: Dataset,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(day1.manifest_path),
+            "--kind",
+            "resample-tracks",
+            "--params",
+            json.dumps({"target_fps": 30.0, "entries": ["@day1"]}),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--entries" in result.output
+    assert _regridded(day1) == []
 
 
 # --- overwrite -----------------------------------------------------------------

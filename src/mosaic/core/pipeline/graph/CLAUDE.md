@@ -9,6 +9,8 @@ named without a path is in `tests/core/pipeline/graph/`.
 `pipelines/<digest>.json` is a recipe (`recipe_store.py`, a leaf the rollup reads),
 `pipelines/requests/<rid>.json` one submission of it and
 `pipelines/computes/<rid>.json` the runs that submission computes (`store.py`).
+`selections/<name>.json` is a saved selection, a frozen entry set that a save and a
+delete write under the lock on `selections/.guard` (`core/selections.py`).
 `runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/` keeps the failure
 records (`claims.py`), the one part of a step's status that is stored instead of derived
 from artifacts. `drivers/<rid>.lease.json` is the lease of the process driving a
@@ -116,6 +118,14 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   is the plan's entries narrowed by its scope (`step_target`), and its identity,
   coverage, asked entries, stall and shortfall are measured over it. The fingerprint
   includes the step scopes only when there are any (`test_pipeline_step_scopes.py`).
+- `Request.selections` names the saved selection each scope came from (`""` for the
+  request's scope, a step id for a step scope), for display. `scope` and `step_scopes`
+  hold the resolved entries, and `plan_fingerprint` leaves the names out, so a selection
+  replaced after a plan changes the asked entries and `expect_plan` raises
+  `PlanChanged`. `save_request` leaves the key out when it is empty. A request made
+  through a selection is a request file an older mosaic refuses, as it refuses one that
+  records a cleanup, because `GraphModel` forbids an unknown key
+  (`test_pipeline_submit.py`).
 - `Request.pins` maps a step that fits over its scope (`fits` and `scope_dependent`)
   to a finished run of its storage (`pins.py`). `plan_pipeline` merges the pins over
   `recorded`, reads each pinned run from an unscoped inventory built once per plan, and
@@ -316,8 +326,21 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `IdentityUnresolved` naming the conversion; scope-free features keep their identity
   (`test_pipeline_converting_graph.py`). A plan over a dataset with no converted tracks and no
   converting step covers no entry, and its whole-dataset caution says to convert first
-  (`_plan_cautions`, `tests/agent/mcp/test_dataset_tools.py`). A step whose artifact reads complete after its
+  (`_plan_cautions`, `tests/agent/mcp/test_dataset_tools.py`). A plan covering a dataset that holds
+  tracks records what each of its `convert-tracks` steps adds to the tracks universe in
+  `Plan.conversion_adds` (`ConversionAdds`, filled from the remainders `_conversion_view` measures,
+  so the raw index is read once per step), outside the fingerprint, the wire and plan equality, and
+  the whole-dataset caution names it. A step whose artifact reads complete after its
   attempt is not stalled.
+- `Plan.growth` (`GrowthNote`, `_growth_notes` in `plan.py`) is filled for a plan asked for
+  no narrowing, from the inventory the plan already holds, so it adds no index read
+  (`test_pipeline_plan_scale.py`). For each feature step neither bound nor pinned it names a
+  finished run covering a non-empty, strict subset of the step's target: the step's own run for
+  a scope-free step, the newest other run of its storage for a scope-dependent one whose own run
+  does not exist yet. A run covers `RunParams.asked_scope()` united with its index rows, never
+  `feature_run_target`, which returns the whole target for a run recorded `asked_all`.
+  `_plan_cautions` words one caution naming five steps and counting the rest. It is outside the
+  wire, the fingerprint and plan equality (`test_pipeline_plan.py`).
 
 ## Running a step
 

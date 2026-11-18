@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from mosaic.core.pipeline.graph import (
     RecipeInvalid,
     RecipeRefused,
     build_step_feature,
+    plan_fingerprint,
     plan_pipeline,
     plan_wire,
     recipe_digest,
@@ -54,6 +56,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.graph.plan import ConversionAdds, GrowthNote
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
@@ -66,17 +69,21 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
     SPEED_RECIPE,
+    add_raw_track_files,
+    calms21_dataset,
     FakeTrex,
     MediaClip,
     add_media_variant,
     add_tracks_variant,
     add_transcode_derivative,
+    chain_recipe,
     assert_tree_unchanged,
     clip_facts,
     convert_tracks_from_raw,
     finish_media_variant,
     install_fake_trex,
     make_dataset,
+    write_trex_npz,
     run_speed,
     scope_over,
     speed_recipe,
@@ -1498,3 +1505,377 @@ def test_a_mean_keeps_auto(tracked: Dataset) -> None:
 
     assert planned.pairs is None
     assert "pairs" not in planned.spec.params
+
+
+def _convert_calms21_recipe() -> Recipe:
+    return Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "convert",
+                    "type": "op",
+                    "kind": "convert-tracks",
+                    "params": {"source_format": "calms21_npy"},
+                }
+            ]
+        }
+    )
+
+
+def test_a_plan_records_what_each_converter_adds_to_the_tracks_universe(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 3}}})
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["x", "y"], unnamed=["late"])
+
+    plan = plan_pipeline(ds, _convert_calms21_recipe())
+
+    assert plan.conversion_adds == {
+        "convert": ConversionAdds(
+            entries=frozenset({("", "x"), ("", "y")}), unnamed_files=1
+        )
+    }
+
+
+def test_a_plan_with_nothing_to_add_records_nothing(tmp_path: Path) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+
+    plan = plan_pipeline(ds, _convert_calms21_recipe())
+
+    assert plan.conversion_adds == {}
+
+
+def test_a_plan_of_a_narrowed_scope_records_nothing(tmp_path: Path) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 3}}})
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["x"])
+
+    plan = plan_pipeline(
+        ds, _convert_calms21_recipe(), scope=Scope(entries=[("train", "s1")])
+    )
+
+    assert plan.conversion_adds == {}
+
+
+def test_the_conversion_counts_are_outside_the_fingerprint_and_plan_equality(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    _ = ds.convert_all_tracks(source_format="calms21_npy")
+    add_raw_track_files(ds, named=["x"])
+    plan = plan_pipeline(ds, _convert_calms21_recipe())
+    without = replace(plan, conversion_adds={})
+
+    assert plan.conversion_adds
+    assert plan == without
+    assert plan_fingerprint(plan) == plan_fingerprint(without)
+
+
+def _trex_recipe() -> Recipe:
+    return Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "convert",
+                    "type": "op",
+                    "kind": "convert-tracks",
+                    "params": {"source_format": "trex_npz"},
+                }
+            ]
+        }
+    )
+
+
+def _scope_caution(plan: Plan) -> str:
+    [caution] = [
+        item.message for item in plan_wire(plan).cautions if item.where == "scope"
+    ]
+    return caution
+
+
+def test_a_converted_per_file_format_adds_only_the_entries_not_yet_converted(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_raw_track_files(ds, trex=["a", "b"])
+    _ = ds.convert_all_tracks(source_format="trex_npz")
+    converted = plan_pipeline(ds, _trex_recipe())
+
+    write_trex_npz(ds.base_dir / "more" / "trex" / "c_fish0.npz")
+    _ = ds.scan_tracks()
+    added = plan_pipeline(ds, _trex_recipe())
+
+    assert converted.conversion_adds == {}
+    assert _scope_caution(converted) == "the plan covers all 2 entries of the dataset"
+    assert added.conversion_adds == {
+        "convert": ConversionAdds(entries=frozenset({("", "c")}), unnamed_files=0)
+    }
+    assert _scope_caution(added) == (
+        "the plan covers the 2 converted entries of the dataset and the 1 entry "
+        "that step 'convert' adds"
+    )
+
+
+# --- growth -------------------------------------------------------------------
+
+GROWTH_ADVICE = "Pass a saved selection as the scope to keep the earlier set"
+
+
+def _grown(tmp_path: Path, *, earlier: int = 3) -> Dataset:
+    """A dataset of *earlier* tracked entries, which :func:`_add_entries` grows."""
+    dataset = make_dataset(tmp_path / "grown")
+    add_tracks_variant(
+        dataset,
+        VARIANT,
+        *[f"seq_{index}" for index in range(earlier)],
+        std_format="mosaic_v1",
+    )
+    return dataset
+
+
+def _add_entries(dataset: Dataset, first: int, count: int) -> None:
+    add_tracks_variant(
+        dataset,
+        VARIANT,
+        *[f"seq_{index}" for index in range(first, first + count)],
+        std_format="mosaic_v1",
+    )
+
+
+def _growth_caution(plan: Plan) -> str | None:
+    found = [
+        item.message
+        for item in plan_wire(plan).cautions
+        if item.where == "scope" and GROWTH_ADVICE in item.message
+    ]
+    assert len(found) <= 1
+    return found[0] if found else None
+
+
+def test_an_unscoped_plan_says_which_earlier_run_a_scope_free_step_reads(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    earlier = run_speed(dataset, 1)
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert plan.step("speed").run_id == earlier
+    assert plan.growth == (
+        GrowthNote(
+            step="speed", read_run_id=earlier, covered=3, target=5, made_run_id=None
+        ),
+    )
+    assert _growth_caution(plan) == (
+        f"step 'speed' reads run {earlier}, which covers 3 entries. The plan "
+        f"covers 5. The 2 entries added since join it. {GROWTH_ADVICE}"
+    )
+
+
+def test_a_scope_dependent_step_says_which_run_the_plan_makes_beside_the_earlier(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    earlier_plan = plan_pipeline(dataset, chain_recipe())
+    _ = execute(dataset, earlier_plan)
+    earlier = earlier_plan.step("templates").run_id
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(dataset, chain_recipe())
+
+    made = plan.step("templates").run_id
+    assert earlier is not None
+    assert made is not None
+    assert made != earlier
+    assert (
+        GrowthNote(
+            step="templates", read_run_id=earlier, covered=3, target=5, made_run_id=made
+        )
+        in plan.growth
+    )
+    message = _growth_caution(plan)
+    assert message is not None
+    assert (
+        f"step 'templates': the plan makes run {made} over 5 entries beside run "
+        f"{earlier} over 3. The 2 entries added since join the new run"
+    ) in message
+
+
+def test_the_caution_names_five_steps_and_counts_the_rest(tmp_path: Path) -> None:
+    dataset = _grown(tmp_path)
+    for step_size in range(1, 7):
+        _ = run_speed(dataset, step_size)
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(
+        dataset,
+        Recipe.model_validate(
+            {
+                "steps": [
+                    {
+                        "id": f"speed{step_size}",
+                        "type": "feature",
+                        "feature": "speed-angvel",
+                        "inputs": ["tracks"],
+                        "params": {"step_size": step_size},
+                    }
+                    for step_size in range(1, 7)
+                ]
+            }
+        ),
+    )
+
+    message = _growth_caution(plan)
+    assert len(plan.growth) == 6
+    assert message is not None
+    assert [f"step 'speed{index}' reads" in message for index in range(1, 7)] == [
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert "1 more step reads an earlier set in the same way" in message
+    assert message.endswith(GROWTH_ADVICE)
+
+
+def test_a_plan_scoped_to_a_selection_does_not_caution(tmp_path: Path) -> None:
+    dataset = _grown(tmp_path)
+    _ = run_speed(dataset, 1)
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(
+        dataset,
+        speed_recipe_stepping(1),
+        scope=Scope(entries=[("", f"seq_{index}") for index in range(3)]),
+    )
+
+    assert plan.growth == ()
+    assert _growth_caution(plan) is None
+
+
+def test_a_plan_whose_runs_cover_the_target_does_not_caution(tmp_path: Path) -> None:
+    dataset = _grown(tmp_path)
+    _add_entries(dataset, 3, 2)
+    _ = run_speed(dataset, 1)
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert plan.growth == ()
+    assert _growth_caution(plan) is None
+
+
+def test_a_run_over_a_narrowed_set_cautions_an_unscoped_plan(tmp_path: Path) -> None:
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+
+    dataset = _grown(tmp_path, earlier=5)
+    narrowed = [("", f"seq_{index}") for index in range(3)]
+    earlier = run_feature(
+        dataset, SpeedAngvel(params={"step_size": 1}), scope=Scope(entries=narrowed)
+    ).run_id
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert [(note.read_run_id, note.covered) for note in plan.growth] == [(earlier, 3)]
+    assert [note.asked_all for note in plan.growth] == [False]
+    assert _growth_caution(plan) == (
+        f"step 'speed' reads run {earlier}, which was asked for 3 entries. The plan "
+        f"covers 5. The other 2 join it. {GROWTH_ADVICE}"
+    )
+
+
+def test_one_entry_a_narrowed_run_was_asked_for_is_worded_in_the_singular(
+    tmp_path: Path,
+) -> None:
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+
+    dataset = _grown(tmp_path, earlier=2)
+    earlier = run_feature(
+        dataset,
+        SpeedAngvel(params={"step_size": 1}),
+        scope=Scope(entries=[("", "seq_0")]),
+    ).run_id
+
+    message = _growth_caution(plan_pipeline(dataset, speed_recipe_stepping(1)))
+
+    assert message == (
+        f"step 'speed' reads run {earlier}, which was asked for 1 entry. The plan "
+        f"covers 2. The other entry joins it. {GROWTH_ADVICE}"
+    )
+
+
+def test_a_run_asked_for_every_entry_says_the_rest_were_added_since(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    _ = run_speed(dataset, 1)
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert [note.asked_all for note in plan.growth] == [True]
+
+
+def test_the_growth_notes_are_outside_the_fingerprint_and_plan_equality(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    _ = run_speed(dataset, 1)
+    _add_entries(dataset, 3, 2)
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+    without = replace(plan, growth=())
+
+    assert plan.growth
+    assert plan == without
+    assert plan_fingerprint(plan) == plan_fingerprint(without)
+
+
+def test_one_entry_added_since_joins_the_run(tmp_path: Path) -> None:
+    dataset = _grown(tmp_path)
+    earlier = run_speed(dataset, 1)
+    _add_entries(dataset, 3, 1)
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert _growth_caution(plan) == (
+        f"step 'speed' reads run {earlier}, which covers 3 entries. The plan "
+        f"covers 4. The 1 entry added since joins it. {GROWTH_ADVICE}"
+    )
+
+
+def test_one_entry_added_since_joins_the_new_run_of_a_scope_dependent_step(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    _ = execute(dataset, plan_pipeline(dataset, chain_recipe()))
+    _add_entries(dataset, 3, 1)
+
+    message = _growth_caution(plan_pipeline(dataset, chain_recipe()))
+
+    assert message is not None
+    assert "over 3. The 1 entry added since joins the new run" in message
+
+
+def test_entries_a_run_covered_and_the_dataset_dropped_are_not_counted(
+    tmp_path: Path,
+) -> None:
+    dataset = _grown(tmp_path)
+    earlier = run_speed(dataset, 1)
+    _ = dataset.drop_entries(scope=Scope(entries=[("", "seq_2")]))
+    _add_entries(dataset, 3, 2)
+
+    plan = plan_pipeline(dataset, speed_recipe_stepping(1))
+
+    assert plan.growth == (
+        GrowthNote(
+            step="speed", read_run_id=earlier, covered=2, target=4, made_run_id=None
+        ),
+    )
+    assert _growth_caution(plan) == (
+        f"step 'speed' reads run {earlier}, which covers 2 entries. The plan "
+        f"covers 4. The 2 entries added since join it. {GROWTH_ADVICE}"
+    )

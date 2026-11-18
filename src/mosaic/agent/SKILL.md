@@ -159,7 +159,9 @@ A dataset is a directory with `dataset.yaml` and named roots
   Produce outputs through `run_feature`, `mosaic run` and the ops, which keep the
   indexes and run ids consistent.
 - Do not hand-edit an `index.csv`, delete a `*.lock` file, or edit `.mosaic/`. Keep
-  `.mosaic/claims/`, the only record of which entries are known to fail.
+  `.mosaic/claims/`, the only record of which entries are known to fail, and
+  `.mosaic/selections/`, the user's saved entry sets (see Bringing data in). Never
+  delete a selection: it is the user's record of which entries an analysis used.
 - Change `dataset.yaml` with `mosaic sources`, `mosaic tags`, `mosaic notes` and
   `mosaic libraries`, or the matching `Dataset` methods. A top-level key added by hand
   survives. A newer `manifest_version` raises `ManifestVersionError`. Upgrade mosaic
@@ -188,16 +190,49 @@ A dataset is a directory with `dataset.yaml` and named roots
 - `group` may be empty. It is a namespace, and it does not define analysis groups. To
   run over an arbitrary set, pass `Scope(entries=[(group, sequence), ...])` or
   `--entries group:sequence`. `groups` and `sequences` combine as a cross product.
+- A run, plan or read with no scope covers the entries the dataset holds when it runs,
+  so more entries change what an earlier command computes. **Before a dataset grows,
+  save the entries an analysis used as a selection**: `mosaic selection save NAME
+  --group G` (or `--entry`, `--entries-file`, `--from-scope`, with `--note`), and in the
+  MCP `manage_dataset` with `save_selection`, `selection_name`, `entries` and `note`. A
+  selection never changes, and a name that exists is refused. Name it in every later
+  plan and read: `--entries @NAME` of `mosaic run` and `mosaic prerequisites`, and
+  `--entry @NAME` of `mosaic summarize`, `mosaic inventory` and `mosaic pipeline
+  plan|verify|run|submit`. A flag that takes JSON uses `{"selection": "NAME"}` alone in
+  its object: `--scope` of `mosaic run` and `mosaic prerequisites`, and `--step-scope`
+  `STEP={"selection": "NAME"}` of `mosaic pipeline plan|verify|run|submit|score`. In
+  Python, pass `selection_scope(ds, "NAME")` from `mosaic.core.selections` as `scope=`.
+  `mosaic track` and `mosaic preview` take no selection and read `@name` as a sequence
+  of the empty group, which `:@name` also spells. `mosaic selection list` and `show`
+  read one. Delete none: the user deletes with `mosaic selection delete`. A plan or a
+  read with no scope that cautions that a run covers fewer entries than the dataset now
+  holds is telling you to pass a selection. Show the user the caution. A request made
+  through a selection cannot be read by a mosaic that predates selections.
+  (https://ecodylicscience.github.io/mosaic/dataset/#save-a-selection)
 - A scan replaces the rows its sources claim and keeps every other row. A files source
   (`mosaic sources add --file ...`) claims only the paths it lists, and indexes each
   that exists, whatever its suffix. A source whose path is missing keeps its rows
   through a scan.
 - Read a scan's `findings` (`mosaic scan --json`, or `manage_dataset` `scan`): a source
-  whose path is missing or a dangling link, a listed file that a rule skips and a group
-  pattern that matches no file each name their source. An empty index after a
-  scan is a finding to read, not a result. `--group-pattern` searches the file stem;
+  whose path is missing or a dangling link, a listed file that a rule skips, a group
+  pattern that matches no file and a `group_pattern_missed` finding each name their
+  source. An empty index after a scan is a finding to read, not a result. A file that a
+  group pattern misses is not indexed: the finding gives the `count` and a `sample` of
+  paths, so fix the pattern and scan again. `--group-pattern` searches the file stem;
   `--group-path-pattern` searches the path below the source, for a group that is a
   folder.
+- `mosaic describe --raw` (`describe_dataset` with `raw: true`) adds a `raw_report`
+  built from the indexes: duplicate raw files, files with no checksum, files a group
+  pattern misses, tracks tables with an odd frame count or span, uneven time steps and
+  missing source paths. Read it after a scan, before converting, instead of writing a
+  script that walks the raw files.
+- Two tracks or labels sources may share a folder when they take no file in common. A
+  scan refuses a file that both take, and names it. Narrow one source's patterns or add
+  `exclude_patterns`. A restricted `mosaic scan --only SOURCE --prune-unsourced` is
+  refused when a source it leaves out shares a folder with it.
+- `mosaic convert-tracks --json` reports `written` and `current` beside `converted`. A
+  second conversion into a dataset that holds the first reports the first as `current`
+  and rewrites nothing.
 - A recording split into clips is one entry, with frames numbered across its clips.
   Divide a recording into the sequences of a continuous group only for parts kept as
   separate sequences, following
@@ -942,10 +977,14 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
   `problems`, `cautions` and the other plan-level blocks are on the first page only.
-- `entries` takes `[group, sequence]` pairs, `{"entries": [...]}` or
-  `{"groups": [...], "sequences": [...]}`, and `step_entries` narrows single steps by
-  step id in the same forms. A step scope is intersected with `entries`, so leave
-  `entries` unset when steps are scoped to different groups. Pass the same ones to
+- `entries` takes `[group, sequence]` pairs, `{"entries": [...]}`, `{"groups": [...],
+  "sequences": [...]}` or `{"selection": "<name>"}` (a saved selection, alone in its
+  object), and `step_entries` narrows single steps by step id in the same forms.
+  `get_inventory` takes the same `entries`, and `preview_output` in `summary` mode takes
+  `selection` in place of `groups`. Save a selection with `manage_dataset`
+  `save_selection` before a dataset grows, and name it in every later plan, submission
+  and read. The tool never deletes one. A step scope is intersected with `entries`, so
+  leave `entries` unset when steps are scoped to different groups. Pass the same ones to
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
 - Write a step repeated over seeds, behaviors or folds once with `repeat`:
   `{"id": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}, ..., "params": {"random_state":

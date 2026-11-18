@@ -31,7 +31,7 @@ from mosaic.core.pipeline import memory_watch
 from mosaic.core.pipeline.memory_watch import MemorySample, MemoryWatch
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.column_contract import MissingInputColumns
-from mosaic.core.pipeline.loading import PairRowsMissing
+from mosaic.core.pipeline.loading import ColumnProjection, PairRowsMissing
 from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.admission import (
     EntriesInFlight,
@@ -309,6 +309,7 @@ def _on_seq_b(
         *,
         cross_join: bool = False,
         expands_individuals: bool = False,
+        projection: ColumnProjection | None = None,
     ) -> pd.DataFrame | None:
         if any("seq_b" in str(path) for path, _ in file_specs):
             return answer()
@@ -317,6 +318,7 @@ def _on_seq_b(
             filters,
             cross_join=cross_join,
             expands_individuals=expands_individuals,
+            projection=projection,
         )
 
     monkeypatch.setattr(manifest_module, "load_entry_data", load)
@@ -661,7 +663,14 @@ real = manifest.load_entry_data
 PREVIOUS = {"seq_b": "seq_a", "seq_c": "seq_b"}
 
 
-def load(file_specs, filters=(), *, cross_join=False, expands_individuals=False):
+def load(
+    file_specs,
+    filters=(),
+    *,
+    cross_join=False,
+    expands_individuals=False,
+    projection=None,
+):
     # Each load waits for the sequence before it to have been applied, so the pool
     # finds its one worker idle at every submission and never starts a second.
     waits = [
@@ -679,6 +688,7 @@ def load(file_specs, filters=(), *, cross_join=False, expands_individuals=False)
         filters,
         cross_join=cross_join,
         expands_individuals=expands_individuals,
+        projection=projection,
     )
 
 

@@ -22,7 +22,7 @@ import zlib
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -49,12 +49,15 @@ from mosaic.core.pipeline.run_matrix import (
     run_key_columns,
 )
 from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf, current_run_id
-from mosaic.core.pipeline.types import Result, ResultColumn
+from mosaic.core.pipeline.types import Inputs, Result, ResultColumn
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    LabeledFeature,
     PairClusterFeature,
     PlainFeature,
     add_track_sequences,
+    add_tracks_variant,
+    grown_run,
     labeled_run,
     make_dataset,
     rewrite_index,
@@ -1464,3 +1467,151 @@ def test_the_refusal_of_entries_with_different_columns_names_them(
     assert detail is not None
     assert detail["entries"] == ["/solo", "g1/s2"]
     assert detail["columns"] == ["w5"]
+
+
+# --- the growth caution ------------------------------------------------------
+
+KEEP_THIS_SET = "Read through a saved selection to keep this set"
+
+
+def test_an_unscoped_read_of_a_run_that_missed_added_entries_cautions(
+    tmp_path: Path,
+) -> None:
+    ds, result = grown_run(tmp_path)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert len(matrix.entries) == 3
+    assert matrix.cautions == (
+        f"run {result.run_id} covers 3 of the dataset's 5 entries. A run over the "
+        f"other 2 adds them to what an unscoped read returns. {KEEP_THIS_SET}",
+    )
+    assert plan_run_read(ds, result).cautions == matrix.cautions
+
+
+def test_the_caution_counts_one_added_entry_in_the_singular(tmp_path: Path) -> None:
+    ds, result = grown_run(tmp_path, earlier=3, added=1)
+
+    assert load_run_matrix(ds, result).cautions == (
+        f"run {result.run_id} covers 3 of the dataset's 4 entries. A run over the "
+        f"other entry adds it to what an unscoped read returns. {KEEP_THIS_SET}",
+    )
+
+
+def test_a_read_of_a_run_that_covers_the_dataset_does_not_caution(
+    tmp_path: Path,
+) -> None:
+    ds, result = wide_run(tmp_path)
+
+    assert load_run_matrix(ds, result).cautions == ()
+
+
+def test_a_read_does_not_count_an_entry_the_dataset_dropped(tmp_path: Path) -> None:
+    ds, result = grown_run(tmp_path)
+    _ = ds.drop_entries(scope=Scope(entries=[("", "seq_0")]))
+
+    matrix = load_run_matrix(ds, result)
+
+    assert matrix.cautions == (
+        f"run {result.run_id} covers 2 of the dataset's 4 entries. A run over the "
+        f"other 2 adds them to what an unscoped read returns. {KEEP_THIS_SET}",
+    )
+
+
+def test_a_read_through_a_scope_does_not_caution(tmp_path: Path) -> None:
+    ds, result = grown_run(tmp_path)
+    kept = Scope(entries=[("", f"seq_{index}") for index in range(3)])
+
+    assert load_run_matrix(ds, result, scope=kept).cautions == ()
+    assert load_run_matrix(ds, result, scope=Scope(groups=[""])).cautions == ()
+
+
+def test_a_run_asked_for_a_narrowed_set_does_not_caution_an_unscoped_read(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *ENTRIES, n_rows=10, n_ids=2)
+    narrowed = Scope(entries=[("g1", "s1"), ("g1", "s2")])
+    result = ds.run_feature(WideFeature(), scope=narrowed)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert len(matrix.entries) == 2
+    assert matrix.cautions == ()
+
+
+def test_the_caution_writes_nothing(tmp_path: Path) -> None:
+    ds, result = grown_run(tmp_path)
+    base = tmp_path / "ds"
+    before = tree_snapshot(base)
+
+    _ = load_run_matrix(ds, result)
+
+    assert tree_snapshot(base) == before
+
+
+PINNED = "resample.1-0123456789"
+"""A tracks variant that some of the dataset's entries carry."""
+
+
+def _pinned_run(
+    tmp_path: Path, *, on: int
+) -> tuple[Dataset, Result[str], LabeledFeature]:
+    """Five entries, a variant over the first *on* of them, and a run pinned to it."""
+    ds = make_dataset(tmp_path / "ds")
+    entries = [("", f"seq_{index}") for index in range(5)]
+    add_track_sequences(ds, *entries, n_rows=4)
+    add_tracks_variant(ds, PINNED, *[f"seq_{index}" for index in range(on)], n_rows=4)
+    feature = LabeledFeature(
+        {entry: pd.DataFrame({"value": [1.0, 2.0]}) for entry in entries}
+    )
+    return ds, ds.run_feature(feature, tracks_run_id=PINNED), feature
+
+
+def test_a_run_pinned_to_a_partial_variant_does_not_caution(tmp_path: Path) -> None:
+    ds, result, _ = _pinned_run(tmp_path, on=2)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert len(matrix.entries) == 2
+    assert matrix.cautions == ()
+
+
+def test_a_run_pinned_to_a_variant_that_grew_cautions_by_the_variants_entries(
+    tmp_path: Path,
+) -> None:
+    ds, result, _ = _pinned_run(tmp_path, on=2)
+    add_tracks_variant(ds, PINNED, "seq_2", "seq_3", n_rows=4)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert len(matrix.entries) == 2
+    assert matrix.cautions == (
+        f"run {result.run_id} covers 2 of the 4 entries of tracks variant {PINNED}. "
+        f"A run over the other 2 adds them to what an unscoped read returns. "
+        f"{KEEP_THIS_SET}",
+    )
+
+
+class _Reader(LabeledFeature):
+    """A scope-free feature that reads the feature run it is given."""
+
+    name = "prov-reader"
+
+
+def test_a_run_over_a_narrowed_feature_input_does_not_caution(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    entries = [("", f"seq_{index}") for index in range(5)]
+    add_track_sequences(ds, *entries, n_rows=4)
+    tables = {entry: pd.DataFrame({"value": [1.0, 2.0]}) for entry in entries}
+    upstream = ds.run_feature(LabeledFeature(tables), scope=Scope(entries=entries[:3]))
+    reader = _Reader(tables)
+    reader.inputs = Inputs[Result[str] | Literal["tracks"]](
+        (Result[str](feature=upstream.feature, run_id=upstream.run_id),)
+    )
+
+    result = ds.run_feature(reader)
+
+    matrix = load_run_matrix(ds, result)
+    assert len(matrix.entries) == 3
+    assert matrix.cautions == ()

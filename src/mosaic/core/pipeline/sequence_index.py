@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "compositions_within",
     "media_compositions_for",
     "SEQUENCE_INDEX_COLUMNS",
     "SEQUENCE_INDEX_PATH_COLUMNS",
@@ -72,6 +73,7 @@ __all__ = [
     "adopt_sequence_columns",
     "empty_sequence_frame",
     "read_sequence_index",
+    "recorded_compositions",
     "sequence_index",
     "sequence_index_path",
     "write_sequence_compositions",
@@ -482,17 +484,39 @@ def read_entry_compositions(
     wanted = set(entries)
     if not wanted:
         return {}
+    return compositions_within(recorded_compositions(ds), wanted)
+
+
+def recorded_compositions(ds: Dataset) -> dict[tuple[str, str], dict[str, str]]:
+    """Every source root's recorded composition, for every entry that has one.
+
+    What :func:`read_entry_compositions` returns for all the entries at once:
+    one read of each root's ``sequences.csv``. A caller that asks for several sets of
+    entries reads it once and narrows it with :func:`compositions_within`.
+    """
     found: dict[tuple[str, str], dict[str, str]] = {}
     for root in get_args(SourceRoot):
         frame = read_sequence_index(ds, root)
         named = frame.loc[:, ["group", "sequence", "composition"]]
         for group, sequence, composition in named.itertuples(index=False, name=None):
-            key = (str(group), str(sequence))
             digest = str(composition)
-            if key not in wanted or not digest:
-                continue
-            found.setdefault(key, {})[root] = digest
+            if digest:
+                found.setdefault((str(group), str(sequence)), {})[root] = digest
     return found
+
+
+def compositions_within(
+    recorded: Mapping[tuple[str, str], Mapping[str, str]],
+    entries: Iterable[tuple[str, str]],
+) -> dict[tuple[str, str], dict[str, str]]:
+    """The compositions of *recorded* for each of *entries*, as fresh dicts.
+
+    The order is that of *recorded*, which :func:`recorded_compositions` keeps
+    as the indexes list the entries. A caller may add to a returned dict
+    without changing *recorded*.
+    """
+    wanted = set(entries)
+    return {entry: dict(roots) for entry, roots in recorded.items() if entry in wanted}
 
 
 def media_compositions_for(

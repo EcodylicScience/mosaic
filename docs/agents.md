@@ -155,12 +155,12 @@ by that first `create`.
 
 | Tool | Result |
 | --- | --- |
-| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and recordings |
+| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, saved selections, counts and recordings. With `raw: true`, a `raw_report` of duplicate raw files, files with no checksum, files a group pattern misses, tracks tables with an odd frame count or span, uneven time steps and missing source paths, as [`mosaic describe --raw`](dataset.md#check-the-raw-data) prints it |
 | `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, listed by category or found by words in their name, summary or keywords and kept to one track space, and the ones named with their params as a table. A search that matches nothing returns a hint to write a [feature definition](#feature-definitions). With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, imports or lists its [sequence tags](dataset.md#sequence-tags), inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. Reports the dataset's `next_steps` |
+| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, imports or lists its [sequence tags](dataset.md#sequence-tags), inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. `save_selection` keeps a set of entries as a [saved selection](#saved-selections). Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document. Its validation report lists only the cautions the edits added, and counts the ones the base recipe already held (`cautions_unchanged`). `validate_recipe` gives the full list, with a caution that several steps share said once |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. Its `recipe_digest` names the recipe by digest only once the dataset has saved it, which an inline `submit_pipeline` or a `patch_recipe` call with no `ops` does; planning saves nothing. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Plans a recipe, or checks it against a reviewed plan's fingerprint, submits it and starts it in the background. Its result counts the steps by status and lists the first few to compute. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
@@ -168,6 +168,12 @@ by that first `create`.
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class. With `mode: "summary"`, a feature run's rows counted and described by group across entries (`by`, `where`, `tests`), as `mosaic summarize --json` prints them. A key of `by` or `where` may name a sequence tag, `sequence_tags` selects the entries by tag, and `tag_revision` reads that revision of the tags instead of the latest, as `--tag-revision` does. The summary records the revision it read as `tag_revision`, null unless a tag key or `sequence_tags` read the tags. A `where` string also matches an integer, float or boolean key where its text reads as one, as `--where` does |
+
+`entries` and `step_entries` of `plan_recipe`, `submit_pipeline` and `get_inventory`
+take `{"selection": "<name>"}`, alone in its object, in place of a list of entries, and
+`preview_output` takes `selection` in `summary` mode in place of `groups`. A selection
+that the dataset does not hold is refused with `selection_not_found`, which lists the
+ones it holds.
 
 Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
 `patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission
@@ -289,6 +295,18 @@ lets the agent start from a folder of raw files: create a dataset inside a datas
 - `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
   not ready: a source to declare, sources to scan, raw files to convert.
 - Files cannot be uploaded: the raw files must already be on the server's disk.
+
+### Saved selections
+
+A dataset that grows changes what an unscoped plan or read covers. The agent keeps an
+entry set fixed with `manage_dataset` `save_selection`, giving `selection_name`,
+`entries` (a list of pairs, `{"groups": [...]}`, or none for every entry the dataset
+holds) and an optional `note`, and names it afterward as `{"selection": "<name>"}`.
+Saving asks no confirmation and is refused on a dataset a service manages, unless the
+server allows managed writes. A selection never changes, and a name that exists is
+refused. [Save a selection](dataset.md#save-a-selection) describes it and the commands
+that list and show one. The agent reads a selection and saves one, and it cannot delete
+one: deleting is yours, with `mosaic selection delete`.
 
 ### Feature definitions
 
@@ -527,6 +545,8 @@ The server does not expose them as tools. When one is needed, the agent proposes
 `mosaic` command or the library call, and you run it:
 
 - overwriting a computed run (`overwrite`);
+- deleting a saved selection (`mosaic selection delete`). Replacing one is a delete and
+  a save, so the agent saves under a new name;
 - deleting tables, entries or runs, except superseded feature runs and the runs of
   recipes retired with them, which `submit_pipeline` removes with
   `cleanup: superseded` when the server runs with `--allow-cleanup feature-runs`

@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.selections import save_selection
 from tests.helpers import (
     calms21_dataset,
     invoke_json,
@@ -500,3 +501,166 @@ def test_a_tag_step_scope_of_a_dataset_without_tags_says_how_to_import_them(
     assert payload["kind"] == "invalid"
     assert "mosaic sequence-tags import" in payload["message"]
     assert payload["detail"] is None
+
+
+@pytest.fixture
+def selected(split: Dataset) -> Dataset:
+    """The split dataset with the selections ``day1`` and ``one``."""
+    _ = save_selection(split, "day1", [("train", "s1"), ("train", "s2")])
+    _ = save_selection(split, "one", [("train", "s1")])
+    return split
+
+
+def test_plan_resolves_a_selection_for_the_request_and_a_step(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    before = tree_snapshot(selected.base_dir)
+
+    plan = _plan(
+        selected,
+        _recipe_file(tmp_path),
+        "--entry",
+        "@day1",
+        "--step-scope",
+        'templates={"selection": "one"}',
+    )
+
+    assert _targets(plan) == {"speed": 2, "templates": 1}
+    assert tree_snapshot(selected.base_dir) == before
+
+
+def test_submit_records_the_selections_beside_the_entries(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    from mosaic.core.pipeline.graph import load_request
+
+    submitted = _submit(
+        selected,
+        _recipe_file(tmp_path),
+        "--entry",
+        "@day1",
+        "--step-scope",
+        'templates={"selection": "one"}',
+    )
+
+    assert submitted["scope"] == [["train", "s1"], ["train", "s2"]]
+    request = load_request(selected.base_dir, str(submitted["request_id"]))
+    assert request.selections == {"": "day1", "templates": "one"}
+    assert request.scope is not None
+    assert request.scope.entries == [("train", "s1"), ("train", "s2")]
+    assert request.step_scopes["templates"].entries == [("train", "s1")]
+
+
+def test_a_request_without_a_selection_records_none(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    from mosaic.core.pipeline.graph import load_request
+
+    submitted = _submit(selected, _recipe_file(tmp_path), "--group", "train")
+
+    request = load_request(selected.base_dir, str(submitted["request_id"]))
+    assert request.selections == {}
+
+
+def test_run_records_the_selection_it_ran_over(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    from mosaic.core.pipeline.graph import load_request
+
+    done = invoke_json(
+        [
+            "pipeline",
+            "run",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(selected.manifest_path),
+            "--entry",
+            "@day1",
+            "--json",
+        ]
+    )
+
+    assert done["scope"] == [["train", "s1"], ["train", "s2"]]
+    request = load_request(selected.base_dir, str(done["request_id"]))
+    assert request.selections == {"": "day1"}
+
+
+def test_a_selection_key_stands_alone_in_a_step_scope(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(selected.manifest_path),
+            "--step-scope",
+            'templates={"selection": "one", "groups": ["train"]}',
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--step-scope" in result.stderr
+    assert "selection" in result.stderr
+    assert "Extra inputs" not in result.stderr
+
+
+def test_a_selection_token_is_refused_beside_a_group(
+    selected: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(selected.manifest_path),
+            "--entry",
+            "@day1",
+            "--group",
+            "train",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--entry" in result.stderr
+    assert "--group" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--entry", "@nope"],
+        ["--step-scope", 'templates={"selection": "nope"}'],
+    ],
+    ids=["request", "step"],
+)
+@pytest.mark.parametrize("verb", ["plan", "submit", "verify"])
+def test_a_missing_selection_is_refused_naming_the_selections_present(
+    selected: Dataset, tmp_path: Path, verb: str, flags: list[str]
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            verb,
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(selected.manifest_path),
+            *flags,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["reason"] == "selection_not_found"
+    assert "day1" in payload["message"]
+    assert "one" in payload["message"]

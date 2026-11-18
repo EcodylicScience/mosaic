@@ -8,11 +8,165 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: selecting by sequence tag, tag keys in summaries, and arena layouts for many recordings
+## Unreleased: saved selections, selecting by sequence tag, tag keys in summaries, arena layouts for many recordings, the raw report, shared source folders, `mosaic pipeline settle` and `mosaic --version`
 
-No run id moves and no identity golden changes. A request selected by tag records
+No run id or output byte moves. A feature run, an op run and a plan's fingerprint are
+what they were. The dataset summary gains `selections` and `raw_report`. Every item
+below adds a key, a caution, a command or a check, except two: a file that a group
+pattern misses is no longer indexed, and a rescan drops its raw rows (see "A file the
+group pattern misses is not indexed"); and an older reader refuses a request file that
+holds `selections`.
+
+No identity golden changes either. A request selected by tag records
 its entries and the revision of the tags it read as `tag_revision`. Its run ids equal
 those of the same entries named one by one, and a recipe does not contain a tag selection.
+
+### Saved selections keep an entry set from growing
+
+An unscoped plan or read covers the entries the dataset holds when it runs, so adding
+entries changed what an earlier recipe or script computed. A saved selection is a frozen
+entry set, the file `.mosaic/selections/<name>.json` (`mosaic.core.selections`:
+`save_selection`, `read_selection`, `list_selections`, `delete_selection` and
+`selection_scope`, which returns the `Scope` of its entries). The file holds `format`
+(`mosaic-selection/1`), `name`, `created_at`, `note`, the sorted `entries` and a
+`digest` of them. A save refuses a name that exists, ignoring case, an empty list, and
+an entry the dataset does not hold, and writes under a lock on `selections/.guard`. A
+name is not empty, does not start with `.`, holds no whitespace, `:` or `@`, and is at
+most 128 bytes. Replacing a selection is a delete and a save.
+
+`mosaic selection save|list|show|delete` is the command set (`list` and `show` open the
+dataset read-only and write nothing, and `save` and `delete` refuse a dataset that a
+service manages). `save` takes one of `--from-scope`, `--entries-file`, `--entry` and
+`--group`, and `--note`. A selection resolves in the adapters, to a `Scope` of entries
+before anything else reads it, so a recipe run through one has the run ids, plan and
+fingerprint of the same entries typed out. The CLI forms are the token `@name` and the
+JSON object `{"selection": "name"}`, each alone:
+
+- `@name` is read by `--entries` of `mosaic run` and `mosaic prerequisites`, and by
+  `--entry` of `mosaic summarize`, `mosaic inventory` and `mosaic pipeline
+  plan|verify|run|submit`.
+- `{"selection": "name"}` is read by `--scope` of `mosaic run` and `mosaic
+  prerequisites`, and by `--step-scope` of `mosaic pipeline
+  plan|verify|run|submit|score`.
+- `mosaic track` and `mosaic preview` do not read a selection, and `@name` still names a
+  sequence of the empty group there. Elsewhere that sequence is written `:@name`. A
+  token `@name` was already such a sequence, so a script that passed one to a command
+  above now names a selection, or is refused when none has that name.
+- The MCP `entries` and `step_entries` of `plan_recipe`, `submit_pipeline`,
+  `get_inventory` and `manage_dataset`, and `selection` of `preview_output` in `summary`
+  mode, take the selection. A missing selection is refused with `selection_not_found`,
+  naming the selections the dataset holds. `manage_dataset` gains the action
+  `save_selection` (`selection_name`, `entries`, `note`), which asks for no confirmation
+  and is refused on a managed dataset unless the server allows managed writes. The
+  server never deletes one.
+- `DatasetSummary.selections` lists each selection's name, entry count, date and note,
+  in `mosaic describe` and `describe_dataset`, which fold a file that cannot be read
+  into `inventory_errors`. `mosaic selection list` lists such a file with the way to
+  delete it.
+
+**`Request.selections` and an older mosaic.** A request records the selection each scope
+came from in the new key `selections` (`""` for the request's scope, a step id for a
+step scope), beside the resolved entries that `scope` and `step_scopes` keep.
+`save_request` writes the key only when a selection was used, so a request made without
+one is the file an older mosaic reads. **An older mosaic refuses a request file that
+holds `selections`**, because the request model forbids an unknown key, as it refuses a
+request that records a cleanup. Do not hand such a request to a mosaic that predates
+this release. The plan's fingerprint leaves the names out. A selection replaced between
+a plan and its submission changes the asked entries, and `expect_plan` then raises
+`PlanChanged`.
+
+### An unscoped plan or read cautions when entries were added since the run
+
+A plan with no narrowing cautions when a feature step reads a finished run that covers
+fewer entries than the plan now does, or, for a step that depends on its scope, would
+make a run over more entries than another finished run of its storage covers. The
+caution names up to five such steps with the run, the entries it covers and the entries
+added since, and says to pass a saved selection as the scope. `Plan.growth`
+(`GrowthNote`) carries it, outside the wire, the fingerprint and plan equality. A read
+with no scope of a run that was recorded for every entry cautions when the run covers
+fewer entries than the dataset (or than the tracks variant it was pinned to) holds.
+`RunMatrix.cautions` and `RunSummary.cautions` carry it, `RunSummaryWire.cautions`
+returns it, `mosaic summarize` prints it on stderr, and the MCP `preview_output` returns
+it in `summary` mode. A run's covered entries are what it was asked for united with its
+index rows, because the inventory's target of a run recorded for every entry is the
+whole dataset. A read of a run asked for a narrower set does not caution. A caution
+refuses nothing.
+
+### The whole-dataset caution counts what the converters add
+
+After a rescan that added raw files, a plan whose recipe starts with `convert-tracks`
+said it covered all the entries of the dataset, and left out the ones the converter
+adds. It now says "the plan covers the 152 converted entries of the dataset and the 21
+entries that step 'convert' adds", adds "from 3 raw files without a sequence name" for
+files that name no sequence, names each step when two convert, and counts an entry two
+steps add once. `Plan.conversion_adds` (`ConversionAdds`) holds the counts, outside the
+wire, the fingerprint and plan equality.
+
+### `convert-tracks` reports what it wrote apart from what was current
+
+`entries_written` of a step stays its coverage, cache hits included, and
+`ConversionOutcome.converted` keeps its meaning: the entries written or found current.
+`ConversionOutcome.current` adds the entries found current that no variant wrote a table
+for, so `converted - current` is the count written. `mosaic convert-tracks --json` gains
+the keys `written` and `current` beside `converted`, and its text reads "Converted 9600
+sequence(s): 1200 written, 8400 current". A `convert-tracks` step that wrote nothing,
+over a source that held files and lost none, records a cache hit. Converting a second
+day into a dataset that holds the first leaves the first day's tables as they were, in
+bytes and modification times.
+
+### Two sources may share a folder, and a restricted prune beside one is refused
+
+A tracks or labels directory source (without a label `series`) claims the files its own
+filter accepts, and no longer the whole folder: one per-file rule (`source_file_filter`)
+decides what the walk indexes, what the declaration check compares and what a scan
+claims, and `tracks_raw/index.csv` is byte for byte what it was. Two such sources whose
+paths are equal or nested are refused at declaration only for files that both accept
+(`SourcesShareFiles`, naming the count and up to five), when the shared folder exists. A
+scan walks the pairs that include a source it scans, also under `--only`, and refuses a
+file two sources take before it writes an index. A rescan of one source keeps the
+other's rows, a rescan after narrowing patterns drops the rows of files the source no
+longer takes, and `mosaic sources remove --drop-rows` drops only the removed source's
+rows. A media source, a label series source, a files source and a shared folder that
+does not exist keep the refusal by path. `mosaic scan --only <source> --prune-unsourced`
+is refused when a source it leaves out shares a folder with one it scans, because the
+pruning would drop that source's rows as unclaimed.
+
+### A file the group pattern misses is not indexed
+
+A tracks or labels scan with `group_pattern` or `group_path_pattern` indexed a file the
+pattern missed with an empty group. It now indexes none, and reports one finding per
+source, `group_pattern_missed`, with the number of files in `count` and up to five paths
+in `sample` (`ScanFinding.count`, `ScanFinding.sample`). The findings
+`group_pattern_unmatched` and `group_path_pattern_unmatched`, which fire when the
+pattern matches no file, keep their names and now end "so no file is indexed" where they
+ended "so each entry has an empty group", and are the only finding of such a source. A
+rescan drops the raw rows that an earlier scan indexed with an empty group, and leaves
+their converted tables. A source with `group_from` misses nothing.
+
+### `mosaic describe --raw` reports on the raw data
+
+`DatasetSummary.raw_report` (`RawReport`, null without `--raw`) is filled by `mosaic
+describe --raw [--json]` and by `describe_dataset` with `raw: true`. It lists duplicate
+raw files by checksum with their sources, raw files without a checksum, the files each
+group pattern misses, tracks tables whose frame count disagrees with their media, tracks
+tables with an outlying frame span, entries read with uneven time steps, and declared
+sources with no path. Each list holds at most 10 items beside the count of the whole. It
+reads the raw indexes, the tracks index and the run-logs, and lists each source's folder
+by file name. It opens no tracks table and no raw file, writes nothing and creates
+nothing, and `mosaic describe --raw` opens the dataset read-only.
+
+### Planning over cached steps and a feature's per-entry cost are lower
+
+A plan of 60 cached steps over 173 entries took 11.3 s (25.9 s when every step reads the
+tracks) and takes 3.3 s (4.4 s). A plan reads each index once, and a scan divides a
+feature's index by run once instead of passing over it for each run, so the time follows
+the runs the dataset holds and no longer the steps of the recipe. A feature that
+declares every column it reads loads only those from a tracks table, and the pair
+filter's neighbor lookup is built without a loop over rows. Per entry of a 300k-row,
+32-column table, on the bench machine, `speed-angvel` runs in 0.32 s where it took 0.46
+s, and `temporal-stack` with a `pair_filter` in 0.69 s where it took 1.11 s. The
+aggregates spend their time in the computation and are unchanged. The outputs are byte
+for byte the same, and every run id is equal.
 
 ### Selecting entries by sequence tag
 
@@ -68,8 +222,6 @@ layout when the tags are edited later.
 `write_arena_layouts`. It takes a sequence of keys, takes the index lock once and writes
 every file and index row, or none when a key is refused. `Dataset.set_arena_layout` is
 unchanged, and `Dataset.set_arena_layouts` declares one layout under several keys.
-
-## Unreleased: `mosaic pipeline settle` records a step that has nothing to compute, and `mosaic --version` prints the release
 
 ### `mosaic pipeline settle`
 

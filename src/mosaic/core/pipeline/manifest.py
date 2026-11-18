@@ -34,7 +34,7 @@ from .index import (
     feature_index_path,
     missing_outputs_error,
 )
-from .loading import PairRowsMissing, load_entry_data
+from .loading import ColumnProjection, PairRowsMissing, load_entry_data
 from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
@@ -91,6 +91,7 @@ class ManifestEntry:
     core_extent: tuple[int, int] | None = None
     prev_extent: tuple[int, int] | None = None
     next_extent: tuple[int, int] | None = None
+    projection: ColumnProjection | None = None
 
 
 Manifest = dict[str, ManifestEntry]
@@ -267,6 +268,7 @@ def build_manifest(
     on_missing_run: MissingRunPolicy = "raise",
     stack: bool = False,
     consumed_roots: Collection[str] = (),
+    projection: ColumnProjection | None = None,
 ) -> tuple[Manifest, ResolvedScope]:
     """Build unified manifest for all input types.
 
@@ -316,6 +318,10 @@ def build_manifest(
     *consumed_roots* are the roots the feature declares. When they hold
     ``arenas``, each entry's layout digest (:func:`arenas_compositions`) joins
     ``ResolvedScope.compositions``, which otherwise holds the source roots only.
+
+    *projection* selects the columns each entry's tables are read for
+    (:func:`~mosaic.core.pipeline.loading.input_projection`), and ``None``
+    reads every column.
     """
     selector = scope if scope is not None else Scope()
     per_input_entries: list[set[tuple[str, str]]] = []
@@ -471,6 +477,7 @@ def build_manifest(
             core_extent=frame_extents.get((group, sequence)),
             prev_extent=None if prev_entry is None else frame_extents.get(prev_entry),
             next_extent=None if next_entry is None else frame_extents.get(next_entry),
+            projection=projection,
         )
 
     return manifest, resolved
@@ -1220,6 +1227,7 @@ def _load_neighbor(
     filter_factory: FilterFactory | None,
     cross_join: bool = False,
     expands_individuals: bool = False,
+    projection: ColumnProjection | None = None,
 ) -> pd.DataFrame | None:
     """Load a neighbor segment with its own filters applied.
 
@@ -1238,6 +1246,7 @@ def _load_neighbor(
             filters=filters,
             cross_join=cross_join,
             expands_individuals=expands_individuals,
+            projection=projection,
         )
     except PairRowsMissing:
         return None
@@ -1360,6 +1369,7 @@ def iter_manifest(
                 filters=filters,
                 cross_join=cross_join,
                 expands_individuals=expands_individuals,
+                projection=entry.projection,
             )
         except PairRowsMissing as exc:
             if on_pairs_missing is None:
@@ -1391,6 +1401,7 @@ def iter_manifest(
                         entry.prev_entry_key,
                         filter_factory,
                         expands_individuals=expands_individuals,
+                        projection=entry.projection,
                     ),
                     overlap_frames,
                     keep_tail=True,
@@ -1401,6 +1412,7 @@ def iter_manifest(
                         entry.next_entry_key,
                         filter_factory,
                         expands_individuals=expands_individuals,
+                        projection=entry.projection,
                     ),
                     overlap_frames,
                     keep_tail=False,

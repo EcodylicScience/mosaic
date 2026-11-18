@@ -56,6 +56,7 @@ from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from mosaic.core.typed_attribute import TypedAttributeType
 from tests.helpers import (
+    grown_run,
     index_a_second_origin,
     labeled_run,
     rewrite_index,
@@ -1849,3 +1850,29 @@ def test_the_package_exports_the_summary_lazily() -> None:
     assert pipeline_package.summarize_run is summarize_run
     assert pipeline_package.RunSummary is RunSummary
     assert pipeline_package.RunSummaryWire is RunSummaryWire
+
+
+def test_an_unscoped_summary_carries_the_growth_caution(tmp_path: Path) -> None:
+    ds, result = grown_run(tmp_path)
+
+    summary = summarize_run(ds, result)
+
+    caution = (
+        f"run {result.run_id} covers 3 of the dataset's 5 entries. A run over the "
+        f"other 2 adds them to what an unscoped read returns. Read through a saved "
+        f"selection to keep this set"
+    )
+    assert summary.cautions == (caution,)
+    assert wire_of(summary).cautions == (caution,)
+    assert dumped(wire_of(summary))["cautions"] == [caution]
+
+
+def test_a_summary_through_a_scope_or_of_a_whole_run_carries_no_caution(
+    tmp_path: Path,
+) -> None:
+    ds, result = grown_run(tmp_path)
+    kept = Scope(entries=[("", f"seq_{index}") for index in range(3)])
+
+    assert summarize_run(ds, result, scope=kept).cautions == ()
+    whole_ds, whole = three_strains(tmp_path / "whole")
+    assert summarize_run(whole_ds, whole, by=["strain"]).cautions == ()

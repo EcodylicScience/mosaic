@@ -20,7 +20,7 @@ from mosaic.cli._io import (
     TAG_GRAMMAR,
     emit_json,
     fail,
-    tag_selection_refusals,
+    scope_choice_refusals,
     tag_wanted,
 )
 from mosaic.cli.tags import ManifestOption
@@ -284,7 +284,7 @@ def _set_for_tags(
     from mosaic.core.strict_model import terse
 
     wanted = tag_wanted(tag)
-    with tag_selection_refusals(as_json=False):
+    with scope_choice_refusals(as_json=False):
         resolved = selection_tag_table(dataset)
         recordings = tagged_recordings(dataset, resolved, wanted)
     keys = [ArenaKey(found.group, found.sequence, camera) for found in recordings]

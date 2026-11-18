@@ -92,6 +92,56 @@ ds.run_feature(
 )
 ```
 
+### Keep the entries when the dataset grows
+
+A run, a plan or a read that names no scope covers the entries the dataset holds at that
+moment. Add a second day of recordings, and the command that covered the first day
+covers both. A **saved selection** names an entry set that does not grow. Save it before
+the dataset grows, and name it wherever you would name entries ([how to save
+one](../../dataset.md#save-a-selection)):
+
+```bash
+mosaic selection save -m dataset.yaml day1 --group day1
+mosaic run -m dataset.yaml --feature speed-angvel --entries @day1
+mosaic run -m dataset.yaml --feature sequence-aggregate \
+  --inputs '[{"feature": "speed-angvel__from__tracks"}]' \
+  --params '{"columns": ["speed"]}' --entries @day1
+mosaic inventory -m dataset.yaml --entry @day1
+mosaic summarize -m dataset.yaml feature/sequence-aggregate__from__speed-angvel__from__tracks/<run_id> --entry @day1
+```
+
+`@name` is a token for `--entries` of `mosaic run` and `mosaic prerequisites`, and for
+`--entry` of `mosaic summarize`, `mosaic inventory` and `mosaic pipeline
+plan|verify|run|submit`. It stands alone: it excludes every other entry token, and
+`--groups`, `--sequences` and `--group`. A selection has a JSON form for a flag that
+takes a JSON selector, `{"selection": "day1"}`, alone in its object. That is `--scope`
+of `mosaic run` and `mosaic prerequisites`, and `--step-scope` of `mosaic pipeline
+plan`, `verify`, `run`, `submit` and `score`:
+
+```bash
+mosaic run -m dataset.yaml --kind transcode --scope '{"selection": "day1"}'
+mosaic pipeline run -m dataset.yaml --recipe @recipe.json --step-scope 'fit={"selection": "train"}'
+```
+
+`mosaic track` and `mosaic preview` take no selection. They still read `@name` as the
+name of a sequence in the empty group, as every command did before selections. To name
+such a sequence where `@name` means a selection, write it `:@name`. A selection that
+does not exist is refused, and the refusal lists the dataset's selections.
+
+A selection resolves to its entries before anything else reads the scope, so a recipe
+run through one has the run ids, the plan and the fingerprint of the same entries typed
+out. A submitted request records the name beside the entries in its request file. An
+entry list in an op's `--params` is not resolved.
+
+When you name no scope, mosaic cautions where the dataset has grown past the run it
+reads. A plan says which steps read a run over fewer entries than the plan covers, and
+how many entries the plan adds to it, and advises passing a saved selection as the scope
+to keep the earlier set. A read of a run recorded for every entry, such as `mosaic
+summarize` or the MCP `preview_output` in `summary` mode, says how many of the dataset's
+entries the run covers, and `mosaic summarize` prints it on stderr. A read that names a
+scope does not caution, and a read of a run that was asked for a narrower set does not.
+A caution refuses nothing and changes no run id.
+
 ## Reading the outcome
 
 ```bash

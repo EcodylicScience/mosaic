@@ -69,7 +69,8 @@ importing `mosaic.tracking` registers neither.
   (`is_under_definitions_root`), media variants by resolved path
   (`media_variant_filter`) and label series by their marker (`is_under_label_series`).
   `_probe_dir_rows` checks the first three and `iter_track_files` the first, second
-  and fourth. A new walk checks each that applies
+  and fourth, through `SourceFileFilter` (`source_file_filter`), the one per-file
+  rule of the tracks and labels walk. A new walk checks each that applies
   (`tests/core/pipeline/test_tracking_roots.py`,
   `tests/core/media/preprocess/test_preprocess_index.py`).
 - `feature_definitions` is a declared root: the first open that is not read-only
@@ -133,8 +134,30 @@ importing `mosaic.tracking` registers neither.
   `core/pipeline/scan_claim.py`) and keeps every other row unless
   `prune_unsourced=True`. A scan claims through `Dataset.scan_claim`, which claims
   nothing for a source whose path is missing, so an unmounted share keeps its rows
-  (`source_claim` is the claim a removal uses). `overlapping_sources` refuses, at
-  declaration, two sources of one kind that could claim one file
+  (`source_claim` is the claim a removal uses). A tracks source and a labels source
+  without `series` own the paths below their directory that their
+  `SourceFileFilter` accepts, plus the resolved target of each file their walk
+  finds, so a symlink to another name or outside the directory stays theirs
+  (`source_claim`). A media source and a series source own their whole subtree. A
+  scan of a tracks or labels directory source claims its whole subtree less what
+  the kind's other declared sources own (`_rescan_claim`, `Unclaimed`), plus its
+  walk, so a rescan after narrowing drops what the source no longer takes and
+  keeps a sibling's rows. A row whose file is gone is claimed without asking the
+  others. Their claim is built once per scan, and only when a row under the folder
+  whose file exists, or a missed file, asks for it. A removal (`source_removal`)
+  counts and drops what the source owns and no other source of its kind owns.
+- `overlapping_sources` refuses, at declaration, two sources of one kind that could
+  claim one file. Two tracks or labels directory sources without `series` whose paths
+  are equal or nested are refused only for a file both walks reach, by resolved path,
+  when their shared tree exists (`shared_source_files`, `SourcesShareFiles`). A scan
+  checks the same pairs that hold a source it scans, `only=` included, and refuses
+  before any index write. Media sources, series sources, file sources and a shared
+  tree that does not exist keep the refusal by path (`tests/core/test_scan_sources.py`).
+- `prune_unsourced` drops every row no scanned source claims, so on a restricted scan
+  (`only=`) it is refused when a declared source the scan leaves out shares a folder,
+  equal or nested, with one it scans (`_refuse_restricted_prune`): that source's rows
+  would read as claimed by no source. The refusal comes before any index write. Without
+  such a sibling a restricted prune drops the unscanned sources' rows as it always did
   (`tests/core/test_scan_sources.py`).
 - A media scan re-measures every row but keeps the identity cells a caller assigned
   through `MediaIndexScope` (`Dataset._keep_assigned_identity`) unless `reassign=True`,
@@ -166,6 +189,15 @@ importing `mosaic.tracking` registers neither.
   scan drops a file reports through a `FindingLog`, never a bare `print`. The CSV import
   of sequence tags reports each row that names no entry as `row_unmatched` with its
   `line`.
+  scan drops a file reports through a `FindingLog`, never a bare `print`.
+- A file that a declared `group_pattern` or `group_path_pattern` misses is not indexed.
+  `group_for_path` (`core/pipeline/tracks_raw_index.py`) decides each file's group and
+  returns `None` for a miss, and `_index_raw` skips it and reports one
+  `group_pattern_missed` finding per source with a `count` and up to `MISSED_SAMPLE`
+  paths. A pattern that misses every file reports `group_pattern_unmatched` or
+  `group_path_pattern_unmatched` alone. A source with `group_from`, or an indexer given
+  `group_from_path`, misses nothing. A rescan drops the raw row of a file an earlier
+  scan indexed with an empty group, and leaves its converted table.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

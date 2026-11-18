@@ -89,9 +89,14 @@ from ..inventory.model import (
     reclassify,
 )
 from ..index import feature_run_root
-from ..inventory.scan import inventory as scan_inventory, reportable_universe
+from ..inventory.scan import (
+    inventory as scan_inventory,
+    reportable_universe,
+    run_covered_entries,
+)
 from ..models import PREPARED_DATA_KINDS
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
+from ..plan_reads import PlanReads
 from ..preprocess_layout import PREPROCESS_KIND
 from ..label_series import TAG_TABLE_KEY, TAGS_SERIES, LabelRevisionRef
 from ..resolve import resolve_references
@@ -102,7 +107,7 @@ from ..track_space import TrackSpaceRefused
 from .digest import recipe_digest
 from .heldout import deferred_scope_problem, held_out_fit_problem
 from .compatibility import Reach
-from .conversion_remainder import conversion_remainder
+from .conversion_remainder import ConversionRemainder, conversion_remainder
 from .lanes import lane_for
 from .model import (
     BOUND_STATUS,
@@ -165,6 +170,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ArtifactView",
+    "ConversionAdds",
     "CoverageShort",
     "DepsIncomplete",
     "HeldOnParents",
@@ -448,6 +454,54 @@ class PlannedStep:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversionAdds:
+    """What one ``convert-tracks`` step brings that the tracks universe lacks.
+
+    Attributes:
+        entries: The entries that the step's raw rows name and that no tracks
+            table holds.
+        unnamed_files: The raw files of the step's format that name no
+            sequence and that no table of the step's variant records as its
+            source. Each holds entries that only reading it can list.
+    """
+
+    entries: frozenset[Entry]
+    unnamed_files: int
+
+
+@dataclass(frozen=True, slots=True)
+class GrowthNote:
+    """A feature step that reads an earlier run over fewer entries than the plan covers.
+
+    Attributes:
+        step: The step's id.
+        read_run_id: The earlier run, which covers fewer entries than the step's
+            target. For a scope-free step it is the step's own run. For a
+            scope-dependent step it is the newest other finished run of the
+            step's storage.
+        covered: How many entries *read_run_id* covers, which are among the
+            step's target.
+        target: How many entries the step's target holds.
+        made_run_id: The run the plan makes over the whole target beside
+            *read_run_id*, set for a scope-dependent step. ``None`` for a
+            scope-free step, which the plan completes in its own run.
+        asked_all: Whether *read_run_id* was asked for every entry, so that the
+            entries the plan adds to it are ones the dataset gained since. ``False``
+            for a scope-free run asked for a chosen set of entries. ``True`` for a
+            scope-dependent step, whose run records no such question, and for a run
+            whose record cannot be read. Outside equality, as :attr:`Plan.growth`
+            is.
+    """
+
+    step: str
+    read_run_id: str
+    covered: int
+    target: int
+    made_run_id: str | None = None
+    asked_all: bool = field(default=True, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
 class Plan:
     """What a recipe would do to a dataset, resolved and not submitted.
 
@@ -502,6 +556,11 @@ class Plan:
             (:func:`~.step_preflight.track_space_refusals`). Each is also a
             problem at the step's ``inputs``. A step refuses with it at its
             start. Not part of the wire, the fingerprint or plan equality.
+        conversion_adds: What each ``convert-tracks`` step adds to the tracks
+            universe, keyed by step id, for a plan that covers the whole of a
+            dataset that holds tracks. A step that adds nothing is not listed.
+            The whole-dataset caution reads it. Not part of the wire, the
+            fingerprint or plan equality.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -535,6 +594,10 @@ class Plan:
         default_factory=dict[str, TrackSpaceRefused], compare=False
     )
     tags_read: LabelRevisionRef | None = None
+    conversion_adds: Mapping[str, ConversionAdds] = field(
+        default_factory=dict[str, ConversionAdds], compare=False
+    )
+    growth: tuple[GrowthNote, ...] = field(default=(), compare=False)
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -983,11 +1046,14 @@ def plan_pipeline(
         # plan's target would not measure it over. The held view cannot answer: it
         # keeps whatever scope it was first built with.
         pinned_inv = scan_inventory(ds, kinds=("feature",)) if pins else None
+        # Read once for every step, since nothing the plan does writes them.
+        reads = PlanReads(ds)
 
         resolved: dict[str, ResolvedStep] = {}
         planned: dict[str, PlannedStep] = {}
         steps: list[PlannedStep] = []
         findings = _Findings()
+        remainders: dict[str, ConversionRemainder] = {}
         splits = ds.splits
         for step in topological_order(recipe):
             step_entries = _step_target(step.id, target, narrowed)
@@ -1003,6 +1069,8 @@ def plan_pipeline(
                 planned=planned,
                 recorded={**(recorded or {}), **pins},
                 problems=findings.problems,
+                remainders=remainders,
+                reads=reads,
                 deferred_by=deferred_by,
                 tracks_run_id=tracks_run_id,
                 pinned_inv=pinned_inv if step.id in pins else None,
@@ -1049,7 +1117,10 @@ def plan_pipeline(
                     and (step.tracks is None or step_plan.spec.tracks_run_id)
                 ):
                     lacking = rows_without_tracklets(
-                        ds, step_plan.spec.tracks_run_id, step_entries
+                        ds,
+                        step_plan.spec.tracks_run_id,
+                        step_entries,
+                        index=reads.tracks_index(),
                     )
                     if lacking:
                         findings.problems.append(
@@ -1144,6 +1215,26 @@ def plan_pipeline(
             locked=locked,
             track_space_refusals=refused_spaces,
             tags_read=tags.read,
+            conversion_adds=(
+                _conversion_adds(remainders, frozenset(intended.entries))
+                if intended.selector.is_unset and deferred_by is None and target
+                else {}
+            ),
+            growth=(
+                _growth_notes(
+                    steps,
+                    inv,
+                    targets={
+                        planned_step.step_id: _step_target(
+                            planned_step.step_id, target, narrowed
+                        )
+                        for planned_step in steps
+                    },
+                    skip=exempt,
+                )
+                if intended.selector.is_unset and deferred_by is None
+                else ()
+            ),
         )
         if pinned_inv is not None:
             # Imported here, because pins imports this module.
@@ -1168,6 +1259,8 @@ def _plan_step(
     planned: Mapping[str, PlannedStep],
     recorded: Mapping[str, str],
     problems: list[Problem],
+    remainders: dict[str, ConversionRemainder],
+    reads: PlanReads,
     deferred_by: str | None = None,
     tracks_run_id: str | None = None,
     pinned_inv: DatasetInventory | None = None,
@@ -1177,6 +1270,9 @@ def _plan_step(
     """Resolve one step against everything the walk has already established.
 
     What resolving its identity refuses in the step is added to *problems*.
+    A ``convert-tracks`` step records the remainder it measured in *remainders*,
+    under its id.
+    *reads* holds the index reads that every step of the plan shares.
     A feature step that *bind* names is the run it pins (:func:`_bound_step`).
     *tracks_run_id* is the variant a feature step reads when it reads the
     tracks without a ``tracks`` reference.
@@ -1264,6 +1360,7 @@ def _plan_step(
             step,
             target=target,
             resolved=resolved,
+            reads=reads,
             tracks_run_id=tracks_run_id,
             pinned=pinned_inv is not None,
             pairs=pairs,
@@ -1291,7 +1388,7 @@ def _plan_step(
 
     view = coverage_against(inv, base.artifact, target)
     if isinstance(step, OpStepSpec) and step.kind == ConvertTracksOp.kind:
-        view = _conversion_view(ds, step, base, inv, view)
+        view = _conversion_view(ds, step, base, inv, view, remainders)
     pinned = _pinned_view(pinned_inv, base.artifact, target)
     if pinned is not None:
         view = pinned
@@ -2057,6 +2154,7 @@ def _resolve_feature_step(
     *,
     target: frozenset[Entry],
     resolved: Mapping[str, ResolvedStep],
+    reads: PlanReads,
     tracks_run_id: str | None = None,
     pinned: bool = False,
     pairs: Literal["once"] | None = None,
@@ -2072,6 +2170,7 @@ def _resolve_feature_step(
     A step that reads the tag table reads the revision of *tags*. What that
     table refuses in the step is a problem at the params path it names, and a
     table with no revision leaves the identity unresolved.
+    *reads* holds the index reads that every step of the plan shares.
     """
     spec = resolve_step_spec(
         recipe, step.id, resolved, tracks_run_id=tracks_run_id, pairs=pairs
@@ -2153,6 +2252,7 @@ def _resolve_feature_step(
             time_window=TimeWindow(spec.filter_start_time, spec.filter_end_time),
             tag_revision=tag_revision,
             tag_payload=tag_payload,
+            reads=reads,
         )
     except AmbiguousTracksVariant as ambiguous:
         if pinned:
@@ -2524,6 +2624,7 @@ def _conversion_view(
     base: PlannedStep,
     inv: DatasetInventory,
     view: ArtifactView,
+    remainders: dict[str, ConversionRemainder],
 ) -> ArtifactView:
     """What a ``convert-tracks`` step holds, measured against the raw rows it reads.
 
@@ -2536,7 +2637,8 @@ def _conversion_view(
     reads held.
 
     A step whose identity is unresolved, or whose params do not build, keeps
-    *view*: its problems are reported elsewhere.
+    *view*: its problems are reported elsewhere. Otherwise the remainder is
+    recorded in *remainders* under the step's id.
     """
     if base.run_id is None:
         return view
@@ -2545,11 +2647,103 @@ def _conversion_view(
     except ValueError:
         return view
     remainder = conversion_remainder(ds, params, base.run_id)
+    remainders[step.id] = remainder
     target = view.coverage.target | remainder.target
     coverage = Coverage[Entry](target=target, present=target - remainder.missing)
     record = inv.record(base.artifact) if base.artifact is not None else None
     status = view.status if record is None else reclassify(record, coverage)
     return replace(view, coverage=coverage, status=status)
+
+
+def _conversion_adds(
+    remainders: Mapping[str, ConversionRemainder], universe: frozenset[Entry]
+) -> dict[str, ConversionAdds]:
+    """What each measured conversion brings that *universe* does not hold.
+
+    A step whose remainder adds no entry and names no unnamed file is left out.
+    """
+    adds: dict[str, ConversionAdds] = {}
+    for step_id, remainder in remainders.items():
+        named = (remainder.target - remainder.unnamed) - universe
+        if named or remainder.unnamed:
+            adds[step_id] = ConversionAdds(
+                entries=named, unnamed_files=len(remainder.unnamed)
+            )
+    return adds
+
+
+def _growth_notes(
+    steps: Sequence[PlannedStep],
+    inv: DatasetInventory,
+    *,
+    targets: Mapping[str, frozenset[Entry]],
+    skip: frozenset[str],
+) -> tuple[GrowthNote, ...]:
+    """The feature steps that read an earlier run over fewer entries than their target.
+
+    A run covers the entries its invocations asked for
+    (:meth:`~.params.RunParams.asked_scope`) and the entries its index rows
+    name. It is not measured over the target the way
+    :func:`~.inventory.scan.feature_run_target` measures it, since that returns
+    the whole target for a run recorded as asked for every entry, which is the
+    run to find.
+
+    The run read is a finished one whose covered entries within the step's target
+    are a non-empty, strict subset of it, so an entry the run covered and the
+    dataset has since dropped counts for nothing. For a scope-free step it is the
+    step's own run. A scope-dependent step makes a run of its own over its target,
+    and the run read is the newest other finished run of its storage. A step whose
+    own run already exists reads it and makes nothing, so it is not noted. A step
+    in *skip* and a step whose identity is unresolved are left out.
+
+    Reads the inventory the plan holds and no file.
+    """
+    finished: dict[FeatureRunRef, str] = {}
+    for record in inv.of_kind("feature"):
+        if isinstance(record.ref, FeatureRunRef) and record.finished_at:
+            finished[record.ref] = record.finished_at
+    by_storage: dict[str, list[FeatureRunRef]] = {}
+    for ref in finished:
+        by_storage.setdefault(ref.name, []).append(ref)
+
+    notes: list[GrowthNote] = []
+    for step in steps:
+        if step.kind != "feature" or step.step_id in skip or step.run_id is None:
+            continue
+        own = FeatureRunRef(name=step.storage_name, run_id=step.run_id)
+        if step.scope_dependent:
+            if own in finished:
+                continue
+            others = [ref for ref in by_storage.get(own.name, []) if ref != own]
+            if not others:
+                continue
+            read = max(others, key=lambda ref: (finished[ref], ref.run_id))
+        elif own in finished:
+            read = own
+        else:
+            continue
+        target = targets[step.step_id]
+        record = inv.record(read)
+        covered = run_covered_entries(
+            None if record is None else record.params, inv.rows(read), target
+        )
+        if covered and covered < target:
+            notes.append(
+                GrowthNote(
+                    step=step.step_id,
+                    read_run_id=read.run_id,
+                    covered=len(covered),
+                    target=len(target),
+                    made_run_id=own.run_id if step.scope_dependent else None,
+                    asked_all=(
+                        step.scope_dependent
+                        or record is None
+                        or record.params is None
+                        or record.params.scope.asked_all
+                    ),
+                )
+            )
+    return tuple(notes)
 
 
 _CONVERSION_ROOTS: Final[dict[str, str]] = {

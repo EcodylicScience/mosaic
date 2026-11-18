@@ -2,14 +2,19 @@
 
 The verb prints the manifest's fields, the counts of sequences, recordings,
 videos and artifacts, the names of the divided recordings, the rule and span of
-each recording divided from its stores, the track schemas and the frame rates.
+each recording divided from its stores, the track schemas, the frame rates and the
+saved selections.
+``--raw`` adds what the raw indexes, the tracks index and the run-logs record
+about the raw data.
 ``--json`` prints the :class:`~mosaic.core.dataset_summary.DatasetSummary` that
-:func:`~mosaic.core.dataset_summary.dataset_summary` returns. The verb writes
-nothing to the dataset.
+:func:`~mosaic.core.dataset_summary.dataset_summary` returns, whose
+``raw_report`` is ``null`` without ``--raw``. The verb writes nothing to the
+dataset.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -18,9 +23,12 @@ import typer
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json
 from mosaic.cli._render import render_kv, render_table
+from mosaic.cli.selection import render_selections
 
 if TYPE_CHECKING:
     from mosaic.core.dataset_summary import DatasetSummary
+    from mosaic.core.raw_report import RawReport
+    from mosaic.core.strict_model import StrictModel
 
 
 def describe_command(
@@ -33,6 +41,17 @@ def describe_command(
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit as a JSON object.")
     ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option(
+            "--raw",
+            help=(
+                "Add the raw report: duplicate files, unhashed files, files a "
+                "group pattern misses, frame-axis and span outliers, uneven time "
+                "steps and missing sources."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Describe a dataset: its manifest, counts, track schemas and frame rates."""
     # Imported in the body, so --help and the other verbs stay import-light.
@@ -40,7 +59,9 @@ def describe_command(
     from mosaic.tracking import dataset_inventory
 
     ds = load_dataset(manifest, read_only=True)
-    summary = dataset_summary(ds, found=dataset_inventory(ds, kinds=SUMMARY_KINDS))
+    summary = dataset_summary(
+        ds, found=dataset_inventory(ds, kinds=SUMMARY_KINDS), raw=raw
+    )
     if as_json:
         emit_json(summary.model_dump(mode="json"))
         return
@@ -48,7 +69,10 @@ def describe_command(
 
 
 def _render(summary: DatasetSummary) -> None:
-    """Print the manifest's fields and counts, then the schemas, rates, tags and libraries."""
+    """Print the manifest's fields and counts, then each table the summary holds.
+
+    The tables are the schemas, rates, arena layouts, selections, tags and libraries.
+    """
     counts = summary.counts
     render_kv(
         {
@@ -95,6 +119,9 @@ def _render(summary: DatasetSummary) -> None:
             ],
             ["recording", "camera", "arenas"],
         )
+    if summary.selections:
+        typer.echo()
+        render_selections(summary.selections)
     if summary.tags:
         typer.echo()
         render_table(
@@ -105,6 +132,9 @@ def _render(summary: DatasetSummary) -> None:
         render_table(
             [link.model_dump() for link in summary.libraries], ["id", "path", "uuid"]
         )
+    if summary.raw_report is not None:
+        typer.echo()
+        _render_raw(summary.raw_report)
     if summary.notes:
         typer.echo()
         typer.echo(summary.notes)
@@ -114,6 +144,49 @@ def _render(summary: DatasetSummary) -> None:
             typer.echo(f"next: {step}")
     for error in summary.inventory_errors:
         typer.echo(f"note: inventory read failed: {error}", err=True)
+
+
+def _render_raw(report: RawReport) -> None:
+    """Print the report's counts, then a table for each list that holds items."""
+    render_kv(
+        {
+            "duplicate_sets": report.duplicate_sets,
+            "unhashed": ", ".join(f"{u.kind}={u.count}" for u in report.unhashed)
+            or "none",
+            "pattern_miss_sources": report.pattern_miss_sources,
+            "frame_axis_tables": report.frame_axis_tables,
+            "span_outlier_tables": report.span_outlier_tables,
+            "time_irregular_entries": report.time_irregular_entries,
+            "missing_source_paths": report.missing_source_paths,
+        }
+    )
+    duplicates = [
+        {**found.model_dump(), "sources": ", ".join(found.sources)}
+        for found in report.duplicates
+    ]
+    if duplicates:
+        typer.echo()
+        render_table(duplicates, ["md5", "count", "sources"])
+    tables: tuple[tuple[Sequence[StrictModel], list[str]], ...] = (
+        (report.pattern_misses, ["kind", "source", "pattern", "count"]),
+        (
+            report.frame_axis,
+            ["verdict", "run_id", "group", "sequence", "frames_read", "media_frames"],
+        ),
+        (
+            report.span_outliers,
+            ["run_id", "group", "sequence", "span", "median_span"],
+        ),
+        (
+            report.time_irregular,
+            ["entry", "count", "largest_step", "execution_id", "recorded_at"],
+        ),
+        (report.missing_sources, ["kind", "source", "path"]),
+    )
+    for rows, columns in tables:
+        if rows:
+            typer.echo()
+            render_table([row.model_dump() for row in rows], columns)
 
 
 def _recordings(summary: DatasetSummary) -> str:

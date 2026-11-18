@@ -211,6 +211,52 @@ def test_run_log_records_entries_written_and_variant(tmp_path: Path) -> None:
     assert snapshot["progress_done"] == snapshot["progress_total"] == 2
 
 
+def test_a_conversion_that_finds_every_table_current_is_a_cache_hit(
+    tmp_path: Path,
+) -> None:
+    """``entries_written`` is coverage: the current entries count beside the written."""
+    ds = _dataset(tmp_path)
+    _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
+    assert not latest_snapshot(ds)["cache_hit"]
+
+    _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "finished"
+    assert snapshot["entries_written"] == 3
+    assert snapshot["cache_hit"]
+
+
+def test_a_conversion_that_writes_one_entry_is_not_a_cache_hit(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
+    (ds.get_root("tracks") / ds.track_conversion_variant("calms21_npy")).joinpath(
+        "test__s3.parquet"
+    ).unlink()
+
+    _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_written"] == 3
+    assert not snapshot["cache_hit"]
+
+
+def test_an_empty_source_records_no_cache_hit(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    raw = ds.base_dir / "raw"
+    raw.mkdir()
+    _ = ds.index_tracks_raw([raw], patterns=["*.npz"], src_format="trex_npz")
+
+    with pytest.raises(ValueError, match="No rows in tracks_raw/index.csv"):
+        _ = run_op(ds, "convert-tracks", {"source_format": "trex_npz"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_written"] == 0
+    assert not snapshot["cache_hit"]
+
+
 def test_convert_labels_run_log_counts_its_raw_files(tmp_path: Path) -> None:
     """Progress counts the two raw files, which convert into three entries."""
     ds = _dataset(tmp_path)

@@ -131,7 +131,8 @@ whole store. Every other dataset stays at version 3 and opens in an older mosaic
 └── .mosaic/
     ├── runs/               one log per attempt
     ├── pipelines/          recipes applied here, and requests/ for each submission
-    └── claims/             failures counted per entry, across resubmissions
+    ├── claims/             failures counted per entry, across resubmissions
+    └── selections/         saved entry sets that do not grow, one file each
 ```
 
 Directory assignments:
@@ -152,6 +153,10 @@ Directory assignments:
 - **Run records**, in `.mosaic/`: what was attempted and submitted here, as
   [Run work and see what ran](guides/pipelines/run-and-see-what-ran.md#where-what-ran-is-recorded)
   describes.
+- **Saved selections**, in `.mosaic/selections/`: one `<name>.json` for each entry set
+  you [saved](#save-a-selection). They are your record of which entries an analysis
+  used, so keep them with the dataset. They are not the root `selections/`, which holds
+  frame lists chosen from tracks.
 
 `feature_definitions/` is the manifest root `feature_definitions`. The first open that
 is not read-only creates it, and a scan of a source declared at the dataset root skips
@@ -296,10 +301,10 @@ files you placed there as a source and brings them under `mosaic scan` too.
 A scan warns on stderr, and lists under `findings` with `--json`, what it drops: a
 source whose path does not exist or is a link to one that does not (`sources add`
 warns of this too, and still declares the source), a listed file that a rule skips,
-such as a resource fork, and a group pattern that matches no file. A scan of a source
-whose path is missing leaves the rows that source indexed, so an unmounted share loses
-none; scan again once it is back. A files source indexes every file it lists that
-exists, whatever its suffix.
+such as a resource fork, a group pattern that matches no file, and the files a group
+pattern misses (below). A scan of a source whose path is missing leaves the rows that
+source indexed, so an unmounted share loses none; scan again once it is back. A files
+source indexes every file it lists that exists, whatever its suffix.
 
 A tracks or labels source can name each entry's group from its path. `--group-pattern`
 is a regex searched in the file stem, as the converter names the sequence, and its
@@ -314,6 +319,30 @@ mosaic sources add -m ~/dataset/dataset.yaml --kind tracks \
 
 A source takes one of the two patterns. A manifest with a `--group-path-pattern` source
 is written at version 5, which an older mosaic refuses to open.
+
+**A file the pattern misses is not indexed.** An empty group is one you did not declare,
+and every unscoped plan and read would take the file in with it. The scan reports one
+`group_pattern_missed` finding for the source, with the number of files missed (`count`)
+and the first few paths (`sample`), and indexes the rest. `mosaic describe --raw` gives
+the count and the first ten paths for each source. A pattern that matches no file at all
+indexes none and reports `group_pattern_unmatched` or `group_path_pattern_unmatched`
+alone. A rescan drops the raw index rows that an earlier scan wrote for such files with
+an empty group. It leaves their converted tables in place. Fix the pattern, or move the
+file, and scan again.
+
+**Several tracks or labels sources may share a folder.** A source claims the files its
+own patterns, exclusions and folder rules accept. Two sources over one folder, equal or
+nested, are therefore allowed when they take no file in common, such as `*_a.csv` and
+`*_b.csv` of one directory with different group patterns. A file that both take is
+refused, when you declare the second source and when a scan finds it, before any index
+is written. The refusal names how many files both take and up to five of them. Narrow
+the patterns of one source, or add `exclude_patterns`. A rescan of one source keeps the
+other's rows, and `mosaic sources remove --drop-rows` drops the rows of the removed
+source alone. Two sources over a folder that does not exist yet, media sources and label
+series sources keep the stricter rule: their paths may not be equal or nested. `mosaic
+scan --only <source> --prune-unsourced` is refused when a source it leaves out shares a
+folder with one it scans, because that source's rows would read as claimed by no source.
+Scan both, or scan every source.
 
 ## Entry names
 
@@ -752,6 +781,53 @@ dataset, keeps the key through a save, and does not enforce it. Do not rely on a
 with a version that predates it. An agent's tools read the roles and cannot write them
 ([why](agents.md#held-out-groups)).
 
+## Save a selection
+
+A command that names no scope covers the entries the dataset holds when it runs, so
+adding a second day of recordings changes what a script written for the first day
+computes. For a result that stays reproducible, save the entries once as a **selection**
+and name it. A selection is frozen: it holds the entries it was saved with and does not
+grow.
+
+```bash
+mosaic selection save -m dataset.yaml day1 --group day1 --note "first day, before day 2"
+mosaic selection save -m dataset.yaml pilot --entries-file pilot.txt
+mosaic selection list -m dataset.yaml
+mosaic selection show -m dataset.yaml day1
+mosaic selection delete -m dataset.yaml pilot
+```
+
+`save` takes its entries from one of `--group` (repeatable), `--entry group:sequence`
+(repeatable), `--entries-file` (one `group:sequence` token on each line, or a JSON list
+of `[group, sequence]` pairs) or `--from-scope`, which takes a scope as JSON such as
+`'{"groups": ["day1"]}'`. It refuses an empty list and an entry the dataset does not
+hold, naming up to five. `--note` keeps free text with it. A name may not be empty,
+start with a dot, hold whitespace, `:` or `@`, or be longer than 128 bytes, and two
+names that differ only in case count as one. `save` refuses a name that exists, so
+replacing a selection is a `delete` and a `save`, and the old name never means two entry
+sets. `list` and `show` only read. `show` prints the selection's digest, a
+checksum of its entries, so two selections can be compared. `list` shows a selection
+file that cannot be read with the command that deletes it. Both `save` and `delete` are
+refused on a dataset that a service manages.
+
+A selection is a file under [`.mosaic/selections/`](#dataset-folder-layout) and is part
+of the dataset's record, so copy it with the dataset. An entry removed from the dataset
+later stays in the file, and a scope that names it behaves as a list of entries that
+names it. `mosaic describe` lists each selection with its entry count, date and note.
+
+Name a selection as `@day1` or `{"selection": "day1"}` where you would name entries.
+[Keep the entries when the dataset
+grows](guides/pipelines/run-and-see-what-ran.md#keep-the-entries-when-the-dataset-grows)
+lists the commands that take it. From Python, `selection_scope(ds, "day1")` from
+`mosaic.core.selections` returns the `Scope` to pass as `scope=` to `load_run_matrix`,
+`summarize_run`, `load_values` and `plan_pipeline`. An agent connected through the MCP
+server can save a selection and name one, and cannot delete one
+([why](agents.md#operations-the-server-leaves-to-you)).
+
+A request file that names a selection holds a `selections` key, which an older mosaic
+refuses to read, as it refuses a request that records a cleanup. A request made without
+a selection is the file an older mosaic reads.
+
 ## Link a model library
 
 A trained model is named by its run id. To use one that was trained in another
@@ -783,30 +859,64 @@ dataset_summary(ds, found=dataset_inventory(ds))  # what `mosaic describe --json
 mosaic describe -m ~/dataset/dataset.yaml
 ```
 
-The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and counts
-the sequences, recordings, videos, tracks variants, feature runs and trained models the
-dataset holds. `sequences` counts the entries with a tracks table, and `recordings`
-counts over the entries of the media and tracks indexes. It lists each recording with
-its kind, and a divided one with its number of sequences and its first and last sequence
-in recording order: by their first frames on the recording's axis, then by name. A
-recording divided from its stores also gives its `division`: the frames of a sequence,
-the chunksize, whether it is one store or one camera, the camera serial, the UTC starts
-of its first and last sequences, and `n_breaks`, the boundaries where a gap, a store
-boundary or a missing sequence stops the frames from continuing. `mosaic describe`
-prints that as one `division` line per recording. The summary also lists the track
-schemas of the tables and the frame rates of the videos.
-`mosaic sequences` lists each entry of the media and tracks indexes with its label and,
-under `--json`, the recording it belongs to, whether it has a tracks table, and for a
-sequence divided from a store its `first_frame` on the recording's axis, its
+The summary gives the manifest's name, `uuid`, notes, tags, libraries, `splits` and
+[saved selections](#save-a-selection), and counts the sequences, recordings, videos,
+tracks variants, feature runs and trained models the dataset holds. `sequences` counts
+the entries with a tracks table, and `recordings` counts over the entries of the media
+and tracks indexes. It lists each recording with its kind, and a divided one with its
+number of sequences and its first and last sequence in recording order: by their first
+frames on the recording's axis, then by name. A recording divided from its stores also
+gives its `division`: the frames of a sequence, the chunksize, whether it is one store
+or one camera, the camera serial, the UTC starts of its first and last sequences, and
+`n_breaks`, the boundaries where a gap, a store boundary or a missing sequence stops the
+frames from continuing. `mosaic describe` prints that as one `division` line per
+recording. The summary also lists the track schemas of the tables and the frame rates of
+the videos. `mosaic sequences` lists each entry of the media and tracks indexes with its
+label and, under `--json`, the recording it belongs to, whether it has a tracks table,
+and for a sequence divided from a store its `first_frame` on the recording's axis, its
 `frame_count`, its `start_utc` and whether it `follows_gap`. These four are `null` for
 every other entry. The MCP `list_sequences` returns the same four fields. A division is
 labeled by its start on the store's local clock, such as `2021-02-19 11:22:53 PST`, or
 in UTC (`2021-02-19 19:22:53Z`) when the store lacks a `timezone_local`. A write labels
 only a sequence without a label. A label you set is kept, and a later scan labels the
 sequences written before it. A label you clear with an empty `set_display_name` is
-written again by the next scan or division write.
-To find the datasets in a directory and up to three levels below it, call
-`discover_datasets(root)` from `mosaic.core.dataset_discovery`.
+written again by the next scan or division write. To find the datasets in a directory
+and up to three levels below it, call `discover_datasets(root)` from
+`mosaic.core.dataset_discovery`.
+
+### Check the raw data
+
+```bash
+mosaic describe -m ~/dataset/dataset.yaml --raw
+```
+
+`--raw` adds a `raw_report` to the summary (`--json` prints it as that key; the MCP
+`describe_dataset` takes `raw: true`). It checks the raw files and the tracks tables
+from what the indexes and run-logs already record. It opens no tracks table and reads no
+raw file, and it writes and creates nothing. Without `--raw` the report is left out,
+because it reads every run-log and lists each source's folder. It reports:
+
+- **Duplicates**: raw files that share a checksum, across the tracks and labels indexes,
+  with the sources that take them and up to five paths. The same file copied into two
+  folders is one set.
+- **Unhashed files**: raw files with no checksum, from a source declared with `--no-md5`
+  (`md5: false`), which no duplicate check can cover.
+- **Pattern misses**: for each source with a group pattern, the count of files the
+  pattern misses and the first ten paths. A source whose `src_format` has no converter
+  is not checked.
+- **Frame counts**: tracks tables whose frame count disagrees with their media, or that
+  stop short of it, with the variant, the frames read and the media's frames.
+- **Span outliers**: tracks tables whose span of frames is under half or over twice the
+  median of their group and variant, which finds a table cut short or doubled. A late
+  first frame is not reported, since an animal is often absent at the start.
+- **Uneven time steps**: entries that a method read with unevenly spaced `time`, with
+  the largest step and the latest run that noted it.
+- **Missing sources**: declared sources whose path is missing or unmounted. The report
+  names them and skips them.
+
+Every list holds at most ten items beside the count of the whole. An entry with several
+tracks variants appears once for each. The report points to what to look at and changes
+nothing.
 
 ## Dataset inventory
 

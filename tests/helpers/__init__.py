@@ -113,7 +113,8 @@ What lives where:
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
   one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
-  passes for it, a run of it, and a rewrite of a run's feature index.
+  passes for it, a run of it, a run beside entries added after it, and a rewrite of
+  a run's feature index.
 - ``aggregates``: a run of an aggregate over two entries of labeled tracks, one
   whose label varies inside every group, with what it wrote and lost, and the
   rows of one individual at a steady step, the error text that a missing ``time``
@@ -346,7 +347,12 @@ from tests.helpers.runner_programs import (
     journal_source,
     write_fake_runner,
 )
-from tests.helpers.run_summaries import LabeledFeature, labeled_run, rewrite_index
+from tests.helpers.run_summaries import (
+    LabeledFeature,
+    grown_run,
+    labeled_run,
+    rewrite_index,
+)
 from tests.helpers.aggregates import (
     MIXED,
     ROI_VALUES,
@@ -436,6 +442,7 @@ from tests.helpers.state_writes import (
 from tests.helpers.tag_tables import index_a_second_origin, tag_table, write_tags
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
+    add_raw_track_files,
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
@@ -684,6 +691,7 @@ __all__ = [
     "scan_predictions_tables",
     "add_media_sequence",
     "add_media_variant",
+    "add_raw_track_files",
     "add_track_sequences",
     "add_tracks_table",
     "add_tracks_variant",
@@ -752,6 +760,7 @@ __all__ = [
     "lightning_action_params",
     "invoke_json",
     "invoke_ok",
+    "grown_run",
     "install_fake_ultralytics",
     "install_ultralytics_config",
     "isolate_tool_location",

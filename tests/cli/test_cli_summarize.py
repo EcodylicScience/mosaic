@@ -25,8 +25,10 @@ from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
 from mosaic.core.pipeline.tag_reads import ResolvedTagTable
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
+from mosaic.core.selections import save_selection
 from tests.helpers import (
     add_tracks_variant,
+    grown_run,
     invoke_ok,
     labeled_run,
     rewrite_index,
@@ -148,6 +150,34 @@ def test_json_is_the_library_summary_as_the_wire(
 
     expected = run_summary_wire(library(ds, result), ref_of(result))
     assert json.loads(printed.stdout) == expected.model_dump(mode="json")
+
+
+def test_a_selection_token_summarizes_the_entries_it_holds(tmp_path: Path) -> None:
+    ds, result = strain_run(tmp_path)
+    _ = save_selection(ds, "strain-b", [("h", "c"), ("h", "d")])
+
+    printed = invoke_ok(
+        summarize(ds, result, "--by", "strain", "--entry", "@strain-b", "--json")
+    )
+
+    expected = run_summary_wire(
+        summarize_run(ds, result, by=["strain"], scope=Scope(groups=["h"])),
+        ref_of(result),
+    )
+    assert json.loads(printed.stdout) == expected.model_dump(mode="json")
+
+
+def test_a_missing_selection_is_refused_by_summarize(tmp_path: Path) -> None:
+    ds, result = strain_run(tmp_path)
+
+    refused = runner.invoke(
+        app, summarize(ds, result, "--by", "strain", "--entry", "@nope", "--json")
+    )
+
+    assert refused.exit_code == 1
+    envelope = ErrorEnvelope.model_validate_json(refused.stdout)
+    assert envelope.kind == "not_found"
+    assert envelope.reason == "selection_not_found"
 
 
 def test_where_matches_an_integer_key_from_its_text(tmp_path: Path) -> None:
@@ -696,3 +726,33 @@ def test_a_summary_by_tag_writes_nothing(tmp_path: Path) -> None:
     _ = invoke_ok(summarize(ds, result, "--tag", "site=x", "--by", "site", "--json"))
 
     assert tree_snapshot(ds.base_dir) == before
+
+
+def test_an_unscoped_summary_of_a_run_that_missed_added_entries_cautions(
+    tmp_path: Path,
+) -> None:
+    ds, result = grown_run(tmp_path)
+    caution = (
+        f"run {result.run_id} covers 3 of the dataset's 5 entries. A run over the "
+        f"other 2 adds them to what an unscoped read returns. Read through a saved "
+        f"selection to keep this set"
+    )
+
+    printed = invoke_ok(summarize(ds, result))
+    as_json = invoke_ok(summarize(ds, result, "--json"))
+
+    assert f"note: {caution}" in printed.stderr.splitlines()
+    assert json.loads(as_json.stdout)["cautions"] == [caution]
+
+
+def test_a_summary_through_a_selection_prints_no_growth_caution(
+    tmp_path: Path,
+) -> None:
+    ds, result = grown_run(tmp_path)
+    _ = save_selection(ds, "earlier", [("", f"seq_{index}") for index in range(3)])
+
+    printed = invoke_ok(summarize(ds, result, "--entry", "@earlier"))
+    as_json = invoke_ok(summarize(ds, result, "--entry", "@earlier", "--json"))
+
+    assert printed.stderr == ""
+    assert json.loads(as_json.stdout)["cautions"] == []

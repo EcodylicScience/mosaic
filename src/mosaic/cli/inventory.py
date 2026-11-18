@@ -22,6 +22,7 @@ from mosaic.cli._io import (
     entries_scope,
     fail,
     fail_classified,
+    resolve_choices,
 )
 from mosaic.cli._render import render_json_block, render_table
 from mosaic.core.pipeline.artifact_kinds import ARTIFACT_KINDS, is_artifact_kind
@@ -232,7 +233,9 @@ def _read(
             ds,
             found,
             kinds=kinds,
-            scope=entries_scope(entry),
+            scope=resolve_choices(
+                ds, entries_scope(entry), None, as_json=as_json
+            ).scope,
             tracks_run_id=tracks_run_id,
             status_not=status_not,
             limit=limit,

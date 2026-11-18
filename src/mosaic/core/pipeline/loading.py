@@ -12,11 +12,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from ..helpers import RowEvents, events_for_frames, load_labels_for_feature_frames
+from ..schema import ARENA_COLUMN
 from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
+from .column_contract import (
+    ParamColumn,
+    Provides,
+    contract_fields,
+    declared_provides,
+    declared_requires,
+    needs_of,
+    param_values,
+    resolve_names,
+)
 from .parquet_reader import read_parquet_column_names
 from .index import (
     feature_index,
@@ -31,6 +43,7 @@ from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, NON_PAYLOAD_COLS
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
+    from .types import Feature
 
 _ALIGN_COLS = ALIGN_COLS
 
@@ -314,19 +327,145 @@ def merge_naming(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ColumnProjection:
+    """The columns of an input table that a step's output depends on.
+
+    Attributes:
+        names: The columns read where the table has them.
+        prefixes: The prefixes of column families, each family read whole.
+    """
+
+    names: frozenset[str]
+    prefixes: tuple[str, ...] = ()
+
+    def select(self, available: Sequence[str]) -> list[str]:
+        """The columns of *available* to read, in their order there."""
+        return [
+            name
+            for name in available
+            if name in self.names or name.startswith(self.prefixes)
+        ]
+
+
+_CARRIED_COLUMNS_FIELD = "keep_columns"
+"""The params field that names input columns an aggregate's output carries."""
+
+
+def _carries_columns(provides: Provides) -> bool:
+    """Whether an output carries the columns its ``keep_columns`` names."""
+    refs = [
+        *provides.adds,
+        *(conditional.column for conditional in provides.conditional),
+    ]
+    return any(
+        isinstance(ref, ParamColumn) and ref.field == _CARRIED_COLUMNS_FIELD
+        for ref in refs
+    )
+
+
+def declares_every_read(feature: object) -> bool:
+    """Whether a feature (or feature class) declares every column it reads.
+
+    A feature declares it with the optional class attribute
+    ``declares_every_read = True``, and its input tables are then read for the
+    columns of :func:`input_projection` alone. Before setting it, audit
+    ``apply``, ``fit`` and every helper they call for each column they read:
+    each must be named by ``requires``, be the ``when_present`` column of a
+    ``provides`` condition, or be an identity, bookkeeping or ``arena`` column.
+    A column read only where present, or named by a param that no declaration
+    reads, rules the attribute out until it is declared. Undeclared, a feature
+    reads every column.
+    """
+    return getattr(feature, "declares_every_read", False) is True
+
+
+def input_projection(feature: Feature) -> ColumnProjection | None:
+    """The columns of its input table that *feature*'s output depends on.
+
+    They are the identity, bookkeeping and ``arena`` columns, the columns its
+    ``requires`` names under its params, and the input columns whose presence
+    its ``provides`` makes a condition of an output column.
+
+    ``None`` means every column. It is returned for a feature that does not
+    declare every column it reads (:func:`declares_every_read`), and when the
+    output may depend on columns the declarations do not list: a step of more
+    than one input, whose merge names collided columns by what each input
+    holds; a feature that declares no ``requires`` or no ``provides``; a
+    requirement of any payload column, or one whose params value cannot be read
+    as column names; an output that passes its input through, writes a family
+    per payload column, carries the columns that ``keep_columns`` names, or
+    holds a column the data alone decides.
+    """
+    if not declares_every_read(feature) or len(feature.inputs.root) != 1:
+        return None
+    requires = declared_requires(type(feature))
+    provides = declared_provides(type(feature))
+    if requires is None or provides is None:
+        return None
+    if provides.passthrough or provides.payload_families or _carries_columns(provides):
+        return None
+    if any(
+        conditional.when_present is None and not conditional.when_param
+        for conditional in provides.conditional
+    ):
+        return None
+    values = param_values(feature.params, contract_fields(requires, provides))
+    named = [
+        *needs_of(requires, values),
+        *(
+            resolve_names(conditional.when_present, values)
+            for conditional in provides.conditional
+            if conditional.when_present is not None
+        ),
+    ]
+    if any(one.unknown or one.payload for one in named):
+        return None
+    names = set(NON_PAYLOAD_COLS | {ARENA_COLUMN})
+    prefixes: list[str] = []
+    for one in named:
+        names.update(one.columns)
+        prefixes.extend((*one.prefixes, *one.possible_prefixes))
+    return ColumnProjection(frozenset(names), tuple(dict.fromkeys(prefixes)))
+
+
+def _projected_columns(path: Path, projection: ColumnProjection) -> list[str] | None:
+    """The columns of the table at *path* to read, ``None`` for every column.
+
+    All when the footer cannot be read, when the projection keeps every column,
+    or when it keeps none, so that the read is the one it would be without it.
+    """
+    available = read_parquet_column_names(path)
+    if available is None:
+        return None
+    selected = projection.select(available)
+    if not selected or len(selected) == len(available):
+        return None
+    return selected
+
+
 def load_parquet_dataframe(
     path: Path,
     load_spec: LoadSpec,
     df_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+    projection: ColumnProjection | None = None,
 ) -> pd.DataFrame | None:
-    """Load a parquet file as a full DataFrame, applying filter if given.
+    """Load a parquet file as a DataFrame, applying filter if given.
+
+    With *projection*, only the columns it selects are read (see
+    :func:`input_projection`), and otherwise every column.
 
     Returns None for non-parquet specs or if the result is empty after
     filtering.
     """
     if not isinstance(load_spec, ParquetLoadSpec):
         return None
-    df = pd.read_parquet(path)
+    columns = None if projection is None else _projected_columns(path, projection)
+    df = (
+        pd.read_parquet(path)
+        if columns is None
+        else pd.read_parquet(path, columns=columns)
+    )
     if df_filter is not None:
         df = df_filter(df)
     if df.empty:
@@ -445,13 +584,15 @@ def load_entry_data(
     *,
     cross_join: bool = False,
     expands_individuals: bool = False,
+    projection: ColumnProjection | None = None,
 ) -> pd.DataFrame | None:
     """Load and merge data for a single manifest entry.
 
     All manifest entries are parquet. Multiple inputs are merged via
     inner join on shared alignment columns. DataFrames are loaded
     lazily and merged incrementally to minimize peak memory. An input that
-    loads no rows is left out of the merge.
+    loads no rows is left out of the merge. *projection* selects the columns
+    each table is read for, and ``None`` reads every column.
 
     Raises:
         PairRowsMissing: Under *expands_individuals*, input 0 is pair-level and
@@ -463,7 +604,7 @@ def load_entry_data(
     def _load_dfs() -> Iterator[tuple[int, pd.DataFrame]]:
         pairs_missing = False
         for declared, (path, load_spec) in enumerate(file_specs):
-            df = load_parquet_dataframe(path, load_spec)
+            df = load_parquet_dataframe(path, load_spec, projection=projection)
             if df is None:
                 pairs_missing = pairs_missing or (
                     declared == 0
@@ -490,18 +631,93 @@ def load_entry_data(
     return merged
 
 
+def _integers(values: npt.NDArray[np.generic]) -> npt.NDArray[np.int64]:
+    """*values* as integers, a float truncated toward zero as ``int()`` does.
+
+    Raises:
+        ValueError: A float value is NaN or infinite, which ``int()`` refuses.
+    """
+    if values.dtype.kind == "f" and not bool(np.isfinite(values).all()):
+        raise ValueError("cannot convert a NaN or infinite value to an integer")
+    return values.astype(np.int64)
+
+
+@dataclass(frozen=True, slots=True)
+class NeighborLookup:
+    """Each individual's nearest neighbor in each frame, from a neighbor table.
+
+    A key is an integer ``(frame, id)`` and holds one neighbor id. Of the rows
+    naming one key, the last row with a neighbor sets it, and a row whose
+    neighbor is NaN sets nothing. An empty lookup is false.
+
+    Attributes:
+        keys: Each ``(frame, id)`` key once.
+        neighbors: The neighbor id of each key, in the order of *keys*.
+    """
+
+    keys: pd.MultiIndex
+    neighbors: npt.NDArray[np.int64]
+
+    @classmethod
+    def from_rows(
+        cls,
+        frames: npt.NDArray[np.generic],
+        ids: npt.NDArray[np.generic],
+        neighbors: npt.NDArray[np.generic],
+    ) -> NeighborLookup:
+        """The lookup of a neighbor table's ``frame``, ``id`` and ``nn_id``.
+
+        A float frame or id is truncated toward zero, as ``int()`` does.
+
+        Raises:
+            ValueError: A row with a neighbor has a NaN or infinite frame or
+                id.
+        """
+        present = ~np.isnan(neighbors)
+        keys = pd.MultiIndex.from_arrays(
+            [_integers(frames[present]), _integers(ids[present])]
+        )
+        last = ~keys.duplicated(keep="last")
+        return cls(keys=keys[last], neighbors=_integers(neighbors[present])[last])
+
+    @classmethod
+    def empty(cls) -> NeighborLookup:
+        """The lookup of no row, which keeps every pair."""
+        none = np.zeros(0, np.int64)
+        return cls.from_rows(none, none, none.astype(np.float64))
+
+    def __len__(self) -> int:
+        return len(self.neighbors)
+
+    def neighbor_of(
+        self, frames: npt.NDArray[np.int64], ids: npt.NDArray[np.int64]
+    ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.int64]]:
+        """Whether each ``(frame, id)`` has a neighbor, and which one.
+
+        Returns:
+            A boolean array of the keys found, and an array of their neighbor
+            ids that holds 0 where a key is not found.
+        """
+        if not len(self):
+            return np.zeros(len(frames), dtype=bool), np.zeros(len(frames), np.int64)
+        positions = self.keys.get_indexer(pd.MultiIndex.from_arrays([frames, ids]))
+        found = positions >= 0
+        return found, np.where(found, self.neighbors[positions], 0)
+
+
 def build_nn_lookup(
     ds: Dataset,
     group: str,
     sequence: str,
     pair_filter_spec: NNResult,
-) -> dict[tuple[int, int], int]:
+) -> NeighborLookup:
     """
     Build a per-frame nearest-neighbor lookup for a given sequence.
 
-    Returns ``{(frame, individual_id): nn_id}`` from the nearest-neighbor
-    feature parquet.  Returns an empty dict when the NN feature has not been
-    computed for this sequence (fail-open).
+    Returns each ``(frame, individual_id)``'s ``nn_id`` from the
+    nearest-neighbor feature parquet, which is read for those columns alone.
+    Returns an empty lookup when the NN feature has not been computed for this
+    sequence (fail-open).
 
     ``NNResult`` is a ``Result``, so on the ``run_feature`` path
     :func:`~mosaic.core.pipeline.resolve.resolve_references` has already pinned
@@ -524,43 +740,33 @@ def build_nn_lookup(
         scope=Scope(entries=[(group, sequence)]),
     )
     if idx_df.empty:
-        return {}
+        return NeighborLookup.empty()
 
     nn_path = ds.resolve_path(idx_df.iloc[0]["abs_path"])
-    df_nn = pd.read_parquet(nn_path)
+    names = read_parquet_column_names(nn_path)
+    if names is None:
+        # An absent or unreadable file raises here, as a read of it does.
+        names = tuple(_column_names(pd.read_parquet(nn_path)))
 
     # below is probably too defensive, NNResult (as a per sequence result) has a known parquet schema
-    frame_col = (
-        "frame"
-        if "frame" in df_nn.columns
-        else ("time" if "time" in df_nn.columns else None)
+    frame_col = "frame" if "frame" in names else ("time" if "time" in names else None)
+    if frame_col is None or "id" not in names or "nn_id" not in names:
+        return NeighborLookup.empty()
+
+    df_nn = pd.read_parquet(nn_path, columns=[frame_col, "id", "nn_id"])
+    return NeighborLookup.from_rows(
+        df_nn[frame_col].to_numpy(), df_nn["id"].to_numpy(), df_nn["nn_id"].to_numpy()
     )
-    if frame_col is None or "id" not in df_nn.columns or "nn_id" not in df_nn.columns:
-        return {}
-
-    frames = df_nn[frame_col].to_numpy()
-    ids = df_nn["id"].to_numpy()
-    nn_ids = df_nn["nn_id"].to_numpy()
-
-    lookup: dict[tuple[int, int], int] = {}
-    for f, ind, nn in zip(frames, ids, nn_ids):
-        if not np.isnan(nn):
-            lookup[(int(f), int(ind))] = int(nn)
-
-    return lookup
 
 
-def nn_pair_mask(
-    df: pd.DataFrame,
-    nn_lookup: dict[tuple[int, int], int],
-) -> np.ndarray:
+def nn_pair_mask(df: pd.DataFrame, nn_lookup: NeighborLookup) -> npt.NDArray[np.bool_]:
     """
     Return a boolean mask for rows in a pair-feature DataFrame where at
     least one individual in the pair considers the other its nearest neighbor.
 
     For pair (id1, id2) at frame F the row is kept when:
-      - ``nn_lookup[(F, id1)] == id2``  (id1's NN is id2), **or**
-      - ``nn_lookup[(F, id2)] == id1``  (id2's NN is id1).
+      - the neighbor of ``(F, id1)`` is ``id2`` (id1's NN is id2), **or**
+      - the neighbor of ``(F, id2)`` is ``id1`` (id2's NN is id1).
 
     Returns all-True when the DataFrame lacks the required columns or
     when *nn_lookup* is empty (fail-open).
@@ -576,19 +782,15 @@ def nn_pair_mask(
     ):
         return np.ones(len(df), dtype=bool)
 
-    frames = df[frame_col].to_numpy(dtype=int)
-    id1s = df["id1"].to_numpy(dtype=int)
-    id2s = df["id2"].to_numpy(dtype=int)
+    frames = df[frame_col].to_numpy(dtype=np.int64)
+    id1s = df["id1"].to_numpy(dtype=np.int64)
+    id2s = df["id2"].to_numpy(dtype=np.int64)
 
-    mask = np.zeros(len(df), dtype=bool)
-    for i in range(len(df)):
-        f = int(frames[i])
-        a = int(id1s[i])
-        b = int(id2s[i])
-        if nn_lookup.get((f, a)) == b or nn_lookup.get((f, b)) == a:
-            mask[i] = True
-
-    return mask
+    first_found, first_neighbor = nn_lookup.neighbor_of(frames, id1s)
+    second_found, second_neighbor = nn_lookup.neighbor_of(frames, id2s)
+    return (first_found & (first_neighbor == id2s)) | (
+        second_found & (second_neighbor == id1s)
+    )
 
 
 def row_individual_pairs(df: pd.DataFrame) -> np.ndarray | None:

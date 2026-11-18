@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.run_summary import RunSummaryWire
     from mosaic.core.pipeline.tag_reads import ResolvedTagTable
     from mosaic.core.scope import Scope
+    from mosaic.core.selections import SelectionSummary
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
     from .config import CleanupClass
@@ -548,7 +549,7 @@ class LocalBackend:
             found = self._inventory(held).get()
         # Opened again so that the manifest fields are those on disk now.
         return dataset_summary(
-            open_dataset(held.manifest, ensure_roots=False), found=found
+            open_dataset(held.manifest, ensure_roots=False), found=found, raw=args.raw
         )
 
     def _list_sequences(self, args: ListSequencesInput) -> SequencePage:
@@ -971,12 +972,12 @@ class LocalBackend:
         held = self._dataset(args.dataset)
         recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
-        tags = _tag_table(held.dataset, args.entries, args.step_entries)
-        scope = _scope(args.entries, tags)
-        step_scopes = _step_scopes(args.step_entries, tags)
         # Opened again, as ``_describe_dataset`` does, so that the manifest fields
         # (the split roles above all) are those on disk now and not at start.
         dataset = open_dataset(held.manifest, ensure_roots=False)
+        tags = _tag_table(dataset, args.entries, args.step_entries)
+        scope = _scope(dataset, args.entries, tags)
+        step_scopes = _step_scopes(dataset, args.step_entries, tags)
         with held.lock:
             # A read, so it needs no --allow-cleanup. Planned with the binds, as
             # the submission plans, so its fingerprint is the submission's.
@@ -1056,8 +1057,8 @@ class LocalBackend:
         catalog = self._declarations()
         tags = _tag_table(dataset, args.entries, args.step_entries)
         tag_revision = None if tags is None else tags.ref
-        narrowing = _scope(args.entries, tags) or Scope()
-        step_scopes = _step_scopes(args.step_entries, tags)
+        narrowing = _scope(dataset, args.entries, tags) or Scope()
+        step_scopes = _step_scopes(dataset, args.step_entries, tags)
         with held.lock:
             cache = self._inventory(held)
             # Planned with the submission's binds, as submit_request plans.
@@ -1099,6 +1100,7 @@ class LocalBackend:
                 else args.plan_fingerprint,
                 refuse_duplicates=not args.confirm,
                 step_scopes=step_scopes,
+                selections=_selection_names(args.entries, args.step_entries),
                 cleanup=cleanup,
                 retire=args.retire,
                 tracks_run_id=args.tracks_run_id,
@@ -1179,6 +1181,7 @@ class LocalBackend:
             orphaned: int | None = None
             defined: DefinitionRecord | None = None
             imported: SequenceTagImport | None = None
+            saved: SelectionSummary | None = None
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         try:
@@ -1200,6 +1203,12 @@ class LocalBackend:
                     message = _set_tags(dataset, args)
                 case "set_arenas":
                     message = _set_arenas(dataset, args)
+                case "save_selection":
+                    saved = _save_selection(dataset, args)
+                    message = (
+                        f"saved the selection {saved.name!r} with "
+                        f"{saved.n_entries} entries"
+                    )
                 case "define_feature":
                     defined = _define_feature(dataset, args)
                     message = (
@@ -1234,6 +1243,7 @@ class LocalBackend:
                     if imported is None
                     else imported.model_copy(update={"findings": ()})
                 ),
+                "selection": saved,
                 "next_steps": dataset_next_steps(held.dataset),
             }
         )
@@ -1762,11 +1772,14 @@ def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
     from mosaic.core.pipeline.run_summary import summarize_ref
     from mosaic.core.pipeline.summary_arguments import read_where
     from mosaic.core.scope import Scope
+    from mosaic.core.selections import selection_scope
 
     scope = None if args.groups is None else Scope(groups=args.groups)
     tag_revision = args.tag_revision
     tag_table = None
-    if args.sequence_tags is not None:
+    if args.selection is not None:
+        scope = selection_scope(dataset, args.selection)
+    elif args.sequence_tags is not None:
         from mosaic.core.annotations.tag_selection import (
             selection_tag_table,
             tagged_scope,
@@ -2009,23 +2022,29 @@ def _tag_table(
 
 
 def _scope(
+    dataset: Dataset,
     entries: list[tuple[str, str]] | ScopeSelector | None,
     tags: ResolvedTagTable | None,
 ) -> Scope | None:
     """Return the scope naming *entries*, ``None`` for the whole dataset.
 
-    A bare list names entries, and a selector is the library's scope. Sequence
-    tags are lowered against *tags*, the table :func:`_tag_table` read.
+    A bare list names entries, a selector is the library's scope, and a selector
+    naming a saved selection is that selection's entries. Sequence tags are
+    lowered against *tags*, the table :func:`_tag_table` read.
 
     Raises:
+        SelectionNotFound: The selector names a selection the dataset lacks.
         TagSelectionInvalid: The tags select no entry, or name an unknown tag or
             a value their type refuses.
     """
     from mosaic.core.scope import Scope
+    from mosaic.core.selections import selection_scope
 
     if entries is None:
         return None
     if isinstance(entries, ScopeSelector):
+        if entries.selection is not None:
+            return selection_scope(dataset, entries.selection)
         if entries.sequence_tags is not None:
             from mosaic.core.annotations.tag_selection import tagged_scope
 
@@ -2052,23 +2071,42 @@ def _entry_scope(
     from mosaic.core.pipeline.inventory.scan import narrow_target, reportable_universe
     from mosaic.core.scope import Scope
 
-    scope = _scope(entries, _tag_table(dataset, entries))
+    scope = _scope(dataset, entries, _tag_table(dataset, entries))
     if scope is None or scope.entries is not None:
         return scope
     return Scope(entries=sorted(narrow_target(reportable_universe(dataset), scope)))
 
 
 def _step_scopes(
+    dataset: Dataset,
     step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None,
     tags: ResolvedTagTable | None,
 ) -> dict[str, Scope]:
     """Return the scope narrowing each step that *step_entries* names."""
     found: dict[str, Scope] = {}
     for step_id, chosen in (step_entries or {}).items():
-        narrowed = _scope(chosen, tags)
+        narrowed = _scope(dataset, chosen, tags)
         if narrowed is not None:
             found[step_id] = narrowed
     return found
+
+
+def _selection_names(
+    entries: list[tuple[str, str]] | ScopeSelector | None,
+    step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None,
+) -> dict[str, str]:
+    """Return the saved selection each scope came from, keyed as a request keys it.
+
+    The key ``""`` is the request's scope and a step id is that step's.
+    """
+    names = {
+        step_id: chosen.selection
+        for step_id, chosen in (step_entries or {}).items()
+        if isinstance(chosen, ScopeSelector) and chosen.selection is not None
+    }
+    if isinstance(entries, ScopeSelector) and entries.selection is not None:
+        names[""] = entries.selection
+    return names
 
 
 @dataclass(frozen=True)
@@ -2234,6 +2272,45 @@ def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:
     return f"tags changed: {', '.join(changed)}"
 
 
+def _save_selection(dataset: Dataset, args: ManageDatasetInput) -> SelectionSummary:
+    """Save the entries *args* name as the selection *args* name, and return it.
+
+    Null ``entries`` name every entry of the dataset, and a selector that names
+    groups or sequences, or a saved selection, is enumerated.
+
+    Raises:
+        ToolFailure: ``selection_name`` is missing, or the name or the entries are
+            refused.
+        ClassifiedError: A selection of that name exists, or the selection named
+            in ``entries`` does not.
+    """
+    from mosaic.core.pipeline.inventory.scan import reportable_universe
+    from mosaic.core.selections import save_selection
+
+    if args.selection_name is None:
+        raise ToolFailure(missing_field("save_selection", "selection_name"))
+    scope = _entry_scope(dataset, args.entries)
+    chosen = (
+        sorted(reportable_universe(dataset))
+        if scope is None
+        else scope.entry_pairs or []
+    )
+    try:
+        saved = save_selection(dataset, args.selection_name, chosen, args.note)
+    except ClassifiedError:
+        raise
+    except ValueError as invalid:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="invalid_selection",
+                message=str(invalid),
+                detail={"selection_name": args.selection_name},
+            )
+        ) from invalid
+    return saved.summary()
+
+
 def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
     """Declare the arena layout *args* names, and say what changed.
 
@@ -2373,7 +2450,10 @@ def _submission_findings(
     catalog: DeclarationCatalog,
     scope: Scope,
 ) -> list[ConfirmationFinding]:
-    """Return each confirmation condition that submitting *plan* over *scope* meets."""
+    """Return each confirmation condition that submitting *plan* over *scope* meets.
+
+    *scope* is the submission's entries, a saved or tag selection resolved.
+    """
     from mosaic.core.pipeline.graph import (
         GPU_LANES,
         computed_runs,

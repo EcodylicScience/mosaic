@@ -1333,7 +1333,11 @@ def read_carries_tracklets(row: CellRow) -> bool | None:
 
 
 def rows_without_tracklets(
-    ds: Dataset, tracks_run_id: str | None, entries: Collection[Entry] | None
+    ds: Dataset,
+    tracks_run_id: str | None,
+    entries: Collection[Entry] | None,
+    *,
+    index: pd.DataFrame | None = None,
 ) -> tuple[tuple[Entry, str], ...]:
     """Return ``(entry, run_id)`` for each tracks row that records no tracklets, sorted.
 
@@ -1344,11 +1348,13 @@ def rows_without_tracklets(
     holding two variants when *tracks_run_id* is ``None`` raises
     :class:`AmbiguousTracksVariant` in the resolver; the planner refuses that
     case before it asks, so this answers ``()``.
+
+    *index* is the tracks index already read with :func:`read_tracks_index`, or
+    ``None`` to read it for this call.
     """
+    frame = read_tracks_index(ds) if index is None else index
     try:
-        rows = rows_in_scope(
-            select_variant_rows(read_tracks_index(ds), tracks_run_id), entries
-        )
+        rows = rows_in_scope(select_variant_rows(frame, tracks_run_id), entries)
     except AmbiguousTracksVariant:
         return ()
     return tuple(

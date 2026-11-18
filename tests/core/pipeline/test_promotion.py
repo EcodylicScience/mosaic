@@ -15,6 +15,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.promotion import (
     correction_revision,
     next_revision,
@@ -27,7 +28,13 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
-from tests.helpers import MediaClip, make_dataset, write_media_index, write_trex_npz
+from tests.helpers import (
+    MediaClip,
+    latest_snapshot,
+    make_dataset,
+    write_media_index,
+    write_trex_npz,
+)
 
 
 def _corrected(
@@ -381,6 +388,60 @@ def test_a_correction_converts_as_its_own_variant(tmp_path: Path) -> None:
     for name, table in tables.items():
         assert len(table) == 5, f"{name} holds both readings"
     assert {float(t["X"].iloc[0]) for t in tables.values()} == {1.0, 99.0}
+
+
+def _upload_with_a_stale_correction(tmp_path: Path) -> Dataset:
+    """A dataset whose upload and correction of one entry are converted, the
+    correction's table then gone."""
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    raw = ds.get_root("tracks_raw")
+    _trex_npz(raw / "vidA_fish0.npz", 1.0)
+    _ = ds.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    ds.convert_all_tracks()
+    (upload,) = sorted(p.name for p in ds.get_root("tracks").iterdir() if p.is_dir())
+    corrections = tmp_path / "corr"
+    corrections.mkdir()
+    _trex_npz(corrections / "vidA_fish0.npz", 99.0)
+    _ = promote_correction(
+        ds,
+        "",
+        "vidA",
+        corrections / "vidA_fish0.npz",
+        src_format="trex_npz",
+        apply=True,
+        force=True,
+    )
+    ds.convert_all_tracks()
+    (correction,) = (
+        p for p in ds.get_root("tracks").iterdir() if p.is_dir() and p.name != upload
+    )
+    (correction / "vidA.parquet").unlink()
+    return ds
+
+
+def test_an_entry_written_under_one_variant_is_not_current_under_another(
+    tmp_path: Path,
+) -> None:
+    """The upload's table is current and the correction's is written, for one entry."""
+    ds = _upload_with_a_stale_correction(tmp_path)
+
+    outcome = ds.convert_all_tracks()
+
+    assert outcome.converted == 1
+    assert outcome.current == 0
+    assert outcome.converted - outcome.current == 1
+
+
+def test_a_conversion_that_writes_a_correction_is_not_a_cache_hit(
+    tmp_path: Path,
+) -> None:
+    ds = _upload_with_a_stale_correction(tmp_path)
+
+    _ = run_op(ds, "convert-tracks", {"source_format": "trex_npz"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_written"] == 1
+    assert not snapshot["cache_hit"]
 
 
 def test_only_the_newest_correction_converts(tmp_path: Path) -> None:

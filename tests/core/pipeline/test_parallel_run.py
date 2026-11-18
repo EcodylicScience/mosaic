@@ -24,6 +24,7 @@ from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.admission import RowCostEstimate
 from mosaic.core.pipeline.column_contract import MissingInputColumns
 from mosaic.core.pipeline.input_size import EntryInputSize
+from mosaic.core.pipeline.loading import ColumnProjection
 from mosaic.core.pipeline.manifest import ManifestEntry
 from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.memory_watch import MemoryWatch
@@ -232,6 +233,7 @@ def _recorded_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         *,
         cross_join: bool = False,
         expands_individuals: bool = False,
+        projection: ColumnProjection | None = None,
     ) -> pd.DataFrame | None:
         loads.extend(
             name
@@ -243,6 +245,7 @@ def _recorded_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             filters,
             cross_join=cross_join,
             expands_individuals=expands_individuals,
+            projection=projection,
         )
 
     monkeypatch.setattr(manifest_module, "load_entry_data", load)
@@ -604,6 +607,7 @@ def test_an_entry_without_a_table_never_stalls_the_gate(
         *,
         cross_join: bool = False,
         expands_individuals: bool = False,
+        projection: ColumnProjection | None = None,
     ) -> pd.DataFrame | None:
         if any("seq_b" in str(path) for path, _ in file_specs):
             return None
@@ -612,6 +616,7 @@ def test_an_entry_without_a_table_never_stalls_the_gate(
             filters,
             cross_join=cross_join,
             expands_individuals=expands_individuals,
+            projection=projection,
         )
 
     monkeypatch.setattr(manifest_module, "load_entry_data", load)

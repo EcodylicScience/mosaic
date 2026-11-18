@@ -49,7 +49,14 @@ from mosaic.core.scope import Scope
 
 from .dataset_indexes import feature_storages
 from .error_kind import ClassifiedError, ErrorKind
-from .index import feature_index, feature_index_path, missing_outputs_error
+from .index import (
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+    missing_outputs_error,
+)
+from .inventory.params import read_run_params
+from .inventory.scan import reportable_universe, run_covered_entries
 from .memory_limit import usable_memory_bytes
 from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
 from .run_errors import RunError, entry_label, list_names
@@ -183,6 +190,9 @@ class RunMatrix:
             for. Empty unless ``allow_partial`` let the read go on without them.
         finished: Whether the run is marked finished. ``False`` only where
             ``allow_partial`` let the read go on.
+        cautions: What the caller should know about the entries the read left
+            out, one sentence each. Empty unless a read with no scope covers
+            fewer entries than the dataset holds (:func:`plan_run_read`).
     """
 
     feature: str
@@ -193,6 +203,7 @@ class RunMatrix:
     columns: tuple[str, ...]
     missing: tuple[Entry, ...] = ()
     finished: bool = True
+    cautions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +242,8 @@ class RunRead:
         keys: The key columns, read beside the identity, in the order asked for.
         key_kinds: For each entry read, in the order of ``outputs.found``, each
             key with its kind in that entry's footer.
+        cautions: What the caller should know about the entries the read leaves
+            out, one sentence each (:func:`plan_run_read`).
     """
 
     feature: str
@@ -241,6 +254,7 @@ class RunRead:
     footer_columns: tuple[tuple[str, ArrowKind], ...]
     keys: tuple[str, ...]
     key_kinds: tuple[tuple[tuple[str, KeyKind], ...], ...]
+    cautions: tuple[str, ...] = ()
 
 
 def load_run_matrix(
@@ -348,7 +362,10 @@ def plan_run_read(
         allow_partial: Read what the run holds where it is partial.
 
     Returns:
-        The planned read, for :func:`read_run`.
+        The planned read, for :func:`read_run`. A read with no *scope* of a run
+        recorded as asked for every entry that covers fewer entries than the
+        dataset holds carries a caution saying so. A run asked for a narrowed
+        set, and a read through a scope, carry none.
 
     Raises:
         RunReadInvalid: No entry writes a key, an identity column that the run
@@ -380,6 +397,7 @@ def plan_run_read(
         footer_columns=footer_columns,
         keys=layout.keys,
         key_kinds=key_kinds,
+        cautions=_growth_cautions(ds, result.feature, run_id, outputs, selector),
     )
 
 
@@ -465,6 +483,7 @@ def read_run(read: RunRead, dtype: npt.DTypeLike = np.float32) -> RunMatrix:
         columns=layout.columns,
         missing=tuple(sorted({*outputs.unreadable, *outputs.absent})),
         finished=outputs.unfinished == 0,
+        cautions=read.cautions,
     )
 
 
@@ -555,6 +574,56 @@ def _run_outputs(ds: Dataset, feature: str, run_id: str, selector: Scope) -> _Ou
         absent=tuple(absent),
         unfinished=0 if finished_at is None else int((finished_at == "").sum()),
         listed=len(rows),
+    )
+
+
+def _growth_cautions(
+    ds: Dataset, feature: str, run_id: str, outputs: _Outputs, selector: Scope
+) -> tuple[str, ...]:
+    """The caution of an unscoped read that returns fewer entries than the run could.
+
+    Only a run recorded as asked for every entry cautions: it was asked for the
+    dataset as it stood, and an unscoped read of it returns that set while a run
+    over the entries added since would join it. The entries the run covers are
+    counted as :func:`~.inventory.scan.run_covered_entries` counts them, within
+    the entries the run could have read, which are the entries of the tracks
+    variant it was pinned to, or every entry resolved as an unpinned run resolves
+    it when it names none.
+
+    A run that read a feature's output, or tracks of more than one variant, has no
+    universe that is known without resolving its inputs again, and gets no
+    caution. Reads the run's ``params.json`` and the tracks index, and writes
+    nothing.
+    """
+    if not selector.is_unset:
+        return ()
+    params = read_run_params(feature_run_root(ds, feature, run_id)).params
+    if params is None or not params.scope.asked_all:
+        return ()
+    variants = params.consumed_tracks_variants()
+    if len(variants) > 1 or any(
+        source != "tracks" for source in params.input_sources()
+    ):
+        return ()
+    variant = next(iter(variants), None)
+    universe = reportable_universe(ds, variant)
+    rows = frozenset(entry for entry, _ in outputs.found) | frozenset(
+        outputs.unreadable
+    )
+    covered = run_covered_entries(params, rows, universe)
+    if not covered or len(covered) >= len(universe):
+        return ()
+    other = len(universe) - len(covered)
+    adds = "the other entry adds it" if other == 1 else f"the other {other} adds them"
+    within = (
+        f"the dataset's {len(universe)} entries"
+        if variant is None
+        else f"the {len(universe)} entries of tracks variant {variant}"
+    )
+    return (
+        f"run {run_id} covers {len(covered)} of {within}. A run over {adds} to "
+        f"what an unscoped read returns. Read through a saved selection to keep "
+        f"this set",
     )
 
 

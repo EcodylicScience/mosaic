@@ -50,6 +50,10 @@ work in before you start. This skill lists what a change must also touch.
 - `requires`, `provides` and `prerequisites`: `src/mosaic/core/pipeline/graph/CLAUDE.md`,
   "Declarations and the registries". An optional package loads through its
   prerequisite (`OptionalModule.load()`).
+- `declares_every_read = True` reads the input tables for the declared columns alone.
+  Set it only after the audit in `declares_every_read`'s docstring
+  (`core/pipeline/loading.py`). `test_column_contract_conformance.py` compares the
+  output from those columns with the output from every column.
 - Guards: `tests/behavior/feature_library/test_feature_conformance.py`,
   `test_column_contract_conformance.py`, and the step-detail size
   `MAX_STEP_TYPE_DETAIL_CHARS` (`agent/mcp/spec.py`).

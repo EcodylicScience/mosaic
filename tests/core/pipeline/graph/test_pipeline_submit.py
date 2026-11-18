@@ -51,6 +51,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.scope import Scope
+from mosaic.core.selections import delete_selection, save_selection, selection_scope
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
@@ -814,3 +815,113 @@ def test_a_plan_reviewed_before_an_index_moved_is_refused_by_its_fingerprint(
             expect_plan=plan_fingerprint(plan),
             reviewed=ReviewedPlan(plan, held.generation),
         )
+
+
+# --- the selections a request came from --------------------------------------
+
+SEQ_B = [("", "seq_b")]
+
+
+def test_a_request_records_the_selections_its_scopes_came_from(
+    tracked: Dataset,
+) -> None:
+    _ = save_selection(tracked, "day1", [("", "seq_a"), ("", "seq_b")])
+    _ = save_selection(tracked, "train", SEQ_B)
+    day1 = selection_scope(tracked, "day1")
+    train = selection_scope(tracked, "train")
+
+    submitted = submit_request(
+        tracked,
+        Recipe.model_validate(CHAIN),
+        scope=day1,
+        step_scopes={"templates": train},
+        selections={"": "day1", "templates": "train"},
+    )
+
+    assert submitted.request.selections == {"": "day1", "templates": "train"}
+    assert submitted.request.scope == day1
+    assert submitted.request.step_scopes == {"templates": train}
+    written = json.loads(submitted.request_path.read_text())
+    assert written["selections"] == {"": "day1", "templates": "train"}
+    assert load_request(tracked.base_dir, submitted.request.request_id) == (
+        submitted.request
+    )
+
+
+def test_a_request_without_a_selection_writes_no_selections_key(
+    tracked: Dataset,
+) -> None:
+    """The file keeps the keys it had before a request could record a selection."""
+    submitted = submit_request(tracked, Recipe.model_validate(CHAIN), scope=SEQ_A)
+
+    written = json.loads(submitted.request_path.read_text())
+
+    assert submitted.request.selections == {}
+    assert list(written) == [
+        "request_id",
+        "recipe_digest",
+        "owner",
+        "created_at",
+        "scope",
+        "bind",
+        "allow_partial",
+        "max_concurrent_steps",
+        "step_executions",
+        "step_versions",
+    ]
+
+
+def test_a_saved_request_holds_the_key_only_with_a_selection(tmp_path: Path) -> None:
+    plain = save_request(tmp_path, _request(cleanup=False))
+    named = save_request(
+        tmp_path,
+        _request(cleanup=False).model_copy(
+            update={"request_id": CLEANING, "selections": {"": "day1"}}
+        ),
+    )
+
+    assert "selections" not in json.loads(plain.read_text())
+    assert json.loads(named.read_text())["selections"] == {"": "day1"}
+
+
+def test_the_fingerprint_of_a_plan_does_not_depend_on_selections(
+    tracked: Dataset,
+) -> None:
+    _ = save_selection(tracked, "day1", [("", "seq_a")])
+    recipe = Recipe.model_validate(CHAIN)
+    scope = selection_scope(tracked, "day1")
+    reviewed = plan_fingerprint(plan_pipeline(tracked, recipe, scope=scope))
+
+    submitted = submit_request(
+        tracked,
+        recipe,
+        scope=scope,
+        selections={"": "day1"},
+        expect_plan=reviewed,
+    )
+
+    assert plan_fingerprint(submitted.plan) == reviewed
+    assert reviewed == plan_fingerprint(plan_pipeline(tracked, recipe, scope=SEQ_A))
+
+
+def test_a_selection_replaced_after_the_plan_refuses_the_submission(
+    tracked: Dataset,
+) -> None:
+    _ = save_selection(tracked, "day1", [("", "seq_a")])
+    recipe = Recipe.model_validate(CHAIN)
+    reviewed = plan_fingerprint(
+        plan_pipeline(tracked, recipe, scope=selection_scope(tracked, "day1"))
+    )
+    delete_selection(tracked, "day1")
+    _ = save_selection(tracked, "day1", SEQ_B)
+
+    with pytest.raises(PlanChanged):
+        _ = submit_request(
+            tracked,
+            recipe,
+            scope=selection_scope(tracked, "day1"),
+            selections={"": "day1"},
+            expect_plan=reviewed,
+        )
+
+    assert not requests_root(tracked.base_dir).exists()

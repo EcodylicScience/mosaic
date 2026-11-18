@@ -12,8 +12,10 @@ from .cpu_fit_advice import card_device_cautions, cpu_fit_cautions
 from .digest import document_digest
 from .heldout import deferred_fit_cautions, listed
 from .plan import (
+    ConversionAdds,
     CoverageShort,
     DepsIncomplete,
+    GrowthNote,
     HeldOnParents,
     IdentityUnresolved,
     Plan,
@@ -244,10 +246,11 @@ def _plan_cautions(
             Problem(
                 "",
                 "scope",
-                f"the plan covers all {len(plan.scope)} entries of the dataset"
-                + _roles_covered(plan),
+                _covered_sentence(plan) + _roles_covered(plan),
             )
         )
+    if plan.growth:
+        cautions.append(Problem("", "scope", _growth_sentence(plan.growth)))
     cautions.extend(deferred_fit_cautions(plan))
     cautions.extend(plan.reach_cautions)
     cautions.extend(
@@ -264,6 +267,104 @@ def _plan_cautions(
                 )
             )
     return tuple(cautions)
+
+
+GROWTH_STEPS_NAMED: Final = 5
+"""How many steps the growth caution names before it counts the rest."""
+
+
+def _growth_sentence(growth: tuple[GrowthNote, ...]) -> str:
+    """What the entries added since an earlier run mean for the steps that read it.
+
+    Names the first :data:`GROWTH_STEPS_NAMED` steps, counts the others, and says
+    once how to keep the earlier set.
+    """
+    parts = [_growth_note_sentence(note) for note in growth[:GROWTH_STEPS_NAMED]]
+    rest = len(growth) - GROWTH_STEPS_NAMED
+    if rest > 0:
+        reads = "step reads" if rest == 1 else "steps read"
+        parts.append(f"{rest} more {reads} an earlier set in the same way")
+    parts.append("Pass a saved selection as the scope to keep the earlier set")
+    return ". ".join(parts)
+
+
+def _growth_note_sentence(note: GrowthNote) -> str:
+    """One step's growth: the run it reads and what the plan adds to it.
+
+    A run that was asked for every entry says the others were added since. A run
+    asked for a chosen set says what it was asked for and that the others join it,
+    since no entry was added.
+    """
+    added = note.target - note.covered
+    joins = "joins" if added == 1 else "join"
+    if note.made_run_id is None:
+        if note.asked_all:
+            return (
+                f"step {note.step!r} reads run {note.read_run_id}, which covers "
+                f"{_entries(note.covered)}. The plan covers {note.target}. The "
+                f"{_entries(added)} added since {joins} it"
+            )
+        return (
+            f"step {note.step!r} reads run {note.read_run_id}, which was asked for "
+            f"{_entries(note.covered)}. The plan covers {note.target}. "
+            f"{'The other entry' if added == 1 else f'The other {added}'} {joins} it"
+        )
+    return (
+        f"step {note.step!r}: the plan makes run {note.made_run_id} over "
+        f"{_entries(note.target)} beside run {note.read_run_id} over "
+        f"{note.covered}. The {_entries(added)} added since {joins} the new run"
+    )
+
+
+def _covered_sentence(plan: Plan) -> str:
+    """How many entries the plan covers, and which the converters add to them.
+
+    A plan whose converters add nothing says it covers all of the dataset's
+    entries. Otherwise the converted entries are counted apart from what each
+    converting step adds, an entry two steps add counted once in the total.
+    """
+    adds = dict(sorted(plan.conversion_adds.items()))
+    if not adds:
+        return f"the plan covers all {len(plan.scope)} entries of the dataset"
+    covered = f"the plan covers the {len(plan.scope)} converted entries of the dataset"
+    if len(adds) == 1:
+        [(step_id, added)] = adds.items()
+        parts: list[str] = []
+        if added.entries:
+            parts.append(
+                f"the {_entries(len(added.entries))} that step {step_id!r} adds"
+            )
+        if added.unnamed_files:
+            parts.append(_unnamed_clause(step_id, added))
+        return f"{covered} and {' and '.join(parts)}"
+    total = {entry for added in adds.values() for entry in added.entries}
+    named: list[str] = []
+    for step_id, added in adds.items():
+        parts = []
+        if added.entries:
+            parts.append(f"{len(added.entries)} from step {step_id!r}")
+        if added.unnamed_files:
+            parts.append(_unnamed_clause(step_id, added))
+        named.append(" and ".join(parts))
+    if total:
+        return f"{covered} and {_entries(len(total))} that its converters add: " + (
+            ", ".join(named)
+        )
+    return f"{covered} and {', '.join(named[:-1])} and {named[-1]}"
+
+
+def _entries(count: int) -> str:
+    """*count* with ``entry`` or ``entries``."""
+    return f"{count} {'entry' if count == 1 else 'entries'}"
+
+
+def _unnamed_clause(step_id: str, added: ConversionAdds) -> str:
+    """The entries a step converts from raw files that name no sequence."""
+    files = added.unnamed_files
+    return (
+        f"the entries step {step_id!r} converts from {files} raw "
+        f"{'file' if files == 1 else 'files'} without a sequence name"
+    )
 
 
 def _roles_named(plan: Plan) -> str:

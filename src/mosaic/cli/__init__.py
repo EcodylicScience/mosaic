@@ -27,6 +27,7 @@ from mosaic.cli.media import media_app
 from mosaic.cli.models import models_app
 from mosaic.cli.scan import scan_command
 from mosaic.cli.sequence_tags import sequence_tags_app
+from mosaic.cli.selection import selection_app
 from mosaic.cli.sources import sources_app
 from mosaic.cli.splits import splits_app
 from mosaic.cli.tags import notes_app, tags_app
@@ -110,6 +111,7 @@ app.add_typer(agent_app, name="agent")
 # Dataset prep.
 _ = app.command(name="init")(init_command)
 app.add_typer(sources_app, name="sources")
+app.add_typer(selection_app, name="selection")
 _ = app.command(name="scan")(scan_command)
 app.add_typer(notes_app, name="notes")
 app.add_typer(tags_app, name="tags")

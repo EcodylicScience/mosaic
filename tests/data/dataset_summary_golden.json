@@ -30,6 +30,7 @@
   "name": "populated",
   "next_steps": [],
   "notes": "",
+  "raw_report": null,
   "recordings": [
     {
       "kind": "undivided",
@@ -60,6 +61,7 @@
       "name": "seq_c"
     }
   ],
+  "selections": [],
   "splits": {},
   "tags": [],
   "track_schemas": [

@@ -602,6 +602,18 @@ class Request(GraphModel):
     in an older mosaic.
     """
 
+    selections: dict[str, str] = Field(default_factory=dict)
+    """The saved selection each scope came from, for display.
+
+    The key ``""`` is the request's ``scope`` and a step id is that step's entry of
+    ``step_scopes``, as in ``{"": "day1", "fit": "train"}``. ``scope`` and
+    ``step_scopes`` hold the resolved entries, so a selection deleted or replaced
+    afterwards changes nothing the request ran over. Left out of the request file
+    when empty, so a request made without a selection reads in an older mosaic.
+    One made through a selection does not, because the model refuses a key it does
+    not know.
+    """
+
     tracks_run_id: str | None = None
     """The tracks variant that each feature step without a ``tracks`` reference reads.
 

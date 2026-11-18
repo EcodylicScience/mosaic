@@ -297,6 +297,7 @@ def submit_request(
     expect_plan: str | None = None,
     refuse_duplicates: bool = False,
     step_scopes: Mapping[str, Scope] | None = None,
+    selections: Mapping[str, str] | None = None,
     cleanup: CleanupPolicy | None = None,
     retire: Iterable[str] = (),
     tracks_run_id: str | None = None,
@@ -345,6 +346,11 @@ def submit_request(
         step_scopes: Narrow single steps, keyed by step id, each intersected
             with *scope*. Recorded on the request, which every step re-plans
             from.
+        selections: The saved selection each of *scope* (key ``""``) and
+            *step_scopes* (a step id) was resolved from, recorded on the request
+            for display. *scope* and *step_scopes* hold the resolved entries, and
+            neither the plan nor its fingerprint reads the names. A request that
+            records one is a file an older mosaic refuses.
         cleanup: Remove the plan's superseded runs after every step has
             finished, judged under this policy, or ``None`` for no cleanup.
             The plan is resolved with them, as :func:`~.cleanup.plan_with_cleanup`
@@ -542,6 +548,7 @@ def submit_request(
                 "max_concurrent_steps": max_concurrent_steps,
                 "step_executions": {step.id: new_execution_id() for step in ordered},
                 "step_versions": versions,
+                "selections": dict(selections or {}),
                 "definitions": definitions,
                 "cleanup": removal,
                 "tag_revision": pinned_tags or plan.tags_read,

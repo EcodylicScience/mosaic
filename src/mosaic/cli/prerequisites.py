@@ -35,7 +35,7 @@ from mosaic.cli._io import (
     refuse_scope_named_twice,
     resolve_scope_choice,
     stdout_to_stderr,
-    tag_selection_refusals,
+    scope_choice_refusals,
     with_command_line_scope,
 )
 from mosaic.core.pipeline.run_commands import mosaic_run_command
@@ -141,7 +141,7 @@ def prerequisites_command(
     ds = load_dataset(manifest, read_only=True)
     params_dict = command_line_params(params)
     scope_choice = command_line_scope(entries, groups, sequences, scope_json)
-    with tag_selection_refusals(as_json=as_json):
+    with scope_choice_refusals(as_json=as_json):
         scope = resolve_scope_choice(
             ds, scope_choice, tags=choices_tag_table(ds, scope_choice, {})
         )
