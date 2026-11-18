@@ -9895,7 +9895,8 @@ class Dataset:
             current.update(outcome.current)
         if written is not None:
             written.update(
-                (staged.row.group, staged.row.sequence) for staged in outcome.tables
+                (str(staged.row.group), str(staged.row.sequence))
+                for staged in outcome.tables
             )
         if variants is not None and outcome.variant:
             variants.add(outcome.variant)
