@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the synthetic and window track converters
+## 0.25.0: the synthetic and window track converters
 
 No run id or output byte of an existing format moves. Six track formats are new, each a
 `--src-format` of `convert-tracks`: `synthetic` (`mosaic_v1`, pixels, 2D) and
