@@ -8,6 +8,16 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the synthetic and window track converters
+
+A sequence that fails to convert no longer loses the rest of its file. For a file that
+holds several sequences, such as a CalMS21 `.npy` or `.json`, `convert-tracks` converts
+every sequence it can and reports each sequence that failed as its own failed entry, by
+the entry's key, where it used to report the whole file once and skip the sequences after
+the bad one. The run still reports `partial`, or fails when no sequence converts, and
+`Dataset.convert_one_track` raises the first failed sequence's error after it has written
+the others. A file that cannot be read at all is still one failed file.
+
 ## 0.24.0: saved selections, selecting by sequence tag, the raw report, shared source folders, `mosaic pipeline settle` and `mosaic --version`
 
 No run id or output byte moves. A feature run, an op run and a plan's fingerprint are

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from tests.helpers import (
     calms21_dataset,
+    fail_calms21_sequence,
     invoke_json,
     make_dataset,
     write_calms21_npy,
@@ -139,3 +141,19 @@ def test_a_failed_conversion_says_so_in_text_and_exits_non_zero(
 
     assert result.exit_code != 0
     assert "failed" in result.stderr
+
+
+def test_convert_tracks_reports_partial_when_a_sequence_of_a_file_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4, "s3": 4}}})
+    fail_calms21_sequence(monkeypatch, "s2")
+
+    result = CliRunner().invoke(
+        app, ["convert-tracks", "-m", str(ds.manifest_path), "--json"]
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "partial"
+    assert (payload["converted"], payload["failed"]) == (2, 1)

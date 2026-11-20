@@ -1689,7 +1689,8 @@ class ConversionOutcome:
     """The entries whose tables the call wrote or found current. An entry that
     failed is not among them."""
     failed: int
-    """The raw files, or merged sequences, that failed."""
+    """The raw files, merged sequences, and sequences of a file that holds
+    several, that failed."""
     variants: tuple[str, ...] = ()
     """The tracks variants this call minted, sorted. One per converter and
     correction revision it reached, whether its tables were written or skipped
@@ -1732,6 +1733,10 @@ class TrackFileOutcome:
             describe them. The process that owns the index publishes them.
         failure: Why the file failed, when it did.
         warning: The line that reports the failure on standard error.
+        entry_failures: The sequences of a file that holds several that failed,
+            each with the ``(group, sequence)`` it belongs to, in file order. The
+            file's other sequences converted. A file that fails as a whole has
+            *failure* instead.
     """
 
     path: Path | None = None
@@ -1741,6 +1746,9 @@ class TrackFileOutcome:
     tables: list[StagedTrackTable] = field(default_factory=list)
     failure: EntryFailure | None = None
     warning: str = ""
+    entry_failures: list[tuple[tuple[str, str], EntryFailure]] = field(
+        default_factory=list
+    )
 
     @property
     def failed_entry(self) -> tuple[str, str] | None:
@@ -9815,7 +9823,7 @@ class Dataset:
     def convert_one_track(
         self,
         raw_row: pd.Series,
-        params: Optional[dict] = None,
+        params: dict[str, object] | None = None,
         overwrite: bool = False,
         covered: set[tuple[str, str]] | None = None,
         variants: set[str] | None = None,
@@ -9840,6 +9848,8 @@ class Dataset:
             ]
         if lost:
             raise lost[0].error
+        if outcome.entry_failures:
+            raise outcome.entry_failures[0][1].error
         assert outcome.path is not None
         return outcome.path
 
@@ -9856,8 +9866,10 @@ class Dataset:
         are written under staging names and come back with their row drafts, for
         the process that owns the index to publish. A file that fails comes back as the
         outcome's ``failure``, beside the entries and tables it produced before it
-        failed. A refusal under ``strict_schema`` raises, because it is the answer
-        the caller asked for.
+        failed. A sequence that fails in a file that holds several does not fail the
+        file: the outcome's ``entry_failures`` records it and the file's other
+        sequences convert. A schema refusal (``TrackSchemaError``) raises, because it
+        is the answer the caller asked for.
         """
         outcome = TrackFileOutcome()
         try:
@@ -9913,8 +9925,12 @@ class Dataset:
         """Convert one raw file, filling *outcome* as it goes.
 
         The entries, the variant and the row drafts are in *outcome* when this
-        raises, so a caller keeps what a file that expands to several entries had
-        produced before one of them failed.
+        raises, so a caller keeps what the file had produced before the failure.
+        A sequence of a file that expands to several that fails, other than by a
+        ``TrackSchemaError``, is recorded in ``outcome.entry_failures`` and the loop
+        goes on to the next. A ``TrackSchemaError``, a failure of
+        ``enumerate_sequences`` and a failure of a file that names its sequence
+        raise.
         """
         src_format = str(raw_row["src_format"])
         src_path = self.resolve_path(raw_row["abs_path"])
@@ -9968,83 +9984,98 @@ class Dataset:
                 if policy in {"filename", "both"} and group_value:
                     out_group_canon = group_value
 
-                # output path -- make_entry_key does the safe-name encoding
                 outcome.covered.append((out_group_canon, canon_seq))
-                stem = make_entry_key(out_group_canon, canon_seq)
-                out_path = variant_root / f"{stem}.parquet"
-                out_path.parent.mkdir(parents=True, exist_ok=True)
+                # output path -- make_entry_key does the safe-name encoding
+                entry_key = make_entry_key(out_group_canon, canon_seq)
+                try:
+                    out_path = variant_root / f"{entry_key}.parquet"
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Respect overwrite flag when outputs already exist, unless the
-                # sources moved under them -- see ``_conversion_is_current``.
-                if (
-                    out_path.exists()
-                    and not overwrite
-                    and self._conversion_is_current(
-                        variant, out_group_canon, canon_seq, facts
+                    # Respect overwrite flag when outputs already exist, unless the
+                    # sources moved under them -- see ``_conversion_is_current``.
+                    if (
+                        out_path.exists()
+                        and not overwrite
+                        and self._conversion_is_current(
+                            variant, out_group_canon, canon_seq, facts
+                        )
+                    ):
+                        outcome.current.append((out_group_canon, canon_seq))
+                        continue
+
+                    # Which entry to produce -- passed beside the params, never
+                    # merged into them, so the sequence name cannot reach a digest.
+                    division = self.division_facts([(out_group_canon, canon_seq)]).get(
+                        (out_group_canon, canon_seq)
                     )
-                ):
-                    outcome.current.append((out_group_canon, canon_seq))
-                    continue
-
-                # Which entry to produce -- passed beside the params, never
-                # merged into them, so the sequence name cannot reach a digest.
-                division = self.division_facts([(out_group_canon, canon_seq)]).get(
-                    (out_group_canon, canon_seq)
-                )
-                hints = _placed_hints(
-                    EntryHints(
-                        group=canon_group_infile,
-                        sequence=canon_seq,
-                        fps=self._conversion_fps(
-                            converter, (out_group_canon, canon_seq)
-                        ),
-                    ),
-                    division,
-                )
-                df_std = converter.convert(src_path, conv_params, hints)
-
-                # Overwrite group column in DataFrame to match policy
-                if "group" in df_std.columns and out_group_canon != canon_group_infile:
-                    df_std["group"] = out_group_canon
-
-                df_std = _placed_conversion(
-                    df_std,
-                    hints,
-                    (out_group_canon, canon_seq),
-                    f"{src_path}::{canon_seq}",
-                    division,
-                )
-
-                # Ensure schema, then write
-                _, _schema_report = ensure_track_schema(
-                    df_std,
-                    std_fmt,
-                    strict=conv_params.strict_schema,
-                    source=f"{src_path}::{canon_seq}",
-                )
-                staged = stage_table(df_std, out_path)
-
-                # The file-level grouping hint the old row kept as 'collection'
-                # is not recorded: it had no reader anywhere, and it stays
-                # recoverable from tracks_raw/index.csv through source_abs_path.
-                outcome.tables.append(
-                    StagedTrackTable(
-                        staged=staged,
-                        row=TracksRowDraft(
-                            run_id=variant,
-                            group=out_group_canon,
+                    hints = _placed_hints(
+                        EntryHints(
+                            group=canon_group_infile,
                             sequence=canon_seq,
-                            out_path=out_path,
-                            producer=producer,
-                            std_format=std_fmt,
-                            n_rows=int(len(df_std)),
-                            source=src_path,
-                            source_md5=source_md5,
-                            consumed_source_roots=("tracks_raw",),
-                            carries_tracklets=converter.tracklets(conv_params),
+                            fps=self._conversion_fps(
+                                converter, (out_group_canon, canon_seq)
+                            ),
                         ),
+                        division,
                     )
-                )
+                    df_std = converter.convert(src_path, conv_params, hints)
+
+                    # Overwrite group column in DataFrame to match policy
+                    if (
+                        "group" in df_std.columns
+                        and out_group_canon != canon_group_infile
+                    ):
+                        df_std["group"] = out_group_canon
+
+                    df_std = _placed_conversion(
+                        df_std,
+                        hints,
+                        (out_group_canon, canon_seq),
+                        f"{src_path}::{canon_seq}",
+                        division,
+                    )
+
+                    # Ensure schema, then write
+                    _, _schema_report = ensure_track_schema(
+                        df_std,
+                        std_fmt,
+                        strict=conv_params.strict_schema,
+                        source=f"{src_path}::{canon_seq}",
+                    )
+                    staged = stage_table(df_std, out_path)
+
+                    # The file-level grouping hint the old row kept as 'collection'
+                    # is not recorded: it had no reader anywhere, and it stays
+                    # recoverable from tracks_raw/index.csv through source_abs_path.
+                    outcome.tables.append(
+                        StagedTrackTable(
+                            staged=staged,
+                            row=TracksRowDraft(
+                                run_id=variant,
+                                group=out_group_canon,
+                                sequence=canon_seq,
+                                out_path=out_path,
+                                producer=producer,
+                                std_format=std_fmt,
+                                n_rows=int(len(df_std)),
+                                source=src_path,
+                                source_md5=source_md5,
+                                consumed_source_roots=("tracks_raw",),
+                                carries_tracklets=converter.tracklets(conv_params),
+                            ),
+                        )
+                    )
+                except TrackSchemaError:
+                    raise
+                except Exception as exc:
+                    # One sequence failing leaves the file's others to convert.
+                    # It staged nothing, so nothing of it is published.
+                    outcome.entry_failures.append(
+                        (
+                            (out_group_canon, canon_seq),
+                            EntryFailure.capture(entry_key, exc),
+                        )
+                    )
 
             outcome.path = self.get_root("tracks") / "index.csv"
             return
@@ -10297,9 +10328,10 @@ class Dataset:
             Called before each raw row or merged sequence. It stops the
             conversion by raising.
         on_failure : callable | None
-            Called as ``on_failure(path, exc)`` for each raw file that failed,
-            from inside the ``except`` block that caught it, so a caller can
-            record the traceback.
+            Called as ``on_failure(key, exc)`` for each raw file that failed, with
+            its path, and for each sequence that failed in a file that holds
+            several, with its entry key, from inside the ``except`` block that
+            caught it, so a caller can record the traceback.
         parallel : ParallelSettings | None
             How many raw files, or merged sequences, are converted at once. None
             converts them in turn. A worker writes the tables, and this process
@@ -10418,6 +10450,16 @@ class Dataset:
                 result, covered, minted, committer, current, written
             ):
                 report_lost(lost)
+            for entry, failure in result.entry_failures:
+                print(
+                    f"[WARN] convert failed for {work.path}, entry "
+                    f"{failure.key}: {failure.error}",
+                    file=sys.stderr,
+                )
+                failures.append(failure.key)
+                unconverted.add(make_entry_key(*entry))
+                if on_failure is not None:
+                    failure.record(on_failure)
             if result.failure is not None:
                 print(result.warning, file=sys.stderr)
                 failures.append(result.failure.key)

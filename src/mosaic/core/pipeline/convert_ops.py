@@ -206,7 +206,8 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
         # ``converted`` counts the entries written or found current, so
         # ``entries_written`` is coverage, as it is for a feature run. A call that
         # wrote nothing, failed nothing and found a table for every entry of a
-        # non-empty source is a cache hit. ``failed`` counts raw files.
+        # non-empty source is a cache hit. ``failed`` counts raw files and the failed
+        # sequences of a file that holds several.
         ctx.entries_written(outcome.converted)
         if (
             outcome.converted > 0
@@ -216,19 +217,20 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
             ctx.cache_hit()
         if outcome.lost_everything:
             msg = (
-                f"every raw file of format {params.source_format!r} failed to "
-                f"convert ({outcome.failed}), so variant {identity.tracks_variant} "
-                "has no entry. The run-log names each file."
+                f"every raw file or sequence of format {params.source_format!r} "
+                f"failed to convert ({outcome.failed}), so variant "
+                f"{identity.tracks_variant} has no entry. The run-log names each "
+                "one."
             )
             raise AllEntriesFailed(msg)
         if outcome.failed:
             # A missing entry here is missing from everything downstream, and a
             # rerun skips what was written, so the attempt fails and resumes.
             msg = (
-                f"convert-tracks failed on {outcome.failed} raw file(s) of format "
-                f"{params.source_format!r}; variant {identity.tracks_variant} is "
-                "incomplete. The run-log names each file. Fix them and re-run "
-                "to resume."
+                f"convert-tracks failed on {outcome.failed} raw file(s) or "
+                f"sequence(s) of format {params.source_format!r}; variant "
+                f"{identity.tracks_variant} is incomplete. The run-log names each "
+                "one. Fix them and re-run to resume."
             )
             raise RuntimeError(msg)
         return identity.run_id

@@ -12,11 +12,14 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import ConversionOutcome, Dataset
+from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.schema import TrackSchemaError
 from mosaic.core.track_converter import EntryHints
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
-from mosaic.core.pipeline.tracks_index import read_tracks_index
 from tests.helpers import (
     calms21_dataset,
+    fail_calms21_sequence,
     make_dataset,
     write_tracktor_recording,
     write_trex_npz,
@@ -108,44 +111,169 @@ def test_nothing_to_convert_is_not_a_loss() -> None:
     assert not outcome.lost_everything
 
 
-def _failing_on_the_second_pair(monkeypatch: pytest.MonkeyPatch) -> None:
-    convert = Calms21Converter.convert
-
-    def convert_or_fail(
-        self: Calms21Converter, path: Path, params: Calms21Params, hints: EntryHints
-    ) -> pd.DataFrame:
-        if hints.sequence == "s2":
-            msg = "the second pair cannot be converted"
-            raise ValueError(msg)
-        return convert(self, path, params, hints)
-
-    monkeypatch.setattr(Calms21Converter, "convert", convert_or_fail)
+_THREE_PAIRS = {"train": {"a": {"s1": 4, "s2": 4, "s3": 4}}}
 
 
-def test_a_file_failing_on_its_second_pair_converts_the_first(
+def _indexed_entries(ds: Dataset) -> list[tuple[str, str]]:
+    index = read_tracks_index(ds)
+    return list(zip(index["group"], index["sequence"], strict=True))
+
+
+def test_a_file_failing_on_its_second_pair_converts_the_first_and_the_third(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4}}})
-    _failing_on_the_second_pair(monkeypatch)
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    fail_calms21_sequence(monkeypatch, "s2")
 
     outcome = ds.convert_all_tracks()
 
-    assert (outcome.converted, outcome.failed) == (1, 1)
-    index = read_tracks_index(ds)
-    assert list(zip(index["group"], index["sequence"], strict=True)) == [
-        ("train", "s1")
-    ]
+    assert (outcome.converted, outcome.failed) == (2, 1)
+    assert not outcome.lost_everything
+    assert sorted(_indexed_entries(ds)) == [("train", "s1"), ("train", "s3")]
+    assert sorted(
+        path.name for path in ds.get_root("tracks").rglob("*.parquet")
+    ) == sorted(f"{make_entry_key('train', name)}.parquet" for name in ("s1", "s3"))
+    assert not list(ds.get_root("tracks").rglob(".stage-*"))
 
 
 def test_the_failed_entry_of_a_file_is_the_pair_that_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4}}})
-    _failing_on_the_second_pair(monkeypatch)
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    fail_calms21_sequence(monkeypatch, "s2")
     (row,) = ds.read_tracks_raw_index()
 
     outcome = ds.convert_track_file(pd.Series(row), {}, False)
 
+    assert outcome.failure is None
+    assert outcome.covered == [("train", "s1"), ("train", "s2"), ("train", "s3")]
+    ((entry, failure),) = outcome.entry_failures
+    assert entry == ("train", "s2")
+    assert failure.key == make_entry_key("train", "s2")
+    assert "s2" in str(failure.error)
+    assert [staged.row.sequence for staged in outcome.tables] == ["s1", "s3"]
+
+
+def test_a_file_that_cannot_enumerate_its_sequences_is_one_failed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    (row,) = ds.read_tracks_raw_index()
+
+    def refuse(self: Calms21Converter, path: Path) -> list[tuple[str, str]]:
+        msg = "the file cannot be read"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(Calms21Converter, "enumerate_sequences", refuse)
+
+    outcome = ds.convert_track_file(pd.Series(row), {}, False)
+
     assert outcome.failure is not None
-    assert outcome.failed_entry == ("train", "s2")
-    assert outcome.covered == [("train", "s1"), ("train", "s2")]
+    assert outcome.entry_failures == []
+    assert outcome.failed_entry is None
+
+
+def test_every_pair_failing_is_a_failed_entry_each_and_a_lost_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4}}})
+
+    def refuse(
+        self: Calms21Converter, path: Path, params: Calms21Params, hints: EntryHints
+    ) -> pd.DataFrame:
+        msg = f"sequence {hints.sequence} cannot be converted"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(Calms21Converter, "convert", refuse)
+
+    outcome = ds.convert_all_tracks()
+
+    assert (outcome.converted, outcome.failed) == (0, 2)
+    assert outcome.lost_everything
+    assert _indexed_entries(ds) == []
+
+
+def test_on_failure_receives_a_record_for_each_failed_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4}}})
+    fail_calms21_sequence(monkeypatch, "s2")
+    records: list[tuple[str, str]] = []
+
+    def record(key: str, error: BaseException) -> None:
+        records.append((key, str(error)))
+
+    _ = ds.convert_all_tracks(on_failure=record)
+
+    assert records == [
+        (make_entry_key("train", "s2"), "sequence s2 cannot be converted")
+    ]
+
+
+def test_a_failed_pair_is_named_on_standard_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4}}})
+    fail_calms21_sequence(monkeypatch, "s2")
+    (row,) = ds.read_tracks_raw_index()
+
+    _ = ds.convert_all_tracks()
+
+    warning = next(
+        line for line in capsys.readouterr().err.splitlines() if "[WARN]" in line
+    )
+    assert str(row["abs_path"]) in warning
+    assert make_entry_key("train", "s2") in warning
+
+
+def test_a_rerun_converts_the_pair_that_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    with monkeypatch.context() as broken:
+        fail_calms21_sequence(broken, "s2")
+        _ = ds.convert_all_tracks()
+
+    outcome = ds.convert_all_tracks()
+
+    assert (outcome.converted, outcome.failed, outcome.current) == (3, 0, 2)
+    assert sorted(_indexed_entries(ds)) == [
+        ("train", "s1"),
+        ("train", "s2"),
+        ("train", "s3"),
+    ]
+
+
+def test_a_pair_failing_the_schema_under_strict_schema_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    convert = Calms21Converter.convert
+
+    def without_frames(
+        self: Calms21Converter, path: Path, params: Calms21Params, hints: EntryHints
+    ) -> pd.DataFrame:
+        table = convert(self, path, params, hints)
+        if hints.sequence == "s2":
+            return table.drop(columns=["frame"])
+        return table
+
+    monkeypatch.setattr(Calms21Converter, "convert", without_frames)
+
+    with pytest.raises(TrackSchemaError):
+        _ = ds.convert_all_tracks(params={"strict_schema": True})
+
+
+def test_convert_one_track_raises_the_failed_pairs_error_after_committing_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", _THREE_PAIRS)
+    fail_calms21_sequence(monkeypatch, "s2")
+    (row,) = ds.read_tracks_raw_index()
+
+    with pytest.raises(ValueError, match="sequence s2 cannot be converted"):
+        _ = ds.convert_one_track(pd.Series(row))
+
+    assert sorted(_indexed_entries(ds)) == [("train", "s1"), ("train", "s3")]

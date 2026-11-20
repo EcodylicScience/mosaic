@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import make_entry_key
 from mosaic.core.pipeline.convert_ops import ConvertLabelsParams, ConvertTracksParams
 from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.ops import OPS, ScopeRefused, run_op
@@ -23,6 +24,7 @@ from mosaic.core.scope import Scope
 from tests.helpers import (
     calms21_dataset,
     entry_error_lines,
+    fail_calms21_sequence,
     latest_snapshot,
     make_dataset,
     tree_snapshot,
@@ -94,6 +96,28 @@ def test_a_failed_file_emits_entry_error_fails_the_attempt_and_a_rerun_resumes(
     _ = bad.write_bytes(good_bytes)
     _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
     assert len(read_tracks_index(ds)) == 3
+
+
+def test_a_failed_sequence_of_a_file_is_its_own_entry_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 4, "s3": 4}}})
+    fail_calms21_sequence(monkeypatch, "s2")
+
+    with pytest.raises(RuntimeError, match="failed on 1 raw file") as raised:
+        _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
+
+    assert not isinstance(raised.value, AllEntriesFailed)
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "failed"
+    assert (snapshot["entries_written"], snapshot["entries_failed"]) == (2, 1)
+    [line] = entry_error_lines(ds, snapshot["execution_id"])
+    assert make_entry_key("train", "s2") in line
+    index = read_tracks_index(ds)
+    assert sorted(zip(index["group"], index["sequence"], strict=True)) == [
+        ("train", "s1"),
+        ("train", "s3"),
+    ]
 
 
 def test_a_crafted_trex_file_is_refused_unread_and_its_neighbor_converts(

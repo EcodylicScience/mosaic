@@ -652,8 +652,8 @@ def _add_heldout(
     )
     if converted.failed:
         raise ScoreRefused(
-            f"{converted.failed} held-out raw file(s) did not convert. Fix the files "
-            "and run again with --reuse. To change a source option (--patterns, "
+            f"{converted.failed} held-out raw file(s) or sequence(s) did not convert. "
+            "Fix the files and run again with --reuse. To change a source option (--patterns, "
             "--group-from, ...), delete --out and start again"
         )
     _ = ds.convert_all_labels(

@@ -20,6 +20,7 @@ from typing import ClassVar, Literal, cast
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
@@ -763,6 +764,27 @@ def write_window_spec(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_toml_text(document))
     return path
+
+
+def fail_calms21_sequence(monkeypatch: pytest.MonkeyPatch, sequence: str) -> None:
+    """Make the CalMS21 track converter refuse the sequence named *sequence*.
+
+    The error names the sequence, so a test reads which one a failure belongs to.
+    Every other sequence converts as it does.
+    """
+    from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
+
+    convert = Calms21Converter.convert
+
+    def convert_or_fail(
+        self: Calms21Converter, path: Path, params: Calms21Params, hints: EntryHints
+    ) -> pd.DataFrame:
+        if hints.sequence == sequence:
+            msg = f"sequence {sequence} cannot be converted"
+            raise ValueError(msg)
+        return convert(self, path, params, hints)
+
+    monkeypatch.setattr(Calms21Converter, "convert", convert_or_fail)
 
 
 def calms21_dataset(
