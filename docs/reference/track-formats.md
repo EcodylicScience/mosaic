@@ -3,7 +3,7 @@
 
 # Track formats, schemas and label formats
 
-11 track converters read a tracker's output into one of
+13 track converters read a tracker's output into one of
 5 registered schemas, and 4 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
@@ -20,6 +20,8 @@ by `mosaic convert-tracks`.
 | `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.3` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
 | `sleap_analysis_h5` | `0.3` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
+| `synthetic` | `0.1` | `mosaic_v1` | no | no | A two-dimensional synthetic track file -> a ``mosaic_v1`` table, in pixels. |
+| `synthetic_3d` | `0.1` | `mosaic_world_v1` | no | no | A three-dimensional synthetic track file -> a ``mosaic_world_v1`` table. |
 | `tracktor_corrected_tsv` | `0.1` | `mosaic_v1` | no | no | Corrected Tracktor ``*_tracked_fixed_final.tsv`` -> a ``mosaic_v1`` table. |
 | `tracktor_raw_csv` | `0.1` | `mosaic_v1` | no | no | Raw Tracktor ``*_tracked.csv`` -> a ``mosaic_v1`` table, timed by its sibling. |
 | `trex_npz` | `0.3` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
@@ -60,6 +62,20 @@ by `mosaic convert-tracks`.
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 | `tracks_named` | `boolean` \| `None` | `null` |  | Whether the export's tracks are named: each track index follows one animal over the video. A SLEAP export records identities only when its tracks are named, so the file cannot say. Leave unset to record no answer; the plan then does not refuse a step that needs ids following an animal. |
+
+#### `synthetic`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `relabel_after_gap` | `boolean` | `false` |  | Give an individual that returns after a missing frame the next unused id, as a tracker that loses and re-finds an animal does. Off, an individual keeps one id throughout, and the table's ids follow animals. |
+
+#### `synthetic_3d`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `relabel_after_gap` | `boolean` | `false` |  | Give an individual that returns after a missing frame the next unused id, as a tracker that loses and re-finds an animal does. Off, an individual keeps one id throughout, and the table's ids follow animals. |
 
 #### `tracktor_corrected_tsv`
 

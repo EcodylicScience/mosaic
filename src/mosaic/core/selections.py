@@ -33,7 +33,7 @@ from mosaic.core.entry import Entry, validate_entry_name
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.scope import Scope
-from mosaic.core.strict_model import StrictModel
+from mosaic.core.strict_model import StrictModel, located
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -282,18 +282,6 @@ def _not_found(directory: Path, name: str) -> SelectionNotFound:
     )
 
 
-def _reason(exc: Exception) -> str:
-    """Say what is wrong in a file, naming each key that failed."""
-    if not isinstance(exc, ValidationError):
-        return str(exc)
-    return "; ".join(
-        ".".join(str(part) for part in error["loc"]) + ": " + error["msg"]
-        if error["loc"]
-        else error["msg"]
-        for error in exc.errors()
-    )
-
-
 def _load(path: Path) -> Selection:
     """Read the selection in *path*, which a file named for its selection holds.
 
@@ -307,7 +295,7 @@ def _load(path: Path) -> Selection:
     except FileNotFoundError:
         raise
     except (ValidationError, UnicodeDecodeError, OSError) as exc:
-        raise SelectionUnreadable(path.name, _reason(exc)) from exc
+        raise SelectionUnreadable(path.name, located(exc)) from exc
     stem = path.name.removesuffix(_SUFFIX)
     if selection.name != stem:
         raise SelectionUnreadable(

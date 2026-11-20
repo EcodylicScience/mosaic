@@ -15,7 +15,7 @@ from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -640,6 +640,80 @@ def write_calms21_npy(
         for group, sequences in pairs.items()
     }
     np.save(path, np.array(payload, dtype=object), allow_pickle=True)
+
+
+def _toml_value(value: object) -> str:
+    """The TOML spelling of a bool, int, float or string."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    msg = f"no TOML spelling for {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _toml_text(document: Mapping[str, object], table: str = "") -> str:
+    """Serialize *document*: its scalars first, then each nested mapping as a table."""
+    scalars = [
+        f"{key} = {_toml_value(value)}"
+        for key, value in document.items()
+        if not isinstance(value, Mapping)
+    ]
+    sections = [
+        _toml_text(
+            cast("Mapping[str, object]", value), f"{table}.{key}" if table else key
+        )
+        for key, value in document.items()
+        if isinstance(value, Mapping)
+    ]
+    head = [f"[{table}]"] if table else []
+    return "\n".join([*head, *scalars]) + "\n" + "\n".join(sections)
+
+
+def write_synthetic_spec(path: Path, **overrides: object) -> Path:
+    """Write a small valid synthetic track file and return its path.
+
+    The file is two-dimensional, with 3 individuals over 200 frames at 30 fps in
+    a 1000 by 1000 box, and a motion table holding only ``mean_speed``.
+
+    Args:
+        path: The file to write. Its parent is created.
+        **overrides: Top-level keys replace the file's. A mapping value for a
+            table (``arena``, ``motion``, ``zones``, ``body``, ``dropouts``)
+            merges into that table, which a table the file lacks creates. A
+            ``None`` value removes the key, since TOML has no null.
+    """
+    scalars: dict[str, object] = {
+        "format": "mosaic-synthetic/1",
+        "seed": 7,
+        "dimensions": 2,
+        "frames": 200,
+        "fps": 30.0,
+        "individuals": 3,
+    }
+    tables: dict[str, dict[str, object]] = {
+        "arena": {"shape": "box", "width": 1000.0, "height": 1000.0},
+        "motion": {"mean_speed": 100.0},
+    }
+    for key, value in overrides.items():
+        if value is None:
+            _ = tables.pop(key, None)
+            _ = scalars.pop(key, None)
+        elif isinstance(value, Mapping):
+            table = tables.setdefault(key, {})
+            table.update(
+                {str(k): v for k, v in cast("Mapping[object, object]", value).items()}
+            )
+        else:
+            scalars[key] = value
+    document: dict[str, object] = {k: v for k, v in scalars.items() if v is not None}
+    for name, table in tables.items():
+        document[name] = {k: v for k, v in table.items() if v is not None}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_toml_text(document))
+    return path
 
 
 def calms21_dataset(

@@ -32,6 +32,7 @@ accessible from mosaic.core.dataset module.
 from . import calms21
 from . import deeplabcut
 from . import sleap
+from . import synthetic
 from . import tracktor
 from . import trex
 from . import ultralytics_tracks
@@ -41,6 +42,7 @@ __all__ = [
     "calms21",
     "deeplabcut",
     "sleap",
+    "synthetic",
     "tracktor",
     "trex",
     "ultralytics_tracks",
