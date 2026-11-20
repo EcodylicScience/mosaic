@@ -643,32 +643,55 @@ def write_calms21_npy(
 
 
 def _toml_value(value: object) -> str:
-    """The TOML spelling of a bool, int, float or string."""
+    """The TOML spelling of a bool, int, float, string or list of those."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
         return json.dumps(value)
+    if isinstance(value, Sequence):
+        items = cast("Sequence[object]", value)
+        return "[" + ", ".join(_toml_value(item) for item in items) + "]"
     msg = f"no TOML spelling for {type(value).__name__}"
     raise TypeError(msg)
 
 
-def _toml_text(document: Mapping[str, object], table: str = "") -> str:
-    """Serialize *document*: its scalars first, then each nested mapping as a table."""
+def _is_array_of_tables(value: object) -> bool:
+    """Whether *value* is a nonempty sequence of mappings."""
+    if not isinstance(value, Sequence) or isinstance(value, str) or not value:
+        return False
+    items = cast("Sequence[object]", value)
+    return all(isinstance(item, Mapping) for item in items)
+
+
+def _toml_text(
+    document: Mapping[str, object], table: str = "", *, array_item: bool = False
+) -> str:
+    """Serialize *document*: its scalars first, then each nested mapping as a table.
+
+    A nonempty sequence of mappings becomes an array of tables, one ``[[name]]``
+    block per mapping. *array_item* marks *document* as one such mapping.
+    """
     scalars = [
         f"{key} = {_toml_value(value)}"
         for key, value in document.items()
-        if not isinstance(value, Mapping)
+        if not isinstance(value, Mapping) and not _is_array_of_tables(value)
     ]
-    sections = [
-        _toml_text(
-            cast("Mapping[str, object]", value), f"{table}.{key}" if table else key
-        )
-        for key, value in document.items()
-        if isinstance(value, Mapping)
-    ]
-    head = [f"[{table}]"] if table else []
+    sections: list[str] = []
+    for key, value in document.items():
+        name = f"{table}.{key}" if table else key
+        if isinstance(value, Mapping):
+            sections.append(_toml_text(cast("Mapping[str, object]", value), name))
+        elif _is_array_of_tables(value):
+            sections.extend(
+                _toml_text(item, name, array_item=True)
+                for item in cast("Sequence[Mapping[str, object]]", value)
+            )
+    if table:
+        head = [f"[[{table}]]" if array_item else f"[{table}]"]
+    else:
+        head = []
     return "\n".join([*head, *scalars]) + "\n" + "\n".join(sections)
 
 
@@ -711,6 +734,32 @@ def write_synthetic_spec(path: Path, **overrides: object) -> Path:
     document: dict[str, object] = {k: v for k, v in scalars.items() if v is not None}
     for name, table in tables.items():
         document[name] = {k: v for k, v in table.items() if v is not None}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_toml_text(document))
+    return path
+
+
+def write_window_spec(
+    path: Path,
+    *,
+    source: Path,
+    tracks_run_id: str,
+    windows: Sequence[Mapping[str, object]],
+) -> Path:
+    """Write a window file and return its path.
+
+    Args:
+        path: The file to write. Its parent is created.
+        source: The source dataset, written as given.
+        tracks_run_id: The source's tracks variant.
+        windows: One mapping per ``[[windows]]`` table, written as given.
+    """
+    document: dict[str, object] = {
+        "format": "mosaic-window/1",
+        "source": str(source),
+        "tracks_run_id": tracks_run_id,
+        "windows": list(windows),
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_toml_text(document))
     return path
