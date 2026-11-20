@@ -10,6 +10,27 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: the synthetic and window track converters
 
+No run id or output byte of an existing format moves. Six track formats are new, each a
+`--src-format` of `convert-tracks`: `synthetic` (`mosaic_v1`, pixels, 2D) and
+`synthetic_3d` (`mosaic_world_v1`, meters, 3D), which simulate a sequence, and
+`window_mosaic_v1`, `window_trex_v2`, `window_mosaic_cm_v1` and
+`window_mosaic_world_v1`, which cut a span of frames out of another dataset's tracks of
+that schema. Their variants are named `convert-<format>.0.1-<digest>`.
+
+A synthetic file has `format = "mosaic-synthetic/1"` and declares every generator
+parameter. Its checksum then identifies the sequence. The one converter parameter,
+`relabel_after_gap` (default `false`), is the id policy: an individual that returns
+after a missing frame takes the next unused id. A variant converted with `false` records
+that ids follow animals (`carries_tracklets` true), and one converted with `true`
+records that they do not.
+
+A window file has `format = "mosaic-window/1"` and names a source dataset, its tracks
+variant and the windows. Its converter parameter `carries_tracklets` (default unset) is
+what the written tracks record, and a window whose source records another answer is
+refused. A window keeps its source's frame numbers and times. A source converted again
+under the same variant leaves its windows as they were until
+`convert-tracks --overwrite` rewrites them.
+
 A sequence that fails to convert no longer loses the rest of its file. For a file that
 holds several sequences, such as a CalMS21 `.npy` or `.json`, `convert-tracks` converts
 every sequence it can and reports each sequence that failed as its own failed entry, by

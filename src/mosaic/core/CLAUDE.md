@@ -323,6 +323,16 @@ importing `mosaic.tracking` registers neither.
   A converter of a file that records its own time (`tracktor`) reads it, takes no rate
   and writes no `fps` or `frame_rate` column
   (`tests/core/track_library/test_tracktor.py`).
+- A synthetic file declares every generator parameter, and the converter's params
+  declare the id policy alone (`relabel_after_gap`). The file's checksum then identifies
+  the sequence, and `TrackConverter.tracklets(params)` answers from the params. Each
+  dimension is a separate format, `synthetic` (`mosaic_v1`) and `synthetic_3d`
+  (`mosaic_world_v1`), and each window schema is a separate format (`window_mosaic_v1`,
+  `window_trex_v2`, `window_mosaic_cm_v1`, `window_mosaic_world_v1`), because a
+  converter declares one `output_schema`. A window converter reads its source dataset
+  inside `convert`, imports the dataset and the tracks index there, and writes nothing
+  to it (`tests/core/track_library/test_synthetic_converter.py`,
+  `tests/core/track_library/test_window_converter.py`).
 - **`core/timebase.py` is the one reading of `time`.** `step_seconds` gives the seconds
   between rows, `uniform_grid_rate` a rate measured as the frame span over the time span
   with a warning on uneven steps, `row_seconds` the seconds each row stands for, per

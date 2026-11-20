@@ -9834,7 +9834,9 @@ class Dataset:
         Returns path to standardized file, updates tracks/index.csv.
 
         *covered* collects the ``(group, sequence)`` entries the file names, and
-        *variants* the tracks variant it was converted under.
+        *variants* the tracks variant it was converted under. A sequence of a file
+        that holds several that fails raises its error after the file's other
+        sequences are written, the first such error when several fail.
         """
         outcome = TrackFileOutcome()
         lost: list[EntryFailure] = []
@@ -9925,7 +9927,7 @@ class Dataset:
         """Convert one raw file, filling *outcome* as it goes.
 
         The entries, the variant and the row drafts are in *outcome* when this
-        raises, so a caller keeps what the file had produced before the failure.
+        raises. A caller keeps what the file had produced before the failure.
         A sequence of a file that expands to several that fails, other than by a
         ``TrackSchemaError``, is recorded in ``outcome.entry_failures`` and the loop
         goes on to the next. A ``TrackSchemaError``, a failure of
@@ -9985,14 +9987,14 @@ class Dataset:
                     out_group_canon = group_value
 
                 outcome.covered.append((out_group_canon, canon_seq))
-                # output path -- make_entry_key does the safe-name encoding
+                # The output path: make_entry_key does the safe-name encoding.
                 entry_key = make_entry_key(out_group_canon, canon_seq)
                 try:
                     out_path = variant_root / f"{entry_key}.parquet"
                     out_path.parent.mkdir(parents=True, exist_ok=True)
 
                     # Respect overwrite flag when outputs already exist, unless the
-                    # sources moved under them -- see ``_conversion_is_current``.
+                    # sources moved under them (see ``_conversion_is_current``).
                     if (
                         out_path.exists()
                         and not overwrite
@@ -10003,8 +10005,8 @@ class Dataset:
                         outcome.current.append((out_group_canon, canon_seq))
                         continue
 
-                    # Which entry to produce -- passed beside the params, never
-                    # merged into them, so the sequence name cannot reach a digest.
+                    # Which entry to produce. It is passed beside the params and not
+                    # merged into them. The sequence name cannot reach a digest.
                     division = self.division_facts([(out_group_canon, canon_seq)]).get(
                         (out_group_canon, canon_seq)
                     )
@@ -10069,7 +10071,7 @@ class Dataset:
                     raise
                 except Exception as exc:
                     # One sequence failing leaves the file's others to convert.
-                    # It staged nothing, so nothing of it is published.
+                    # It staged nothing and publishes nothing.
                     outcome.entry_failures.append(
                         (
                             (out_group_canon, canon_seq),
@@ -10328,10 +10330,10 @@ class Dataset:
             Called before each raw row or merged sequence. It stops the
             conversion by raising.
         on_failure : callable | None
-            Called as ``on_failure(key, exc)`` for each raw file that failed, with
-            its path, and for each sequence that failed in a file that holds
-            several, with its entry key, from inside the ``except`` block that
-            caught it, so a caller can record the traceback.
+            Called as ``on_failure(key, exc)`` from inside the ``except`` block that
+            caught the failure, where a caller can record the traceback. *key* is
+            the path of each raw file that failed and the entry key of each
+            sequence that failed in a file that holds several.
         parallel : ParallelSettings | None
             How many raw files, or merged sequences, are converted at once. None
             converts them in turn. A worker writes the tables, and this process

@@ -3,16 +3,19 @@
 Imports pydantic and the standard library only. :func:`terse` and :func:`located` live
 here because they render a pydantic validation failure, and this module declares
 the pydantic base mosaic's models share. Both mosaic's command line and
-mosaic-queue's submit commands print one.
+mosaic-queue's submit commands print one. :func:`read_toml_model` reads a file into
+a model and renders its failures with :func:`located`.
 """
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-__all__ = ["StrictModel", "located", "terse"]
+__all__ = ["StrictModel", "located", "read_toml_model", "terse"]
 
 
 class StrictModel(BaseModel):
@@ -59,6 +62,37 @@ def located(exc: Exception) -> str:
         location = ".".join(str(part) for part in entry["loc"])
         parts.append(f"{location}: {message}" if location else message)
     return "; ".join(parts) or str(exc)
+
+
+def read_toml_model[ModelT: BaseModel](
+    path: Path, model: type[ModelT], kind: str
+) -> ModelT:
+    """Read the TOML file at *path* into *model*.
+
+    Args:
+        path: The file to read.
+        model: The model that validates the file's top-level table.
+        kind: What the file is, with its article, for the refusal: ``"a window
+            file"``.
+
+    Returns:
+        The validated model.
+
+    Raises:
+        ValueError: The file is not valid UTF-8 TOML, or *model* refuses it. The
+            message names *path* and, for a refusal, each refused field.
+    """
+    with path.open("rb") as handle:
+        try:
+            document = tomllib.load(handle)
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+            msg = f"{path} is not valid TOML: {error}"
+            raise ValueError(msg) from error
+    try:
+        return model.model_validate(document)
+    except ValidationError as error:
+        msg = f"{path} is not {kind}: {located(error)}"
+        raise ValueError(msg) from error
 
 
 def _without_prefix(message: object) -> str:

@@ -46,8 +46,9 @@ What lives where:
   that fits, for the tests of the claim a fit holds.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP, DeepLabCut, Tracktor and zebrafish 3D workflow exports, a
-  synthetic track file, and an object member whose unpickling writes a marker
-  file.
+  synthetic track file and a dataset indexing several of them, a window file, a
+  CalMS21 dataset and the patch that makes the CalMS21 converter fail one
+  sequence, and an object member whose unpickling writes a marker file.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
@@ -461,6 +462,9 @@ from tests.helpers.tracks import (
     write_calms21_npy,
     write_dlc_csv,
     write_sleap_analysis_h5,
+    SYNTHETIC_ARENA_3D,
+    SYNTHETIC_DROPOUTS,
+    synthetic_dataset,
     write_synthetic_spec,
     write_tracktor_recording,
     write_trex_npz,
@@ -652,6 +656,8 @@ __all__ = [
     "SEPARATED_TOOLS",
     "SOURCE_ROOT",
     "STUB_NODES",
+    "SYNTHETIC_ARENA_3D",
+    "SYNTHETIC_DROPOUTS",
     "CALMS21_NAMES",
     "CiJob",
     "ScopedFeature",
@@ -875,6 +881,7 @@ __all__ = [
     "raw_world_dataset",
     "registered_world_points",
     "track_sequences",
+    "synthetic_dataset",
     "track_table",
     "tag_table",
     "tree_snapshot",

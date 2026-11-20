@@ -3,7 +3,7 @@
 
 # Track formats, schemas and label formats
 
-13 track converters read a tracker's output into one of
+17 track converters read a tracker's output into one of
 5 registered schemas, and 4 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
@@ -28,6 +28,10 @@ by `mosaic convert-tracks`.
 | `trex_npz_cm` | `0.2` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
 | `trex_npz_scaled` | `0.2` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
 | `ultralytics_tracks` | `0.3` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
+| `window_mosaic_cm_v1` | `0.1` | `mosaic_cm_v1` | yes | no | A window file of a ``mosaic_cm_v1`` source -> ``mosaic_cm_v1`` tables. |
+| `window_mosaic_v1` | `0.1` | `mosaic_v1` | yes | no | A window file of a ``mosaic_v1`` source -> ``mosaic_v1`` tables. |
+| `window_mosaic_world_v1` | `0.1` | `mosaic_world_v1` | yes | no | A window file of a ``mosaic_world_v1`` source -> ``mosaic_world_v1`` tables. |
+| `window_trex_v2` | `0.1` | `trex_v2` | yes | no | A window file of a ``trex_v2`` source -> ``trex_v2`` tables. |
 | `zebrafish_3d_workflow_csv` | `0.1` | `mosaic_world_v1` | no | no | A zebrafish 3D workflow ``.csv`` -> a ``mosaic_world_v1`` table. |
 
 ### Converter parameters
@@ -117,6 +121,34 @@ by `mosaic convert-tracks`.
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+
+#### `window_mosaic_cm_v1`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `carries_tracklets` | `boolean` \| `None` | `null` |  | Whether the source's ids follow animals, as its tracks index records. The written rows record it, and a window whose source records another answer is refused. Leave unset for a source that records none. |
+
+#### `window_mosaic_v1`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `carries_tracklets` | `boolean` \| `None` | `null` |  | Whether the source's ids follow animals, as its tracks index records. The written rows record it, and a window whose source records another answer is refused. Leave unset for a source that records none. |
+
+#### `window_mosaic_world_v1`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `carries_tracklets` | `boolean` \| `None` | `null` |  | Whether the source's ids follow animals, as its tracks index records. The written rows record it, and a window whose source records another answer is refused. Leave unset for a source that records none. |
+
+#### `window_trex_v2`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `carries_tracklets` | `boolean` \| `None` | `null` |  | Whether the source's ids follow animals, as its tracks index records. The written rows record it, and a window whose source records another answer is refused. Leave unset for a source that records none. |
 
 #### `zebrafish_3d_workflow_csv`
 

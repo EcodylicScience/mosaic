@@ -327,17 +327,17 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   referencing it. Do not rescale a tracks table yourself. The overlay and the crop
   features refuse a table recorded in centimeters (`trex_v1`, `mosaic_cm_v1`) and one in
   the world frame. `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
-- A 3D table (`mosaic_world_v1`, from the `zebrafish_3d_workflow_csv` converter) is in
-  **meters** in a right-handed world frame with +Z up, and `Z` is the body center's
-  height. The media calibration does not apply to it. Run `pose-egocentric` (keypoints
-  in each animal's body frame), `pair-world` (distance, bearing and elevation between
-  animals) and `keypoint-kinematics` (per-keypoint speeds in m/s) on it. A planar
-  feature refuses it with `schema_family_mismatch`, as a recipe does when it is planned
-  or, for tracks the recipe itself writes, when the step starts. `pose-egocentric` and
-  `pair-world` refuse a pixel or centimeter table. A feature whose computation does not
-  depend on the space (`keypoint-kinematics`, `label-statistics`) or that reads no
-  spatial column (the aggregates) accepts every space. Before planning on world-frame
-  tracks, find the step types that compute in `world_m` with
+- A 3D table (`mosaic_world_v1`, from the `zebrafish_3d_workflow_csv` and `synthetic_3d`
+  converters) is in **meters** in a right-handed world frame with +Z up, and `Z` is the
+  body center's height. The media calibration does not apply to it. Run
+  `pose-egocentric` (keypoints in each animal's body frame), `pair-world` (distance,
+  bearing and elevation between animals) and `keypoint-kinematics` (per-keypoint speeds
+  in m/s) on it. A planar feature refuses it with `schema_family_mismatch`, as a recipe
+  does when it is planned or, for tracks the recipe itself writes, when the step starts.
+  `pose-egocentric` and `pair-world` refuse a pixel or centimeter table. A feature whose
+  computation does not depend on the space (`keypoint-kinematics`, `label-statistics`)
+  or that reads no spatial column (the aggregates) accepts every space. Before planning
+  on world-frame tracks, find the step types that compute in `world_m` with
   `describe_step_types(track_space="world_m")` or
   `mosaic features list --track-space world_m`. Each step type lists its
   `track_spaces`, and an op, which computes in none, passes the filter.
@@ -345,6 +345,20 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `seconds_total`, because the recording drops frames and no frame rate gives a frame's
   time. The raw format reads that time from the corrected `.tsv` beside it. The table
   is in pixels, so scale it with `scale-to-cm` and an explicit `cm_per_pixel`.
+- Synthetic tracks come from a TOML file of generator parameters, one file per sequence,
+  read by `synthetic` (2D, `mosaic_v1`, pixels) and `synthetic_3d` (3D,
+  `mosaic_world_v1`, meters). The file declares every generator parameter, and the
+  converter's `relabel_after_gap` sets the id policy: an individual returning after a
+  dropout or frame gap takes a new id, and the tracks then record that ids do not follow
+  animals:
+  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#synthetic-tracks.
+- A window file cuts frame spans out of the tracks of another dataset and writes each as
+  an entry. Its format follows the source's schema (`window_mosaic_v1`,
+  `window_trex_v2`, `window_mosaic_cm_v1` or `window_mosaic_world_v1`), the source needs
+  `--multi-sequences-per-file`, and `carries_tracklets` must match what the source's
+  tracks index records. A window keeps its source's frames and times, and
+  `convert-tracks --overwrite` rewrites it after the source is converted again:
+  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#windows-of-another-dataset.
 - A table that dropped frames is read by its `time` column. A feature that differences
   positions divides by the seconds between rows and takes no `fps`: `speed-angvel`,
   `collective-motion-metrics`, `trajectory-smooth`, `social-motion-summary` and the pair

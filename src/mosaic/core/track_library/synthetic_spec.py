@@ -1,24 +1,23 @@
 """Declares the synthetic track file and reads it.
 
-A synthetic track file holds every parameter of one generated sequence: the
+A synthetic track file declares every parameter of one generated sequence: the
 arena, the motion, the interaction zones, the body, the dropouts and the seed.
-The file is the world, so its checksum identifies the sequence it produces.
+The file's checksum identifies the sequence it produces.
 Every length is in the unit of the table the file generates: pixels for a 2D
 table, meters for a 3D one.
 
-Imports pydantic, ``tomllib``, the standard library and
-:mod:`mosaic.core.strict_model` at module level.
+Imports pydantic, the standard library and :mod:`mosaic.core.strict_model` at
+module level.
 """
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from mosaic.core.strict_model import StrictModel, located
+from mosaic.core.strict_model import StrictModel, read_toml_model
 
 __all__ = [
     "MAX_TABLE_CELLS",
@@ -35,11 +34,11 @@ __all__ = [
 SYNTHETIC_FORMAT = "mosaic-synthetic/1"
 
 MAX_TABLE_CELLS = 600_000_000
-"""The most numeric cells a generated table may hold.
+"""The most numeric cells a generated table may contain.
 
 A cell is one value of a numeric column of one row. The generator returns one
-table, and the write path holds a few copies of it, so the cap is the largest
-shape whose write was measured to fit in memory.
+table, and the write path keeps a few copies of it in memory. The cap is the
+largest shape whose write was measured to fit.
 """
 
 MAX_INDIVIDUALS = 300
@@ -168,7 +167,7 @@ class DropoutSpec(StrictModel):
     """Per-frame probabilities that an id goes missing or that a frame gap starts.
 
     A rate applies to every frame, and a run's length is geometric with the mean
-    declared in frames, so the rows a file writes do not depend on its ``fps``.
+    declared in frames. The rows a file writes do not depend on its ``fps``.
     """
 
     id_rate: Rate = 0.0
@@ -200,11 +199,16 @@ class SyntheticSpec(StrictModel):
         keypoints = 0 if self.body is None else self.body.keypoints
         return 3 + self.dimensions + keypoints * (self.dimensions + 1)
 
+    @field_validator("format")
+    @classmethod
+    def _check_format(cls, value: str) -> str:
+        if value != SYNTHETIC_FORMAT:
+            msg = f"format must be {SYNTHETIC_FORMAT!r}, got {value!r}"
+            raise ValueError(msg)
+        return value
+
     @model_validator(mode="after")
     def _check_file(self) -> SyntheticSpec:
-        if self.format != SYNTHETIC_FORMAT:
-            msg = f"format must be {SYNTHETIC_FORMAT!r}, got {self.format!r}"
-            raise ValueError(msg)
         if self.dimensions == 2 and self.arena.depth is not None:
             msg = "arena.depth is for dimensions = 3, and dimensions is 2"
             raise ValueError(msg)
@@ -238,14 +242,4 @@ def read_synthetic_spec(path: Path) -> SyntheticSpec:
         ValueError: The file is not valid TOML, or a model refuses it. The message
             names *path* and each refused field.
     """
-    with path.open("rb") as handle:
-        try:
-            document = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as error:
-            msg = f"{path} is not valid TOML: {error}"
-            raise ValueError(msg) from error
-    try:
-        return SyntheticSpec.model_validate(document)
-    except ValidationError as error:
-        msg = f"{path} is not a synthetic track file: {located(error)}"
-        raise ValueError(msg) from error
+    return read_toml_model(path, SyntheticSpec, "a synthetic track file")

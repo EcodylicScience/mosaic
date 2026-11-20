@@ -27,10 +27,12 @@ holds no row of, and a label selection of none.
 
 **A file that fails is reported and then fails the attempt**, as
 ``resample-tracks`` does: each failure is an ``entry_error`` on the run-log, and
-a rerun converts only what is missing. A run in which every file fails raises
-``AllEntriesFailed``. A label entry that has no tracks in the variant its labels are
-placed on is an ``entry_error`` too, but the attempt finishes with the entries it
-wrote, and raises ``AllEntriesFailed`` only when none was written or kept.
+a rerun converts only what is missing. A sequence of a file that holds several
+fails alone, as its own ``entry_error``, and the file's other sequences convert.
+A run in which every file or sequence fails raises ``AllEntriesFailed``. A label
+entry that has no tracks in the variant its labels are placed on is an
+``entry_error`` too, but the attempt finishes with the entries it wrote, and
+raises ``AllEntriesFailed`` only when none was written or kept.
 
 **``convert-tracks`` converts its files at once** when the run has workers. A
 worker converts and writes one file or one merged sequence, and this process
@@ -218,7 +220,7 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
         if outcome.lost_everything:
             msg = (
                 f"every raw file or sequence of format {params.source_format!r} "
-                f"failed to convert ({outcome.failed}), so variant "
+                f"failed to convert ({outcome.failed}). Variant "
                 f"{identity.tracks_variant} has no entry. The run-log names each "
                 "one."
             )

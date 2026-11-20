@@ -1,13 +1,12 @@
 """The synthetic track file is a validated description of a generator run.
 
-One TOML file holds every generator parameter, so the file's checksum identifies
+One TOML file declares every generator parameter. The file's checksum identifies
 the sequence it produces. The reader refuses a file the generator could not honor
 before any frame is drawn, and each refusal names the field it concerns.
 """
 
 from __future__ import annotations
 
-import ast
 import sys
 import tomllib
 from pathlib import Path
@@ -21,7 +20,7 @@ from mosaic.core.track_library.synthetic_spec import (
     SyntheticSpec,
     read_synthetic_spec,
 )
-from tests.helpers import write_synthetic_spec
+from tests.helpers import imports_of, write_synthetic_spec
 
 
 def refusal(tmp_path: Path, **overrides: object) -> str:
@@ -191,7 +190,7 @@ def test_the_cell_cap_counts_every_numeric_column(tmp_path: Path) -> None:
 
 
 def test_a_file_at_the_cell_cap_is_accepted(tmp_path: Path) -> None:
-    # 5 columns * 100 ids * frames == MAX_TABLE_CELLS exactly.
+    # 5 columns * 100 ids * frames == MAX_TABLE_CELLS.
     frames = MAX_TABLE_CELLS // (100 * 5)
     assert frames * 100 * 5 == MAX_TABLE_CELLS
 
@@ -317,20 +316,12 @@ ALLOWED_THIRD_PARTY = {
 
 @pytest.mark.parametrize("name", list(ALLOWED_THIRD_PARTY))
 def test_the_module_level_imports_stay_inside_the_allowed_modules(name: str) -> None:
-    tree = ast.parse((LIBRARY / name).read_text())
-    imported: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            assert node.level == 0, f"{name} imports relatively"
-            imported.add(node.module or "")
-
     allowed = ALLOWED_THIRD_PARTY[name] | set(sys.stdlib_module_names) | {"__future__"}
     outside = {
-        module
-        for module in imported
-        if module not in allowed and module.split(".")[0] not in allowed
+        imported.module
+        for imported in imports_of(LIBRARY / name, scope="module", relative=True)
+        if imported.module not in allowed
+        and imported.module.split(".")[0] not in allowed
     }
     assert not outside, f"{name} imports {sorted(outside)} at module level"
 

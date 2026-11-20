@@ -1,21 +1,21 @@
 """Synthetic track files -> simulated tables, one format per dimension.
 
-A synthetic track file (:mod:`~mosaic.core.track_library.synthetic_spec`) holds
+A synthetic track file (:mod:`~mosaic.core.track_library.synthetic_spec`) declares
 every parameter of one generated sequence: the arena, the motion, the interaction
-zones, the body, the dropouts, the frame rate and the seed. The file is the world,
-so its checksum identifies the sequence, and a tracks variant's ``source_md5``
-covers all of it. The converter's params declare the id policy alone,
-``relabel_after_gap``, because ``TrackConverter.tracklets(params)`` answers
-whether ids follow animals from the params and cannot read the file. A tracks
-variant then names the policy. The file records its rate, so the params derive
-from ``TrackConvertParams`` and carry no ``fps``, as the rule for a file that
-records its own time has it (``core/CLAUDE.md``, "Track converters and schemas").
+zones, the body, the dropouts, the frame rate and the seed. The file's checksum
+identifies the sequence, and a tracks variant's ``source_md5`` covers all of it.
+The converter's params declare the id policy alone, ``relabel_after_gap``, because
+``TrackConverter.tracklets(params)`` answers whether ids follow animals from the
+params and cannot read the file. A tracks variant then names the policy. The file
+records its rate. The params derive from ``TrackConvertParams`` and have no
+``fps`` field, as the rule for a file that records its own time has it
+(``core/CLAUDE.md``, "Track converters and schemas").
 
-**Each dimension is its own format.** A converter declares one ``output_schema``,
-and a converter that chose its schema per file would make the declaration a guess
-(``trex.py``). ``synthetic`` writes ``mosaic_v1``, in pixels and two dimensions,
-and ``synthetic_3d`` writes ``mosaic_world_v1``, in meters and three. Each refuses
-a file of the other dimension and names the format that reads it.
+**Each dimension is its own format.** A converter declares one ``output_schema``
+for all of its files (``trex.py``). ``synthetic`` writes ``mosaic_v1``, in pixels
+and two dimensions, and ``synthetic_3d`` writes ``mosaic_world_v1``, in meters and
+three. Each refuses a file of the other dimension and names the format that reads
+it.
 
 **3D positions are generated in world meters.** The arena's lengths are meters,
 and ``X``, ``Y``, ``Z`` and ``poseZ{k}`` are written as simulated, with no

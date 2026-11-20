@@ -15,7 +15,7 @@ from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal, TypeIs
 
 import numpy as np
 import numpy.typing as npt
@@ -643,6 +643,21 @@ def write_calms21_npy(
     np.save(path, np.array(payload, dtype=object), allow_pickle=True)
 
 
+def _is_mapping(value: object) -> TypeIs[Mapping[str, object]]:
+    """Whether *value* is a mapping, whose keys the writers below take as strings."""
+    return isinstance(value, Mapping)
+
+
+def _is_sequence(value: object) -> TypeIs[Sequence[object]]:
+    """Whether *value* is a sequence other than a string."""
+    return isinstance(value, Sequence) and not isinstance(value, str)
+
+
+def _is_array_of_tables(value: object) -> TypeIs[Sequence[Mapping[str, object]]]:
+    """Whether *value* is a nonempty sequence of mappings."""
+    return _is_sequence(value) and len(value) > 0 and all(map(_is_mapping, value))
+
+
 def _toml_value(value: object) -> str:
     """The TOML spelling of a bool, int, float, string or list of those."""
     if isinstance(value, bool):
@@ -651,19 +666,10 @@ def _toml_value(value: object) -> str:
         return repr(value)
     if isinstance(value, str):
         return json.dumps(value)
-    if isinstance(value, Sequence):
-        items = cast("Sequence[object]", value)
-        return "[" + ", ".join(_toml_value(item) for item in items) + "]"
+    if _is_sequence(value):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     msg = f"no TOML spelling for {type(value).__name__}"
     raise TypeError(msg)
-
-
-def _is_array_of_tables(value: object) -> bool:
-    """Whether *value* is a nonempty sequence of mappings."""
-    if not isinstance(value, Sequence) or isinstance(value, str) or not value:
-        return False
-    items = cast("Sequence[object]", value)
-    return all(isinstance(item, Mapping) for item in items)
 
 
 def _toml_text(
@@ -677,18 +683,15 @@ def _toml_text(
     scalars = [
         f"{key} = {_toml_value(value)}"
         for key, value in document.items()
-        if not isinstance(value, Mapping) and not _is_array_of_tables(value)
+        if not _is_mapping(value) and not _is_array_of_tables(value)
     ]
     sections: list[str] = []
     for key, value in document.items():
         name = f"{table}.{key}" if table else key
-        if isinstance(value, Mapping):
-            sections.append(_toml_text(cast("Mapping[str, object]", value), name))
+        if _is_mapping(value):
+            sections.append(_toml_text(value, name))
         elif _is_array_of_tables(value):
-            sections.extend(
-                _toml_text(item, name, array_item=True)
-                for item in cast("Sequence[Mapping[str, object]]", value)
-            )
+            sections.extend(_toml_text(item, name, array_item=True) for item in value)
     if table:
         head = [f"[[{table}]]" if array_item else f"[{table}]"]
     else:
@@ -700,13 +703,13 @@ def write_synthetic_spec(path: Path, **overrides: object) -> Path:
     """Write a small valid synthetic track file and return its path.
 
     The file is two-dimensional, with 3 individuals over 200 frames at 30 fps in
-    a 1000 by 1000 box, and a motion table holding only ``mean_speed``.
+    a 1000 by 1000 box, and a motion table with only ``mean_speed``.
 
     Args:
         path: The file to write. Its parent is created.
         **overrides: Top-level keys replace the file's. A mapping value for a
             table (``arena``, ``motion``, ``zones``, ``body``, ``dropouts``)
-            merges into that table, which a table the file lacks creates. A
+            merges into that table and creates a table the file lacks. A
             ``None`` value removes the key, since TOML has no null.
     """
     scalars: dict[str, object] = {
@@ -725,11 +728,8 @@ def write_synthetic_spec(path: Path, **overrides: object) -> Path:
         if value is None:
             _ = tables.pop(key, None)
             _ = scalars.pop(key, None)
-        elif isinstance(value, Mapping):
-            table = tables.setdefault(key, {})
-            table.update(
-                {str(k): v for k, v in cast("Mapping[object, object]", value).items()}
-            )
+        elif _is_mapping(value):
+            tables.setdefault(key, {}).update(value)
         else:
             scalars[key] = value
     document: dict[str, object] = {k: v for k, v in scalars.items() if v is not None}
@@ -738,6 +738,55 @@ def write_synthetic_spec(path: Path, **overrides: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_toml_text(document))
     return path
+
+
+SYNTHETIC_DROPOUTS: Mapping[str, object] = {
+    "id_rate": 0.05,
+    "id_mean_frames": 4.0,
+    "gap_rate": 0.02,
+}
+"""The dropouts of the files :func:`synthetic_dataset` writes."""
+
+SYNTHETIC_ARENA_3D: Mapping[str, object] = {
+    "shape": "box",
+    "width": 1000.0,
+    "height": 1000.0,
+    "depth": 500.0,
+}
+"""The arena of the files :func:`synthetic_dataset` writes for ``synthetic_3d``."""
+
+
+def synthetic_dataset(
+    base: Path,
+    names: Sequence[str],
+    *,
+    src_format: Literal["synthetic", "synthetic_3d"] = "synthetic",
+    body: Mapping[str, object] | None = None,
+) -> Dataset:
+    """A dataset indexing one synthetic file per name, each with a distinct seed.
+
+    Args:
+        base: The dataset directory. Created if absent.
+        names: The files' stems, written as ``raw/<name>.toml`` and seeded from 1.
+        src_format: ``synthetic_3d`` writes 3D files in :data:`SYNTHETIC_ARENA_3D`.
+        body: The files' ``body`` table, or None for a centroid-only file.
+
+    Returns:
+        The saved dataset, its files indexed and converted by nothing.
+    """
+    from tests.helpers.datasets import make_dataset
+
+    ds = make_dataset(base)
+    raw = ds.base_dir / "raw"
+    overrides: dict[str, object] = {"dropouts": SYNTHETIC_DROPOUTS}
+    if body is not None:
+        overrides["body"] = body
+    if src_format == "synthetic_3d":
+        overrides.update(dimensions=3, arena=SYNTHETIC_ARENA_3D)
+    for seed, name in enumerate(names, start=1):
+        _ = write_synthetic_spec(raw / f"{name}.toml", seed=seed, **overrides)
+    _ = ds.index_tracks_raw([raw], patterns=["*.toml"], src_format=src_format)
+    return ds
 
 
 def write_window_spec(
@@ -769,7 +818,7 @@ def write_window_spec(
 def fail_calms21_sequence(monkeypatch: pytest.MonkeyPatch, sequence: str) -> None:
     """Make the CalMS21 track converter refuse the sequence named *sequence*.
 
-    The error names the sequence, so a test reads which one a failure belongs to.
+    The error names the sequence. A test reads which one a failure belongs to.
     Every other sequence converts as it does.
     """
     from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params

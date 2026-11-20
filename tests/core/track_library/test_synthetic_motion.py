@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tracemalloc
 from pathlib import Path
-from typing import cast
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
@@ -576,9 +576,9 @@ def test_noisy_turning_lets_groups_form_and_split(tmp_path: Path) -> None:
     ``turning_sd = 2``, four times the default. A group is a connected
     component of the graph joining individuals within the attraction radius.
     Four squarings of its reachability matrix cover paths of 16 edges, more
-    than ten individuals need. The box is small beside the 150 attraction
-    radius, so scattered individuals meet, and the noise is large, so a joined
-    group sheds members.
+    than ten individuals need. A box small beside the 150 attraction radius
+    brings scattered individuals together, and large noise makes a joined group
+    shed members.
     """
     spec = make_spec(
         tmp_path,
@@ -605,9 +605,10 @@ def test_noisy_turning_lets_groups_form_and_split(tmp_path: Path) -> None:
 BODY = {"keypoints": 5, "length": 30.0, "keypoint_sd": 0.0}
 
 
-def body_spec(tmp_path: Path, **overrides: object) -> SyntheticSpec:
-    body = {**BODY, **cast("dict[str, object]", overrides.pop("body", {}))}
-    return make_spec(tmp_path, body=body, **overrides)
+def body_spec(
+    tmp_path: Path, body: Mapping[str, object] | None = None, **overrides: object
+) -> SyntheticSpec:
+    return make_spec(tmp_path, body={**BODY, **(body or {})}, **overrides)
 
 
 def keypoint_array(columns: SyntheticColumns, axis: str, keypoints: int) -> Floats:
@@ -690,7 +691,7 @@ def test_the_head_is_first_and_points_along_the_step_that_arrived_at_the_positio
     """Keypoints use the heading of the written position.
 
     The individual arrived at frame ``t``'s position along the heading that
-    frame writes, so the tail-to-head direction is the unit step from frame
+    frame writes. The tail-to-head direction is the unit step from frame
     ``t - 1``. The walk turns, stays far from the walls and has constant speed.
     """
     individuals = 3
@@ -747,9 +748,10 @@ def test_a_3d_body_lies_along_the_3d_heading(tmp_path: Path) -> None:
 
 
 def test_keypoint_noise_has_the_declared_standard_deviation(tmp_path: Path) -> None:
-    arguments: dict[str, object] = {"frames": 2_000, "individuals": 3}
-    exact = simulate(body_spec(tmp_path, **arguments))
-    noisy = simulate(body_spec(tmp_path, **arguments, body={"keypoint_sd": 2.0}))
+    exact = simulate(body_spec(tmp_path, frames=2_000, individuals=3))
+    noisy = simulate(
+        body_spec(tmp_path, frames=2_000, individuals=3, body={"keypoint_sd": 2.0})
+    )
 
     for axis in ("X", "Y"):
         residual = keypoint_array(noisy, axis, 5) - keypoint_array(exact, axis, 5)
@@ -759,10 +761,13 @@ def test_keypoint_noise_has_the_declared_standard_deviation(tmp_path: Path) -> N
 
 
 def test_confidence_lies_in_the_unit_interval_and_clips_at_zero(tmp_path: Path) -> None:
-    arguments: dict[str, object] = {"frames": 400, "individuals": 3}
-    default = simulate(body_spec(tmp_path, **arguments))
-    wide = simulate(body_spec(tmp_path, **arguments, body={"confidence_sd": 1.0}))
-    exact = simulate(body_spec(tmp_path, **arguments, body={"confidence_sd": 0.0}))
+    default = simulate(body_spec(tmp_path, frames=400, individuals=3))
+    wide = simulate(
+        body_spec(tmp_path, frames=400, individuals=3, body={"confidence_sd": 1.0})
+    )
+    exact = simulate(
+        body_spec(tmp_path, frames=400, individuals=3, body={"confidence_sd": 0.0})
+    )
 
     confidence = np.concatenate([default.pose[f"poseP{k}"] for k in range(5)])
     assert confidence.min() >= 0.0
@@ -985,7 +990,7 @@ def reference_rows(written: Bools) -> list[tuple[int, int, int]]:
     An individual missing at its previous frame takes the next unused id at its
     next written row, and every individual starts present at the first frame.
     Rows are ordered by frame and then id, and ``individual`` is the index whose
-    walk the row carries.
+    walk the row records.
     """
     frames, individuals = written.shape
     current = list(range(individuals))

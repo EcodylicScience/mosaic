@@ -9,35 +9,35 @@ With ``spec.zones`` set, each frame first turns every heading toward a direction
 its neighbors set, by the zones of repulsion, orientation and attraction of
 Couzin, Krause, James, Ruxton and Franks (2002), "Collective memory and spatial
 sorting in animal groups", J. Theor. Biol. 218:1-11. :func:`zone_step` gives the
-rules. The step draws nothing, so the streams are those of independent walkers.
+rules. The step draws nothing. The streams are those of independent walkers.
 Neighbors come from dense pairwise distances, one ``individuals`` by
 ``individuals`` array per frame.
 
 Random draws follow one rule: one stream per kind of draw, and a fixed count of
 values per frame. :data:`STREAM_NAMES` names the eight streams, spawned from
 ``SeedSequence(seed)`` in that order. A chunk of ``n`` frames then consumes the
-values that ``n`` single frames would, so the output does not depend on the chunk
+values that ``n`` single frames would. The output does not depend on the chunk
 size, and a draw added to one stream later leaves every other stream, and so every
 trajectory, unchanged.
 
 The simulation advances :data:`CHUNK_FRAMES` frames at a time and writes each
 chunk's rows into column arrays allocated once at ``frames * individuals`` rows.
-Besides the table, the generator holds one chunk of draws.
+The generator keeps one chunk of draws beside the table.
 
 With ``spec.dropouts`` set, two-state chains decide which rows are written. Each
 individual's chain, from the ``id_chain`` stream, takes a present id to missing
 with probability ``id_rate`` per frame and back with probability
 ``1 / id_mean_frames``. One more chain over frames, from ``gap_chain`` with
 ``gap_rate`` and ``gap_mean_frames``, removes every row of a frame in a gap. The
-streams draw a fixed count of uniforms per frame, burn-in included, so the chunk
-size and the burn-in shift no draw. The chains start with every id present and run
-through the burn-in, so the state entering frame 0 is their stationary draw once
-the burn-in is long against the chains' mean runs. Only written rows are dropped:
+streams draw a fixed count of uniforms per frame, burn-in included. Neither the
+chunk size nor the burn-in shifts a draw. The chains start with every id present
+and run through the burn-in. The state entering frame 0 is their stationary draw
+once the burn-in is long against the chains' mean runs. Only written rows are dropped:
 positions, keypoints and confidence are computed for every individual and frame,
 and a dropout changes none of them. With ``relabel_after_gap`` an individual
 returning after a dropout or a frame gap takes a new id (see :func:`simulate`).
 
-With ``spec.body.keypoints = K > 0`` each individual carries K keypoints on the
+With ``spec.body.keypoints = K > 0`` each individual has K keypoints on the
 body axis. The axis is the heading ``u`` in force at the written position, after
 any reflection at a wall, and the turn and step of the frame after it come later.
 Keypoint ``k`` lies at the position plus ``(0.5 - k / (K - 1)) * length * u``, head
@@ -45,8 +45,8 @@ first and tail last, or at the position for ``K = 1``, plus Gaussian noise of
 ``keypoint_sd`` per axis. The position is then the mean of the noise-free
 keypoints. A keypoint's confidence is ``clip(1 - |N(0, confidence_sd^2)|, 0, 1)``.
 The ``keypoint`` and ``confidence`` streams draw for every individual in every
-simulated frame, burn-in included, so a frame's draws do not depend on the rows
-that are kept.
+simulated frame, burn-in included. A frame's draws do not depend on the rows that
+are kept.
 
 Imports numpy, the standard library and :mod:`mosaic.core.track_library.synthetic_spec`
 at module level.
@@ -169,8 +169,8 @@ def turn_headings(headings: Floats, noise: Floats) -> Floats:
 
     The part of ``noise`` along a heading is dropped, and the rest is the tangent
     step. The heading moves along the great circle through that step by its
-    length, so in 2D this is the rotation by the signed angle the noise has
-    orthogonal to the heading. The result is renormalized, which holds its length
+    length. In 2D this is the rotation by the signed angle the noise has
+    orthogonal to the heading. The result is renormalized, which keeps its length
     at 1 however many turns are chained.
 
     Args:
@@ -198,7 +198,7 @@ def zone_step(
 
     Individual ``i`` perceives ``j != i`` when the angle between ``u_i`` and the
     offset ``r_ij = x_j - x_i`` is at most half of ``zones.field_of_view_deg``.
-    A neighbor at ``i``'s own position has no direction and is not perceived.
+    A neighbor at ``i``'s position has no direction and is not perceived.
     Over the perceived neighbors at distance ``d_ij``:
 
     - Any within ``repulsion`` set the desired direction ``-sum r_ij / d_ij``,
@@ -214,7 +214,7 @@ def zone_step(
 
     Two cases are classified with the relative tolerance :data:`_COLLINEAR`, so
     rounding does not choose a turn. The desired direction is a sum of unit
-    vectors, so its scale is their count. A desired direction no longer than
+    vectors and its scale is their count. A desired direction no longer than
     the tolerance times that count cancels, and the heading is kept. Otherwise
     the part of the desired direction orthogonal to the heading is compared
     with the desired direction's length. Within the tolerance, a desired
@@ -343,7 +343,7 @@ def _start_positions(spec: SyntheticSpec, uniform: Floats) -> Floats:
 def _reflect(positions: Floats, headings: Floats, walls: _Walls) -> None:
     """Reflect positions at the walls in place, flipping the heading to match.
 
-    A step never exceeds the arena's smallest extent, so one reflection per axis
+    A step does not exceed the arena's smallest extent. One reflection per axis
     returns every individual to the arena.
     """
     axes = walls.box_axes
@@ -384,7 +384,7 @@ _AXIS_NAMES = ("X", "Y", "Z")
 class _PoseColumns:
     """The preallocated keypoint columns of one sequence.
 
-    ``axes[k]`` holds keypoint ``k``'s coordinate columns in axis order and
+    ``axes[k]`` is keypoint ``k``'s coordinate columns in axis order and
     ``confidence[k]`` its confidence column.
     """
 
@@ -460,7 +460,7 @@ class _PoseColumns:
 class _Chains:
     """The two-state chains that decide which individuals and frames are written.
 
-    Every id starts present and no gap is open. ``advance`` takes a chunk's
+    Every id starts present and the frame chain starts outside a gap. ``advance`` takes a chunk's
     uniforms and returns the cells written.
     """
 
@@ -527,9 +527,9 @@ class _Relabeler:
     def assign(self, written: Bools) -> Ints:
         """The id of every cell of ``written``, shape ``(frames, individuals)``.
 
-        An individual absent from the previous frame (its own dropout, or a frame
-        gap) and written now takes the next unused id, individuals in index order
-        within a frame. The first frame follows no frame, so an individual
+        An individual absent from the previous frame (its dropout, or a frame
+        gap) and written in this one takes the next unused id, individuals in index order
+        within a frame. The first frame follows no frame. An individual
         written there keeps its index, and one missing there takes a new id at
         its first written row.
         """
@@ -573,19 +573,18 @@ def simulate(
 ) -> SyntheticColumns:
     """Generate the rows of one synthetic sequence.
 
-    The result depends on ``spec`` and ``relabel_after_gap`` alone, and not on
-    ``chunk_frames``. The ``burn_in_frames`` first frames are simulated and not
+    The result depends on ``spec`` and ``relabel_after_gap`` alone. The ``burn_in_frames`` first frames are simulated and not
     written, and the dropout chains run through them. A keypoint lies on the body
     axis of the heading that goes with its frame's position (see the module
     docstring).
 
     With ``relabel_after_gap``, an individual whose previous frame was missing for
-    it, by its own dropout or because the whole frame was in a gap, takes the next
+    it, by its dropout or because the whole frame was in a gap, takes the next
     unused id at its next written row. The ids count up from ``individuals``, and
     when several individuals return in one frame they take them in index order.
-    Frame 0 follows no frame, so an individual missing at frame 0 returns at its
-    first written row, and one written there keeps its own index. A burn-in frame
-    is not written and relabels no one. Ids are then ``0`` to ``individuals - 1``
+    Frame 0 follows no frame. An individual missing at frame 0 returns at its
+    first written row, and one written there keeps its index. A burn-in frame
+    is not written and leaves ids unchanged. Ids are then ``0`` to ``individuals - 1``
     without it.
 
     Args:

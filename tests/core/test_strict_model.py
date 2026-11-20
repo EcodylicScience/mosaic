@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError, field_validator, model_validator
 
-from mosaic.core.strict_model import StrictModel, located, terse
+from mosaic.core.strict_model import StrictModel, located, read_toml_model, terse
 
 
 class Inner(StrictModel):
@@ -70,3 +72,47 @@ def test_terse_still_drops_the_location() -> None:
 
     assert not rendered.startswith("inner")
     assert "Input should be a valid integer" in rendered
+
+
+def test_read_toml_model_returns_the_validated_model(tmp_path: Path) -> None:
+    path = tmp_path / "ordered.toml"
+    _ = path.write_text("low = 1\nhigh = 2\n")
+
+    assert read_toml_model(path, Ordered, "an ordered file") == Ordered(low=1, high=2)
+
+
+def test_read_toml_model_names_the_path_of_a_syntax_error(tmp_path: Path) -> None:
+    path = tmp_path / "ordered.toml"
+    _ = path.write_text("low = \n")
+
+    with pytest.raises(ValueError, match="is not valid TOML") as caught:
+        _ = read_toml_model(path, Ordered, "an ordered file")
+
+    assert str(path) in str(caught.value)
+
+
+def test_read_toml_model_names_the_path_of_a_file_that_is_not_text(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ordered.toml"
+    _ = path.write_bytes(b"low = \xff\xfe\n")
+
+    with pytest.raises(ValueError, match="is not valid TOML") as caught:
+        _ = read_toml_model(path, Ordered, "an ordered file")
+
+    assert str(path) in str(caught.value)
+
+
+def test_read_toml_model_names_the_path_the_kind_and_each_refused_field(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ordered.toml"
+    _ = path.write_text("low = 1\nextra = 3\n")
+
+    with pytest.raises(ValueError, match="is not an ordered file") as caught:
+        _ = read_toml_model(path, Ordered, "an ordered file")
+
+    message = str(caught.value)
+    assert str(path) in message
+    assert "extra: Extra inputs are not permitted" in message
+    assert "high: Field required" in message

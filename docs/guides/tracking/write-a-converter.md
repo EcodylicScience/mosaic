@@ -5,7 +5,7 @@ per individual, with `frame, time, id, group, sequence, X, Y`. Keypoints
 (`poseX*` / `poseY*`) are optional. mosaic writes the result to
 `tracks/<variant>/<group>__<sequence>.parquet` and indexes it.
 
-Check [the track formats reference](../../reference/track-formats.md) first — eleven
+Check [the track formats reference](../../reference/track-formats.md) first — seventeen
 converters ship, and one may already read your files.
 
 ## Two worked examples
@@ -25,13 +25,14 @@ different hard case, and together they are the fastest way in.
 
 ## Three questions
 
-1. **How do files and sequences correspond?** One file, one sequence is the
-   default. For one file holding several sequences, set `enumerable = True` and
-   implement `enumerate_sequences`, *and* pass `--multi-sequences-per-file` on the
-   source — without the flag the file collapses into a single entry, silently. For
-   several files making one sequence, set `merges_per_sequence = True` and override
-   `sequence_from_stem`. The two are mutually exclusive. Merged files must number
-   their frames across the sequence, because a repeated (frame, id) row fails the
+1. **How do files and sequences correspond?** One file, one sequence is the default. For
+   one file holding several sequences, set `enumerable = True` and implement
+   `enumerate_sequences`, *and* pass `--multi-sequences-per-file` on the source —
+   without the flag the file becomes a single entry with no warning. A sequence that
+   fails to convert is reported as a failed entry, and the file's other sequences still
+   convert. For several files making one sequence, set `merges_per_sequence = True` and
+   override `sequence_from_stem`. The two are mutually exclusive. Merged files must
+   number their frames across the sequence, because a repeated (frame, id) row fails the
    entry.
 2. **Does your tracker measure something `mosaic_v1` forbids?** Velocity, speed,
    heading and the weighted centroid belong to features. If your tracker genuinely

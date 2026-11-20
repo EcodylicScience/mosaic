@@ -1,6 +1,6 @@
 """The ``synthetic`` and ``synthetic_3d`` converters write simulated tracks.
 
-A synthetic track file holds every generator parameter, so a conversion is a pure
+A synthetic track file declares every generator parameter. A conversion is a pure
 function of the file and the id policy. The converters read the file, run the
 simulation and hand the table to ``convert_all_tracks``, which writes it and records
 its measures in the tracks index.
@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import (
     frame_measures,
     read_carries_tracklets,
@@ -32,11 +31,16 @@ from mosaic.core.track_library.synthetic import (
 )
 from mosaic.core.track_library.synthetic_motion import SyntheticColumns, simulate
 from mosaic.core.track_library.synthetic_spec import SyntheticSpec
-from tests.helpers import invoke_json, make_dataset, write_synthetic_spec
+from tests.helpers import (
+    SYNTHETIC_ARENA_3D,
+    SYNTHETIC_DROPOUTS,
+    invoke_json,
+    make_dataset,
+    synthetic_dataset,
+    write_synthetic_spec,
+)
 
-DROPOUTS = {"id_rate": 0.05, "id_mean_frames": 4.0, "gap_rate": 0.02}
 BODY = {"keypoints": 3, "length": 40.0, "keypoint_sd": 1.0}
-ARENA_3D = {"shape": "box", "width": 1000.0, "height": 1000.0, "depth": 500.0}
 
 
 def _convert(
@@ -48,21 +52,6 @@ def _convert(
 ) -> pd.DataFrame:
     params = SyntheticParams(relabel_after_gap=relabel_after_gap)
     return converter.convert(path, params, hints or EntryHints())
-
-
-def _dataset(tmp_path: Path, *names: str, src_format: str = "synthetic") -> Dataset:
-    """A dataset indexing one synthetic file per name, each with its own seed."""
-    ds = make_dataset(tmp_path / "ds")
-    raw = ds.base_dir / "raw"
-    for seed, name in enumerate(names, start=1):
-        extra: dict[str, object] = {}
-        if src_format == "synthetic_3d":
-            extra = {"dimensions": 3, "arena": ARENA_3D}
-        _ = write_synthetic_spec(
-            raw / f"{name}.toml", seed=seed, dropouts=DROPOUTS, **extra
-        )
-    _ = ds.index_tracks_raw([raw], patterns=["*.toml"], src_format=src_format)
-    return ds
 
 
 def _pairs(table: pd.DataFrame) -> tuple[int, float]:
@@ -116,7 +105,7 @@ def test_a_file_with_a_body_carries_its_keypoints_with_confidence(
 
 def test_a_3d_file_has_z_and_a_z_per_keypoint_in_world_schema(tmp_path: Path) -> None:
     path = write_synthetic_spec(
-        tmp_path / "walk.toml", dimensions=3, arena=ARENA_3D, body=BODY
+        tmp_path / "walk.toml", dimensions=3, arena=SYNTHETIC_ARENA_3D, body=BODY
     )
 
     table = _convert(Synthetic3dConverter(), path)
@@ -173,7 +162,9 @@ def test_group_and_sequence_come_from_the_hints_or_the_file_stem(
 
 
 def test_synthetic_refuses_a_3d_file_and_names_synthetic_3d(tmp_path: Path) -> None:
-    path = write_synthetic_spec(tmp_path / "walk.toml", dimensions=3, arena=ARENA_3D)
+    path = write_synthetic_spec(
+        tmp_path / "walk.toml", dimensions=3, arena=SYNTHETIC_ARENA_3D
+    )
 
     with pytest.raises(ValueError, match="synthetic_3d") as caught:
         _ = _convert(SyntheticConverter(), path)
@@ -208,7 +199,7 @@ def test_the_two_formats_declare_their_schema_and_the_id_policy() -> None:
 def test_a_dataset_converts_two_files_and_indexes_their_measures(
     tmp_path: Path,
 ) -> None:
-    ds = _dataset(tmp_path, "a", "b")
+    ds = synthetic_dataset(tmp_path / "ds", ["a", "b"])
 
     outcome = ds.convert_all_tracks()
 
@@ -231,7 +222,7 @@ def test_a_dataset_converts_two_files_and_indexes_their_measures(
 
 
 def test_relabeling_records_that_ids_do_not_follow_animals(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path, "a")
+    ds = synthetic_dataset(tmp_path / "ds", ["a"])
     default = ds.track_conversion_variant("synthetic")
     relabeling = ds.track_conversion_variant("synthetic", {"relabel_after_gap": True})
 
@@ -245,7 +236,7 @@ def test_relabeling_records_that_ids_do_not_follow_animals(tmp_path: Path) -> No
 
 
 def test_a_3d_source_converts_to_the_world_schema(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path, "a", src_format="synthetic_3d")
+    ds = synthetic_dataset(tmp_path / "ds", ["a"], src_format="synthetic_3d")
 
     outcome = ds.convert_all_tracks()
 
@@ -260,7 +251,7 @@ def test_two_datasets_converting_one_file_agree_to_the_byte(tmp_path: Path) -> N
     for name in ("first", "second"):
         ds = make_dataset(tmp_path / name / "ds")
         _ = write_synthetic_spec(
-            ds.base_dir / "raw" / "walk.toml", dropouts=DROPOUTS, body=BODY
+            ds.base_dir / "raw" / "walk.toml", dropouts=SYNTHETIC_DROPOUTS, body=BODY
         )
         _ = ds.index_tracks_raw(
             [ds.base_dir / "raw"], patterns=["*.toml"], src_format="synthetic"
@@ -278,7 +269,7 @@ def test_two_datasets_converting_one_file_agree_to_the_byte(tmp_path: Path) -> N
 def test_a_file_that_fails_validation_is_a_failed_entry_and_the_rest_convert(
     tmp_path: Path,
 ) -> None:
-    ds = _dataset(tmp_path, "good")
+    ds = synthetic_dataset(tmp_path / "ds", ["good"])
     _ = write_synthetic_spec(ds.base_dir / "raw" / "bad.toml", format="other/9")
     _ = ds.index_tracks_raw(
         [ds.base_dir / "raw"], patterns=["*.toml"], src_format="synthetic"
@@ -296,7 +287,7 @@ def test_a_file_that_fails_validation_is_a_failed_entry_and_the_rest_convert(
 
 
 def test_convert_tracks_reports_two_written(tmp_path: Path) -> None:
-    ds = _dataset(tmp_path, "a", "b")
+    ds = synthetic_dataset(tmp_path / "ds", ["a", "b"])
 
     payload = invoke_json(
         [

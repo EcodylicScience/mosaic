@@ -36,6 +36,7 @@ from . import synthetic
 from . import tracktor
 from . import trex
 from . import ultralytics_tracks
+from . import window
 from . import zebrafish_3d_workflow
 
 __all__ = [
@@ -46,5 +47,6 @@ __all__ = [
     "tracktor",
     "trex",
     "ultralytics_tracks",
+    "window",
     "zebrafish_3d_workflow",
 ]

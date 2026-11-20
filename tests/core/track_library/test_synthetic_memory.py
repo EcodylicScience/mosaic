@@ -1,13 +1,13 @@
 """A synthetic entry converts in memory proportional to its table.
 
-The converter returns one table and the write path holds a few copies of it, so the
-spec reader caps a file at ``MAX_TABLE_CELLS`` cells. Each test converts one file in a
+The converter returns one table and the write path keeps a few copies of it in
+memory. The spec reader caps a file at ``MAX_TABLE_CELLS`` cells. Each test converts one file in a
 fresh interpreter, after a 600-row warm-up file has loaded every module and the pyarrow
 pool, and reads the growth of the child's peak resident memory over the conversion.
 
 The two slow tests are the largest entries a 16 GiB machine converts: 10 million rows
 with 5 keypoints, and 30 million rows at the cell cap. Each runs under an exclusive
-lock, so one large child runs per machine at a time.
+lock that allows one large child per machine at a time.
 """
 
 from __future__ import annotations
@@ -55,11 +55,11 @@ raise SystemExit(code)
 """
 """Runs the program in a grandchild interpreter and passes its exit status on.
 
-The first argument is the seconds the grandchild has. A longer run kills the grandchild
-and fails the launcher, so no conversion outlives the lock the test holds.
+The first argument is the seconds the grandchild has. A longer run kills the
+grandchild and fails the launcher. No conversion outlives the lock the test holds.
 
 On Linux a process starts with the peak resident memory of the process that spawned
-it, so a program started from the large test process would read its own growth as zero.
+it. A program started from the large test process reads zero growth.
 The launcher is small, and its child starts from the launcher's peak.
 """
 
@@ -138,7 +138,7 @@ def _measurements(stdout: str) -> dict[str, int]:
 
 @contextmanager
 def _one_large_child() -> Generator[None]:
-    """Hold the machine's lock for large conversions, so one child runs at a time."""
+    """Take the machine's lock for large conversions, one child at a time."""
     lock_path = Path(tempfile.gettempdir()) / "mosaic-synthetic-memory.lock"
     with lock_path.open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -184,7 +184,7 @@ def test_a_200k_row_entry_grows_memory_by_a_few_tables(tmp_path: Path) -> None:
     The bound is 4 tables on Linux and 6 on macOS, where the allocator returns less
     between steps. The measured ratio of growth to table bytes is 2.9 on Linux and
     between 4.3 and 5.5 on macOS. A table copy added to the write path moves the ratio
-    by about 1, so the Linux bound catches the second added copy and the macOS bound
+    by about 1. The Linux bound catches the second added copy and the macOS bound
     one to two.
     """
     ds, measured = _prepare(tmp_path, 2_000, KEYPOINTS)

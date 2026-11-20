@@ -58,7 +58,7 @@ starts.
 
 ## The formats mosaic reads
 
-Eleven converters are registered. `--src-format` names one, and the choice also fixes
+Seventeen converters are registered. `--src-format` names one, and the choice also fixes
 which schema the output carries.
 
 | `--src-format` | Reads | Emits |
@@ -74,6 +74,12 @@ which schema the output carries.
 | `zebrafish_3d_workflow_csv` | The per-experiment `.csv` of a zebrafish 3D tracking workflow: `frame_index` and `fish{n}_{part}_{axis}` columns in centimeters, empty fields as gaps. It records no frame rate. The workflow's default rate, and the published release's, is 140 fps: set `fps_default: 140` or pass `fps=140` for those files | `mosaic_world_v1` |
 | `tracktor_corrected_tsv` | The corrected `*_tracked_fixed_final.tsv` of a Tracktor run, as the DGRP looming release writes it: one arena per file, `Fly<n>` ids that follow the animals. Time is its `seconds_total`. Frames before 62 are dropped (`first_frame`). Pixels, with `stimuli` and the recording's labels carried as columns | `mosaic_v1` |
 | `tracktor_raw_csv` | The raw `*_tracked.csv` of the same run, whose ids swap between animals. It has no time column, so the corrected `.tsv` beside it times the table, and a missing `.tsv` fails the entry | `mosaic_v1` |
+| `synthetic` | A [synthetic track file](#synthetic-tracks) describing a 2D simulation, in pixels | `mosaic_v1` |
+| `synthetic_3d` | A synthetic track file describing a 3D simulation, in meters | `mosaic_world_v1` |
+| `window_mosaic_v1` | A [window file](#windows-of-another-dataset) that cuts frames out of the `mosaic_v1` tracks of another dataset | `mosaic_v1` |
+| `window_trex_v2` | A window file over `trex_v2` tracks | `trex_v2` |
+| `window_mosaic_cm_v1` | A window file over `mosaic_cm_v1` tracks | `mosaic_cm_v1` |
+| `window_mosaic_world_v1` | A window file over `mosaic_world_v1` tracks | `mosaic_world_v1` |
 
 [The track formats reference](../../reference/track-formats.md) lists each with its
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
@@ -116,6 +122,180 @@ mosaic sources add -m dataset.yaml --kind tracks --path /data/tracktor \
     --patterns '*_tracked_fixed_final.tsv' --src-format tracktor_corrected_tsv
 ```
 
+## Synthetic tracks
+
+A synthetic track file describes a simulated world, one file per sequence, and
+mosaic converts it into a tracks table. Use it to try a feature or a pipeline on data
+whose truth you know, or to size a job before the real tracks exist. The same file and
+parameters give the same table.
+
+```toml
+format = "mosaic-synthetic/1"
+seed = 7
+dimensions = 2          # 2 for synthetic, 3 for synthetic_3d
+frames = 300000
+fps = 30.0
+individuals = 30        # 1 to 300
+burn_in_frames = 0      # simulated and not written
+
+[arena]
+shape = "box"           # "box" or "disk"
+width = 1000.0          # box: x spans [0, width]
+height = 1000.0         # box: y spans [0, height]
+# radius = 500.0        # disk: centered at (radius, radius)
+# depth = 0.5           # 3D only: z spans [0, depth]
+# start_radius = 100.0  # start within this distance of the center. Default: anywhere
+
+[motion]
+mean_speed = 100.0      # per second
+speed_sd = 30.0         # default 0
+speed_tau_s = 1.0       # speed autocorrelation time in seconds, default 1
+turning_sd = 0.5        # heading noise in radians per sqrt(second), default 0.5
+
+[zones]                 # optional
+repulsion = 10.0
+orientation = 60.0
+attraction = 150.0
+field_of_view_deg = 270.0   # default 270
+max_turn_rate = 6.0         # radians per second, default 6
+
+[body]                  # optional: without it the table has the center alone
+keypoints = 5           # 0 to 32, default 0
+length = 30.0           # required when keypoints is above 0
+keypoint_sd = 1.0       # position noise per keypoint, default 0
+confidence_sd = 0.05    # default 0.05
+
+[dropouts]              # optional: without it every row is written
+id_rate = 0.001         # per-frame chance that a present id goes missing
+id_mean_frames = 10.0   # mean length of a missing run, default 10
+gap_rate = 0.0005       # per-frame chance that a frame gap starts
+gap_mean_frames = 5.0   # mean length of a frame gap, default 5
+```
+
+`format`, `seed`, `dimensions`, `frames`, `fps` and `individuals` are required, with an
+`[arena]` sized for its shape and a `[motion]` that gives `mean_speed`. The other keys
+take the defaults in the comments. Without `[zones]` the individuals walk independently.
+With it they follow the repulsion, orientation and attraction zones of Couzin, Krause,
+James, Ruxton and Franks (2002). A key mosaic does not know is refused, and the error
+names the file and the key.
+
+```bash
+mosaic sources add -m dataset.yaml --kind tracks \
+    --path /data/synthetic --patterns '*.toml' --src-format synthetic
+mosaic scan -m dataset.yaml --kind tracks
+mosaic convert-tracks -m dataset.yaml
+```
+
+The file name without `.toml` is the sequence. Every length in the file is in the unit
+of the table it produces, and speeds are per second:
+
+- `synthetic` reads `dimensions = 2` and writes `mosaic_v1`, in pixels.
+- `synthetic_3d` reads `dimensions = 3` and writes `mosaic_world_v1`, in meters with
+  `Z` up. The arena needs a `depth`.
+
+A file of the other dimension is refused, and the message names the format that reads
+it. `time` is `frame` divided by `fps`, and the table writes `poseX{k}`, `poseY{k}` and
+a confidence `poseP{k}` for each keypoint. A file is refused when its table would contain
+more than 600 million values (lower `frames`, `individuals` or `keypoints`) or when a
+step at `mean_speed` plus four `speed_sd` is longer than the arena (lower `mean_speed`
+or raise `fps`).
+
+### Ids after a gap
+
+By default an individual keeps one id, and the table records that ids follow animals.
+With `relabel_after_gap` on a file with `[dropouts]`, an individual missing in the
+previous frame, from a dropout or a frame gap, takes the next unused id when it returns,
+as a tracker that loses and re-finds an animal does. The table then records ids as not
+following animals, and a step that needs ids following an animal refuses it.
+
+```bash
+mosaic convert-tracks -m dataset.yaml --params '{"relabel_after_gap": true}'
+```
+
+## Windows of another dataset
+
+A window file cuts spans of frames out of the tracks of another dataset and writes each
+as an entry of the dataset you convert into. Use it to test on a stretch of a long
+recording, or to make a smaller dataset from a large one. The source dataset is read and
+not written.
+
+```toml
+format = "mosaic-window/1"
+source = "../guppies/dataset.yaml"   # a manifest or its directory, from this file
+tracks_run_id = "convert-trex_npz.0.3-6bb5efbf05"   # the source's tracks variant
+
+[[windows]]
+group = ""                # the source entry
+sequence = "trial_01"
+start = 0                 # first frame, inclusive. Default: the entry's first
+stop = 200000             # last frame, exclusive. Default: past the entry's last
+as_group = ""             # the written entry's group. Default: the source group
+as_sequence = "trial_01_first_part"
+# Default: the source sequence for a window without bounds, else
+# "<sequence>_f<start>-<stop>", with "first" or "end" for a bound left out.
+```
+
+A leading `~` of `source` expands to your home directory. `format`, `source`,
+`tracks_run_id` and at least one window are required, and a window needs its
+`sequence`. Two windows that write the same entry are refused, as is a window with
+`start` at or above `stop`.
+
+```bash
+mosaic sources add -m analysis/dataset.yaml --kind tracks \
+    --path /data/windows --patterns '*.toml' \
+    --src-format window_trex_v2 --multi-sequences-per-file
+mosaic scan -m analysis/dataset.yaml --kind tracks
+mosaic convert-tracks -m analysis/dataset.yaml --params '{"carries_tracklets": true}'
+```
+
+`--multi-sequences-per-file` is required, because one window file writes several
+entries. A window that cannot be cut, such as one with no rows in its frames, fails as a
+separate entry and the others are written.
+
+### Choosing the source variant and format
+
+`tracks_run_id` names the source's tracks variant, the directory under its `tracks/`.
+List the variants of the source without changing it, and read each `run_id`:
+
+```bash
+mosaic inventory -m /data/guppies/dataset.yaml --kind tracks-variant --json
+```
+
+To see the schema and tracklets answer of each entry as well, read the tracks index.
+Pass `ensure_roots=False` so that opening the source creates nothing in it:
+
+```python
+from mosaic.core.dataset import open_dataset
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+source = open_dataset("/data/guppies/dataset.yaml", ensure_roots=False)
+tracks = read_tracks_index(source)
+tracks[["group", "sequence", "run_id", "std_format", "carries_tracklets"]]
+```
+
+The format follows the source's schema, `std_format`: `window_mosaic_v1` for
+`mosaic_v1`, `window_trex_v2` for `trex_v2`, `window_mosaic_cm_v1` for `mosaic_cm_v1`
+and `window_mosaic_world_v1` for `mosaic_world_v1`. A window of another schema is
+refused, and the message names the right format. A source whose tables record a blank
+schema or `trex_v1` is refused as well. Run `mosaic upgrade-tracks --apply` on the
+source dataset first, then name the variant it writes.
+
+### What a window keeps
+
+A window keeps the source's frame numbers and times. A window of frames 1000 to 2000
+starts at frame 1000 and keeps the source's `time`. The rows are the source's, in
+their stored order, with every column it has.
+
+The window also records whether ids follow animals, and it must record what the source
+does. A `synthetic` source converted without `relabel_after_gap`, or a TRex source,
+records `true`, and the command above passes it. A conversion with another answer is
+refused, and the message names the answer to pass. Leave `carries_tracklets` unset for a
+source that records none.
+
+A window is not rewritten when its source is converted again under the same variant. Run
+`mosaic convert-tracks -m analysis/dataset.yaml --overwrite` to rewrite the windows.
+A source converted into another variant needs that variant's `tracks_run_id` in the file.
+
 ## Files mosaic will not unpickle
 
 A raw file can come from someone else, or arrive in an upload. mosaic reads TRex `.npz`,
@@ -124,7 +304,10 @@ refuses a file that is malformed or declares more array data than the limit allo
 refused file fails its own entry, and the message names the file and the reason. `mosaic
 convert-tracks` warns, converts the rest and reports `partial`. As a recipe step,
 `convert-tracks` records an entry error for each refused file, writes the rest, and fails
-the step; rerun it once the file is fixed or removed.
+the step; rerun it once the file is fixed or removed. A refused file that contains
+several sequences, such as a CalMS21 file, fails as one file. A sequence of a readable
+file that fails to convert is a failed entry named by its group and sequence, and the
+file's other sequences are written.
 
 Two formats can refuse a file you expected to load:
 
