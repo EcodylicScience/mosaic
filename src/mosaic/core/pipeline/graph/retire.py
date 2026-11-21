@@ -4,7 +4,8 @@ Removing older versions of a pipeline, cleaning up a project and deleting a
 pipeline with its results submit no recipe. :func:`plan_retirement` judges the
 runs that the retired recipes' requests wrote, against the plans of the
 pipelines that stay (the **keepers**), by the rules of :mod:`~.cleanup`
-(:func:`~.cleanup.judge_runs`). The runs a keeper expects are never candidates.
+(:func:`~.cleanup.judge_runs`). The runs a keeper expects are never candidates,
+and neither is a run the dataset reads through a link.
 
 Planning refuses nothing. A digest that cannot be retired is listed in
 :attr:`RetirementPlan.not_retired` with its reason and left out:

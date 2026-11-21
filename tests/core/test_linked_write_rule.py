@@ -1,13 +1,14 @@
-"""No removal, prune, reconcile or backfill on a copy changes the dataset it links.
+"""No removal, retirement, prune, reconcile or backfill on a copy changes its source.
 
 The source holds feature runs, a fitted run, tracks, a frames run and transcoded
 media, with a derivative no link cell names. Each test acts on a copy that links
-it and holds data of its own, then compares the source's tree and file digests
-with what they were before.
+it and holds data of its own, or the source's request history, then compares the
+source's tree and file digests with what they were before.
 """
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,15 +18,19 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.graph import (
+    CleanupOutcome,
+    RetirementSpec,
     plan_fingerprint,
+    plan_retirement,
     plan_with_cleanup,
     run_cleanup,
+    run_pipeline,
+    run_retirement,
     execute_step,
     submit_request,
 )
-from mosaic.core.pipeline.graph.cleanup import CleanupPolicy
 from mosaic.core.pipeline.index import feature_run_root
-from mosaic.core.pipeline.job import CancelToken
+from mosaic.core.pipeline.job import CancelToken, job_context
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import (
     backfill_frame_extents,
@@ -33,7 +38,9 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.behavior.feature_library import SpeedAngvel
 from tests.helpers import (
+    LOOSE,
     SOURCE_ENTRIES,
+    SPEED_STORAGE,
     SUPERSEDED_RECIPE,
     CenteringFeature,
     add_tracks_table,
@@ -42,6 +49,7 @@ from tests.helpers import (
     extract_entry_camera,
     file_digests,
     raw_source,
+    run_id_of,
     run_speed,
     speed_recipe_stepping,
     track_table,
@@ -53,11 +61,6 @@ SOURCE_VARIANT = "convert-trex.0.2-1111111111"
 
 OWN_VARIANT = "convert-trex.0.2-2222222222"
 """The tracks variant the copy holds for an entry of its own."""
-
-STORAGE = "speed-angvel__from__tracks"
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
-"""A policy that keeps no run for its age or its recency."""
 
 type SourceUnchanged = Callable[[], None]
 
@@ -124,7 +127,7 @@ def copy(source: Dataset, source_unchanged: SourceUnchanged, tmp_path: Path) -> 
 
 def _speed_runs(dataset: Dataset) -> set[str]:
     """The run directories of the speed storage under *dataset*'s own root."""
-    root = dataset.get_root("features") / STORAGE
+    root = dataset.get_root("features") / SPEED_STORAGE
     return {path.name for path in root.iterdir() if path.is_dir()}
 
 
@@ -147,10 +150,67 @@ def test_a_cleanup_on_a_copy_removes_its_own_run_and_leaves_the_source_alone(
 
     outcome = run_cleanup(copy, request, token=CancelToken())
 
-    assert [(run.storage, run.run_id) for run in outcome.removed] == [(STORAGE, own)]
-    assert not feature_run_root(copy, STORAGE, own).exists()
+    assert [(run.storage, run.run_id) for run in outcome.removed] == [
+        (SPEED_STORAGE, own)
+    ]
+    assert not feature_run_root(copy, SPEED_STORAGE, own).exists()
     assert _speed_runs(source) == held
     source_unchanged()
+
+
+def _retire(ds: Dataset, spec: RetirementSpec) -> CleanupOutcome:
+    """Run the approved retirement *spec* on *ds* in a job attempt."""
+    with job_context(ds, kind="retire-recipes", target="retire-recipes") as ctx:
+        return run_retirement(ds, spec, "", ctx=ctx)
+
+
+@pytest.mark.usefixtures("lapsed_request_holds")
+def test_a_retirement_on_a_copy_removes_its_own_run_and_leaves_the_source_alone(
+    source: Dataset, copy: Dataset, source_unchanged: SourceUnchanged
+) -> None:
+    held = _speed_runs(source)
+    ran = run_pipeline(copy, speed_recipe_stepping(2))
+    written = run_id_of(ran, "speed")
+    assert feature_run_root(copy, SPEED_STORAGE, written).is_dir()
+    plan = plan_retirement(copy, [ran.recipe_digest], [], LOOSE, "")
+
+    outcome = _retire(copy, plan.spec)
+
+    assert [(run.storage, run.run_id) for run in outcome.removed] == [
+        (SPEED_STORAGE, written)
+    ]
+    assert not feature_run_root(copy, SPEED_STORAGE, written).exists()
+    assert _speed_runs(source) == held
+    source_unchanged()
+
+
+@pytest.mark.usefixtures("lapsed_request_holds")
+def test_a_retirement_on_a_copy_of_the_sources_requests_offers_none_of_its_runs(
+    source: Dataset, tmp_path: Path
+) -> None:
+    ran = run_pipeline(source, speed_recipe_stepping(2))
+    written = run_id_of(ran, "speed")
+    copy = copy_of(source, tmp_path / "copy")
+    for history in ("pipelines", "runs"):
+        _ = shutil.copytree(
+            source.base_dir / ".mosaic" / history,
+            copy.base_dir / ".mosaic" / history,
+            dirs_exist_ok=True,
+        )
+    snapshot = tree_snapshot(source.base_dir)
+    digests = file_digests(source.base_dir)
+
+    plan = plan_retirement(copy, [ran.recipe_digest], [], LOOSE, "")
+    outcome = _retire(copy, plan.spec)
+
+    assert plan.retired == (ran.recipe_digest,)
+    assert written not in {run.run_id for run in plan.cleanup.runs}, (
+        "the copy's requests wrote the run, and the source holds it"
+    )
+    assert (plan.spec.approved, outcome.removed) == ([], ())
+    assert feature_run_root(source, SPEED_STORAGE, written).is_dir()
+    assert_tree_unchanged(source.base_dir, snapshot)
+    assert file_digests(source.base_dir) == digests
 
 
 def test_a_pipeline_clean_on_a_copy_neither_removes_nor_counts_the_sources_runs(
@@ -166,7 +226,7 @@ def test_a_pipeline_clean_on_a_copy_neither_removes_nor_counts_the_sources_runs(
     assert dict(zip(summary["run_id"], summary["status"], strict=True)) == {
         own: "removed"
     }
-    assert not feature_run_root(copy, STORAGE, own).exists()
+    assert not feature_run_root(copy, SPEED_STORAGE, own).exists()
     assert _speed_runs(source) == held, "the source's two runs are all still there"
     source_unchanged()
 

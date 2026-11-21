@@ -159,7 +159,7 @@ The inventory lists the runs, variants, frame runs, label series and models of a
 dataset's links, measured over the dataset's target. `ArtifactRecord` gains `link_id`,
 the link of the record's `run_root` when the dataset has no run directory for it and
 `""` otherwise, and `linked_only`, the present entries that only a link has. Neither is
-on the inventory wire. A cleanup is not offered a linked run.
+on the inventory wire. Neither a cleanup nor a retirement is offered a linked run.
 
 `Op.per_entry` declares that one entry's output depends on that entry alone. A plan
 leaves the entries that only a link covers out of such a step's scope. A copy that adds

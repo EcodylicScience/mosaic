@@ -133,6 +133,8 @@ GUARDED_SITES: Final = (
     GuardedSite("core/pipeline/feature_run_removal.py", "finish_feature_run_removal"),
     GuardedSite("core/pipeline/feature_run_removal.py", "_checked_run_root"),
     GuardedSite("core/pipeline/graph/cleanup.py", "_remove_approved"),
+    GuardedSite("core/pipeline/graph/cleanup.py", "remove_approved_runs"),
+    GuardedSite("core/pipeline/graph/retire.py", "run_retirement"),
     GuardedSite("core/pipeline/graph/cleanup.py", "_keepers"),
     GuardedSite("core/pipeline/delete_set.py", "_apply"),
     GuardedSite("core/dataset.py", "Dataset.drop_entries"),
