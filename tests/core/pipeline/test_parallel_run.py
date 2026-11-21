@@ -9,6 +9,10 @@ run resumes, and says what to change.
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,6 +27,7 @@ from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.admission import RowCostEstimate
 from mosaic.core.pipeline.column_contract import MissingInputColumns
+from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.input_size import EntryInputSize
 from mosaic.core.pipeline.loading import ColumnProjection
 from mosaic.core.pipeline.manifest import ManifestEntry
@@ -34,8 +39,18 @@ from mosaic.core.pipeline.parallelism import (
     WorkerProcessDied,
 )
 from mosaic.core.pipeline.run import run_feature
+from mosaic.run_cost import read_run_cost
 from mosaic.runlog import read_run, run_log_dir, run_log_path
-from tests.helpers import ParallelFeature, add_tracks_variant, make_dataset
+from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
+    HOLD_DIRECTORY_VARIABLE,
+    REPO_ROOT,
+    HoldsOnSequences,
+    ParallelFeature,
+    add_tracks_variant,
+    make_dataset,
+    wait_for,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 _SEQUENCES = ("seq_a", "seq_b", "seq_c")
@@ -46,6 +61,12 @@ class _KillsOnSeqB(ParallelFeature):
 
     name = "prov-parallel-kills"
     kill_on = ("seq_b",)
+
+
+class HoldsOnSeqBC(HoldsOnSequences):
+    """Holds both workers on ``seq_b`` and ``seq_c`` once ``seq_a`` has returned."""
+
+    hold_on = ("seq_b", "seq_c")
 
 
 def _outputs(ds: Dataset, storage: str, run_id: str) -> dict[str, pd.DataFrame]:
@@ -122,6 +143,81 @@ def test_a_rerun_after_a_dead_worker_finishes_the_same_run(tmp_path: Path) -> No
     assert result.run_id is not None
     kept = _outputs(ds, "prov-parallel-kills__from__tracks", result.run_id)
     assert len(kept) == len(_SEQUENCES)
+
+
+_CANCELLED_CHILD = """
+import sys
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
+from mosaic.core.pipeline.parallelism import WorkerProcessDied
+from mosaic.core.pipeline.run import run_feature
+from tests.core.pipeline.test_parallel_run import HoldsOnSeqBC
+
+token = CancelToken()
+install_signal_handler(token)
+ds = Dataset(manifest_path=sys.argv[1]).load()
+try:
+    run_feature(
+        ds,
+        HoldsOnSeqBC(),
+        parallel_workers=2,
+        parallel_mode="process",
+        cancel_token=token,
+        execution_id=sys.argv[2],
+    )
+except Cancelled:
+    sys.exit(3)
+except WorkerProcessDied:
+    sys.exit(4)
+"""
+
+
+def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    execution_id = "TESTPARALLELCANCEL"
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CANCELLED_CHILD, str(ds.manifest_path), execution_id],
+        env={**os.environ, HOLD_DIRECTORY_VARIABLE: str(marks)},
+        cwd=REPO_ROOT,
+        start_new_session=True,
+    )
+    try:
+        wait_for(
+            lambda: (marks / "seq_b").exists() and (marks / "seq_c").exists(),
+            CHILD_TIMEOUT_SECONDS,
+            "both workers never began a held entry",
+        )
+        os.killpg(child.pid, signal.SIGTERM)
+        status = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+
+    assert status == 3
+    run_dir = run_log_dir(ds.base_dir)
+    snapshot = read_run(run_dir, execution_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+    assert snapshot["error_json"] == ""
+    cost = read_run_cost(run_dir, execution_id)
+    assert cost is not None
+    assert (cost.status, cost.stopped_for_memory, cost.error_type) == (
+        "cancelled",
+        False,
+        None,
+    )
+    assert snapshot["entries_written"] == 1
+    storage = "prov-parallel-holds__from__tracks"
+    assert snapshot["run_id"]
+    kept = feature_index(feature_index_path(ds, storage)).read(
+        run_id=snapshot["run_id"]
+    )
+    assert list(kept["sequence"]) == ["seq_a"]
 
 
 def _free_fractions(values: list[float]) -> Callable[[MemoryWatch], float]:

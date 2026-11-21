@@ -11024,6 +11024,7 @@ class Dataset:
             on_result=on_result,
             on_error=on_error,
             on_resources=on_resources,
+            cancel_check=cancel_check,
         )
         ref = dataset_ref(self, settings.mode)
         try:

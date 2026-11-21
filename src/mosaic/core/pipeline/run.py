@@ -3483,6 +3483,7 @@ def _run_feature_impl(
                     floor_at_submit=False,
                     on_dispatch=_dispatched,
                     on_computed=_computed,
+                    cancel_check=ctx.check_cancel,
                 )
             )
 

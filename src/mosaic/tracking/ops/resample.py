@@ -251,6 +251,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
             on_result=on_result,
             on_error=on_error,
             on_resources=ctx.resources,
+            cancel_check=ctx.check_cancel,
         )
         ref = dataset_ref(ds, ctx.parallel.mode)
         try:

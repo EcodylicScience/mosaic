@@ -13,7 +13,9 @@ in worker processes too, for the tests of a fit that a linked dataset holds.
 ``kill_on`` ends the process computing those sequences, for the tests of a run
 that computes several entries at once. :class:`LabelsClassifier` reads
 ground-truth labels and records the file of each entry it is handed, for the
-tests of labels that a linked dataset holds.
+tests of labels that a linked dataset holds. :class:`HoldsOnSequences` stops in
+the entries it names until it is killed, for the tests of a cancel that reaches
+a run's workers.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import json
 import os
 import signal
 import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -142,6 +145,32 @@ class ParallelFeature(PlainFeature):
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if not df.empty and str(df["sequence"].iloc[0]) in self.kill_on:
             os.kill(os.getpid(), signal.SIGKILL)
+        return df
+
+
+HOLD_DIRECTORY_VARIABLE = "MOSAIC_TEST_HOLD_DIRECTORY"
+"""The environment variable naming the directory a :class:`HoldsOnSequences` marks in."""
+
+_HOLD_SECONDS = 120.0
+
+
+class HoldsOnSequences(ParallelFeature):
+    """Sleeps in each entry named in ``hold_on`` until its process is killed.
+
+    On entering such an entry it writes an empty file named for the sequence into the
+    directory that ``HOLD_DIRECTORY_VARIABLE`` names, so a test sees which workers
+    are busy. The names are a class attribute for the reason ``kill_on`` is.
+    """
+
+    name = "prov-parallel-holds"
+    hold_on: tuple[str, ...] = ()
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
+        if sequence in self.hold_on:
+            marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
+            (marks / sequence).touch()
+            time.sleep(_HOLD_SECONDS)
         return df
 
 

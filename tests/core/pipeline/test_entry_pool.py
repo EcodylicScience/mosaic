@@ -16,13 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline import memory_watch
+from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline.entry_pool import (
     EntryFailure,
     EntryPool,
     OrderedResults,
     worker_dataset,
 )
+from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.memory_watch import MemoryWatch
 from mosaic.core.pipeline.parallelism import (
@@ -159,6 +160,69 @@ def test_a_dead_worker_ends_the_pool_with_the_memory_it_used() -> None:
 
     pool.close()
     assert heard.resources[-1].workers == 2
+
+
+def test_a_pool_that_breaks_while_a_cancel_is_requested_raises_the_cancel() -> None:
+    heard = _Heard()
+    token = CancelToken()
+    token.cancel()
+    pool = EntryPool(
+        workers=2,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        cancel_check=token.raise_if_cancelled,
+    )
+
+    with pytest.raises(Cancelled):
+        pool.submit(1, die, 1)
+        pool.submit(2, die, 2)
+        pool.finish()
+
+    pool.close()
+
+
+def test_a_cancel_that_arrives_after_the_pool_broke_is_still_the_cancel() -> None:
+    heard = _Heard()
+    token = CancelToken()
+    pool = EntryPool(
+        workers=2,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        cancel_check=token.raise_if_cancelled,
+    )
+    handler = threading.Timer(0.3, token.cancel)
+    handler.start()
+
+    with pytest.raises(Cancelled):
+        pool.submit(1, die, 1)
+        pool.submit(2, die, 2)
+        pool.finish()
+
+    handler.join()
+    pool.close()
+
+
+def test_a_broken_pool_with_no_cancel_requested_is_a_worker_death(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entry_pool, "CANCEL_ARRIVAL_SECONDS", 0.2)
+    heard = _Heard()
+    pool = EntryPool(
+        workers=2,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        cancel_check=CancelToken().raise_if_cancelled,
+    )
+
+    with pytest.raises(WorkerProcessDied):
+        pool.submit(1, die, 1)
+        pool.submit(2, die, 2)
+        pool.finish()
+
+    pool.close()
 
 
 def test_the_floor_holds_dispatch_until_the_calls_in_flight_finish(

@@ -197,6 +197,23 @@ for itself and refused an entry that has two tracks variants. The run's
 step's graph run already planned it, and the run prints that processes were
 asked and threads were used. No run id or output moves.
 
+## Unreleased: a cancelled process-mode run ends `cancelled`, not `failed`
+
+A cancel that signals the process group of a run in process mode, as
+mosaic-queue's local backend and the pipeline driver do, kills the workers as well
+as setting the parent's cancel token. The run recorded `failed` with
+`WorkerProcessDied`, and `read_run_cost` reported `stopped_for_memory`. A pool
+that breaks while a cancel is requested now ends the run `cancelled`, through the
+cancel path that flushes the rows of the outputs already written. The pool waits
+up to two seconds for a cancel request that has not reached the parent yet before
+it reports a worker's death. A pool that breaks with no cancel requested is
+unchanged: `WorkerProcessDied`, `failed`, and `stopped_for_memory`.
+
+`stopped_for_memory` is therefore false for a cancelled attempt, and a sizing
+rule that read such an attempt as an out-of-memory stop sees an ordinary
+cancel. The run-log events and the terminal statuses are unchanged. Workers still
+take the default action on SIGTERM.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

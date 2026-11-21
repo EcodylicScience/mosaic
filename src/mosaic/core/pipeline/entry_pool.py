@@ -16,6 +16,7 @@ from __future__ import annotations
 import gc
 import multiprocessing as mp
 import pickle
+import time
 import traceback
 from collections.abc import Callable
 from concurrent.futures import (
@@ -27,7 +28,7 @@ from concurrent.futures import (
 )
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, NoReturn
 
 from mosaic.runlog import ResourceReport
 
@@ -52,6 +53,17 @@ __all__ = [
     "worker_dataset",
 ]
 
+
+CANCEL_ARRIVAL_SECONDS: Final = 2.0
+"""How long a broken pool waits for a cancel request to arrive before it reports a death.
+
+A cancel signals the whole process group, so the workers die at about the moment the
+caller's handler sets its cancel token. The pool can see the break first. The handler
+runs within milliseconds of the signal, and a break with no cancel after this long is a
+worker the host killed.
+"""
+
+_CANCEL_POLL_SECONDS: Final = 0.05
 
 type ResourceReporter = Callable[[ResourceReport], None]
 """Where a pool records its workers and the memory measured so far.
@@ -89,6 +101,11 @@ class EntryPool[Tag, Result]:
             computing. With several workers it is called from the executor's thread
             as the call ends and again where its outcome is handed back, and a
             caller keeps the earlier of the two.
+        cancel_check: Called when a process pool breaks. It raises when a cancel was
+            requested, and the pool raises that exception instead of
+            :class:`WorkerProcessDied`. The check is polled for
+            ``CANCEL_ARRIVAL_SECONDS`` because the cancel that killed the workers
+            may not have reached the caller yet.
     """
 
     def __init__(
@@ -104,7 +121,9 @@ class EntryPool[Tag, Result]:
         floor_at_submit: bool = True,
         on_dispatch: Callable[[Tag], None] | None = None,
         on_computed: Callable[[Tag], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> None:
+        self._cancel_check: Callable[[], None] | None = cancel_check
         self.workers: int = max(1, workers)
         self.mode: ParallelMode = mode
         self._floor: float = min_free_memory_fraction
@@ -133,6 +152,7 @@ class EntryPool[Tag, Result]:
         on_result: Callable[[Tag, Result], None],
         on_error: Callable[[Tag, Exception], None],
         on_resources: ResourceReporter | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> EntryPool[Tag, Result]:
         """Build the pool that *settings* describe."""
         return cls(
@@ -142,6 +162,7 @@ class EntryPool[Tag, Result]:
             on_result=on_result,
             on_error=on_error,
             on_resources=on_resources,
+            cancel_check=cancel_check,
         )
 
     def submit[*Args](
@@ -154,7 +175,8 @@ class EntryPool[Tag, Result]:
         of this or an earlier call arrives here or in a later call of this pool. With one worker the outcome has arrived on return.
 
         Raises:
-            WorkerProcessDied: A process worker ended without returning.
+            WorkerProcessDied: A process worker ended without returning and no cancel
+                was requested.
             MemoryFloorReached: Memory is under the floor with no call in flight.
         """
         executor = self._executor
@@ -184,7 +206,7 @@ class EntryPool[Tag, Result]:
                 future.add_done_callback(self._stamp(tag))
         except BrokenProcessPool as exc:
             self.report(final=True)
-            raise WorkerProcessDied(self._memory_use()) from exc
+            self._raise_broken(exc)
         self.report()
 
     @property
@@ -262,6 +284,27 @@ class EntryPool[Tag, Result]:
             )
         )
 
+    def _raise_broken(self, broken: BrokenProcessPool) -> NoReturn:
+        """End the run for a pool that broke, as the cancel or as a worker's death.
+
+        A cancel of the run's process group kills the workers, so a break while a
+        cancel is requested is that cancel and not a memory death. The pool waits up
+        to ``CANCEL_ARRIVAL_SECONDS`` for the request to arrive, and raises what the
+        cancel check raises.
+        """
+        check = self._cancel_check
+        if check is not None:
+            deadline = time.monotonic() + CANCEL_ARRIVAL_SECONDS
+            while True:
+                try:
+                    check()
+                except BaseException as cancel:
+                    raise cancel from broken
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_CANCEL_POLL_SECONDS)
+        raise WorkerProcessDied(self._memory_use()) from broken
+
     def _memory_use(self) -> str:
         limit = self.watch.limit
         return memory_use_text(
@@ -291,7 +334,7 @@ class EntryPool[Tag, Result]:
                 # Every other pending future of a broken pool fails the same way, so
                 # this is the run's failure and not one entry's.
                 self.report(final=True)
-                raise WorkerProcessDied(self._memory_use()) from exc
+                self._raise_broken(exc)
             except Exception as exc:
                 try:
                     self._on_error(tag, exc)

@@ -67,7 +67,13 @@ are in `graph/CLAUDE.md`.
   made again, not skipped. A process worker reopens the dataset from its manifest path
   (`dataset_ref`, `worker_dataset`). An op that ends on an exception settles the pool
   first and publishes what its workers finished
-  (`tests/core/pipeline/test_op_parallelism.py`).
+  (`tests/core/pipeline/test_op_parallelism.py`). A cancel signals the run's process
+  group and kills the process workers, so a pool that breaks while a cancel is requested
+  ends the run `cancelled`, not `failed` with `WorkerProcessDied`, which
+  `run_cost.stopped_for_memory` reads as a memory stop. A pool takes the caller's
+  `cancel_check` and polls it for `CANCEL_ARRIVAL_SECONDS`, because the caller's SIGTERM
+  handler can run after the pool sees the break
+  (`tests/core/pipeline/test_parallel_run.py`).
 
 ## Public types and imports
 
