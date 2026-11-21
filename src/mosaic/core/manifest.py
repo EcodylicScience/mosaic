@@ -1403,7 +1403,7 @@ def migrate_to_current(
     lands in ``preserved`` and is written back out; an absent root is backfilled;
     a version absent entirely reads as 1, because that is what every manifest
     written before versioning existed is. Below version 6, ``libraries`` is read
-    as ``links`` that each provide models, the one kind a library link served;
+    as ``links`` that each provide models, the one kind that key served;
     at 6 and above it is an unmodeled key like any other.
 
     Args:

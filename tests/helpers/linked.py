@@ -6,6 +6,7 @@ import json
 from collections.abc import Collection
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -39,6 +40,7 @@ __all__ = [
     "feature_edge",
     "labelled_source",
     "link_forms",
+    "portable_columns",
     "raw_source",
     "take_link_offline",
     "tracks_edge",
@@ -58,6 +60,27 @@ link_forms = pytest.mark.parametrize(
     "relative", [True, False], ids=["relative-link", "absolute-link"]
 )
 """Runs a test once per path form of a link: relative and absolute."""
+
+
+def portable_columns(ds: Dataset, index_path: Path) -> frozenset[str]:
+    """The columns of the index at *index_path* that ``make_portable`` rewrites.
+
+    Every cell of the index is set to an absolute path inside *ds*, the dataset
+    is made portable, and the columns whose cells come back relative are the
+    ones a portability pass treats as paths. The index is left rewritten, so
+    *ds* serves only this probe.
+    """
+    frame = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    for column in frame.columns:
+        frame[column] = str(ds.base_dir / "probe" / str(column))
+    frame.to_csv(index_path, index=False)
+    _ = ds.make_portable()
+    after = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    return frozenset(
+        str(column)
+        for column in after.columns
+        if not Path(str(after[column].iloc[0])).is_absolute()
+    )
 
 
 def raw_source(base: Path) -> Dataset:

@@ -199,7 +199,7 @@ def refuse_mixed_schemas(
     to answer, so a tracker sweep of one family passes.
 
     Args:
-        ds: The dataset whose tracks index to read.
+        ds: The dataset whose tracks rows, with those of its links, to read.
         step_id: The step that refuses, empty for a submission. An empty one
             names the first unpinned reader in a ``variant_ambiguous`` refusal.
         recipe: The recipe whose feature steps read the tracks. ``None`` checks

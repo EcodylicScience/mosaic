@@ -47,8 +47,8 @@ def yield_sequences(
 ) -> Iterator[tuple[str, str, pd.DataFrame]]:
     """Yield ``(group, sequence, df)`` for the standardized tracks *scope* names.
 
-    Reads ``tracks/index.csv``. ``None`` and an unset selector both cover every
-    entry it names.
+    Reads the tracks rows of *ds* and of the datasets it links. ``None`` and an
+    unset selector both cover every entry they name.
 
     ``run_id`` names one tracks variant. This walks *rows*, and without the
     shared variant selector an entry answering to two of them would be yielded

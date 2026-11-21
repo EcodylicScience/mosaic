@@ -73,6 +73,7 @@ from tests.helpers import (
     converted_source,
     copy_of,
     make_dataset,
+    portable_columns,
     track_table,
 )
 
@@ -2308,10 +2309,20 @@ def test_a_linked_rows_source_and_appearance_paths_name_the_sources_files(
         assert cell.is_file(), column
 
 
-def test_the_linked_path_columns_are_the_portability_passes_columns() -> None:
-    from mosaic.core.dataset import _INDEX_PATH_COLUMNS  # pyright: ignore[reportPrivateUsage]
+def test_the_linked_path_columns_are_the_portability_passes_columns(
+    tmp_path: Path,
+) -> None:
+    probe = make_dataset(tmp_path / "probe", name="probe")
+    raw = probe.get_root("tracks_raw") / "s1.npz"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    _ = raw.write_bytes(b"raw")
+    add_tracks_variant(
+        probe, "convert-trex_npz.0.3-aaaaaaaaaa", "s1", source=raw, appearance_dim=4
+    )
 
-    assert TRACKS_ROWS_PATH_COLUMNS == ("abs_path", *_INDEX_PATH_COLUMNS["tracks"])
+    columns = portable_columns(probe, probe.get_root("tracks") / "index.csv")
+
+    assert columns == set(TRACKS_ROWS_PATH_COLUMNS)
 
 
 def test_a_variant_is_located_in_the_first_dataset_that_holds_it(

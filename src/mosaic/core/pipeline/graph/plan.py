@@ -888,7 +888,7 @@ def plan_pipeline(
             outright. ``None`` falls back to the request's. A bound step is
             the run it names and is never executed, and its descendants read
             that run. A bind of an op step, of a storage other than the step's
-            own, or of a run this dataset does not hold is a problem at
+            own, or of a run that neither this dataset nor a linked one holds is a problem at
             ``bind.<id>``, and one naming no step a problem at ``bind``.
         tracks_run_id: The tracks variant that each feature step reading the
             tracks without a ``tracks`` reference reads. ``None`` falls back to
@@ -1471,7 +1471,7 @@ def _bind_problems(
     the recipe (a problem at ``bind``, the key quoted), and the run must be one
     that step could have written: an op step cannot be bound, the bind's storage
     must be the step's own output storage, and the run must exist in this
-    dataset. A step that runs checks its own bind through the plan it makes, so
+    dataset or one it links. A step that runs checks its own bind through the plan it makes, so
     a request submitted before a check existed is refused when it runs.
     """
     found: list[Problem] = []

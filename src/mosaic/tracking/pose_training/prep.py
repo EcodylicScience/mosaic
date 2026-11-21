@@ -894,7 +894,7 @@ def tracks_to_yolo_pose(
         Random seed for split assignment.
     video_stem_to_sequence : dict, optional
         Explicit mapping from video filename stem to track sequence name.
-        If None, auto-built from ``tracks/index.csv`` using
+        If None, auto-built from the tracks rows of *ds* and its links using
         ``Path(sequence).name`` as the video stem.
 
     Returns

@@ -30,7 +30,7 @@ and `remove_link`, `Dataset.linked_libraries` is `Dataset.lookup_order`, and
 tracks variant sidecar records keeps its name and its `<id>@<uuid>` value.
 
 `mosaic links add` takes a repeatable `--provides <kind>`, every kind by default, and
-refuses a kind that is not one of the five. `mosaic links list` prints a `provides`
+refuses a kind that is not one of the six. `mosaic links list` prints a `provides`
 column, and its JSON entries carry `provides`. `Dataset.add_link` also refuses a link to
 a dataset that records this dataset's `uuid`, and a second link to a `uuid` that a link
 already records. `Dataset.resolve_link_path(link)` returns a link's path as an absolute

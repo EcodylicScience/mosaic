@@ -920,7 +920,8 @@ def get_feature_run_root(
     """
     Resolve (run_id, run_root_path) for a feature.
 
-    If run_id is None, picks the latest finished run.
+    If run_id is None, picks the latest finished run. A run that a linked dataset
+    holds resolves to that dataset's run root.
     """
     if run_id is None:
         run_id, run_root = latest_feature_run_root(ds, feature_name)

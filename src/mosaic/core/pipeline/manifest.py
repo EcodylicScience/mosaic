@@ -159,7 +159,8 @@ def unrun_feature_input(ds: Dataset, name: str) -> UnrunFeatureInput:
     """The refusal of an input *name* that names no stored run.
 
     Args:
-        ds: The dataset whose ``features/`` root was searched.
+        ds: The dataset whose ``features/`` root, and those of its links, were
+            searched.
         name: The input's feature name as written.
 
     Returns:
@@ -844,7 +845,7 @@ def _resolve_tracks(
     scope: Scope | None = None,
     on_missing_run: MissingRunPolicy = "raise",
 ) -> ResolvedInput:
-    """Resolve track entries and paths from tracks/index.csv.
+    """Resolve track entries and paths from the tracks rows of *ds* and its links.
 
     ``run_id`` names one tracks *variant*. It takes ``_resolve_feature``'s
     second-positional slot, and mirrors it -- with one deliberate difference:
@@ -968,7 +969,7 @@ def tracks_table_columns(
     out, and so is a table whose footer does not parse.
 
     Args:
-        ds: The dataset whose tracks index to read.
+        ds: The dataset whose tracks rows, with those of its links, to read.
         tracks_run_id: Which variant to resolve, or ``None`` for whichever each
             entry has. A variant without rows yet does not resolve a table.
         scope: The entries to read.
@@ -991,7 +992,7 @@ def tracks_table_schemas(
     :func:`tracks_table_columns`. An entry without a table on disk is left out.
 
     Args:
-        ds: The dataset whose tracks index to read.
+        ds: The dataset whose tracks rows, with those of its links, to read.
         tracks_run_id: Which variant to resolve, or ``None`` for whichever each
             entry has. A variant without rows yet resolves no table.
         scope: The entries to read.
@@ -1026,7 +1027,7 @@ def refuse_mixed_track_schemas(
     on one entry raise, whichever one a reader would have named.
 
     Args:
-        ds: The dataset whose tracks index to read.
+        ds: The dataset whose tracks rows, with those of its links, to read.
         tracks_run_id: Which variant to check, or ``None`` for every candidate of
             each entry.
         scope: What to check, or ``None`` for everything.
@@ -1106,7 +1107,7 @@ def _resolve_feature(
     scope: Scope | None = None,
     on_missing_run: MissingRunPolicy = "raise",
 ) -> ResolvedInput:
-    """Resolve feature result entries and paths from the feature index CSV.
+    """Resolve feature result entries and paths from the feature index rows of *ds* and its links.
 
     Leaves ``tracks_variants`` empty: a feature input's identity is the upstream
     ``run_id``, which ``resolve_references`` has already pinned into ``Inputs``

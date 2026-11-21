@@ -3673,9 +3673,8 @@ class Dataset:
     ) -> None:
         """Write *root*'s ``sequences.csv`` with *source*'s recorded compositions.
 
-        Only the sequences of *rows* are written. Called after the index write
-        and outside its lock, the order
-        :mod:`mosaic.core.pipeline.sequence_index` requires.
+        Only the sequences of *rows* are written. Called after the index write and
+        outside its lock, the order :mod:`mosaic.core.pipeline.sequence_index` requires.
         """
         sequences = {
             (str(row.get("group", "")), str(row.get("sequence", ""))) for row in rows
@@ -12412,7 +12411,8 @@ class Dataset:
                 ``(group, sequence)`` pairs it names, since a labels row is
                 keyed without a camera.
             labels_run_id: Which label variant to read, or ``None`` for
-                whichever variant each entry has.
+                whichever variant each entry has in the nearest dataset that
+                holds a row of it.
 
         Returns:
             ``{(group, sequence): {"labels": {id: {field: value}},
@@ -12538,7 +12538,8 @@ class Dataset:
         """
         Get the label map {id: name} for a label kind.
 
-        Reads the vocabulary off the resolved variant's first row.
+        Reads the vocabulary off the resolved variant's first row, resolved as
+        :meth:`load_labels` resolves it.
         """
         df = select_label_variant_rows(labels_rows(self, kind), labels_run_id)
         if df.empty:

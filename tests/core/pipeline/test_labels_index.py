@@ -23,7 +23,6 @@ from mosaic.core.label_converter import (
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
-    LABELS_INDEX_PATH_COLUMNS,
     LABELS_ROWS_PATH_COLUMNS,
     empty_labels_frame,
     labels_rows,
@@ -51,6 +50,7 @@ from tests.helpers import (
     copy_of,
     labelled_source,
     make_dataset,
+    portable_columns,
     run_child,
     track_table,
     tree_snapshot,
@@ -233,8 +233,16 @@ def test_a_models_only_link_adds_no_labels_row(tmp_path: Path) -> None:
     assert labels_rows(copy, "behavior").empty
 
 
-def test_the_linked_labels_path_columns_are_the_portability_passes_columns() -> None:
-    assert LABELS_ROWS_PATH_COLUMNS == ("abs_path", *LABELS_INDEX_PATH_COLUMNS)
+def test_the_linked_labels_path_columns_are_the_portability_passes_columns(
+    tmp_path: Path,
+) -> None:
+    probe = labelled_source(tmp_path / "probe")
+
+    columns = portable_columns(
+        probe, probe.get_root("labels") / "behavior" / "index.csv"
+    )
+
+    assert columns == set(LABELS_ROWS_PATH_COLUMNS)
 
 
 def test_the_readable_label_kinds_list_the_own_kinds_first_each_once(

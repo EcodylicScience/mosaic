@@ -1,10 +1,10 @@
 """A model trained in one dataset is named, and found, from another.
 
 A trained model is identified by its run identifier, which is content and carries
-no location. Before links, that name resolved only inside the dataset that trained
-the model, so a second dataset could reach the weights by absolute path alone -- and
-a path reference mints a different inference identifier from a run-identifier one,
-for the same bytes.
+no location. Without a link, that name resolves only inside the dataset that trained
+the model, so a second dataset reaches the weights by absolute path alone -- and a
+path reference mints a different inference identifier from a run-identifier one, for
+the same bytes.
 
 A link makes the name resolve across datasets, which is what lets a shared
 library serve many projects under one identity.

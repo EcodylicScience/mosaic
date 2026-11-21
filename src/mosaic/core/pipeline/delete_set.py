@@ -117,6 +117,9 @@ def delete_set(
     deletes what it resolves to, and an omitted selector would mean every entry
     in the dataset.
 
+    A linked dataset's artifact is declined, because this dataset does not
+    change it.
+
     Only ``drifted`` is a candidate. A reached artifact whose recorded and current
     compositions still agree is current; one whose verdict is ``unknown`` is
     declined, because an absent record is not evidence of change and deleting on

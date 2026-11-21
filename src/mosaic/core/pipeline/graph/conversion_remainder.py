@@ -53,7 +53,8 @@ def conversion_remainder(
 ) -> ConversionRemainder:
     """Measure the raw rows of *params*' format against the tables of *variant*.
 
-    Reads the raw index and the tracks index and writes nothing.
+    Reads the raw index and the tracks rows of *ds* and its links, and writes
+    nothing.
     """
     sources = ds.track_conversion_sources(params.source_format)
     frame = tracks_rows(ds)
