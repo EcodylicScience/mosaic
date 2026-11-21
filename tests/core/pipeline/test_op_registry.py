@@ -32,7 +32,7 @@ def test_registry_lives_in_core_pipeline():
 # The op domains this codebase recognizes. Extend it only when a genuinely new op
 # domain is introduced (a deliberate act) -- new ops within an existing domain need
 # no edit. Deliberately NOT imported from the source, so a stray new value fails here.
-KNOWN_OP_DOMAINS = {"tracking", "media"}
+KNOWN_OP_DOMAINS = {"tracking", "media", "pipeline"}
 
 
 def test_every_op_declares_a_known_domain():

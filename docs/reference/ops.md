@@ -3,15 +3,15 @@
 
 # Ops
 
-28 ops are registered. An op is the unit `mosaic run --kind <kind>`
+29 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
 
-!!! note "4 of these are not discoverable from the CLI"
+!!! note "5 of these are not discoverable from the CLI"
 
     `mosaic tracking list` shows only the ops whose domain is `tracking`.
-    It omits `export-joined`, `export-store`, `preprocess` and `transcode`,
+    It omits `export-joined`, `export-store`, `preprocess`, `retire-recipes` and `transcode`,
     which `mosaic run --kind` runs all the same. This page reads `OPS` directly
     and lists every op.
 
@@ -866,3 +866,106 @@ Transcode the scoped entries' originals for a target, linking both ways.
 | --- | --- | --- | --- | --- |
 | `target` | `"analysis"` \| `"playback"` | `"analysis"` |  | Which derivative to write: 'analysis' is the one a tool decodes frame by frame, 'playback' the one a browser streams. |
 | `allow_hardware` | `boolean` | `false` |  | Permit a hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not. |
+
+## Pipeline
+
+### cleanup
+
+#### `retire-recipes`
+
+Version `0.1` &middot; `mosaic.core.pipeline.retire_recipes.RetireRecipesOp`
+
+Remove the runs an approved retirement of recipes found removable.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `retirement` | `RetirementSpec` | _required_ |  | The approved retirement: the retired recipes' digests, the pipelines that stay, the policy the plan judged under, the runs the plan found removable and the instant it planned at. The run plans and judges again, and removes only an approved run that is still removable. |
+| `manager` | `string` | `""` |  | The manager the retirement acts for. A dataset managed by that manager has its runs removed. Empty acts for no manager, so a managed dataset keeps every run. |
+
+??? note "`CleanupPolicy`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `keep_newest` | `integer` | `1` | >= `0` |  |
+    | `min_age_hours` | `number` | `24.0` | >= `0` |  |
+
+??? note "`CleanupTarget`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `storage` | `string` | _required_ |  |  |
+    | `run_id` | `string` | _required_ |  |  |
+
+??? note "`FeatureStepSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `id` | `string` | _required_ |  |  |
+    | `after` | list of `string` | _constructed_ |  |  |
+    | `type` | `"feature"` | `"feature"` |  |  |
+    | `feature` | `string` | _required_ |  |  |
+    | `inputs` | list of (`"tracks"` \| `StepRef`) | _constructed_ |  |  |
+    | `tracks` | `StepRef` \| `None` | `null` |  |  |
+    | `params` | `object` | _constructed_ |  |  |
+    | `run` | `StepRun` | _constructed_ |  |  |
+
+??? note "`OpStepSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `id` | `string` | _required_ |  |  |
+    | `after` | list of `string` | _constructed_ |  |  |
+    | `type` | `"op"` | `"op"` |  |  |
+    | `kind` | `string` | _required_ |  |  |
+    | `params` | `object` | _constructed_ |  |  |
+
+??? note "`Recipe`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `schema_version` | `integer` | `1` |  |  |
+    | `name` | `string` | `""` |  |  |
+    | `steps` | list of (`FeatureStepSpec` \| `OpStepSpec`) | _constructed_ |  |  |
+
+??? note "`RetirementKeeper`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `recipe` | `Recipe` | _required_ |  |  |
+    | `scope` | `Scope` | _constructed_ |  |  |
+
+??? note "`RetirementSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `retire` | list of `string` | _constructed_ |  |  |
+    | `keepers` | list of `RetirementKeeper` | _constructed_ |  |  |
+    | `policy` | `CleanupPolicy` | _constructed_ |  |  |
+    | `approved` | list of `CleanupTarget` | _constructed_ |  |  |
+    | `planned_at` | `string` | _required_ |  |  |
+    | `fingerprint` | `string` | `""` |  |  |
+
+??? note "`Scope`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `entries` | list of tuple of (`string`, `string`) \| list of tuple of (`string`, `string`, `string`) \| `None` | `null` |  |  |
+    | `groups` | list of `string` \| `None` | `null` |  |  |
+    | `sequences` | list of `string` \| `None` | `null` |  |  |
+
+??? note "`StepRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `string` | _required_ |  |  |
+    | `pattern` | `string` | `""` |  |  |
+
+??? note "`StepRun`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `filter_start_frame` | `integer` \| `None` | `null` |  |  |
+    | `filter_end_frame` | `integer` \| `None` | `null` |  |  |
+    | `filter_start_time` | `number` \| `None` | `null` |  |  |
+    | `filter_end_time` | `number` \| `None` | `null` |  |  |
+    | `overlap_frames` | `integer` | `0` |  |  |

@@ -301,7 +301,7 @@ class Op(Generic[P]):
 
     kind: ClassVar[str]
     category: ClassVar[str]  # "extract" | "train" | "infer" | "convert" | "transcode"
-    domain: ClassVar[str]  # "tracking" | "media"
+    domain: ClassVar[str]  # "tracking" | "media" | "pipeline"
     version: ClassVar[str] = "0.1"
     # Compute-placement hint for schedulers / the execution router ("gpu" | "heavy" |
     # "cpu"). Empty ("") derives it from ``category`` (train/infer -> gpu, else cpu) via
@@ -514,6 +514,7 @@ CORE_OP_MODULES: Final[tuple[str, ...]] = (
     "mosaic.core.pipeline.convert_ops",
     "mosaic.core.pipeline.joined_export",
     "mosaic.core.pipeline.preprocess",
+    "mosaic.core.pipeline.retire_recipes",
     "mosaic.core.pipeline.store_export",
     "mosaic.core.pipeline.transcode",
 )

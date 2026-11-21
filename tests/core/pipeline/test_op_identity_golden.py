@@ -342,6 +342,12 @@ OP_CASES: tuple[OpCase, ...] = (
         case_id="resample-tracks/30fps-prefiltered",
         params=_op_params("resample-tracks", target_fps=30.0, prefilter=40.0),
     ),
+    OpCase(
+        case_id="retire-recipes/minimal",
+        params=_op_params(
+            "retire-recipes", retirement={"planned_at": "2026-01-01T00:00:00+00:00"}
+        ),
+    ),
     # --- infer ----------------------------------------------------------------
     OpCase(
         case_id="infer-pose/model",
@@ -1380,6 +1386,7 @@ def test_every_family_is_covered() -> None:
         "assign-identities",
         "preprocess",
         "resample-tracks",
+        "retire-recipes",
         "infer-pose",
         "infer-points",
         "infer-localizer",

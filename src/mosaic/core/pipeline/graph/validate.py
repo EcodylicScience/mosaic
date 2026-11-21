@@ -181,6 +181,10 @@ EXCLUDED_KINDS: Final[dict[str, str]] = {
         "annotated frames. Two owners of one piece of work is worse than a "
         "missing step type"
     ),
+    "retire-recipes": (
+        "a retirement removes the runs of recipes that are already saved and is "
+        "submitted as a job of its own, so no recipe runs it"
+    ),
 }
 """Ops a graph may not run, and why -- ownership rather than capability."""
 

@@ -50,6 +50,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "steps": [{"step": "crop", "x": 0, "y": 0, "width": 320, "height": 240}]
     },
     "resample-tracks": {"target_fps": 30.0},
+    "retire-recipes": {"retirement": {"planned_at": "2026-01-01T00:00:00+00:00"}},
     "score-predictions": {
         "prediction_runs": ["predict-frames.0.1-abcdef0123"],
         "labels": [{"set_key": "set-a"}],

@@ -161,6 +161,10 @@ PARAMS_ONLY: dict[str, str] = {
         "a preparation names its tracker run, and its row records the "
         "predictions files it read"
     ),
+    "retire-recipes": (
+        "a retirement names its approval, which lists the runs it removes, and "
+        "reads no data file"
+    ),
 }
 """One-shot ops whose identity is their params alone, and why.
 

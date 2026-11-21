@@ -48,6 +48,7 @@
   "preprocess/upstream": "preprocess.0.1-fd989625ca",
   "resample-tracks/30fps": "82815cdde7",
   "resample-tracks/30fps-prefiltered": "ed393a19d9",
+  "retire-recipes/minimal": "b0e132d8a8",
   "score-predictions/default": "score-predictions.0.1-4224d54421",
   "score-predictions/map": "score-predictions.0.1-8d3dd4fa32",
   "score-predictions/pool": "score-predictions.0.1-0054cdecc1",

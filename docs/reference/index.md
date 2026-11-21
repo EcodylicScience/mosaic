@@ -10,7 +10,7 @@ and need the name and the knobs.
 | Page | Holds |
 | --- | --- |
 | [Features](features.md) | 70 registered features, grouped by category, with their parameters |
-| [Ops](ops.md) | 28 registered ops -- trackers, training, inference, frame extraction and media |
+| [Ops](ops.md) | 29 registered ops -- trackers, training, inference, frame extraction and media |
 | [Media steps](media-steps.md) | 7 steps a `preprocess` run applies to make a media variant, with their parameters |
 | [CLI](cli.md) | Every `mosaic` command and flag |
 | [Track formats](track-formats.md) | 17 track converters, 5 schemas, 4 label converters |

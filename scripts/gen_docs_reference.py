@@ -107,6 +107,7 @@ TABLE_LEGEND: Final[tuple[str, ...]] = (
 DOMAIN_TITLES: Final[tuple[tuple[str, str], ...]] = (
     ("tracking", "Tracking"),
     ("media", "Media"),
+    ("pipeline", "Pipeline"),
 )
 
 
