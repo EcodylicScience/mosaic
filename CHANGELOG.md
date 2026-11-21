@@ -225,6 +225,22 @@ rule that read such an attempt as an out-of-memory stop sees an ordinary
 cancel. The run-log events and the terminal statuses are unchanged. Workers still
 take the default action on SIGTERM.
 
+## Unreleased: a process worker ends with the process that started it
+
+A process worker of `run_feature`, of an op that sets `parallelizable`, of
+`run_trex_batch` and of `extract-frames` in process mode now exits when the process
+that built its pool dies. A caller killed by SIGKILL (the out-of-memory killer, a
+node under memory pressure, an expired grace period) ran no cleanup, and a worker
+holds both ends of the executor's queue pipes, so it stayed alive after its task,
+holding its memory, until something killed it. Each worker now runs a thread that
+waits on the parent sentinel of `multiprocessing.parent_process()`, which the kernel
+closes with the caller, under every start method. The guard reads no clock, so a
+step of the system clock cannot end a worker. A worker ended while it writes through
+`write_parquet_atomic` or `atomic_write` leaves a temporary file that no reader takes
+as output. `extract-frames` writes its frames in place, so a worker ended mid-sequence
+leaves a partial directory. Workers still receive SIGTERM and SIGINT as before, and no
+run id, output or run-log event changes.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

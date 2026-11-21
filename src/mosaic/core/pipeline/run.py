@@ -16,7 +16,6 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import ClassVar, Final, TYPE_CHECKING, get_args
 
@@ -182,6 +181,7 @@ from .parallelism import (
 )
 from .params_facts import params_equal_defaults, params_identity_digest
 from .parquet_reader import output_n_rows
+from .process_pool import caller_guarded_process_pool
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
 from .writers import (
@@ -2110,9 +2110,7 @@ def _report_worker_base(
     if frozen is None or limit is None or limit.available_bytes < frozen.base_rss_bytes:
         return
     try:
-        with ProcessPoolExecutor(
-            max_workers=1, mp_context=mp.get_context("spawn")
-        ) as pool:
+        with caller_guarded_process_pool(1, mp.get_context("spawn")) as pool:
             measured = pool.submit(
                 process_worker_base,
                 feature.__module__,

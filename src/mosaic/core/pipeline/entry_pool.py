@@ -40,6 +40,7 @@ from .parallelism import (
     WorkerProcessDied,
     memory_use_text,
 )
+from .process_pool import caller_guarded_process_pool
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -138,8 +139,8 @@ class EntryPool[Tag, Result]:
         self._executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
         if self.workers > 1:
             if mode == "process":
-                self._executor = ProcessPoolExecutor(
-                    max_workers=self.workers, mp_context=mp.get_context("spawn")
+                self._executor = caller_guarded_process_pool(
+                    self.workers, mp.get_context("spawn")
                 )
             else:
                 self._executor = ThreadPoolExecutor(max_workers=self.workers)

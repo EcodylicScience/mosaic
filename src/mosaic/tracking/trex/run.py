@@ -29,12 +29,12 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Final, Sequence
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.process_pool import caller_guarded_process_pool
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -688,7 +688,7 @@ def run_trex_batch(
             )
         return results
 
-    with ProcessPoolExecutor(max_workers=parallel_workers) as pool:
+    with caller_guarded_process_pool(parallel_workers) as pool:
         futures = [
             pool.submit(
                 _convert_and_track_single,

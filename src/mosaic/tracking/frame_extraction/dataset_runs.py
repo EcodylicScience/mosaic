@@ -5,7 +5,7 @@ import json
 import shutil
 import sys
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal
@@ -27,6 +27,7 @@ from mosaic.core.pipeline.joined_export import (
     join_to_read,
     missing_joins,
 )
+from mosaic.core.pipeline.process_pool import caller_guarded_process_pool
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.params import (
@@ -1115,8 +1116,11 @@ def _run_extract_frames(
 
     try:
         if max_workers > 1:
-            PoolCls = ProcessPoolExecutor if p_mode == "process" else ThreadPoolExecutor
-            with PoolCls(max_workers=max_workers) as pool:
+            with (
+                caller_guarded_process_pool(max_workers)
+                if p_mode == "process"
+                else ThreadPoolExecutor(max_workers=max_workers)
+            ) as pool:
                 futures = {pool.submit(_extract_one, spec): spec for spec in specs}
                 done = 0
                 for future in as_completed(futures):

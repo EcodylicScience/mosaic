@@ -309,6 +309,15 @@ are in `graph/CLAUDE.md`.
 
 ## Parallel runs
 
+- A `ProcessPoolExecutor` comes from `caller_guarded_process_pool` (`process_pool.py`),
+  whose workers wait on the parent sentinel of `multiprocessing.parent_process()` and
+  `os._exit` when the caller dies. A worker holds both ends of the executor's pipes, so
+  a caller killed by SIGKILL never gives it end of file. The sentinel is a pipe that the
+  caller holds under every start method, whereas the worker's own parent is the
+  forkserver under `forkserver`. The guard reads no process id and no clock, sets no
+  `PR_SET_PDEATHSIG`, which fires on the death of the thread that spawned the worker, and
+  leaves signals and process groups alone
+  (`tests/core/pipeline/test_worker_caller_guard.py`).
 - The memory limit comes from `read_memory_limit` (`memory_limit.py`): a container's
   cgroup limit, else the host's memory. The floor, the gate and the run-log's limit
   figures read it, never `psutil.virtual_memory()` alone.
