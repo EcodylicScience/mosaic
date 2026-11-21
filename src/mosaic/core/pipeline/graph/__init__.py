@@ -339,6 +339,7 @@ if TYPE_CHECKING:
         CleanupRunWire as CleanupRunWire,
         CleanupStatusWire as CleanupStatusWire,
         cleanup_status_wire as cleanup_status_wire,
+        retirement_status_wire as retirement_status_wire,
     )
     from .step import (
         STEP_RUN_KIND as STEP_RUN_KIND,
@@ -797,6 +798,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "CleanupRunWire": ".status",
     "CleanupStatusWire": ".status",
     "cleanup_status_wire": ".status",
+    "retirement_status_wire": ".status",
     "CLEANUP_KIND": ".cleanup",
     "CleanupOutcome": ".cleanup",
     "remove_approved_runs": ".cleanup",
@@ -1155,6 +1157,7 @@ __all__ = [
     "retirable_recipes",
     "retired_recipe_names",
     "retirement_fingerprint",
+    "retirement_status_wire",
     "retirement_wire",
     "rollup_verdict",
     "run_cleanup",

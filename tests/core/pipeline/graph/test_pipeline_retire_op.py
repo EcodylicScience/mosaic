@@ -22,12 +22,16 @@ from mosaic.core.pipeline.graph import (
     RetirementSpec,
     check_recipe,
     plan_retirement,
+    retirement_status_wire,
     run_pipeline,
 )
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.graph.status import CLEANUP_RUN_SAMPLE
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.ops import registered_op, run_op
+from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.runlog import (
+    JsonlRunLog,
     new_execution_id,
     read_removal_records,
     reduce_run_log,
@@ -225,6 +229,196 @@ def test_a_cancel_stops_the_op_as_a_cancelled_attempt(dataset: Dataset) -> None:
     assert snapshot is not None
     assert snapshot["status"] == "cancelled"
     assert _exists(dataset, STORAGE, old.speed)
+
+
+# --- the report -----------------------------------------------------------------------
+
+
+def _fail_every_removal(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(path: Path) -> None:
+        raise OSError(f"busy: {path}")
+
+    monkeypatch.setattr(feature_run_removal.shutil, "rmtree", refuse)
+
+
+def test_the_report_of_a_finished_retirement_counts_and_lists_its_removals(
+    dataset: Dataset,
+) -> None:
+    old = _Old(dataset)
+    execution_id = new_execution_id()
+    _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+
+    report = retirement_status_wire(
+        dataset.base_dir, execution_id, len(old.spec.approved)
+    )
+
+    assert (report.execution_id, report.status) == (execution_id, "finished")
+    assert (report.approved_runs, report.removed_runs, report.kept_runs) == (2, 2, 0)
+    assert (report.failed_runs, report.interrupted_runs) == (0, 0)
+    assert report.removed_bytes > 0
+    assert {(run.storage, run.run_id) for run in report.removed} == {
+        (STORAGE, old.speed),
+        (HEADING, old.heading),
+    }
+    assert sum(run.bytes for run in report.removed) == report.removed_bytes
+    assert {run.retired for run in report.removed} == {old.spec.retire[0]}
+    assert (report.removed_omitted, report.kept_omitted) == (0, 0)
+    assert report.error is None
+
+
+def test_the_report_of_a_rerun_lists_each_kept_run_with_its_reason(
+    dataset: Dataset,
+) -> None:
+    old = _Old(dataset)
+    _ = run_op(dataset, KIND, old.params(), overwrite=True)
+    execution_id = new_execution_id()
+    _ = run_op(dataset, KIND, old.params(), overwrite=False, execution_id=execution_id)
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2)
+
+    assert (report.status, report.removed_runs, report.kept_runs) == ("finished", 0, 2)
+    assert {(run.run_id, run.reason) for run in report.kept} == {
+        (old.speed, "absent"),
+        (old.heading, "absent"),
+    }
+    assert all(run.bytes == 0 and run.retired == "" for run in report.kept)
+
+
+def test_the_report_of_a_cancelled_retirement_removed_nothing(
+    dataset: Dataset,
+) -> None:
+    old = _Old(dataset)
+    token = CancelToken()
+    token.cancel()
+    execution_id = new_execution_id()
+    with pytest.raises(Cancelled):
+        _ = run_op(
+            dataset,
+            KIND,
+            old.params(),
+            execution_id=execution_id,
+            cancel_token=token,
+        )
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2)
+
+    assert (report.status, report.approved_runs) == ("cancelled", 2)
+    assert (report.removed_runs, report.removed_bytes) == (0, 0)
+    assert report.removed == ()
+    assert report.error is None
+
+
+def test_the_report_of_a_failed_retirement_carries_its_error_and_failures(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _Old(dataset)
+    _fail_every_removal(monkeypatch)
+    execution_id = new_execution_id()
+    with pytest.raises(AllEntriesFailed):
+        _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2)
+
+    assert (report.status, report.failed_runs, report.removed_runs) == (
+        "failed",
+        2,
+        0,
+    )
+    assert report.error is not None
+    assert report.error.type == "AllEntriesFailed"
+    assert "failed to remove each of the 2 approved runs" in report.error.message
+
+
+def test_the_report_of_a_partial_retirement_is_finished_with_a_failed_run(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _Old(dataset)
+    _fail_first_removal(monkeypatch)
+    execution_id = new_execution_id()
+    _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2)
+
+    assert (report.status, report.removed_runs, report.failed_runs) == (
+        "finished",
+        1,
+        1,
+    )
+    assert report.error is None
+
+
+def test_the_report_lists_the_first_runs_of_each_kind_and_counts_the_rest(
+    dataset: Dataset,
+) -> None:
+    extra = 3
+    total = CLEANUP_RUN_SAMPLE + extra
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.started(kind=KIND, target="")
+        for index in range(total):
+            removed = f"0.1-{index:010d}"
+            log.run_removing(
+                feature=STORAGE,
+                run_id=removed,
+                reason="superseded",
+                superseded_by="",
+                params={},
+                retired="retired-digest",
+            )
+            log.run_removed(feature=STORAGE, run_id=removed, bytes=10, files=1, rows=1)
+            log.run_kept(
+                feature=HEADING,
+                run_id=f"0.1-{index:010d}",
+                reason="bound",
+                detail=f"detail {index}",
+            )
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2 * total)
+
+    assert (report.removed_runs, report.removed_bytes) == (total, 10 * total)
+    assert [run.run_id for run in report.removed] == [
+        f"0.1-{index:010d}" for index in range(CLEANUP_RUN_SAMPLE)
+    ]
+    assert report.removed_omitted == extra
+    assert {(run.storage, run.retired, run.bytes) for run in report.removed} == {
+        (STORAGE, "retired-digest", 10)
+    }
+    assert report.kept_runs == total
+    assert [run.detail for run in report.kept] == [
+        f"detail {index}" for index in range(CLEANUP_RUN_SAMPLE)
+    ]
+    assert report.kept_omitted == extra
+    assert {(run.storage, run.reason) for run in report.kept} == {(HEADING, "bound")}
+
+
+def test_the_report_of_an_attempt_that_has_not_ended_is_running(
+    dataset: Dataset,
+) -> None:
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.started(kind=KIND, target="")
+
+    report = retirement_status_wire(dataset.base_dir, execution_id, 2)
+
+    assert (report.status, report.approved_runs, report.removed_runs) == (
+        "running",
+        2,
+        0,
+    )
+    assert report.error is None
+
+
+def test_the_report_of_an_attempt_without_a_run_log_is_pending(
+    dataset: Dataset,
+) -> None:
+    report = retirement_status_wire(dataset.base_dir, new_execution_id(), 2)
+
+    assert (report.status, report.approved_runs, report.removed_runs) == (
+        "pending",
+        2,
+        0,
+    )
+    assert report.error is None
 
 
 # --- mosaic run ---------------------------------------------------------------------------

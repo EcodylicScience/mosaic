@@ -15,10 +15,13 @@ import pytest
 from mosaic.core.pipeline.graph import (
     CleanupPolicy,
     plan_fingerprint,
+    plan_retirement,
     plan_with_cleanup,
     run_pipeline,
     submit_request,
 )
+from mosaic.core.pipeline.ops import run_op
+from mosaic.runlog import new_execution_id
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
@@ -136,6 +139,32 @@ def test_a_status_with_a_cleanup_loads_no_heavy_module(tmp_path: Path) -> None:
         f"request = load_request(root, {request.request_id!r})\n"
         "status = request_status_wire(root, request)\n"
         "assert status.cleanup is not None and status.cleanup.removed_runs == 1"
+    )
+
+    assert modules_loaded_by(statement, HEAVY_MODULES) == []
+
+
+def test_the_report_of_a_retirement_loads_no_heavy_module(
+    tmp_path: Path, lapsed_request_holds: None
+) -> None:
+    """A retirement that removed a run reports it without pandas."""
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, "convert-trex.0.2-1111111111", "seq_a")
+    ran = run_pipeline(ds, speed_recipe())
+    spec = plan_retirement(
+        ds, [ran.recipe_digest], [], CleanupPolicy(keep_newest=0, min_age_hours=0), ""
+    ).spec
+    execution_id = new_execution_id()
+    _ = run_op(
+        ds,
+        "retire-recipes",
+        {"retirement": spec.model_dump(mode="json")},
+        execution_id=execution_id,
+    )
+    statement = (
+        "from mosaic.core.pipeline.graph import retirement_status_wire\n"
+        f"report = retirement_status_wire({str(ds.base_dir)!r}, {execution_id!r}, 1)\n"
+        "assert report.status == 'finished' and report.removed_runs == 1"
     )
 
     assert modules_loaded_by(statement, HEAVY_MODULES) == []

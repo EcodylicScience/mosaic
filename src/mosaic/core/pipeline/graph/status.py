@@ -87,6 +87,7 @@ __all__ = [
     "request_status_wire",
     "request_summary",
     "request_verdict_of",
+    "retirement_status_wire",
     "rollup_verdict",
     "run_status_wire",
 ]
@@ -346,8 +347,14 @@ class StepStatusWire(GraphModel):
     waiting_for_gpu: bool = False
 
 
+_CleanupState = Literal[
+    "pending", "running", "finished", "failed", "cancelled", "skipped"
+]
+"""How a cleanup or a retirement stands."""
+
+
 class CleanupRunWire(GraphModel):
-    """One run a request's cleanup was approved to remove, and how that ended.
+    """One run a cleanup or a retirement was approved to remove, and how it ended.
 
     Attributes:
         storage: Its storage name under ``features/``.
@@ -368,30 +375,35 @@ class CleanupRunWire(GraphModel):
 
 
 class CleanupStatusWire(GraphModel):
-    """A request's cleanup of superseded runs, as its run-log reports it.
+    """The removals of a request's cleanup or of a retirement, as a run-log reports.
 
     Attributes:
-        execution_id: The cleanup's attempt.
-        status: ``pending`` while a step has not finished, ``running`` until
-            its run-log ends, then ``finished``, ``failed`` or ``cancelled``.
-            ``skipped`` when a step did not finish, so the cleanup never ran.
-        approved_runs: How many runs the submission approved for removal.
+        execution_id: The attempt that removed the runs: the cleanup's, or the
+            ``retire-recipes`` op's.
+        status: ``pending`` while a step has not finished or, for a retirement,
+            while the op has written no run-log. ``running`` until its run-log
+            ends, then ``finished``, ``failed`` or ``cancelled``. ``skipped``
+            applies only to a cleanup, when a step did not finish, so the
+            cleanup never ran.
+        approved_runs: How many runs the submission or the retirement approved
+            for removal.
         removed_runs: How many it removed.
         removed_bytes: The bytes they held.
         kept_runs: How many approved runs it kept, each for a reason.
         failed_runs: How many removals raised.
         interrupted_runs: How many removals began and did not end, as when its
-            process was killed. Running the request again finishes them.
+            process was killed. Running the request or the retirement again
+            finishes them.
         removed: The first removed runs, at most :data:`CLEANUP_RUN_SAMPLE`.
         removed_omitted: How many more were removed.
         kept: The first kept runs with their reasons, at most
             :data:`CLEANUP_RUN_SAMPLE`.
         kept_omitted: How many more were kept.
-        error: Why the cleanup as a whole failed, parsed, or ``None``.
+        error: Why the attempt as a whole failed, parsed, or ``None``.
     """
 
     execution_id: str
-    status: Literal["pending", "running", "finished", "failed", "cancelled", "skipped"]
+    status: _CleanupState
     approved_runs: int
     removed_runs: int = 0
     removed_bytes: int = 0
@@ -744,13 +756,76 @@ def cleanup_status_wire(
         status = "skipped"
     else:
         status = "pending"
-    records = read_removal_records(run_log_dir(base_dir), spec.execution_id)
+    return _removal_report(
+        base_dir,
+        spec.execution_id,
+        approved=len(spec.approved),
+        status=_cleanup_status(status),
+        error=recorded_error(attempt.error_json),
+    )
+
+
+def retirement_status_wire(
+    base_dir: Path | str, execution_id: str, approved: int
+) -> CleanupStatusWire:
+    """Report a retirement's removals from the run-log of the op attempt that ran it.
+
+    A retirement has no request, so the attempt of the ``retire-recipes`` op is
+    the whole record. The report reads the attempt's status and failure, and the
+    removals and keeps the run recorded.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        execution_id: The op attempt's execution id.
+        approved: How many runs the retirement approved, the length of its
+            spec's ``approved`` list.
+
+    Returns:
+        The report: ``pending`` while the attempt has written no run-log,
+        ``running`` until it ends, then ``finished``, ``failed`` or
+        ``cancelled``. ``error`` holds the failure a ``failed`` attempt
+        recorded.
+    """
+    snapshot = read_run(run_log_dir(base_dir), execution_id)
+    if snapshot is None:
+        status = "pending"
+    elif snapshot["status"] in TERMINAL_STATUSES:
+        status = snapshot["status"]
+    else:
+        status = "running"
+    return _removal_report(
+        base_dir,
+        execution_id,
+        approved=approved,
+        status=_cleanup_status(status),
+        error=None if snapshot is None else recorded_error(snapshot["error_json"]),
+    )
+
+
+def _removal_report(
+    base_dir: Path | str,
+    execution_id: str,
+    *,
+    approved: int,
+    status: _CleanupState,
+    error: RecordedErrorWire | None,
+) -> CleanupStatusWire:
+    """The report of the removals and keeps that attempt *execution_id* recorded.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        execution_id: The attempt that removed or kept the runs.
+        approved: How many runs were approved for removal.
+        status: How the attempt stands.
+        error: Why the attempt as a whole failed, or ``None``.
+    """
+    records = read_removal_records(run_log_dir(base_dir), execution_id)
     removed = [record for record in records if record["state"] == "removed"]
     kept = [record for record in records if record["state"] == "kept"]
     return CleanupStatusWire(
-        execution_id=spec.execution_id,
-        status=_cleanup_status(status),
-        approved_runs=len(spec.approved),
+        execution_id=execution_id,
+        status=status,
+        approved_runs=approved,
         removed_runs=len(removed),
         removed_bytes=sum(record["bytes"] for record in removed),
         kept_runs=len(kept),
@@ -776,13 +851,13 @@ def cleanup_status_wire(
             for record in kept[:CLEANUP_RUN_SAMPLE]
         ),
         kept_omitted=max(len(kept) - CLEANUP_RUN_SAMPLE, 0),
-        error=recorded_error(attempt.error_json),
+        error=error,
     )
 
 
 def _cleanup_status(
     status: str,
-) -> Literal["pending", "running", "finished", "failed", "cancelled", "skipped"]:
+) -> _CleanupState:
     """*status* narrowed to a cleanup status, ``running`` for any other word."""
     match status:
         case "pending" | "finished" | "failed" | "cancelled" | "skipped":

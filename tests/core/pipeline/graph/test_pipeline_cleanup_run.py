@@ -219,6 +219,32 @@ def test_a_failed_removal_is_reported_and_the_cleanup_goes_on(
     assert status.verdict == "finished"
 
 
+def test_a_cleanup_that_fails_as_a_whole_reports_its_error_and_spares_the_request(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("the judging broke")
+
+    monkeypatch.setattr(module, "plan_cleanup", broken)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.status == "failed"
+    assert _exists(dataset, old)
+    status = request_status_wire(dataset.base_dir, request)
+    assert status.cleanup is not None
+    assert status.cleanup.status == "failed"
+    assert status.cleanup.error is not None
+    assert status.cleanup.error.type == "RuntimeError"
+    assert status.cleanup.error.message == "the judging broke"
+    assert status.verdict == "finished"
+
+
 def _interrupted(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Request, str]:
