@@ -58,7 +58,7 @@ from mosaic.core.pipeline.label_series_index import (
     LabelSeriesTamperedError,
     ResolvedRevision,
     SeveralOrigins,
-    read_label_series,
+    label_series_rows,
     read_revision_manifest,
     record_revision,
     resolve_series_refs,
@@ -530,10 +530,11 @@ def resolve_sequence_tag_revision(
     """The revision of the tag table that a run reads, or ``None`` for none.
 
     Without *revision* it is the latest indexed revision of any dataset. Either
-    way it is resolved as a run resolves it, so its digest is measured off disk.
+    way it is resolved as a run resolves it, through the series indexes of *ds*
+    and the datasets it links, so its digest is measured off disk.
 
     Args:
-        ds: The dataset whose ``tags`` series is read.
+        ds: The dataset whose ``tags`` series, and those of its links, are read.
         revision: The revision to resolve, or ``None`` for the latest.
         kind: What is resolving, named in a deferral.
 
@@ -549,7 +550,7 @@ def resolve_sequence_tag_revision(
     """
     indexed = [
         record
-        for record in index_records(read_label_series(ds, TAGS_SERIES))
+        for record in index_records(label_series_rows(ds, TAGS_SERIES))
         if record.get("key", "") == TAG_TABLE_KEY
     ]
     if revision is not None:

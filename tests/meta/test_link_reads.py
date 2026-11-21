@@ -47,6 +47,10 @@ LINK_LOOKUPS: Final = frozenset(
         "run_coverage",
         "frame_rows",
         "frame_run_file",
+        "frame_run_roots",
+        "latest_frame_run_id",
+        "linked_frames_row_files",
+        "label_series_rows",
         "resolve_series_refs",
         "linked_training_complete",
         "open_enclosing",
@@ -85,6 +89,28 @@ def test_importing_the_merge_loads_no_dataset() -> None:
     assert loaded == []
 
 
+@pytest.mark.parametrize(
+    ("path", "module"),
+    [
+        ("core/dataset_discovery.py", "mosaic.core.dataset"),
+        ("tracking/model_refs.py", "mosaic.core.pipeline.linked_rows"),
+    ],
+    ids=["discovery-imports-no-dataset", "models-lookup-merges-no-rows"],
+)
+def test_a_module_below_a_lookup_does_not_import_it(path: str, module: str) -> None:
+    """``from a import b`` reaches ``a`` and ``a.b``, since ``b`` may be a module."""
+    reached = {
+        reach
+        for imported in imports_of(SOURCE_ROOT / path, scope="anywhere", relative=False)
+        for reach in (
+            imported.module,
+            f"{imported.module}.{imported.name}" if imported.name else imported.module,
+        )
+    }
+
+    assert module not in reached
+
+
 @dataclass(frozen=True, slots=True)
 class GuardedSite:
     """One definition the guard reads: a function, a method or a whole class.
@@ -119,6 +145,7 @@ GUARDED_SITES: Final = (
     GuardedSite("core/pipeline/upgrade_tracks.py", "upgrade_trex_tables"),
     GuardedSite("core/pipeline/pipeline.py", "Pipeline.clean"),
     GuardedSite("core/pipeline/run.py", "_run_feature_impl"),
+    GuardedSite("tracking/frame_extraction/dataset_runs.py", "_run_extract_frames"),
 )
 """The write, removal and reconcile sites that stay on own addresses."""
 

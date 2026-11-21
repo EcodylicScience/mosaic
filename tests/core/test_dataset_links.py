@@ -601,6 +601,46 @@ def test_a_linked_dataset_does_not_follow_its_own_links(
     ], "C is never opened"
 
 
+def test_the_enclosing_datasets_are_opened_once_each(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each manifest found is opened once, and an opened one follows no link."""
+    reader = make_dataset(tmp_path / "reader", name="reader")
+    owner = make_dataset(tmp_path / "owner", name="owner")
+    _ = make_dataset(tmp_path / "other", name="other")
+    _ = owner.add_link(DatasetLink(id="other", path="../other"))
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    _ = (broken / "dataset.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    fresh = _reopened(reader)
+    loaded: list[Path] = []
+    load = Dataset.load
+
+    def recording_load(self: Dataset, ensure_roots: bool = True) -> Dataset:
+        loaded.append(self.manifest_path)
+        return load(self, ensure_roots=ensure_roots)
+
+    monkeypatch.setattr(Dataset, "load", recording_load)
+    first = owner.base_dir / "frames" / "a"
+    second = owner.base_dir / "frames" / "b"
+    own = fresh.base_dir / "frames" / "c"
+    unreadable = broken / "frames"
+    outside = tmp_path / "nowhere"
+
+    found = fresh.open_enclosing([first, second, own, unreadable, outside])
+
+    opened = found[first]
+    assert opened is not None
+    assert opened.uuid == owner.uuid
+    assert found[second] is opened
+    assert found[own] is fresh
+    assert found[unreadable] is None
+    assert found[outside] is None
+    assert [path.resolve() for path in loaded] == [owner.manifest_path.resolve()]
+    assert [linked.dataset for linked in opened.lookup_order()] == [opened]
+    assert len(loaded) == 1, "the owner's link is never opened"
+
+
 def test_a_link_to_nothing_fails_when_it_is_made(tmp_path: Path) -> None:
     project = make_dataset(tmp_path / "52", name="project")
 

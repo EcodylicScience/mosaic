@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, LinkedDataset
 
 
 PREPARED_DATA_KINDS: Final[frozenset[str]] = frozenset(
@@ -84,3 +84,39 @@ def model_run_root(ds: Dataset, model_name: str, run_id: str) -> Path:
 def model_index_path(ds: Dataset, model_name: str) -> Path:
     """Return the index CSV path for a model (``models/<name>/index.csv``)."""
     return ds.get_root("models") / model_name / "index.csv"
+
+
+def model_index_row(ds: Dataset, model_name: str, run_id: str) -> dict[str, str] | None:
+    """The last row of *run_id* in this dataset's own index of *model_name*, as strings.
+
+    ``None`` when the dataset has no index of that kind, the index has no
+    ``run_id`` column, or no row names the run.
+    """
+    import pandas as pd
+
+    from mosaic.core.pipeline.index_csv import index_records
+
+    index_path = model_index_path(ds, model_name)
+    if not index_path.exists():
+        return None
+    frame = pd.read_csv(index_path, dtype="string", keep_default_na=False)
+    if "run_id" not in frame.columns:
+        return None
+    matching = [r for r in index_records(frame) if r.get("run_id", "") == run_id]
+    return matching[-1] if matching else None
+
+
+def model_index_row_holder(
+    ds: Dataset, model_name: str, run_id: str
+) -> tuple[LinkedDataset, dict[str, str]] | None:
+    """The first dataset of the models lookup order whose index registers *run_id*.
+
+    Looks in this dataset, then in each linked dataset that provides models, and
+    returns that dataset with the last row of the run. ``None`` when no index
+    registers it. The row's paths are relative to the dataset that wrote it.
+    """
+    for linked in ds.lookup_order("models"):
+        found = model_index_row(linked.dataset, model_name, run_id)
+        if found is not None:
+            return linked, found
+    return None

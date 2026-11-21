@@ -18,26 +18,36 @@ from typer.testing import CliRunner
 import mosaic.tracking.frame_extraction.dataset_runs as dataset_runs
 from mosaic.cli import app
 from mosaic.core.helpers import entry_camera_path
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.run_log import read_run_progress, read_runs, run_log_dir
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import make_entry_key
+from mosaic.core.manifest import DatasetLink
 from mosaic.runlog import read_entry_errors, read_run
 from mosaic.tracking.frame_extraction.dataset_runs import (
     ExtractFramesParams,
     ListedFramesRefused,
     extract_frames,
     frames_run_id,
+    get_frame_manifests,
+    get_frame_paths,
 )
 from mosaic.tracking.frame_extraction.frame_runs import (
+    FramesIndexRow,
+    frame_rows,
+    frame_run_file,
     frames_index,
     frames_index_path,
     frames_run_root,
+    linked_frames_row_files,
 )
 from mosaic.tracking.frame_extraction.sampling import Exclusion
 
 from tests.helpers import (
     MediaClip,
+    extract_entry_camera,
     make_dataset,
     stub_media_dataset,
     write_h264_mp4,
@@ -592,3 +602,159 @@ def test_every_outcome_returns_from_a_process_worker(tmp_path: Path) -> None:
     errors = read_entry_errors(run_log_dir(dataset.base_dir), "PROCESS")["items"]
     assert [error["key"] for error in errors] == ["undecodable"]
     assert _indexed_cameras(dataset, run_id) == [("decodable", "")]
+
+
+# --- frame runs read through a link -----------------------------------------
+
+
+_LINKED_RUN = "uniform-linked"
+
+
+def _source_with_frames(base: Path) -> Dataset:
+    """A dataset at *base* with one frames run over two entries of group ``g``."""
+    source = make_dataset(base, name="source")
+    for sequence in ("s1", "s2"):
+        _ = extract_entry_camera(
+            source,
+            run_id=_LINKED_RUN,
+            group="g",
+            sequence=sequence,
+            camera="",
+            sizes={1: (4, 4)},
+        )
+    return source
+
+
+def _linking_copy(base: Path, source: Dataset) -> Dataset:
+    copy = make_dataset(base, name="copy")
+    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path="../source"))
+    return copy
+
+
+def _entry_directory(ds: Dataset, run_id: str, sequence: str) -> Path:
+    return frames_run_root(ds, "uniform", run_id) / make_entry_key("g", sequence)
+
+
+def test_a_copy_reads_the_sources_frames_rows_and_run_files(tmp_path: Path) -> None:
+    source = _source_with_frames(tmp_path / "source")
+    copy = _linking_copy(tmp_path / "copy", source)
+    manifest = f"{make_entry_key('g', 's1')}/run_info.json"
+    frames_run_root(copy, "uniform", _LINKED_RUN).mkdir(parents=True)
+
+    rows = frame_rows(copy, "uniform")
+    found = frame_run_file(copy, "uniform", _LINKED_RUN, manifest)
+
+    assert list(rows["sequence"]) == ["s1", "s2"]
+    assert set(rows["link_id"]) == {f"source-{source.uuid}"}
+    assert [Path(cell) for cell in rows["abs_path"]] == [
+        _entry_directory(source, _LINKED_RUN, sequence) for sequence in ("s1", "s2")
+    ]
+    assert found == frames_run_root(source, "uniform", _LINKED_RUN) / manifest
+    assert frame_run_file(copy, "uniform", _LINKED_RUN, "absent.json") is None
+    assert list(frame_rows(source)["link_id"]) == ["", ""]
+
+
+def test_a_linked_rows_single_video_path_is_made_absolute(tmp_path: Path) -> None:
+    """A multi-clip camera's array of paths is kept as stored."""
+    source = make_dataset(tmp_path / "source", name="source")
+    clips = json.dumps(["media/a.mp4", "media/b.mp4"])
+    index = frames_index(frames_index_path(source, "uniform"))
+    index.ensure()
+    index.append(
+        [
+            FramesIndexRow(
+                run_id=_LINKED_RUN,
+                method="uniform",
+                group="g",
+                sequence=sequence,
+                camera="",
+                abs_path=Path("frames") / "uniform" / _LINKED_RUN / sequence,
+                video_abs_path=video,
+                params_hash="h",
+            )
+            for sequence, video in (("s1", "media/s1.mp4"), ("s2", clips))
+        ]
+    )
+    copy = _linking_copy(tmp_path / "copy", source)
+
+    rows = frame_rows(copy)
+
+    assert list(rows["video_abs_path"]) == [
+        str(source.base_dir / "media" / "s1.mp4"),
+        clips,
+    ]
+
+
+def test_the_frames_of_the_latest_run_are_the_sources_until_the_copy_has_one(
+    tmp_path: Path,
+) -> None:
+    source = _source_with_frames(tmp_path / "source")
+    copy = _linking_copy(tmp_path / "copy", source)
+    source_manifests = [
+        _entry_directory(source, _LINKED_RUN, sequence) / "run_info.json"
+        for sequence in ("s1", "s2")
+    ]
+
+    linked_paths = get_frame_paths(copy, "uniform")
+    linked_manifests = get_frame_manifests(copy, "uniform", group="g", sequence="s2")
+    own = extract_entry_camera(
+        copy,
+        run_id="uniform-own",
+        group="g",
+        sequence="s1",
+        camera="",
+        sizes={2: (4, 4)},
+    )
+
+    assert linked_paths == [
+        manifest.parent / "frame_000001.png" for manifest in source_manifests
+    ]
+    assert [manifest["files"] for manifest in linked_manifests] == [
+        [
+            {
+                "frame_index": 1,
+                "path": str(source_manifests[1].parent / "frame_000001.png"),
+                "width": 4,
+                "height": 4,
+            }
+        ]
+    ]
+    assert get_frame_paths(copy, "uniform") == [copy.base_dir / own[2]]
+    assert get_frame_paths(copy, "uniform", run_id=_LINKED_RUN) == linked_paths
+
+
+def test_an_entry_the_copy_holds_shadows_the_linked_entry_of_one_run(
+    tmp_path: Path,
+) -> None:
+    source = _source_with_frames(tmp_path / "source")
+    copy = _linking_copy(tmp_path / "copy", source)
+    own = extract_entry_camera(
+        copy, run_id=_LINKED_RUN, group="g", sequence="s1", camera="", sizes={2: (4, 4)}
+    )
+
+    paths = get_frame_paths(copy, "uniform", run_id=_LINKED_RUN)
+
+    assert sorted(paths) == sorted(
+        [
+            copy.base_dir / own[2],
+            _entry_directory(source, _LINKED_RUN, "s2") / "frame_000001.png",
+        ]
+    )
+
+
+def test_a_linked_rows_images_are_named_from_the_copy(tmp_path: Path) -> None:
+    source = _source_with_frames(tmp_path / "source")
+    copy = _linking_copy(tmp_path / "copy", source)
+    own = extract_entry_camera(
+        copy, run_id=_LINKED_RUN, group="g", sequence="s1", camera="", sizes={2: (4, 4)}
+    )
+
+    files = {
+        row["sequence"]: linked_frames_row_files(copy, row)
+        for row in index_records(frame_rows(copy))
+    }
+
+    assert [file.image for file in files["s1"]] == [own[2].as_posix()]
+    assert [file.image for file in files["s2"]] == [
+        (_entry_directory(source, _LINKED_RUN, "s2") / "frame_000001.png").as_posix()
+    ]

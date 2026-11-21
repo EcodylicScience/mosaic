@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from mosaic.core.dataset import LinkUnreachableError
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, index_records
@@ -39,6 +40,7 @@ __all__ = [
     "TRAINED_MODEL_INDEX_COLUMNS",
     "TrainedModelIndexRow",
     "adopt_trained_model_columns",
+    "linked_training_complete",
     "trained_model_index",
     "trained_model_records",
     "training_is_complete",
@@ -162,6 +164,49 @@ def training_is_complete(ds: Dataset, kind: str, run_id: str) -> bool:
     if not recorded:
         return False
     return ds.resolve_path(recorded).exists()
+
+
+def linked_training_complete(ds: Dataset, kind: str, run_id: str) -> bool:
+    """Has *ds*, or a dataset it links for models, already finished this run?
+
+    Asks :func:`training_is_complete` of each dataset of
+    ``ds.lookup_order("models")``, this one first, and answers ``True`` for the
+    first that says so. A copy then reuses the run its source finished instead of
+    training it again, whatever its own index records for that run.
+
+    A link that provides models and cannot be read is not evidence that the run
+    is missing. When no reachable dataset finished the run and such a link is
+    offline, the answer is unknown, and training would compute again what the
+    link may hold.
+
+    Args:
+        ds: The dataset that would train.
+        kind: The training op's kind.
+        run_id: The training run's identifier.
+
+    Returns:
+        ``True`` when a reachable dataset finished the run, ``False`` when none
+        did and every link that provides models was read.
+
+    Raises:
+        LinkUnreachableError: If no reachable dataset finished the run and a link
+            that provides models is unreachable.
+    """
+    for linked in ds.lookup_order("models"):
+        if training_is_complete(linked.dataset, kind, run_id):
+            return True
+    offline = ds.unreachable_links("models")
+    if offline:
+        names = ", ".join(
+            f"{link.id!r} at {ds.resolve_link_path(link)}" for link in offline
+        )
+        msg = (
+            f"Cannot tell whether {run_id} was already trained: {names} provides "
+            "models and is not reachable. Training now would compute again what "
+            "it may hold. Try again once it is reachable."
+        )
+        raise LinkUnreachableError(msg, links=offline)
+    return False
 
 
 def trained_model_records(

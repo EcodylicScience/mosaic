@@ -62,8 +62,8 @@ from mosaic.tracking.common.ultralytics_env import (
 )
 from mosaic.tracking.frame_extraction.frame_runs import (
     FrameFile,
-    frames_row_files,
-    list_frame_runs,
+    frame_rows,
+    linked_frames_row_files,
 )
 from mosaic.tracking.frame_predictions.adapter import (
     AdapterResult,
@@ -641,10 +641,12 @@ def _entry_frames(
     entry: Entry,
     rows: Sequence[Mapping[str, str]],
 ) -> _EntryFrames:
-    """Read the images of each camera of *entry* from its frames-index *rows*.
+    """Read the images of each camera of *entry* from its :func:`frame_rows` *rows*.
+
+    A linked row's images are named from *ds*, absolute where they lie outside it.
 
     Raises:
-        ValueError: A camera's directory lies outside the dataset tree, or its
+        ValueError: A camera's directory lies outside its dataset's tree, or its
             ``run_info.json`` is missing, unreadable or lacks a record field.
     """
     group, sequence = entry
@@ -653,7 +655,7 @@ def _entry_frames(
             camera=row.get("camera", ""),
             method=row.get("method", ""),
             composition=row.get("media_composition", ""),
-            files=frames_row_files(ds, row),
+            files=linked_frames_row_files(ds, row),
         )
         for row in sorted(rows, key=lambda row: row.get("camera", ""))
     )
@@ -665,8 +667,9 @@ def _extraction(
 ) -> _Extraction:
     """Read the images of each scoped entry of the extraction run *frames_run_id*.
 
-    An unset scope covers every entry of the run. A scoped entry without frames
-    in the run is skipped and counted. An entry whose images cannot be read is
+    The run's rows are read through *ds*'s links (:func:`frame_rows`). An unset
+    scope covers every entry of the run. A scoped entry without frames in the
+    run is skipped and counted. An entry whose images cannot be read is
     recorded as failed, and the other entries are read.
 
     Raises:
@@ -675,7 +678,7 @@ def _extraction(
     """
     rows = [
         row
-        for row in index_records(list_frame_runs(ds))
+        for row in index_records(frame_rows(ds))
         if row.get("run_id", "") == frames_run_id
     ]
     if not rows:

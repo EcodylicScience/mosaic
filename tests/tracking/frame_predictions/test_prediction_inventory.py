@@ -14,6 +14,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.entry import Entry
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.inventory import (
     ArtifactStatus,
     CoverageWire,
@@ -213,6 +214,25 @@ def test_a_drifted_camera_drifts_its_entry(dataset: Dataset) -> None:
 
     assert record is not None
     assert record.drift == (("G", "S1"),)
+
+
+def test_a_copy_drifts_on_an_entry_its_linked_dataset_extracted_again(
+    tmp_path: Path,
+) -> None:
+    """The copy holds no frames of its own, so the extraction method is a linked one."""
+    source = make_dataset(tmp_path / "source", name="source")
+    _extracted(source, "S1", composition="new")
+    _extracted(source, "S2", composition="same")
+    copy = make_dataset(tmp_path / "copy", name="copy")
+    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path="../source"))
+    _ = _predict(copy, "S1", consumed="old")
+    _ = _predict(copy, "S2", consumed="same")
+
+    record = dataset_inventory(copy, kinds=["frame-predictions"]).record(REF)
+
+    assert record is not None
+    assert record.drift == (("G", "S1"),)
+    assert record.status == "complete-but-drifted"
 
 
 @pytest.mark.parametrize(

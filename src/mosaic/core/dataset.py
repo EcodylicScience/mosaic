@@ -145,6 +145,7 @@ from .recording import (
     recordings,
     sequence_frame,
 )
+from .dataset_discovery import enclosing_dataset
 from .json_value import JsonValue
 from .manifest import (
     AnyScanSource,
@@ -153,6 +154,7 @@ from .manifest import (
     DatasetTag,
     LabelsScanSource,
     DIVISION_MANIFEST_VERSION,
+    ManifestVersionError,
     MediaDivision,
     MediaLayout,
     MediaScanSource,
@@ -193,6 +195,7 @@ from .scan_findings import (
 )
 from .pipeline.artifact_kinds import ArtifactKind, LinkedKind
 from .pipeline.index_stamp import IndexStamp
+from .pipeline.refusal import Refusal
 from .pipeline.entry_pool import (
     EntryFailure,
     EntryPool,
@@ -2008,6 +2011,26 @@ class LinkMismatchError(ValueError):
     """
 
 
+class LinkUnreachableError(Refusal):
+    """A linked dataset that cannot be read decides what the caller would do.
+
+    Raised where reading the dataset alone would answer "no" for data the link
+    may hold, and acting on that answer would compute again, or write beside,
+    what the link already has. The ``links`` key of :attr:`detail` lists each
+    unreachable link as ``{"id": ..., "provides": [...]}``.
+
+    Args:
+        message: What could not be decided, and why.
+        links: The unreachable links.
+    """
+
+    def __init__(self, message: str, *, links: Sequence[DatasetLink]) -> None:
+        listed: list[JsonValue] = [
+            {"id": link.id, "provides": list(link.provides)} for link in links
+        ]
+        super().__init__(message, reason="link_unreachable", detail={"links": listed})
+
+
 @dataclass(frozen=True, slots=True)
 class LinkedDataset:
     """One dataset of a lookup order: the reading dataset, or one a link opened.
@@ -2324,7 +2347,8 @@ class Dataset:
 
     Attributes:
         opened_as_link: Whether another dataset's :meth:`lookup_order` opened
-            this one through a link. Such a dataset answers its own
+            this one through a link, or its :meth:`open_enclosing` opened it as
+            the owner of a path. Such a dataset answers its own
             :meth:`lookup_order` with itself alone, so a lookup reads a linked
             dataset's own data and never follows that dataset's links.
     """
@@ -3341,6 +3365,51 @@ class Dataset:
                 "this is the intended dataset, remove the link and add it again."
             )
             raise LinkMismatchError(msg)
+        return target
+
+    def open_enclosing(self, paths: Iterable[Path]) -> dict[Path, Dataset | None]:
+        """The dataset whose manifest is nearest around each of *paths*.
+
+        Each manifest found by :func:`~mosaic.core.dataset_discovery.enclosing_dataset`
+        is opened once, with ``ensure_roots=False``, and marked
+        :attr:`opened_as_link`, so its own lookups stay within it. This
+        dataset's own manifest answers with this dataset. The owner found by a
+        path is not a link: its ``uuid`` is not checked and no ``provides``
+        applies.
+
+        Args:
+            paths: Files or directories, which need not exist.
+
+        Returns:
+            Each of *paths* mapped to its enclosing dataset, or to ``None`` when
+            no manifest is around it or the nearest one does not read.
+        """
+        own = self.manifest_path.resolve()
+        opened: dict[Path, Dataset | None] = {own: self}
+        found: dict[Path, Dataset | None] = {}
+        for path in paths:
+            discovered = enclosing_dataset(path)
+            if discovered is None:
+                found[path] = None
+                continue
+            manifest = Path(discovered.manifest).resolve()
+            if manifest not in opened:
+                opened[manifest] = (
+                    None
+                    if discovered.error is not None
+                    else self._open_enclosing_manifest(manifest)
+                )
+            found[path] = opened[manifest]
+        return found
+
+    @staticmethod
+    def _open_enclosing_manifest(manifest: Path) -> Dataset | None:
+        """The dataset of *manifest*, or ``None`` when it does not read."""
+        try:
+            target = Dataset(manifest_path=manifest).load(ensure_roots=False)
+        except (OSError, ValueError, ManifestVersionError):
+            return None
+        target.opened_as_link = True
         return target
 
     def adopt_raw_rows(

@@ -38,6 +38,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.linked_rows import LINK_ID_COLUMN, merge_linked_rows
 from mosaic.core.pipeline.ops import IdentityDeferred
 from mosaic.core.strict_model import terse
 from mosaic.core.pipeline.label_series import (
@@ -65,6 +66,7 @@ __all__ = [
     "carried_series_digests",
     "ensure_series_root",
     "label_series_index",
+    "label_series_rows",
     "latest_revision",
     "payload_digest",
     "read_label_series",
@@ -177,6 +179,9 @@ class LabelSeriesIndexRow(IndexRowBase):
     source_id: str = ""
 
 
+_SERIES_ROW_KEYS: Final = ("origin_uuid", "key", "revision")
+"""The columns that identify a row of a series index."""
+
 LABEL_SERIES_INDEX_COLUMNS: Final[tuple[str, ...]] = (
     "abs_path",
     "series",
@@ -234,6 +239,9 @@ class SeriesRevision:
         path: The payload file.
         written: ``False`` when the state matched the latest revision and nothing
             was written. The revision named is then the existing one.
+        origin_uuid: The ``uuid`` of the dataset whose revision this is: the
+            writer's for a written revision, and a linked dataset's when an
+            unchanged state matched that dataset's latest revision.
     """
 
     series: str
@@ -242,6 +250,7 @@ class SeriesRevision:
     digest: str
     path: Path
     written: bool
+    origin_uuid: str
 
 
 class _RevisionManifestFile(BaseModel):
@@ -393,6 +402,13 @@ def write_series_revision(
     appended -- all inside the series index lock, so two saves landing together
     never share a number and neither loses its row.
 
+    While *ds* indexes no revision of *key*, the latest revision is the one a
+    reference without an origin resolves in the datasets *ds* links. A save that
+    matches it writes nothing and returns that revision, and a changed save
+    numbers past it, so a copy's first save of a key read through a link follows
+    the linked dataset's latest. Once *ds* indexes a revision of *key*, its own
+    rows alone decide.
+
     A revision is never overwritten. *payload* must be deterministic for a given
     state: a timestamp inside it would make every save look like a change.
     Timestamps belong in *origin*, which is recorded beside the payload.
@@ -437,11 +453,14 @@ def write_series_revision(
     digest = payload_digest(payload)
     origin_uuid = ds.uuid or ""
     key_root = root / key
+    linked = _linked_latest(ds, spec.name, key)
 
     index = label_series_index(series_index_path(ds, spec.name))
     with index_lock(index.path):
         committed = index.read_holding_lock()
         latest = latest_revision(committed, origin_uuid=origin_uuid, key=key)
+        if not any(record.get("key", "") == key for record in index_records(committed)):
+            latest = linked
         if latest is not None and latest.get("digest", "") == digest:
             existing = ds.resolve_path(latest["abs_path"])
             if existing.is_file():
@@ -452,6 +471,7 @@ def write_series_revision(
                     digest=digest,
                     path=existing,
                     written=False,
+                    origin_uuid=latest.get("origin_uuid", ""),
                 )
 
         indexed = record_revision(latest) if latest is not None else 0
@@ -518,7 +538,26 @@ def write_series_revision(
         digest=digest,
         path=target,
         written=True,
+        origin_uuid=origin_uuid,
     )
+
+
+def _linked_latest(ds: Dataset, series: str, key: str) -> dict[str, str] | None:
+    """The latest revision of *key* that the datasets *ds* links resolve, or ``None``.
+
+    Read as a reference without an origin reads it, from the first linked
+    dataset that indexes *key*. ``None`` when none does, or when that dataset
+    indexes *key* under several origins, which such a reference refuses.
+    """
+    linked = [
+        rows
+        for link_id, rows in _rows_by_dataset(label_series_rows(ds, series))
+        if link_id
+    ]
+    matching = _first_holding(linked, key=key, origin_uuid="", revision=None)
+    if len({record.get("origin_uuid", "") for record in matching}) != 1:
+        return None
+    return max(matching, key=record_revision)
 
 
 def _write_bytes(path: Path, content: bytes) -> None:
@@ -717,6 +756,78 @@ def read_label_series(ds: Dataset, series: str) -> pd.DataFrame:
     return label_series_index(path).read()
 
 
+def label_series_rows(ds: Dataset, series: str) -> pd.DataFrame:
+    """The *series* index of *ds* merged with those of the datasets it links.
+
+    Reads each dataset of ``ds.lookup_order("label-series")`` with
+    :func:`read_label_series` and merges the frames with
+    :func:`~mosaic.core.pipeline.linked_rows.merge_linked_rows`, keyed on
+    ``(origin_uuid, key, revision)``: an own row shadows a linked row of the same
+    revision, and an earlier link shadows a later one. A linked row's
+    ``abs_path`` is made absolute against its own dataset, so it names its file
+    from *ds*. Own cells stay as stored.
+
+    Writes nothing.
+
+    Returns:
+        The merged rows in lookup order, with a ``link_id`` column that names the
+        link of each row and is ``""`` for an own row.
+    """
+    return merge_linked_rows(
+        [
+            (
+                linked.link_id,
+                linked.dataset.base_dir,
+                read_label_series(linked.dataset, series),
+            )
+            for linked in ds.lookup_order("label-series")
+        ],
+        _SERIES_ROW_KEYS,
+        ("abs_path",),
+    )
+
+
+def _rows_by_dataset(frame: pd.DataFrame) -> list[tuple[str, list[dict[str, str]]]]:
+    """The records of a :func:`label_series_rows` frame, one list per dataset.
+
+    The lists keep lookup order, the order in which the merge placed the rows.
+    """
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for record in index_records(frame):
+        grouped.setdefault(record.get(LINK_ID_COLUMN, ""), []).append(record)
+    return list(grouped.items())
+
+
+def _first_holding(
+    datasets: Sequence[list[dict[str, str]]],
+    *,
+    key: str,
+    origin_uuid: str,
+    revision: int | None,
+) -> list[dict[str, str]]:
+    """The rows of *key* in the first dataset that holds what a reference names.
+
+    A dataset holds it when it indexes *key*, under *origin_uuid* when one is
+    named, and *revision* of it when one is named. The rows returned are every
+    row of *key* in that dataset, under *origin_uuid* when one is named, so a
+    caller sees each origin the dataset indexes the key under.
+    """
+    for records in datasets:
+        of_key = [
+            record
+            for record in records
+            if record.get("key", "") == key
+            and (not origin_uuid or record.get("origin_uuid", "") == origin_uuid)
+        ]
+        if revision is not None and not any(
+            record_revision(record) == revision for record in of_key
+        ):
+            continue
+        if of_key:
+            return of_key
+    return []
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedRevision:
     """A revision reference, resolved to one revision file on disk.
@@ -748,33 +859,38 @@ def resolve_series_refs(
     a revision that was edited in place cannot mint the identifier of the state
     it used to hold.
 
+    The rows are those of :func:`label_series_rows`, read one dataset at a time
+    in lookup order, and a reference is answered by the first dataset that holds
+    what it names: a revision of its key, under its ``origin_uuid`` when it names
+    one, and its ``revision`` when it names one. A reference without a revision
+    takes the latest revision of that dataset, so once a copy saves a revision
+    of a key, its latest is its own. Rows of two datasets never combine into one
+    match.
+
     Args:
-        ds: The dataset whose index of *series* is read.
+        ds: The dataset whose index of *series*, and those of its links, are
+            read.
         series: The series the references name keys of.
         refs: The references, resolved in order.
         kind: What is resolving, named in a deferral.
 
     Raises:
-        SeveralOrigins: A reference matches several datasets' revisions of its
-            key and names none.
+        SeveralOrigins: A reference names no origin, and the dataset that
+            answers it indexes its key under several origins.
         IdentityDeferred: A reference matches no indexed revision, or the
             revision it matches is not on disk. Both are states a scan or a
             save can still change, which is what deferring means.
         LabelSeriesTamperedError: A revision's bytes no longer match the digest
             its index row recorded.
     """
-    records = index_records(read_label_series(ds, series))
+    datasets = [rows for _, rows in _rows_by_dataset(label_series_rows(ds, series))]
+    records = [record for rows in datasets for record in rows]
     resolved: list[ResolvedRevision] = []
     for ref in refs:
-        matching = [
-            record
-            for record in records
-            if record.get("key", "") == ref.key
-            and (
-                not ref.origin_uuid or record.get("origin_uuid", "") == ref.origin_uuid
-            )
-        ]
-        if not matching:
+        held = _first_holding(
+            datasets, key=ref.key, origin_uuid=ref.origin_uuid, revision=None
+        )
+        if not held:
             known = sorted({record.get("key", "") for record in records})
             origin = f" from dataset {ref.origin_uuid}" if ref.origin_uuid else ""
             raise IdentityDeferred(
@@ -784,23 +900,33 @@ def resolve_series_refs(
                 "another dataset has to be claimed first: declare a labels "
                 f"source with series={series!r} naming the revision, then scan",
             )
-        origins = sorted({record.get("origin_uuid", "") for record in matching})
+        matching = (
+            held
+            if ref.revision is None
+            else _first_holding(
+                datasets,
+                key=ref.key,
+                origin_uuid=ref.origin_uuid,
+                revision=ref.revision,
+            )
+        )
+        origins = sorted({record.get("origin_uuid", "") for record in matching or held})
         if len(origins) > 1:
             raise SeveralOrigins(series, ref.key, origins)
-        if ref.revision is None:
-            chosen = max(matching, key=record_revision)
-        else:
-            wanted = [
+        if not matching:
+            indexed = sorted(record_revision(record) for record in held)
+            raise IdentityDeferred(
+                kind,
+                f"revision {ref.revision} of {series} key {ref.key!r} is "
+                f"not indexed here (indexed: {indexed}); claim it and scan",
+            )
+        chosen = (
+            max(matching, key=record_revision)
+            if ref.revision is None
+            else next(
                 record for record in matching if record_revision(record) == ref.revision
-            ]
-            if not wanted:
-                held = sorted(record_revision(record) for record in matching)
-                raise IdentityDeferred(
-                    kind,
-                    f"revision {ref.revision} of {series} key {ref.key!r} is "
-                    f"not indexed here (indexed: {held}); claim it and scan",
-                )
-            chosen = wanted[0]
+            )
+        )
         payload = ds.resolve_path(chosen["abs_path"])
         if not payload.is_file():
             raise IdentityDeferred(
@@ -816,7 +942,7 @@ def resolve_series_refs(
         resolved.append(
             ResolvedRevision(
                 series=series,
-                origin_uuid=origins[0],
+                origin_uuid=chosen.get("origin_uuid", ""),
                 key=ref.key,
                 revision=record_revision(chosen),
                 digest=measured,

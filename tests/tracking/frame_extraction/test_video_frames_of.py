@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 from mosaic.core.annotations.model import AnnotationFrame
-from mosaic.core.annotations.split import VideoFrame, frame_key
+from mosaic.core.annotations.split import VideoFrame, frame_key, unit_key
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.manifest import DatasetLink
 from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
@@ -411,3 +411,138 @@ def test_a_read_only_dataset_without_a_frames_root_gains_no_directory(
         frame_index=4,
     )
     assert_tree_unchanged(base, before)
+
+
+@dataclass(frozen=True, slots=True)
+class _Copied:
+    """A source with extracted frames, a copy that links it, and a library."""
+
+    source: Dataset
+    copy: Dataset
+    library: Dataset
+    images: dict[int, Path]
+
+
+@pytest.fixture
+def copied(tmp_path: Path) -> _Copied:
+    source = make_dataset(tmp_path / "source", name="source")
+    images = _extract(source)
+    copy = make_dataset(tmp_path / "copy", name="copy")
+    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path="../source"))
+    library = make_dataset(tmp_path / "library", name="library")
+    return _Copied(source=source, copy=copy, library=library, images=images)
+
+
+def _reader(copied: _Copied, name: str) -> Dataset:
+    return copied.copy if name == "copy" else copied.library
+
+
+readers = pytest.mark.parametrize("reader", ["copy", "library"])
+"""Reads a copy's revision on the copy and on a library that links neither."""
+
+
+def _source_frame(copied: _Copied, index: int) -> VideoFrame:
+    return VideoFrame(
+        origin_uuid=copied.source.uuid or "",
+        group="G",
+        sequence="S",
+        camera="cam1",
+        frame_index=index,
+    )
+
+
+@readers
+def test_a_copied_revisions_absolute_image_takes_the_sources_frame(
+    copied: _Copied, reader: str
+) -> None:
+    image = copied.source.base_dir / copied.images[100]
+
+    (located,) = video_frames_of(
+        _reader(copied, reader),
+        copied.copy.base_dir,
+        [_frame(image)],
+        revision_origin=copied.copy.uuid or "",
+    )
+
+    assert located == _source_frame(copied, 100)
+
+
+@readers
+def test_a_copied_revisions_image_through_the_parent_takes_the_sources_frame(
+    copied: _Copied, reader: str
+) -> None:
+    image = Path("..") / "source" / copied.images[250]
+
+    (located,) = video_frames_of(
+        _reader(copied, reader),
+        copied.copy.base_dir,
+        [_frame(image)],
+        revision_origin=copied.copy.uuid or "",
+    )
+
+    assert located == _source_frame(copied, 250)
+
+
+def test_an_absolute_image_outside_a_readable_dataset_falls_back(
+    tmp_path: Path, copied: _Copied
+) -> None:
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    _ = (broken / "dataset.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    frames = [
+        _frame(tmp_path / "loose" / "S" / "a.png", video="S", frame_index=3),
+        _frame(broken / "frames" / "S" / "b.png", video="S", frame_index=4),
+    ]
+
+    located = video_frames_of(
+        copied.copy, copied.copy.base_dir, frames, revision_origin=REVISION_ORIGIN
+    )
+
+    assert [(frame.origin_uuid, frame.camera) for frame in located] == [
+        (REVISION_ORIGIN, ""),
+        (REVISION_ORIGIN, ""),
+    ]
+
+
+def test_a_frame_the_copy_extracted_takes_the_copys_uuid_and_unit(
+    copied: _Copied,
+) -> None:
+    """The copy's own frames of an adopted sequence split apart from the copied ones."""
+    own = _extract(copied.copy)
+
+    copied_frame, extracted = video_frames_of(
+        copied.copy,
+        copied.copy.base_dir,
+        [_frame(copied.source.base_dir / copied.images[100]), _frame(own[250])],
+        revision_origin=REVISION_ORIGIN,
+    )
+
+    assert copied_frame == _source_frame(copied, 100)
+    assert extracted == replace(
+        _source_frame(copied, 250), origin_uuid=copied.copy.uuid or ""
+    )
+    assert unit_key(extracted, "sequence", {}, {}) != unit_key(
+        copied_frame, "sequence", {}, {}
+    )
+
+
+def test_a_relative_image_inside_an_unknown_image_root_falls_back(
+    copied: _Copied,
+) -> None:
+    """A library that links neither dataset knows no dataset at the image root."""
+    own = _extract(copied.copy)
+
+    (located,) = video_frames_of(
+        copied.library,
+        copied.copy.base_dir,
+        [_frame(own[100], video="S", frame_index=100)],
+        revision_origin=REVISION_ORIGIN,
+    )
+
+    assert located == VideoFrame(
+        origin_uuid=REVISION_ORIGIN,
+        group="",
+        sequence="S",
+        camera="",
+        frame_index=100,
+    )

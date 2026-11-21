@@ -74,6 +74,7 @@ type RefusalReason = Literal[
     "tool_unavailable",
     "run_root_held",
     "subset_refused",
+    "link_unreachable",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -113,7 +114,12 @@ entries under an attempt of its own; its ``cause`` is ``scope_dependent`` for a
 step whose run id covers its set of entries, so a subset would be another run,
 ``op_step`` for an op step, ``stand_in`` for a step the request binds or pins to a
 run, which it serves rather than computes, and ``outside_target`` for a named
-entry that is not among the step's entries.
+entry that is not among the step's entries. ``link_unreachable`` is an op that
+needs the answer of a linked dataset that cannot be read: a training whose run
+no reachable dataset finished while a link that provides models is offline. Its
+``links`` detail lists each unreachable link by ``id`` and ``provides``. The
+attempt may be retried once the link opens, and no training output was written for
+it.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

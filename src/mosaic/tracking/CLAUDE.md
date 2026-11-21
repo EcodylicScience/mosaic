@@ -80,6 +80,11 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   dataset in declaration order, and resolves the cell against the dataset that wrote it.
 - Links are one level deep. An unreachable linked dataset is skipped with a warning. A
   reachable one with a different manifest `uuid` raises `LinkMismatchError`.
+- A training op reuses a run that this dataset or a linked dataset finished
+  (`linked_training_complete` in `ops/trained_models.py`). An offline link that provides
+  models, with no finished row in a reachable dataset, raises `LinkUnreachableError`
+  rather than training. `training_is_complete` reads one dataset's index, and
+  `trained_model_records` keeps it for an own record's `complete` cell.
 
 ## Training data and provenance
 

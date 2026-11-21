@@ -96,6 +96,21 @@ deletes only the dataset's own, so it writes nothing under a linked dataset.
 `DatasetSummary.libraries`, the `libraries` key of `mosaic describe --json` and of the
 `describe_dataset` tool's output, is `links`.
 
+`RefusalReason` gains `link_unreachable`, the one addition to the set. It is raised as
+`LinkUnreachableError` (`mosaic.core.dataset`), a `Refusal` whose `detail` lists each
+unreachable link as `{"id": ..., "provides": [...]}`. `job_context` records the attempt
+`failed` with that reason in `error_json`, and a retry once the link opens is the
+answer. The training ops (`train-pose`, `train-points`, `train-localizer`,
+`train-litpose`, `train-sleap`) reuse a run that the dataset or a dataset it links for
+`models` finished, through `linked_training_complete`
+(`mosaic.tracking.ops.trained_models`), so a copy whose own index records an unfinished
+training of a run that its source finished returns the source's run without training.
+When no reachable dataset finished the run and a models link is offline, the op raises
+`LinkUnreachableError` instead of training. An own finished run is reused while a link
+is offline. `prepare-training-data` and `convert-points` run ids as a training op's data
+argument resolve through the same links, and the stored path is resolved against the
+dataset that wrote it.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

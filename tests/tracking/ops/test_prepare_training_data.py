@@ -61,6 +61,7 @@ from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops._common import (
     fingerprint_dataset,
     fingerprint_yolo_dataset,
+    prepared_data_row,
     resolve_training_data,
 )
 from mosaic.tracking.ops.prepare import (
@@ -80,6 +81,7 @@ from tests.helpers import (
     MOUSE,
     add_track_sequences,
     assert_tree_unchanged,
+    copy_of,
     extract_entry_camera,
     make_dataset,
     narrowed_params,
@@ -2260,6 +2262,35 @@ def test_training_data_may_be_named_by_the_run_that_prepared_it(
     )
 
 
+def test_a_preparation_in_a_linked_dataset_is_read_through_the_link(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    mice, _rats, library = world
+    run_id = _prepare(library)
+    _ = mice.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
+
+    row = prepared_data_row(mice, run_id)
+
+    assert row is not None and row["run_id"] == run_id
+    assert resolve_training_data(mice, run_id) == (
+        model_run_root(library, KIND, run_id) / "data.yaml"
+    ), "the stored cell is resolved against the dataset that wrote it"
+
+
+def test_a_link_that_does_not_provide_models_serves_no_preparation(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    mice, _rats, library = world
+    run_id = _prepare(library)
+    _ = mice.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("features",))
+    )
+
+    assert prepared_data_row(mice, run_id) is None
+
+
 def test_a_train_identity_over_a_run_id_carries_no_location(
     world: tuple[Dataset, Dataset, Dataset], tmp_path: Path
 ) -> None:
@@ -2389,6 +2420,28 @@ def test_the_same_answer_from_a_project_that_links_the_library(
 
     assert found.served_by == "group"
     assert len(found.sets) == 2
+
+
+def test_a_model_trained_in_a_copy_reaches_the_source_revision_it_read(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
+    _ = _save_set(source, "17-openfield", {"m01": 4, "m02": 4})
+    copy = copy_of(source, tmp_path / "copy")
+    prepared = run_op(
+        copy,
+        KIND,
+        {"sets": [{"set_key": "17-openfield"}], "split": (0.5, 0.5, 0.0)},
+    )
+    model = _train(copy, prepared)
+
+    found = training_provenance(copy, "train-pose", model)
+
+    assert found.stopped_at == ""
+    assert [(s.origin_uuid, s.set_key, s.revision) for s in found.sets] == [
+        (source.uuid, "17-openfield", 1)
+    ]
+    assert all(s.reachable and s.origin == {"dolt_commit": "c1"} for s in found.sets)
 
 
 def test_an_archived_project_is_named_as_where_the_chain_stops(

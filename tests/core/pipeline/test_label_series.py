@@ -32,6 +32,8 @@ from mosaic.core.annotations.projection import (
     write_keypoint_set_revision,
 )
 from mosaic.core.annotations.readers.coco import read_coco_keypoints
+from mosaic.core.annotations.sequence_tags import resolve_sequence_tag_revision
+from mosaic.core.annotations.tag_table import TagTable, tag_table_payload
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import LabelsScanSource, read_manifest
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
@@ -39,21 +41,30 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.label_series import (
     SERIES_MARKER,
+    TAG_TABLE_KEY,
+    TAGS_SERIES,
+    LabelRevisionRef,
     is_under_label_series,
     series_spec,
 )
 from mosaic.core.pipeline.label_series_index import (
     LabelSeriesCollisionError,
     LabelSeriesTamperedError,
+    ResolvedRevision,
+    SeveralOrigins,
     read_label_series,
     read_revision_manifest,
+    resolve_series_refs,
     revision_export,
     write_series_revision,
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 from mosaic.core.recording import RecordingKey
+from mosaic.core.typed_attribute import TypedAttributeType
 from tests.helpers import (
     add_track_sequences,
+    copy_of,
+    index_a_second_origin,
     make_dataset,
     pose_frame,
     pose_object,
@@ -555,3 +566,127 @@ def test_a_library_sees_a_vanished_project_as_a_row_with_no_file(
     record = inventory(library, kinds=["label-series"]).records[0]
     assert record.status != "complete"
     assert record.orphan_rows == frozenset({"1"})
+
+
+# --------------------------------------------------------------- across a link
+
+TAG_TYPES: dict[str, TypedAttributeType] = {"treatment": "categorical"}
+
+
+def _tags(value: str) -> TagTable:
+    return tag_table({("g", "s1"): {"treatment": value}}, TAG_TYPES)
+
+
+def _latest_ref(revision: int | None = None, origin_uuid: str = "") -> LabelRevisionRef:
+    return LabelRevisionRef(
+        key=TAG_TABLE_KEY, revision=revision, origin_uuid=origin_uuid
+    )
+
+
+def _resolve(ds: Dataset, ref: LabelRevisionRef) -> ResolvedRevision:
+    (resolved,) = resolve_series_refs(ds, TAGS_SERIES, (ref,), kind="any-op")
+    return resolved
+
+
+@pytest.fixture
+def linked_pair(tmp_path: Path) -> tuple[Dataset, Dataset]:
+    """A source holding revisions 1 to 3 of the tag table, and a copy linking it."""
+    source = make_dataset(tmp_path / "source", name="source")
+    for value in ("a", "b", "c"):
+        _ = write_tags(source, _tags(value))
+    return source, copy_of(source, tmp_path / "copy")
+
+
+def test_a_reference_on_a_copy_resolves_the_sources_latest_revision(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+
+    resolved = _resolve(copy, _latest_ref())
+
+    assert (resolved.origin_uuid, resolved.revision) == (source.uuid, 3)
+    assert resolved.payload.is_relative_to(source.base_dir.resolve())
+    assert resolved.payload.read_bytes() == tag_table_payload(_tags("c"))
+
+
+def test_a_changed_save_on_a_copy_follows_the_sources_numbering(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+
+    saved = write_tags(copy, _tags("d"))
+
+    assert (saved.written, saved.revision, saved.origin_uuid) == (True, 4, copy.uuid)
+    assert saved.path.is_relative_to(copy.base_dir)
+    assert len(read_label_series(source, TAGS_SERIES)) == 3
+    latest = _resolve(copy, _latest_ref())
+    assert (latest.origin_uuid, latest.revision) == (copy.uuid, 4)
+    earlier = _resolve(copy, _latest_ref(revision=2))
+    assert (earlier.origin_uuid, earlier.revision) == (source.uuid, 2)
+
+    _ = write_tags(source, _tags("e"))
+
+    after = _resolve(copy, _latest_ref())
+    assert (after.origin_uuid, after.revision) == (copy.uuid, 4), (
+        "a later save in the source does not displace the copy's own latest"
+    )
+
+
+def test_a_save_of_the_sources_state_on_a_copy_writes_nothing(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+
+    saved = write_tags(copy, _tags("c"))
+
+    assert (saved.written, saved.revision, saved.origin_uuid) == (
+        False,
+        3,
+        source.uuid,
+    )
+    assert saved.path == _resolve(source, _latest_ref()).payload
+    assert read_label_series(copy, TAGS_SERIES).empty
+
+
+def test_a_reference_naming_an_origin_reads_the_first_dataset_holding_it(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+    _ = write_tags(copy, _tags("d"))
+
+    from_source = _resolve(copy, _latest_ref(origin_uuid=source.uuid or ""))
+    from_copy = _resolve(copy, _latest_ref(origin_uuid=copy.uuid or ""))
+
+    assert (from_source.origin_uuid, from_source.revision) == (source.uuid, 3)
+    assert (from_copy.origin_uuid, from_copy.revision) == (copy.uuid, 4)
+
+
+def test_several_origins_are_refused_only_within_one_dataset(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+    other = index_a_second_origin(source)
+
+    with pytest.raises(SeveralOrigins) as raised:
+        _ = _resolve(copy, _latest_ref())
+    assert raised.value.origins == tuple(sorted((source.uuid or "", other)))
+
+    saved = write_tags(copy, _tags("d"))
+
+    resolved = _resolve(copy, _latest_ref())
+    assert (resolved.origin_uuid, resolved.revision) == (copy.uuid, saved.revision), (
+        "the copy's rows and the source's do not combine into one match"
+    )
+
+
+def test_a_copy_resolves_a_tag_revision_of_its_source(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    source, copy = linked_pair
+
+    latest = resolve_sequence_tag_revision(copy, kind="any-op")
+    named = resolve_sequence_tag_revision(copy, 2, kind="any-op")
+
+    assert latest is not None and named is not None
+    assert (latest.origin_uuid, latest.revision) == (source.uuid, 3)
+    assert (named.origin_uuid, named.revision) == (source.uuid, 2)

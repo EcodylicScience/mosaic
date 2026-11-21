@@ -1,8 +1,9 @@
-"""The datasets below a directory, found by their manifests.
+"""The datasets below a directory, and the one around a path, found by their manifests.
 
 :func:`discover_datasets` walks down from a directory and returns each dataset
-whose manifest it finds, named by its path, ``uuid`` and ``name``. It reads
-each manifest and writes nothing.
+whose manifest it finds, named by its path, ``uuid`` and ``name``.
+:func:`enclosing_dataset` walks up from a path to the nearest one. Both read
+each manifest and write nothing.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ __all__ = [
     "SKIPPED_DIRECTORIES",
     "DiscoveredDataset",
     "discover_datasets",
+    "enclosing_dataset",
 ]
 
 DEFAULT_DISCOVERY_DEPTH: Final = 3
@@ -132,6 +134,30 @@ def discover_datasets(
                 for child in _subdirectories(directory, skipped=skipped)
             )
     return sorted(found, key=lambda dataset: dataset.manifest)
+
+
+def enclosing_dataset(path: Path) -> DiscoveredDataset | None:
+    """Find the dataset whose manifest is in the nearest directory around *path*.
+
+    *path* is resolved, and it, when it is a directory, and each of its
+    ancestors in turn is checked for a manifest as :func:`discover_datasets`
+    recognizes one. A directory that cannot be probed is passed over.
+
+    Args:
+        path: A file or directory, which need not exist.
+
+    Returns:
+        The nearest dataset, with ``error`` set when its manifest does not
+        read, or ``None`` when no ancestor holds a manifest.
+    """
+    resolved = path.resolve()
+    for directory in (resolved, *resolved.parents):
+        if not directory.is_dir():
+            continue
+        dataset = _dataset_at(directory)
+        if dataset is not None:
+            return dataset.found
+    return None
 
 
 class _DatasetHere(NamedTuple):

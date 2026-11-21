@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal
 
-import pandas as pd
 from mosaic_media import MediaFacts
 from pydantic import Field, ValidationInfo, field_validator
 
@@ -43,9 +42,11 @@ from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
 from .frame_runs import (
     FramesIndexRow,
+    frame_run_roots,
     frames_index,
     frames_index_path,
     frames_run_root,
+    latest_frame_run_id,
 )
 from .sampling import Exclusion, ExtractionMethod
 
@@ -1308,57 +1309,79 @@ def extract_frames(
     )
 
 
+def _run_files(
+    ds: Dataset,
+    method: str,
+    run_id: str | None,
+    group: str | None,
+    sequence: str | None,
+    pattern: str,
+) -> list[tuple[Dataset, Path]]:
+    """The files matching *pattern* under each entry directory of a frames run.
+
+    The run's roots are read in lookup order (:func:`frame_run_roots`), and an
+    entry directory of an earlier root shadows the same entry's directory in a
+    later one. A missing *run_id* takes :func:`latest_frame_run_id`. The search
+    descends the optional per-camera subdirectory, which a multi-camera
+    recording writes as ``frames/<seq>/<camera>/``.
+
+    Returns:
+        Each file, sorted by path, with the dataset whose run root holds it.
+    """
+    if run_id is None:
+        run_id = latest_frame_run_id(ds, method)
+        if run_id is None:
+            return []
+    entry = (
+        None
+        if group is None and sequence is None
+        else make_entry_key(group or "", sequence or "")
+    )
+    found: list[tuple[Dataset, Path]] = []
+    seen: set[str] = set()
+    for owner, root in frame_run_roots(ds, method, run_id):
+        directories = [
+            child
+            for child in sorted(root.iterdir())
+            if child.is_dir()
+            and child.name not in seen
+            and (entry is None or child.name == entry)
+        ]
+        seen.update(child.name for child in directories)
+        found.extend(
+            (owner, path) for child in directories for path in child.rglob(pattern)
+        )
+        if entry is None:
+            found.extend((owner, path) for path in root.glob(pattern))
+    return sorted(found, key=lambda item: item[1])
+
+
 def get_frame_paths(
-    ds,
+    ds: Dataset,
     method: str,
     run_id: str | None = None,
     group: str | None = None,
     sequence: str | None = None,
 ) -> list[Path]:
+    """The extracted frame PNGs of a frames run, read through the dataset's links.
+
+    Args:
+        ds: The reading dataset.
+        method: Extraction method (``"uniform"``, ``"kmeans"`` or ``"list"``).
+        run_id: The run, or ``None`` for the latest: *ds*'s own latest run,
+            else the first linked dataset's.
+        group: With *sequence*, only the frames of the entry ``(group,
+            sequence)``.
+        sequence: See *group*.
+
+    Returns:
+        The PNG paths, sorted. An entry directory of *ds*'s own run root
+        shadows the same entry's in a linked one.
     """
-    Return paths to extracted frame PNGs for a given scope.
-
-    Parameters
-    ----------
-    method : str
-        Extraction method ("uniform", "kmeans" or "list").
-    run_id : str, optional
-        Specific run_id. If None, uses the latest run.
-    group, sequence : str, optional
-        Filter to a specific (group, sequence).
-
-    Returns
-    -------
-    list[Path]
-        Sorted list of PNG file paths.
-    """
-    frames_root = ds.get_root("frames")
-    method_root = frames_root / method
-    if not method_root.exists():
-        return []
-
-    # Resolve run_id
-    if run_id is None:
-        idx_path = method_root / "index.csv"
-        if not idx_path.exists():
-            return []
-        df = pd.read_csv(idx_path)
-        if df.empty:
-            return []
-        run_id = str(df["run_id"].iloc[-1])
-
-    run_root = method_root / run_id
-    if not run_root.exists():
-        return []
-
-    # Collect PNG paths. rglob so a per-camera subdir (a multi-camera recording
-    # writes frames/<seq>/<camera>/*.png) is descended into; single-camera frames
-    # sit directly under the sequence dir and are still found.
-    if group is not None or sequence is not None:
-        seq_label = make_entry_key(group or "", sequence or "")
-        seq_dir = run_root / seq_label
-        return sorted(seq_dir.rglob("*.png")) if seq_dir.exists() else []
-    return sorted(run_root.rglob("*.png"))
+    return [
+        path
+        for _owner, path in _run_files(ds, method, run_id, group, sequence, "*.png")
+    ]
 
 
 def get_frame_manifests(
@@ -1368,61 +1391,31 @@ def get_frame_manifests(
     group: str | None = None,
     sequence: str | None = None,
 ) -> list[dict[str, object]]:
+    """The ``run_info.json`` manifests of a frames run, read through its links.
+
+    Each file record's ``path`` is made absolute against the manifest's
+    directory, and a relative ``output_dir`` or ``video_path`` against the
+    dataset whose run root holds the manifest.
+
+    Args:
+        ds: The reading dataset.
+        method: Extraction method (``"uniform"``, ``"kmeans"`` or ``"list"``).
+        run_id: The run, or ``None`` for the latest: *ds*'s own latest run,
+            else the first linked dataset's.
+        group: With *sequence*, only the manifests of the entry ``(group,
+            sequence)``.
+        sequence: See *group*.
+
+    Returns:
+        One manifest per entry camera directory, sorted by path. Each holds
+        ``video_path``, ``files``, ``video_meta``, ``selected_frame_indices``
+        and the other fields the extraction wrote.
     """
-    Load run_info.json manifests from extracted frame directories.
-
-    Parameters
-    ----------
-    method : str
-        Extraction method ("uniform", "kmeans" or "list").
-    run_id : str, optional
-        Specific run_id. If None, uses the latest run.
-    group, sequence : str, optional
-        Filter to a specific (group, sequence).
-
-    Returns
-    -------
-    list[dict]
-        List of manifest dicts loaded from run_info.json files,
-        one per sequence directory. Each dict contains video_path,
-        files, video_meta, selected_frame_indices, etc.
-    """
-    frames_root = ds.get_root("frames")
-    method_root = frames_root / method
-    if not method_root.exists():
-        return []
-
-    # Resolve run_id
-    if run_id is None:
-        idx_path = method_root / "index.csv"
-        if not idx_path.exists():
-            return []
-        df = pd.read_csv(idx_path)
-        if df.empty:
-            return []
-        run_id = str(df["run_id"].iloc[-1])
-
-    run_root = method_root / run_id
-    if not run_root.exists():
-        return []
-
-    # Collect run_info.json manifests. rglob descends the optional per-camera
-    # subdir, so a multi-camera recording yields one manifest per camera and a
-    # single-camera sequence yields one manifest directly under its dir.
-    if group is not None or sequence is not None:
-        seq_label = make_entry_key(group or "", sequence or "")
-        seq_root = run_root / seq_label
-        manifest_paths = (
-            sorted(seq_root.rglob("run_info.json")) if seq_root.exists() else []
-        )
-    else:
-        manifest_paths = sorted(run_root.rglob("run_info.json"))
-
     manifests: list[dict[str, object]] = []
-    for manifest_path in manifest_paths:
+    for owner, manifest_path in _run_files(
+        ds, method, run_id, group, sequence, "run_info.json"
+    ):
         data = json.loads(manifest_path.read_text())
-        # Resolve each file against the manifest's directory so callers always
-        # see absolute paths
         manifest_dir = manifest_path.parent
         for f in data.get("files", []):
             if "path" in f:
@@ -1431,10 +1424,10 @@ def get_frame_manifests(
         if "output_dir" in data:
             od = Path(data["output_dir"])
             if not od.is_absolute():
-                data["output_dir"] = str(ds.resolve_path(od))
+                data["output_dir"] = str(owner.resolve_path(od))
         if "video_path" in data:
             vp = Path(data["video_path"])
             if not vp.is_absolute():
-                data["video_path"] = str(ds.resolve_path(vp))
+                data["video_path"] = str(owner.resolve_path(vp))
         manifests.append(data)
     return manifests

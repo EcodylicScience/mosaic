@@ -40,13 +40,15 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import (
     ResolvedRevision,
+    label_series_rows,
     read_label_series,
     read_revision_manifest,
 )
 from mosaic.core.pipeline.models import (
     PREPARED_DATA_KINDS,
     SPLIT_RECORD_FILENAME,
-    model_index_path,
+    model_index_row,
+    model_index_row_holder,
     model_run_root,
     prepared_artifact_cell,
 )
@@ -215,16 +217,6 @@ def _revision_json(item: ConsumedRevision) -> dict[str, JsonValue]:
     }
 
 
-def _row(index_path: Path, run_id: str) -> dict[str, str] | None:
-    if not index_path.exists():
-        return None
-    frame = pd.read_csv(index_path, dtype="string", keep_default_na=False)
-    if "run_id" not in frame.columns:
-        return None
-    matching = [r for r in index_records(frame) if r.get("run_id", "") == run_id]
-    return matching[-1] if matching else None
-
-
 def _holder(
     ds: Dataset, kind: str, run_id: str
 ) -> tuple[Dataset, str, dict[str, str]] | None:
@@ -232,11 +224,11 @@ def _holder(
 
     Returns ``None`` when no index registers it.
     """
-    for linked in ds.lookup_order("models"):
-        found = _row(model_index_path(linked.dataset, kind), run_id)
-        if found is not None:
-            return linked.dataset, linked.link_id, found
-    return None
+    found = model_index_row_holder(ds, kind, run_id)
+    if found is None:
+        return None
+    linked, row = found
+    return linked.dataset, linked.link_id, row
 
 
 def _unregistered(kind: str, run_id: str) -> str:
@@ -349,29 +341,57 @@ def _resolved(item: ConsumedRevision) -> ResolvedRevision | None:
     )
 
 
-def _consumed(holder: Dataset, cell: str) -> tuple[ConsumedRevision, ...]:
+def _consumed(
+    reader: Dataset, holder: Dataset, cell: str
+) -> tuple[ConsumedRevision, ...]:
+    """The revisions *cell* records, each found where a series index holds it.
+
+    The holder's own rows are read first, so a library keeps the revisions it
+    claimed from projects that *reader* does not link. The merged rows of
+    *reader* follow, so a model trained in a copy finds a revision it read
+    through the copy's link. The first row of a revision wins, and its path is
+    resolved by the dataset whose rows it is in: *holder* for its own rows and
+    *reader* for the merged ones.
+
+    Args:
+        reader: The dataset asking for the provenance.
+        holder: The dataset whose index registers the model.
+        cell: The JSON list of consumed revisions a preparation row records.
+    """
     try:
         entries = _CONSUMED.validate_json(cell or "[]")
     except ValidationError:
         return ()
-    indexed = index_records(read_label_series(holder, KEYPOINTS_SERIES))
+    indexed = [
+        *(
+            (record, holder)
+            for record in index_records(read_label_series(holder, KEYPOINTS_SERIES))
+        ),
+        *(
+            (record, reader)
+            for record in index_records(label_series_rows(reader, KEYPOINTS_SERIES))
+        ),
+    ]
     found: list[ConsumedRevision] = []
     for entry in entries:
         origin_uuid = entry.origin_uuid
         set_key = entry.set_key
         revision = entry.revision
         digest = entry.digest
-        row = next(
+        match = next(
             (
-                record
-                for record in indexed
+                (record, resolver)
+                for record, resolver in indexed
                 if record.get("origin_uuid", "") == origin_uuid
                 and record.get("key", "") == set_key
                 and record.get("revision", "") == str(revision)
             ),
             None,
         )
-        path = holder.resolve_path(row["abs_path"]) if row is not None else None
+        path: Path | None = None
+        if match is not None:
+            record, resolver = match
+            path = resolver.resolve_path(record["abs_path"])
         reachable = path is not None and path.is_file()
         origin: Mapping[str, JsonValue] = {}
         if path is not None and reachable:
@@ -455,7 +475,7 @@ def _walk(ds: Dataset, kind: str, run_id: str) -> _Walk | None:
             "which annotations it holds"
         )
         return _Walk(holder, None, _stopped(base, reason))
-    prepared = _row(model_index_path(holder, prepared_kind), prepared_run_id)
+    prepared = model_index_row(holder, prepared_kind, prepared_run_id)
     if prepared is None:
         stopped = _stopped(
             base,
@@ -464,7 +484,7 @@ def _walk(ds: Dataset, kind: str, run_id: str) -> _Walk | None:
             prepared_run_id=prepared_run_id,
         )
         return _Walk(holder, None, stopped)
-    sets = _consumed(holder, prepared.get("consumed_sets", ""))
+    sets = _consumed(ds, holder, prepared.get("consumed_sets", ""))
     unreachable = [item for item in sets if not item.reachable]
     reason = ""
     if not sets:
@@ -490,7 +510,7 @@ def _walk(ds: Dataset, kind: str, run_id: str) -> _Walk | None:
         keypoint_count=_keypoint_count(holder, prepared),
         keypoint_schema=_keypoint_schema(prepared, sets),
         sets=sets,
-        held_out_sets=_consumed(holder, prepared.get("held_out_sets", "")),
+        held_out_sets=_consumed(ds, holder, prepared.get("held_out_sets", "")),
         stopped_at=reason,
     )
     return _Walk(holder, prepared, provenance)

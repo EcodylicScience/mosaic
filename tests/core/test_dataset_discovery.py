@@ -12,6 +12,7 @@ from mosaic.core.dataset_discovery import (
     SKIPPED_DIRECTORIES,
     DiscoveredDataset,
     discover_datasets,
+    enclosing_dataset,
 )
 from mosaic.core.manifest import MANIFEST_VERSION
 from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
@@ -164,3 +165,38 @@ def test_a_root_that_is_not_a_directory_or_a_negative_depth_is_refused(
         _ = discover_datasets(tmp_path / "absent")
     with pytest.raises(ValueError, match="max_depth"):
         _ = discover_datasets(tmp_path, max_depth=-1)
+
+
+def test_the_enclosing_dataset_is_the_nearest_ancestors(tmp_path: Path) -> None:
+    outer = make_dataset(tmp_path / "outer", name="outer")
+    inner = make_dataset(tmp_path / "outer" / "library", name="inner")
+
+    nested = enclosing_dataset(inner.base_dir / "frames" / "run" / "a.png")
+    around = enclosing_dataset(outer.base_dir / "media" / "a.mp4")
+
+    assert nested == DiscoveredDataset(
+        manifest=str(inner.manifest_path.resolve()), uuid=inner.uuid, name="inner"
+    )
+    assert around is not None
+    assert around.name == "outer"
+
+
+def test_a_path_outside_every_dataset_has_no_enclosing_dataset(tmp_path: Path) -> None:
+    _ = make_dataset(tmp_path / "ds", name="ds")
+
+    assert enclosing_dataset(tmp_path / "elsewhere" / "a.png") is None
+
+
+def test_an_enclosing_manifest_that_does_not_read_is_reported_with_its_error(
+    tmp_path: Path,
+) -> None:
+    broken = tmp_path / "broken" / "dataset.yaml"
+    broken.parent.mkdir()
+    _ = broken.write_text("name: [unclosed\n", encoding="utf-8")
+
+    found = enclosing_dataset(broken.parent / "frames" / "a.png")
+
+    assert found is not None
+    assert found.manifest == str(broken.resolve())
+    assert found.error
+    assert found.name is None

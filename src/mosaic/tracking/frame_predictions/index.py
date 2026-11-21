@@ -39,6 +39,7 @@ from mosaic.core.pipeline.inventory.model import (
     PredictionScoreRef,
 )
 from mosaic.tracking.frame_extraction.frame_runs import (
+    frame_rows,
     frames_index_path,
     list_frame_runs,
 )
@@ -299,14 +300,18 @@ def _drifted_entries(
 
     Each row's ``consumed_frames_composition`` is compared with the
     ``media_composition`` of the current frames row of the same extraction run
-    and entry camera, under
+    and entry camera, read through *ds*'s links (:func:`frame_rows`), under
     :func:`~mosaic.core.pipeline.composition.compositions_disagree`. A blank
     side, or no current row, is no drift. A drifted camera drifts its entry.
 
     Returns:
         The drifted entries, sorted and distinct.
     """
-    methods = frozenset(root_subdirectories(ds, "frames"))
+    methods = frozenset(
+        method
+        for linked in ds.lookup_order("frames")
+        for method in root_subdirectories(linked.dataset, "frames")
+    )
     current: dict[tuple[str, str, str, str, str], str] = {}
     read: set[str] = set()
     drifted: set[Entry] = set()
@@ -314,8 +319,10 @@ def _drifted_entries(
         method = record.get("frames_method", "")
         if method in methods and method not in read:
             read.add(method)
-            frame = reader.frame(
-                frames_index_path(ds, method), lambda m=method: list_frame_runs(ds, m)
+            frame = frame_rows(
+                ds,
+                method,
+                read_index=lambda owner, _: _frames_rows(reader, owner, method),
             )
             for row in index_records(frame):
                 key = (
@@ -339,6 +346,13 @@ def _drifted_entries(
         ):
             drifted.add((group, sequence))
     return tuple(sorted(drifted))
+
+
+def _frames_rows(reader: IndexReader, ds: Dataset, method: str) -> pd.DataFrame:
+    """The rows of *ds*'s own frames index of *method*, read once per *reader*."""
+    return reader.frame(
+        frames_index_path(ds, method), lambda: list_frame_runs(ds, method)
+    )
 
 
 def prediction_score_records(

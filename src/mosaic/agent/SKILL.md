@@ -767,6 +767,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   for the holder that `detail` names to end (`mosaic runs` lists it), then rerun, which
   reuses its result. Run `mosaic release` only for a holder that is dead, and never
   delete the claim marker by hand.
+- Reason `link_unreachable`: a training could not learn whether a linked dataset
+  already holds its run, because a link that provides `models` is offline. No training
+  output was written. Bring the linked dataset's disk or mount back, then rerun, which
+  reuses a run that the link finished. `--allow-partial` does not answer it.
 - Reason `subset_refused`: a step refused a probe or a named subset of its entries,
   with a `cause` of `scope_dependent`, `op_step`, `stand_in` or `outside_target`.
   Run the step whole instead.

@@ -12,6 +12,8 @@ import pickle
 
 import pytest
 
+from mosaic.core.dataset import LinkUnreachableError
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall, StepRefused
@@ -43,6 +45,23 @@ def test_a_tool_unavailable_survives_pickle_with_its_tool_cause_and_reason() -> 
     )
     assert str(restored) == "no interpreter was found"
     assert restored.error_json("fit") == error.error_json("fit")
+
+
+def test_a_link_unreachable_refusal_survives_pickle_with_its_links() -> None:
+    links = [
+        DatasetLink(id="group", path="../libraries/7", provides=("models", "tracks"))
+    ]
+    error = LinkUnreachableError("the group link is offline", links=links)
+
+    restored = _round_trip(error)
+
+    assert type(restored) is LinkUnreachableError
+    assert (restored.reason, restored.detail) == (
+        "link_unreachable",
+        {"links": [{"id": "group", "provides": ["models", "tracks"]}]},
+    )
+    assert str(restored) == "the group link is offline"
+    assert restored.error_json("train") == error.error_json("train")
 
 
 def test_a_step_refusal_survives_pickle_with_its_step_and_detail() -> None:

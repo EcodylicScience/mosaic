@@ -52,7 +52,7 @@ from mosaic.tracking.ops._common import (
 )
 from mosaic.tracking.ops.prepare import PREPARE_KIND
 from mosaic.tracking.ops.train import finalize_training
-from mosaic.tracking.ops.trained_models import training_is_complete
+from mosaic.tracking.ops.trained_models import linked_training_complete
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,
@@ -818,7 +818,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
 
         run_id = self._identity(ds, params, labels_path, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and linked_training_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id

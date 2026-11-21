@@ -23,7 +23,7 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import (
     PREPARED_DATA_KINDS,
-    model_index_path,
+    model_index_row_holder,
     prepared_artifact_cell,
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
@@ -267,32 +267,42 @@ def resolve_training_data(ds: Dataset, reference: str) -> Path:
     candidate = Path(ds.resolve_path(reference))
     if candidate.exists():
         return candidate
-    row = prepared_data_row(ds, reference)
-    stored = prepared_artifact_cell(row) if row is not None else ""
-    return Path(ds.resolve_path(stored)) if stored else candidate
+    found = _prepared_data_holder(ds, reference)
+    if found is None:
+        return candidate
+    holder, row = found
+    stored = prepared_artifact_cell(row)
+    return Path(holder.resolve_path(stored)) if stored else candidate
 
 
 def prepared_data_row(ds: Dataset, reference: str) -> dict[str, str] | None:
     """The index row of the preparation run that *reference* names, as strings.
 
-    ``None`` when *reference* is not the run id of a preparation kind, or its
-    index holds no row of it. The last row of the run wins.
+    The row is the one in this dataset's index, or else in the index of the
+    first linked dataset that provides models and holds it. ``None`` when
+    *reference* is not the run id of a preparation kind, or no index holds a row
+    of it. The last row of the run wins.
+    """
+    found = _prepared_data_holder(ds, reference)
+    return None if found is None else found[1]
+
+
+def _prepared_data_holder(
+    ds: Dataset, reference: str
+) -> tuple[Dataset, dict[str, str]] | None:
+    """The dataset whose index registers a preparation, and its row.
+
+    The row's paths are relative to the dataset that wrote it, so a caller
+    resolves them against the returned dataset and not against *ds*.
     """
     parsed = parse_op_run_id(reference)
     if parsed is None or parsed.kind not in PREPARED_DATA_KINDS:
         return None
-    index_path = model_index_path(ds, parsed.kind)
-    if not index_path.exists():
+    found = model_index_row_holder(ds, parsed.kind, reference)
+    if found is None:
         return None
-    import pandas as pd
-
-    frame = pd.read_csv(index_path, dtype="string", keep_default_na=False)
-    if "run_id" not in frame.columns:
-        return None
-    match = frame[frame["run_id"] == reference]
-    if match.empty:
-        return None
-    return {str(name): str(value) for name, value in match.iloc[-1].items()}
+    linked, row = found
+    return linked.dataset, row
 
 
 def fingerprint_yolo_dataset(data_yaml: Path) -> str:

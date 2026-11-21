@@ -1,17 +1,19 @@
 """The frames index, and what the inventory says about frame-extraction runs.
 
-Each extraction method keeps one index under frames/<method>/index.csv, one
-row per (run, group, sequence, camera). This module reads and writes it and
-imports no tracker, trainer or extraction code, and loads only the media modules
-that ``mosaic.core.pipeline.inventory`` loads, so an inventory reads frame runs
-without loading what writes them. It also names the recorded frame behind an
-annotated image (:func:`video_frames_of`).
+Each extraction method keeps one index under frames/<method>/index.csv, one row per
+(run, group, sequence, camera). This module reads and writes it and imports no tracker,
+trainer or extraction code, and loads only the media modules that
+``mosaic.core.pipeline.inventory`` loads, so an inventory reads frame runs without
+loading what writes them. :func:`frame_rows` and :func:`frame_run_file` read a dataset's
+frame runs together with those of the datasets it links. It also names the recorded
+frame behind an annotated image (:func:`video_frames_of`).
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from collections.abc import Callable
+from dataclasses import dataclass, fields, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final
 
@@ -27,6 +29,7 @@ from mosaic.core.pipeline.inventory.model import (
     FrameRunRef,
     InventoryScope,
 )
+from mosaic.core.pipeline.linked_rows import LINK_ID_COLUMN, merge_linked_rows
 from mosaic.core.stored_paths import manifest_file_path
 
 if TYPE_CHECKING:
@@ -41,11 +44,16 @@ __all__ = [
     "FrameFile",
     "FramesIndexRow",
     "adopt_frames_columns",
+    "frame_rows",
+    "frame_run_file",
     "frame_run_records",
+    "frame_run_roots",
     "frames_row_files",
     "frames_index",
     "frames_index_path",
     "frames_run_root",
+    "latest_frame_run_id",
+    "linked_frames_row_files",
     "list_frame_runs",
     "video_frames_of",
 ]
@@ -171,6 +179,107 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
     if not dfs:
         return pd.DataFrame(columns=FRAMES_INDEX_COLUMNS)
     return pd.concat(dfs, ignore_index=True)
+
+
+_FRAME_ROW_KEYS: Final = ("run_id", "group", "sequence", "camera")
+"""The columns that identify a frames row, the index's dedup keys."""
+
+_FRAME_ROWS_PATH_COLUMNS: Final = ("abs_path", "video_abs_path")
+"""The frames index columns that name a file each."""
+
+
+def frame_rows(
+    ds: Dataset,
+    method: str | None = None,
+    *,
+    read_index: Callable[[Dataset, str | None], pd.DataFrame] = list_frame_runs,
+) -> pd.DataFrame:
+    """The frames index of *ds* merged with those of the datasets it links.
+
+    Reads each dataset of ``ds.lookup_order("frames")`` with *read_index* and
+    merges the frames with :func:`~mosaic.core.pipeline.linked_rows.merge_linked_rows`,
+    keyed on ``(run_id, group, sequence, camera)``: an own row shadows a linked
+    row of the same run and entry camera, and an earlier link shadows a later
+    one. A linked row's ``abs_path`` and single-path ``video_abs_path`` are made
+    absolute against its own dataset, and own cells stay as stored. Writes
+    nothing.
+
+    Args:
+        ds: The reading dataset.
+        method: Only the rows of this extraction method, or ``None`` for every
+            method.
+        read_index: Reads one dataset's rows of *method*, as
+            :func:`list_frame_runs` does. A caller that reads many indexes
+            passes one that remembers what it read.
+
+    Returns:
+        The merged rows with a ``link_id`` column that names the link of each
+        row and is ``""`` for an own row.
+    """
+    return merge_linked_rows(
+        [
+            (
+                linked.link_id,
+                linked.dataset.base_dir,
+                read_index(linked.dataset, method),
+            )
+            for linked in ds.lookup_order("frames")
+        ],
+        _FRAME_ROW_KEYS,
+        _FRAME_ROWS_PATH_COLUMNS,
+    )
+
+
+def frame_run_roots(
+    ds: Dataset, method: str, run_id: str
+) -> tuple[tuple[Dataset, Path], ...]:
+    """Each existing root of a frames run, in lookup order, with its dataset.
+
+    A run directory that *ds* created and a linked one that holds the rest of
+    the same run are both listed, *ds* first once it exists.
+
+    Returns:
+        The dataset and run root of each dataset of ``ds.lookup_order("frames")``
+        whose run directory exists. Empty when none does.
+    """
+    roots = (
+        (linked.dataset, frames_run_root(linked.dataset, method, run_id))
+        for linked in ds.lookup_order("frames")
+    )
+    return tuple((owner, root) for owner, root in roots if root.is_dir())
+
+
+def frame_run_file(ds: Dataset, method: str, run_id: str, name: str) -> Path | None:
+    """The file *name* of a frames run in the first run root that holds it.
+
+    Returns:
+        The file's path, or ``None`` when no root of :func:`frame_run_roots`
+        holds it.
+    """
+    for _owner, root in frame_run_roots(ds, method, run_id):
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def latest_frame_run_id(ds: Dataset, method: str) -> str | None:
+    """The latest frames run of *method*: *ds*'s own, else the first link's.
+
+    A dataset's latest run is the run of the last row of its index. A later run
+    in a link does not displace *ds*'s own.
+
+    Returns:
+        The run's identifier, or ``None`` when no dataset's index holds a row.
+    """
+    for linked in ds.lookup_order("frames"):
+        path = frames_index_path(linked.dataset, method)
+        if not path.exists():
+            continue
+        rows = frames_index(path).read()
+        if not rows.empty:
+            return str(rows["run_id"].iloc[-1])
+    return None
 
 
 def frame_run_records(
@@ -320,6 +429,43 @@ def frames_row_files(ds: Dataset, row: Mapping[str, str]) -> tuple[FrameFile, ..
     )
 
 
+def linked_frames_row_files(
+    ds: Dataset, row: Mapping[str, str]
+) -> tuple[FrameFile, ...]:
+    """The extracted PNGs of one :func:`frame_rows` record, each named from *ds*.
+
+    An own row reads as :func:`frames_row_files` reads it. A linked row is read
+    in the dataset of its ``link_id``, and each image is named by
+    ``ds.relative_to_root``, which keeps a file outside *ds* absolute.
+
+    Raises:
+        ValueError: If no reachable link has the row's ``link_id``, the row's
+            directory lies outside its dataset's tree, or its ``run_info.json``
+            is missing, unreadable or lacks a record field.
+    """
+    link_id = row.get(LINK_ID_COLUMN, "")
+    if not link_id:
+        return frames_row_files(ds, row)
+    owner = next(
+        (
+            linked.dataset
+            for linked in ds.lookup_order("frames")
+            if linked.link_id == link_id
+        ),
+        None,
+    )
+    if owner is None:
+        msg = f"No reachable link of {ds.name!r} has the id {link_id!r}."
+        raise ValueError(msg)
+    return tuple(
+        replace(
+            file,
+            image=Path(ds.relative_to_root(owner.resolve_path(file.image))).as_posix(),
+        )
+        for file in frames_row_files(owner, row)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _ExtractedEntry:
     """One frames row's entry camera, and the frame index of each file it wrote."""
@@ -328,6 +474,14 @@ class _ExtractedEntry:
     sequence: str
     camera: str
     index_by_image: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedImage:
+    """An annotated image's owner, by resolved manifest path, and its key there."""
+
+    manifest: Path
+    key: str
 
 
 def video_frames_of(
@@ -339,20 +493,23 @@ def video_frames_of(
 ) -> tuple[VideoFrame, ...]:
     """The recorded frame behind each annotation frame, one per frame in input order.
 
-    Reads the frames indexes of the dataset whose base directory is
-    *image_root*, which is *ds* or one of its linked datasets. A frames row
-    matches an image when the row's entry directory is the image's directory.
-    The image then takes the row's group, sequence and camera, and the dataset's
-    manifest uuid as its origin. Its frame index is the one that the
-    ``run_info.json`` records for the image's dataset-relative path, or -1 when
-    the run did not write it. The annotation frame's sequence and index are not
-    read for a matched image, because an import of extracted PNGs records index
-    -1.
+    Each image is looked up in the frames indexes of its owner. A relative image path
+    that resolves inside *image_root*'s directory tree is owned by the dataset whose
+    base directory is *image_root*, which is *ds* or one of its linked datasets. An
+    absolute image path, and a relative one that resolves outside that tree, such as a
+    ``../`` path, is owned by the dataset whose manifest is nearest around it
+    (:meth:`Dataset.open_enclosing`), whether or not a dataset is at *image_root*. A
+    frames row of the owner matches an image when the row's entry directory is the
+    image's directory. The image then takes the row's group, sequence and camera, and
+    the owner's manifest uuid as its origin. Its frame index is the one that the
+    ``run_info.json`` records for the image's dataset-relative path, or -1 when the run
+    did not write it. The annotation frame's sequence and index are not read for a
+    matched image, because an import of extracted PNGs records index -1.
 
-    An image that no row matches takes *revision_origin*, camera ``""``, the
-    group its annotation frame records, the sequence it records, else the
-    image's directory's name, and the frame index it records. Index -1 keeps the
-    image's stem. The dataset tree is left unchanged.
+    An image that no row matches, or that has no owner, takes *revision_origin*, camera
+    ``""``, the group its annotation frame records, the sequence it records, else the
+    image's directory's name, and the frame index it records. Index -1 keeps the image's
+    stem. No dataset tree is changed.
 
     Args:
         ds: The dataset that reads the revision.
@@ -368,23 +525,45 @@ def video_frames_of(
     Raises:
         ValueError: If a matched row's ``run_info.json`` cannot be read.
     """
-    owner = _dataset_at(ds, image_root)
-    if owner is None:
-        return tuple(_unextracted(frame, revision_origin) for frame in frames)
-    keys = [_image_key(owner, frame) for frame in frames]
-    entries = _entries_holding(
-        owner, {_directory_of(key) for key in keys if key is not None}
-    )
+    by_path = [_located_by_path(frame.image_path, image_root) for frame in frames]
+    enclosing = ds.open_enclosing({path.parent for path in by_path if path is not None})
+    root_owner = _dataset_at(ds, image_root)
+    owners: dict[Path, Dataset] = {}
+    owned: list[_OwnedImage | None] = []
+    for frame, path in zip(frames, by_path, strict=True):
+        owner = root_owner if path is None else enclosing[path.parent]
+        key = None if owner is None else _image_key(owner, frame.image_path, path)
+        if owner is None or key is None:
+            owned.append(None)
+            continue
+        manifest = owner.manifest_path.resolve()
+        _ = owners.setdefault(manifest, owner)
+        owned.append(_OwnedImage(manifest=manifest, key=key))
+    entries = {
+        manifest: _entries_holding(
+            owner,
+            {
+                _directory_of(image.key)
+                for image in owned
+                if image is not None and image.manifest == manifest
+            },
+        )
+        for manifest, owner in owners.items()
+    }
     located: list[VideoFrame] = []
-    for frame, key in zip(frames, keys, strict=True):
-        entry = None if key is None else entries.get(_directory_of(key))
-        if key is None or entry is None:
+    for frame, image in zip(frames, owned, strict=True):
+        entry = (
+            None
+            if image is None
+            else entries[image.manifest].get(_directory_of(image.key))
+        )
+        if image is None or entry is None:
             located.append(_unextracted(frame, revision_origin))
             continue
-        index = entry.index_by_image.get(key, -1)
+        index = entry.index_by_image.get(image.key, -1)
         located.append(
             VideoFrame(
-                origin_uuid=owner.uuid or "",
+                origin_uuid=owners[image.manifest].uuid or "",
                 group=entry.group,
                 sequence=entry.sequence,
                 camera=entry.camera,
@@ -407,15 +586,30 @@ def _dataset_at(ds: Dataset, image_root: Path) -> Dataset | None:
     return None
 
 
-def _image_key(owner: Dataset, frame: AnnotationFrame) -> str | None:
+def _located_by_path(image: Path, image_root: Path) -> Path | None:
+    """The path by which an image's owner is found, or ``None`` for the image root's.
+
+    An absolute image path is returned as it is, and a relative one that
+    resolves outside *image_root*'s directory tree is returned joined to
+    *image_root*.
+    """
+    if image.is_absolute():
+        return image
+    joined = image_root / image
+    inside = joined.resolve().is_relative_to(image_root.resolve())
+    return None if inside else joined
+
+
+def _image_key(owner: Dataset, image: Path, by_path: Path | None) -> str | None:
     """The image's dataset-relative POSIX path in *owner*, or ``None`` outside it.
 
-    A relative image path is relative to the revision's image root, which is
-    *owner*'s base directory.
+    An image keyed at the image root keeps its relative path, which is relative
+    to *owner*'s base directory. An image found by its path, *by_path*, is made
+    relative to *owner*.
     """
-    if not frame.image_path.is_absolute():
-        return frame.image_path.as_posix()
-    relative = Path(owner.relative_to_root(frame.image_path))
+    if by_path is None:
+        return image.as_posix()
+    relative = Path(owner.relative_to_root(by_path))
     return None if relative.is_absolute() else relative.as_posix()
 
 

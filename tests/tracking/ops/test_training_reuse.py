@@ -25,7 +25,10 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.dataset import Dataset, LinkUnreachableError
 from mosaic.core.pipeline.entry_claim import RunRootHeld
+from mosaic.core.pipeline.inventory._read import IndexReader
+from mosaic.core.pipeline.inventory.model import InventoryScope, TrainedModelRef
 from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
@@ -36,8 +39,12 @@ from mosaic.tracking.ops._common import (
     remove_label_caches,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import TrainRequestBase
-from mosaic.tracking.ops.trained_models import trained_model_index
-from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
+from mosaic.tracking.ops.trained_models import (
+    TrainedModelIndexRow,
+    trained_model_index,
+    trained_model_records,
+)
+from tests.helpers import FakeTrainer, copy_of, make_dataset, write_data_yaml
 
 
 def _write(path: Path, content: bytes) -> Path:
@@ -664,10 +671,10 @@ def test_overrides_reach_the_trainer_and_move_the_identity(
 
 # --- the reuse gate reads the argument, on every op that has one ------------
 #
-# One gate shape, repeated per op: `if not overwrite and training_is_complete(...)`.
+# One gate shape, repeated per op: `if not overwrite and linked_training_complete(...)`.
 # The value used to be a params field on all six. Each case below asserts both
 # directions, because an op that ignored the argument entirely would reuse
-# forever and an op whose gate lost its `training_is_complete` half would
+# forever and an op whose gate lost its `linked_training_complete` half would
 # retrain forever, and one direction cannot tell those apart.
 
 
@@ -739,3 +746,114 @@ def test_train_localizer_reuses_a_finished_run_unless_overwrite_says_otherwise(
 
     assert run_op(ds, "train-localizer", dict(params), overwrite=True) == first
     assert len(trained) == 2, "overwrite must reach the gate"
+
+
+# --- a model that a linked dataset trained ----------------------------------
+
+
+def _source_trained_and_copy_unfinished(
+    tmp_path: Path, trainer: FakeTrainer
+) -> tuple[Dataset, str, dict[str, object]]:
+    """A copy whose own index records an unfinished run that its source finished.
+
+    Returns:
+        The copy, reloaded so that nothing of its link is opened or cached, the
+        run's identifier and the params that mint it.
+    """
+    source = make_dataset(tmp_path / "source", name="source")
+    params: dict[str, object] = {
+        "data": str(write_data_yaml(tmp_path)),
+        "epochs": 2,
+        "device": "cpu",
+    }
+    run_id = run_op(source, "train-pose", dict(params))
+    assert trainer.calls == 1
+
+    copy = copy_of(source, tmp_path / "copy")
+    own_root = model_run_root(copy, "train-pose", run_id)
+    index = trained_model_index(model_index_path(copy, "train-pose"))
+    index.ensure()
+    index.append(
+        [
+            TrainedModelIndexRow(
+                run_id=run_id,
+                abs_path=Path(copy.relative_to_root(own_root)),
+                kind="train-pose",
+                base_model="",
+                base_run_id="",
+                best_model_path="",
+                metrics_path="",
+                n_epochs=0,
+                status="running",
+            )
+        ]
+    )
+    return Dataset(manifest_path=copy.manifest_path).load(), run_id, params
+
+
+def test_a_copy_reuses_the_run_its_source_finished_beside_its_own_unfinished_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, run_id, params = _source_trained_and_copy_unfinished(tmp_path, trainer)
+
+    assert run_op(copy, "train-pose", dict(params)) == run_id
+
+    assert trainer.calls == 1, "the source's finished run is not trained again"
+    assert not model_run_root(copy, "train-pose", run_id).exists()
+
+
+def test_the_own_record_stays_incomplete_while_a_link_holds_the_finished_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, run_id, _params = _source_trained_and_copy_unfinished(tmp_path, trainer)
+
+    scope = InventoryScope(kinds=frozenset({"trained-model"}))
+    records = trained_model_records(copy, scope, IndexReader())
+
+    assert [record.ref for record in records] == [
+        TrainedModelRef(op_kind="train-pose", run_id=run_id)
+    ]
+    assert records[0].status != "complete"
+
+
+def test_a_models_link_that_is_offline_refuses_a_training_no_own_row_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, _run_id, params = _source_trained_and_copy_unfinished(tmp_path, trainer)
+    (link,) = copy.manifest.links
+    source_manifest = copy.resolve_link_path(link) / "dataset.yaml"
+    _ = source_manifest.rename(source_manifest.with_name("dataset.yaml.away"))
+
+    with pytest.raises(LinkUnreachableError) as refused:
+        _ = run_op(copy, "train-pose", dict(params))
+
+    assert refused.value.reason == "link_unreachable"
+    assert refused.value.detail["links"] == [
+        {"id": link.id, "provides": list(link.provides)}
+    ]
+    assert trainer.calls == 1, "nothing trains while the answer is unknown"
+
+
+def test_an_own_finished_run_is_reused_while_a_models_link_is_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, run_id, params = _source_trained_and_copy_unfinished(tmp_path, trainer)
+    own = Dataset(manifest_path=copy.manifest_path).load()
+    assert run_op(own, "train-pose", dict(params), overwrite=True) == run_id
+    assert trainer.calls == 2
+    (link,) = copy.manifest.links
+    source_manifest = copy.resolve_link_path(link) / "dataset.yaml"
+    _ = source_manifest.rename(source_manifest.with_name("dataset.yaml.away"))
+    offline = Dataset(manifest_path=copy.manifest_path).load()
+
+    assert run_op(offline, "train-pose", dict(params)) == run_id
+
+    assert trainer.calls == 2

@@ -18,6 +18,8 @@ import pytest
 
 import mosaic.runlog as runlog
 from mosaic.runlog import EntryMeasure, ResourceReport
+from mosaic.core.dataset import LinkUnreachableError
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
@@ -295,6 +297,35 @@ def test_a_refusal_is_recorded_by_its_reason_and_the_step_it_ran_in(
         "step": "track",
         "message": "no",
         "codec": "av1",
+    }
+
+
+def test_an_unreachable_link_is_recorded_as_a_refusal_with_its_reason(
+    tmp_path: Path,
+) -> None:
+    """A training that cannot learn what a linked dataset holds fails by reason."""
+    ds = make_dataset(tmp_path / "ds")
+    execution_id = new_execution_id()
+    link = DatasetLink(id="group", path="../libraries/7", provides=("models",))
+
+    with pytest.raises(LinkUnreachableError):
+        with job_context(
+            ds,
+            kind="train-pose",
+            target="t",
+            execution_id=execution_id,
+            step_id="train",
+        ):
+            raise LinkUnreachableError("the group link is offline", links=[link])
+
+    logged = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert logged is not None
+    assert logged["status"] == "failed"
+    assert json.loads(logged["error_json"]) == {
+        "reason": "link_unreachable",
+        "step": "train",
+        "message": "the group link is offline",
+        "links": [{"id": "group", "provides": ["models"]}],
     }
 
 

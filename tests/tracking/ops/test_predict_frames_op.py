@@ -31,6 +31,7 @@ from mosaic.core.annotations.pose_predictions import (
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry, make_entry_key
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline
 from mosaic.core.pipeline.identity_scheme import MARKER_NAME, read_identity_scheme
 from mosaic.core.pipeline.index_csv import index_records
@@ -747,6 +748,27 @@ def test_the_adapter_is_called_once_for_every_held_entry(
     assert [
         (image.path.resolve(), (image.width, image.height)) for image in images
     ] == [(path.resolve(), size) for path, size in expected]
+
+
+def test_a_copy_predicts_the_frames_of_its_linked_datasets_run(
+    tmp_path: Path, fake_pose: FakeAdapter
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    _extract(source, S1)
+    _extract(source, S2)
+    copy = make_dataset(tmp_path / "copy", name="copy")
+    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path="../source"))
+    _ = _register(copy, "train-pose", POSE_RUN)
+
+    run_id = _run(copy)
+
+    assert len(fake_pose.calls) == 1
+    assert [image.path.resolve() for image in fake_pose.calls[0].images] == [
+        (_frames_directory(source, entry) / f"frame_{index:06d}.png").resolve()
+        for entry in (S1, S2)
+        for index in sorted(SIZES)
+    ]
+    assert [row["sequence"] for row in _rows(copy, run_id)] == ["s1", "s2"]
 
 
 def test_each_entry_camera_gets_its_file_and_row(

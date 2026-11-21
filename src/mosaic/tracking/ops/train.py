@@ -69,7 +69,7 @@ from mosaic.tracking.ops._common import (
 from mosaic.tracking.ops.trained_models import (
     TrainedModelIndexRow,
     trained_model_index,
-    training_is_complete,
+    linked_training_complete,
 )
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
@@ -884,7 +884,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         # and it is the one a planner does not read.
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and linked_training_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
@@ -1020,7 +1020,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         # and it is the one a planner does not read.
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and linked_training_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
@@ -1150,7 +1150,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
 
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and linked_training_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id

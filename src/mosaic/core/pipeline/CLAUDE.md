@@ -394,6 +394,9 @@ are in `graph/CLAUDE.md`.
   (sorted, compact, without a timestamp).
 - Numbering happens inside the series index lock, takes the higher of the index and
   the directories on disk, and creates the revision directory exclusively.
+- While the dataset indexes no row of the key, the latest revision is the one that a
+  reference without an origin resolves through the dataset's links
+  (`label_series_rows`), so a copy's first save numbers past the source's latest.
 - Only the payload is digested and compared. `revision_export` checks an export's
   digest where it is read. A revision whose payload changed raises
   `LabelSeriesTamperedError` at scan, and `resolve_series_refs` raises it when a
