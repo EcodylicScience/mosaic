@@ -18,7 +18,7 @@ import pandas as pd
 import cv2
 
 from mosaic.core.pipeline.column_contract import AnyOf, Column, Requirement, Template
-from mosaic.core.pipeline.tracks_index import read_tracks_index, select_variant_rows
+from mosaic.core.pipeline.tracks_index import select_variant_rows, tracks_rows
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.core.schema import schema_space
 
@@ -121,7 +121,7 @@ def _recorded_schema(
     ds: Any, group: str, sequence: str, tracks_run_id: str | None
 ) -> str:
     """The schema an entry's tracks row records, chosen as the loader chooses."""
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     if index.empty:
         return ""
     hit = index[

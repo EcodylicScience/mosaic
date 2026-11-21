@@ -18,10 +18,13 @@ from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
 from tests.helpers.datasets import make_dataset
 from tests.helpers.media import MediaClip, add_transcode_derivative, write_media_index
 from tests.helpers.tag_tables import tag_table, write_tags
+from tests.helpers.tracks import write_trex_npz
 
 __all__ = [
+    "CONVERTED_ENTRIES",
     "SOURCE_ENTRIES",
     "SUPERSEDED_RECIPE",
+    "converted_source",
     "copy_of",
     "link_forms",
     "raw_source",
@@ -29,6 +32,9 @@ __all__ = [
 
 SOURCE_ENTRIES: tuple[tuple[str, str], ...] = (("g", "s1"), ("g", "s2"))
 """The entries :func:`raw_source` holds, in index order."""
+
+CONVERTED_ENTRIES: tuple[tuple[str, str], ...] = (("g", "a"), ("g", "b"))
+"""The entries :func:`converted_source` holds, in index order."""
 
 SUPERSEDED_RECIPE = "superseded0"
 """The ``recipe_hash`` of the derivative row of :func:`raw_source` no cell names."""
@@ -89,6 +95,26 @@ def raw_source(base: Path) -> Dataset:
         source,
         tag_table({SOURCE_ENTRIES[0]: {"site": "a"}}, {"site": "text"}),
     )
+    return source
+
+
+def converted_source(base: Path) -> Dataset:
+    """A saved dataset at *base* whose raw TREx files are converted to tracks.
+
+    Each entry of :data:`CONVERTED_ENTRIES` has one TREx export under ``raw/``,
+    indexed in group ``g`` and converted into one tracks variant.
+    """
+    source = make_dataset(base, name="source")
+    raw = source.base_dir / "raw"
+    for _group, sequence in CONVERTED_ENTRIES:
+        write_trex_npz(raw / f"{sequence}_fish0.npz")
+    _ = source.index_tracks_raw(
+        [raw],
+        patterns=["*.npz"],
+        src_format="trex_npz",
+        group_from_path=lambda _path: "g",
+    )
+    _ = source.convert_all_tracks()
     return source
 
 

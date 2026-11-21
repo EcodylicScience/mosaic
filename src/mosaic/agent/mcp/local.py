@@ -558,14 +558,14 @@ class LocalBackend:
         from mosaic.core.pipeline.tracks_index import (
             count_cell,
             read_frame_extent,
-            read_tracks_index,
             select_variant_rows,
+            tracks_rows,
         )
         from mosaic.core.recording import division_placement, recording_name
 
         # Opened again so that each recording follows the declaration on disk now.
         dataset = open_dataset(self._dataset(args.dataset).manifest, ensure_roots=False)
-        index = read_tracks_index(dataset)
+        index = tracks_rows(dataset)
         if args.group is not None:
             index = index[index["group"] == args.group]
         try:

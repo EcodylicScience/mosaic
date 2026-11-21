@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.inventory.scan import existing_tracks_records
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import tracks_rows
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -56,7 +56,7 @@ def conversion_remainder(
     Reads the raw index and the tracks index and writes nothing.
     """
     sources = ds.track_conversion_sources(params.source_format)
-    frame = read_tracks_index(ds)
+    frame = tracks_rows(ds)
     frame = frame.loc[
         frame["run_id"] == variant, ["group", "sequence", "abs_path", "source_abs_path"]
     ]

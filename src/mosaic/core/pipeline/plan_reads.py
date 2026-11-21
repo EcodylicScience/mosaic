@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .manifest import tracks_variants_for
 from .sequence_index import recorded_compositions
-from .tracks_index import AmbiguousTracksVariant, read_tracks_index
+from .tracks_index import AmbiguousTracksVariant, tracks_rows
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -48,9 +48,9 @@ class PlanReads:
         return self._compositions
 
     def tracks_index(self) -> pd.DataFrame:
-        """The tracks index, as :func:`~.tracks_index.read_tracks_index` reads it."""
+        """The tracks index, as :func:`~.tracks_index.tracks_rows` reads it."""
         if self._tracks_index is None:
-            self._tracks_index = read_tracks_index(self._ds)
+            self._tracks_index = tracks_rows(self._ds)
         return self._tracks_index
 
     def tracks_variants(self) -> tuple[str, ...]:

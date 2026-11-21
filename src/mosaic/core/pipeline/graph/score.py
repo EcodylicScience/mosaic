@@ -603,9 +603,9 @@ def _declare_sources(
 
 
 def _tracks_entries(ds: Dataset, variant: str) -> set[tuple[str, str]]:
-    from ..tracks_index import read_tracks_index
+    from ..tracks_index import tracks_rows
 
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     rows = index[index["run_id"] == variant]
     return set(zip(rows["group"], rows["sequence"], strict=True))
 

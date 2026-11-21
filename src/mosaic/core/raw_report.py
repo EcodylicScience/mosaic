@@ -480,12 +480,12 @@ def _tracks_findings(ds: Dataset) -> tuple[list[FrameAxisRow], list[SpanOutlier]
     from mosaic.core.pipeline.tracks_index import (
         frame_axis_findings,
         read_frame_extent,
-        read_tracks_index,
+        tracks_rows,
     )
 
     if not ds.has_root("tracks"):
         return [], []
-    rows = read_tracks_index(ds)
+    rows = tracks_rows(ds)
     producers: dict[tuple[str, str, str], str] = {}
     spans: dict[tuple[str, str], list[tuple[str, int]]] = defaultdict(list)
     for _, row in rows.iterrows():

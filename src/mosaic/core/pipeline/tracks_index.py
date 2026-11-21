@@ -65,6 +65,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock_unless_dry_run
+from mosaic.core.pipeline.linked_rows import merge_linked_rows
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_axis import (
@@ -80,6 +81,7 @@ from mosaic.core.pipeline.tracks_identity import (
     read_tracks_variant,
     recorded_model_id,
     recorded_models,
+    tracks_variant_root,
 )
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
@@ -95,6 +97,7 @@ __all__ = [
     "NO_IDS",
     "TRACKS_INDEX_COLUMNS",
     "TRACKS_INDEX_PATH_COLUMNS",
+    "TRACKS_ROWS_PATH_COLUMNS",
     "CellBackfill",
     "CellRow",
     "FrameMeasures",
@@ -131,6 +134,7 @@ __all__ = [
     "read_known_tail_loss",
     "read_media_frames",
     "read_pair_frames",
+    "located_tracks_table",
     "read_tracks_index",
     "row_in_scope",
     "recorded_first_frames",
@@ -144,6 +148,9 @@ __all__ = [
     "tracks_index",
     "tracks_index_path",
     "tracks_made_with",
+    "tracks_row_table",
+    "tracks_rows",
+    "tracks_variant_location",
     "refuse_colliding_drafts",
     "write_tracks_row",
     "write_tracks_rows",
@@ -407,6 +414,19 @@ reindex, a relocation or a re-address. ``consumed_source_roots`` is absent
 because it holds root keys, which no machine move changes.
 """
 
+TRACKS_ROWS_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "abs_path",
+    *TRACKS_INDEX_PATH_COLUMNS,
+)
+"""The path columns of a linked row that :func:`tracks_rows` anchors at its dataset.
+
+``abs_path`` and :data:`TRACKS_INDEX_PATH_COLUMNS`, the columns the portability
+passes rewrite, so the two cannot name different columns.
+"""
+
+_TRACKS_ROW_KEYS: Final[tuple[str, ...]] = ("run_id", "group", "sequence")
+"""The columns that identify a tracks row across a dataset and its links."""
+
 _ROOT_SEPARATOR: Final = ","
 """Comma, matching every other multi-valued index cell in the toolkit.
 
@@ -637,10 +657,10 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
 def variant_entry_rows(ds: Dataset, run_id: str | None, entry: Entry) -> pd.DataFrame:
     """The tracks-index rows of *entry* in variant *run_id*, none when it has no row.
 
-    *run_id* is read as by :func:`select_variant_rows`. Reads the index and
-    writes nothing.
+    *run_id* is read as by :func:`select_variant_rows`. Reads the merged rows
+    of :func:`tracks_rows` and writes nothing.
     """
-    rows = select_variant_rows(read_tracks_index(ds), run_id)
+    rows = select_variant_rows(tracks_rows(ds), run_id)
     if rows.empty:
         return rows
     group, sequence = entry
@@ -828,7 +848,10 @@ def tracks_made_with(ds: Dataset, model_run_id: str, *, digest: str) -> TracksMa
     found. The variant that it was derived from names the model itself and is
     found, so the model is reported in use through it.
 
-    Reads the tracks index and the variants' records. Writes nothing.
+    Reads the merged rows of :func:`tracks_rows`, and each variant's record
+    from the first dataset that holds the variant
+    (:func:`tracks_variant_location`). A variant that no dataset holds reads
+    as one whose record is absent. Writes nothing.
 
     Args:
         ds: The dataset whose tracks are searched.
@@ -859,12 +882,13 @@ def tracks_made_with(ds: Dataset, model_run_id: str, *, digest: str) -> TracksMa
         )
         raise ValueError(message)
     named = frozenset({model_run_id, digest})
-    tracks_root = ds.get_root("tracks")
     verdicts: dict[str, _Verdict] = {}
     entries: set[TracksMadeWithEntry] = set()
-    for record in index_records(read_tracks_index(ds)):
+    for record in index_records(tracks_rows(ds)):
         variant = record["run_id"]
         if variant not in verdicts:
+            location = tracks_variant_location(ds, variant)
+            tracks_root = ds.get_root("tracks") if location is None else location.parent
             verdicts[variant] = _verdict(tracks_root, variant, named)
         if verdicts[variant] == "made":
             entries.add(
@@ -1015,6 +1039,85 @@ def read_tracks_index(ds: Dataset) -> pd.DataFrame:
         return empty_tracks_frame()
     raw = pd.read_csv(path, keep_default_na=False, dtype=str)
     return adopt_legacy_columns(raw)
+
+
+def tracks_rows(ds: Dataset) -> pd.DataFrame:
+    """The tracks index of *ds* merged with those of the datasets it links.
+
+    Reads each dataset of ``ds.lookup_order("tracks")`` with
+    :func:`read_tracks_index` and merges the frames with
+    :func:`~mosaic.core.pipeline.linked_rows.merge_linked_rows`, keyed on
+    ``(run_id, group, sequence)``: an own row shadows a linked row of the same
+    variant and entry, and an earlier link shadows a later one. The cells of
+    :data:`TRACKS_ROWS_PATH_COLUMNS` in a linked row are made absolute against
+    its own dataset, so they name its files from *ds*. Own cells stay as stored.
+
+    Writes nothing.
+
+    Returns:
+        The merged rows, with a ``link_id`` column that names the link of each
+        row and is ``""`` for an own row. For a dataset that links nothing, the
+        frame :func:`read_tracks_index` returns plus that column.
+    """
+    return merge_linked_rows(
+        [
+            (linked.link_id, linked.dataset.base_dir, read_tracks_index(linked.dataset))
+            for linked in ds.lookup_order("tracks")
+        ],
+        _TRACKS_ROW_KEYS,
+        TRACKS_ROWS_PATH_COLUMNS,
+    )
+
+
+def located_tracks_table(ds: Dataset, variant: str, entry: Entry) -> Path | None:
+    """The table that the merged row of *variant* and *entry* names.
+
+    The row is the one :func:`tracks_rows` keeps, an own row before a linked
+    one, and its ``abs_path`` is resolved by *ds*. Writes nothing.
+
+    Returns:
+        The table's path, or ``None`` when no dataset of the lookup has a row
+        of the entry in the variant or the row's table is absent.
+    """
+    rows = tracks_rows(ds)
+    group, sequence = entry
+    matched = rows[
+        (rows["run_id"] == variant)
+        & (rows["group"] == group)
+        & (rows["sequence"] == sequence)
+    ]
+    if matched.empty:
+        return None
+    return tracks_row_table(ds, matched["abs_path"].iloc[-1])
+
+
+def tracks_row_table(ds: Dataset, stored_path: str | Path) -> Path | None:
+    """The table that a row of :func:`tracks_rows` names, ``None`` when it is absent.
+
+    *stored_path* is the row's ``abs_path``, resolved by *ds*, the dataset whose
+    merged rows hold it. Writes nothing.
+    """
+    path = ds.resolve_path(stored_path)
+    return path if path.is_file() else None
+
+
+def tracks_variant_location(ds: Dataset, variant: str) -> Path | None:
+    """The directory ``tracks/<variant>/`` of the first dataset that holds it.
+
+    Looks in each dataset of ``ds.lookup_order("tracks")``, *ds* first, so a
+    variant that *ds* holds itself is read there. Writes nothing.
+
+    Returns:
+        The variant's directory, or ``None`` for an empty *variant* or when no
+        dataset of the lookup holds one.
+    """
+    if not variant:
+        return None
+    for linked in ds.lookup_order("tracks"):
+        root = tracks_variant_root(linked.dataset.get_root("tracks"), variant)
+        if root.is_dir():
+            return root
+    return None
 
 
 def consumed_composition_for(
@@ -1349,10 +1452,10 @@ def rows_without_tracklets(
     :class:`AmbiguousTracksVariant` in the resolver; the planner refuses that
     case before it asks, so this answers ``()``.
 
-    *index* is the tracks index already read with :func:`read_tracks_index`, or
-    ``None`` to read it for this call.
+    *index* is the tracks rows already read with :func:`tracks_rows`, or
+    ``None`` to read them for this call.
     """
-    frame = read_tracks_index(ds) if index is None else index
+    frame = tracks_rows(ds) if index is None else index
     try:
         rows = rows_in_scope(select_variant_rows(frame, tracks_run_id), entries)
     except AmbiguousTracksVariant:
@@ -1381,7 +1484,7 @@ def tracklets_by_entry(
     """
     if not variants or not entries:
         return {}
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     wanted_variants = set(variants)
     wanted_entries = set(entries)
     answers: dict[Entry, set[bool | None]] = {}
@@ -1665,8 +1768,8 @@ def frame_axis_findings(rows: pd.DataFrame) -> FrameAxisFindings:
 
 
 def _variant_rows(ds: Dataset, run_id: str | None) -> pd.DataFrame:
-    """The tracks index's rows of variant *run_id*, or all of them for ``None``."""
-    df = read_tracks_index(ds)
+    """The tracks rows of variant *run_id*, or all of them for ``None``."""
+    df = tracks_rows(ds)
     if run_id is None or df.empty:
         return df
     return df[df["run_id"].astype(str) == run_id]
@@ -1730,7 +1833,7 @@ def read_frame_extents(
     groups: Collection[str] | None = None,
     variants: Collection[str] | None = None,
 ) -> FrameExtents:
-    """Every entry's recorded frame extent, from the tracks index.
+    """Every entry's recorded frame extent, from the merged tracks rows.
 
     Read from the **index**, never from the tables. Adjacency is computed during
     :func:`build_manifest`, which also runs to *predict* an identifier before
@@ -1744,7 +1847,7 @@ def read_frame_extents(
     not of whichever input a caller happened to list first.
 
     Args:
-        ds: The dataset whose tracks index to read.
+        ds: The dataset whose tracks rows to read, with its links'.
         run_id: The tracks variant to read, or ``None`` for the variant each
             entry resolves to (:func:`select_variant_rows`).
         groups: Read only the entries of these groups, or ``None`` for every
@@ -1757,7 +1860,7 @@ def read_frame_extents(
         ValueError: If an entry read under ``run_id=None`` has two labeled
             variants among those considered.
     """
-    df = read_tracks_index(ds)
+    df = tracks_rows(ds)
     if groups is not None:
         df = df[df["group"].astype(str).isin(set(groups))]
     if run_id is None and variants is not None:
@@ -2528,7 +2631,7 @@ def tracks_compositions(
     """
     if not variants:
         return {}
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     if index.empty:
         return {}
     wanted = set(variants)

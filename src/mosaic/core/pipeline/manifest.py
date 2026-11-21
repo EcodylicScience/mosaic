@@ -39,10 +39,10 @@ from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
     read_frame_extents,
-    read_tracks_index,
     select_variant_rows,
     tracks_compositions,
     tracks_index_path,
+    tracks_rows,
     variant_candidate_rows,
 )
 from .types import (
@@ -878,7 +878,7 @@ def _resolve_tracks(
     predates variants yields an empty tuple and hashes exactly as it always has.
     """
     selector = scope if scope is not None else Scope()
-    df = select_variant_rows(read_tracks_index(ds), run_id)
+    df = select_variant_rows(tracks_rows(ds), run_id)
     if run_id is not None and df.empty:
         if on_missing_run == "raise":
             msg = f"No tracks rows for run_id {run_id!r} in {tracks_index_path(ds)}"
@@ -1032,7 +1032,7 @@ def refuse_mixed_track_schemas(
         ValueError: Naming the families and a sample of the entries in each.
     """
     selector = scope if scope is not None else Scope()
-    candidates = variant_candidate_rows(read_tracks_index(ds), tracks_run_id)
+    candidates = variant_candidate_rows(tracks_rows(ds), tracks_run_id)
     tables, _ = _tables_on_disk(ds, candidates)
     selected = _entry_selected(selector)
     _refuse_mixed_schemas(

@@ -69,6 +69,30 @@ writes no link cell and no derivative row. A derivative the source later removes
 encoded into the dataset's own `media/transcode` directory, and the adopted derivative
 rows stay.
 
+`tracks_rows(ds)` (`mosaic.core.pipeline.tracks_index`) returns the tracks index of a
+dataset merged with those of the datasets it links for `tracks`, keyed on
+`(run_id, group, sequence)`, with a `link_id` column that is `""` for an own row. An own
+row shadows a linked row of the same variant and entry. The `abs_path`,
+`source_abs_path` and `appearance_abs_path` of a linked row are absolute and name the
+linked dataset's files. `located_tracks_table(ds, variant, entry)` returns the table
+that the merged row of an entry names, and `tracks_variant_location(ds, variant)` the
+`tracks/<variant>/` directory of the first dataset that holds it. `list_groups`,
+`list_entries`, `get_sequence_metadata` (which gains the `link_id` column),
+`query_sequences`, label placement, media routing, frame extents, track compositions and
+`tracks_made_with` read the merged rows. A track conversion reports an entry whose
+current table a linked dataset holds as `current`, and writes no row or table for it.
+
+The dataset summary, the entry universe of an inventory, `yield_sequences`, the input
+sizes of a plan, the raw report, the frame extraction selection, the pose training prep,
+the visualization loaders, `mosaic splits`, the MCP `list_sequences` tool, the chained
+tracks ops (`resample-tracks`, `assign-identities`), `convert-tracks` plans, the step
+preflight, the plan reads, previews and the provenance walk read the merged tracks rows,
+so a dataset that links a tracks dataset sees its entries and tables. An op that chains
+from a linked variant writes its own variant into the dataset's own `tracks` root.
+`PROVENANCE_COLUMNS` gains `link_id`, `""` for an artifact of the dataset. `delete_set`
+declines each reached artifact that names a link, with a reason naming the link, and
+deletes only the dataset's own, so it writes nothing under a linked dataset.
+
 `DatasetSummary.libraries`, the `libraries` key of `mosaic describe --json` and of the
 `describe_dataset` tool's output, is `links`.
 

@@ -19,9 +19,9 @@ from mosaic.core.entry import Entry, make_entry_key
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.tracks_index import (
     read_first_frame,
-    read_tracks_index,
     rows_in_scope,
     select_variant_rows,
+    tracks_rows,
 )
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ def chained_source_rows(
     second run of the op under other params. Chaining the op onto its own
     output is named with ``source_tracks_run_id``.
     """
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     if index.empty:
         return index
     if source_tracks_run_id is None and "producer" in index.columns:
@@ -116,7 +116,7 @@ def folded_composition(source_composition: str, term: str, digest: str) -> str:
 
 def written_tables(ds: Dataset, variant: str) -> dict[str, WrittenTable]:
     """Return what each written table of *variant* records, by entry key."""
-    index = read_tracks_index(ds)
+    index = tracks_rows(ds)
     if index.empty:
         return {}
     return {

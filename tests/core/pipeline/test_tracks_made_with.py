@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 from tests.helpers import (
     add_track_sequences,
     add_tracks_variant,
+    copy_of,
     install_fake_sleap,
     install_fake_trex,
     make_dataset,
@@ -174,6 +176,35 @@ def test_a_variant_whose_record_is_absent_or_unreadable_is_reported(
 
     assert found.entries == ()
     assert found.unreadable_variants == tuple(sorted((absent, corrupt)))
+
+
+def test_a_copy_reads_a_linked_variants_record_where_the_variant_is(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    variant, run_id = _sleap_variant(source, MODEL, "s1")
+    copy = copy_of(source, tmp_path / "copy")
+
+    found = tracks_made_with(copy, MODEL, digest=DIGEST)
+
+    assert found.entries == (
+        TracksMadeWithEntry(variant, "", "s1", SLEAP_KIND, run_id),
+    )
+    assert found.unreadable_variants == ()
+
+
+def test_a_linked_row_whose_variant_is_held_nowhere_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    variant, _ = _sleap_variant(source, MODEL, "s1")
+    copy = copy_of(source, tmp_path / "copy")
+    shutil.rmtree(tracks_variant_root(source.get_root("tracks"), variant))
+
+    found = tracks_made_with(copy, MODEL, digest=DIGEST)
+
+    assert found.entries == ()
+    assert found.unreadable_variants == (variant,)
 
 
 def test_unlabelled_tables_are_reported_as_the_empty_variant(tmp_path: Path) -> None:

@@ -186,7 +186,7 @@ def test_the_identity_answers_without_reading_the_dataset(
     def refuse(_ds: Dataset) -> pd.DataFrame:
         raise AssertionError("plan_identity read the tracks index")
 
-    monkeypatch.setattr(assign_identities, "read_tracks_index", refuse)
+    monkeypatch.setattr(assign_identities, "tracks_rows", refuse)
 
     identity = AssignIdentitiesOp().plan_identity(ds, _params(TWO), ResolvedScope())
 

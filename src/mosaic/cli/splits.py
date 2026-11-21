@@ -75,9 +75,9 @@ def set_splits(
 
 def _indexed_groups(dataset: Dataset) -> set[str]:
     """The groups that hold a row of the tracks index or of the raw tracks index."""
-    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.core.pipeline.tracks_index import tracks_rows
 
-    groups = {str(group) for group in read_tracks_index(dataset)["group"]}
+    groups = {str(group) for group in tracks_rows(dataset)["group"]}
     groups.update(row.get("group", "") for row in dataset.read_tracks_raw_index())
     return groups
 

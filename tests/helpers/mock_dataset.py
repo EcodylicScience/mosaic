@@ -13,6 +13,7 @@ they claimed the dataset does.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from mosaic.core.arenas import ArenaKey
@@ -28,6 +29,19 @@ from mosaic.core.recording import (
     recording_of,
     recordings,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class MockLookupEntry:
+    """The one entry of a stand-in's lookup order: the stand-in itself.
+
+    Attributes:
+        dataset: The stand-in whose own data a lookup reads.
+        link_id: ``""``, the link id of a dataset's own entry.
+    """
+
+    dataset: MockDataset
+    link_id: str = ""
 
 
 class MockDataset:
@@ -89,6 +103,11 @@ class MockDataset:
     @property
     def base_dir(self) -> Path:
         return self._root
+
+    def lookup_order(self, kind: str | None = None) -> tuple[MockLookupEntry, ...]:
+        """Return the stand-in alone, because it declares no link."""
+        _ = kind
+        return (MockLookupEntry(dataset=self),)
 
     def has_root(self, key: str) -> bool:
         """Return True: every root lives under *root*, as :meth:`get_root` says."""

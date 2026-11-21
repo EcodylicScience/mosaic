@@ -21,10 +21,17 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     submit_request,
 )
-from mosaic.core.pipeline.graph.conversion_remainder import stand_ins
+from mosaic.core.pipeline.convert_ops import ConvertTracksParams
+from mosaic.core.pipeline.graph.conversion_remainder import (
+    conversion_remainder,
+    stand_ins,
+)
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
+    CONVERTED_ENTRIES,
+    converted_source,
+    copy_of,
     calms21_dataset,
     exited_pid,
     make_dataset,
@@ -220,3 +227,16 @@ def test_an_orphaned_request_does_not_block_the_resubmit(tmp_path: Path) -> None
 
     assert resubmitted.duplicates == ()
     assert plan_pipeline(ds, recipe).step("convert").coverage.missing
+
+
+def test_a_copy_of_a_converted_source_has_no_missing_entry(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    (variant,) = set(read_tracks_index(source)["run_id"])
+
+    remainder = conversion_remainder(
+        copy, ConvertTracksParams(source_format="trex_npz"), variant
+    )
+
+    assert remainder.target == frozenset(CONVERTED_ENTRIES)
+    assert remainder.missing == frozenset()

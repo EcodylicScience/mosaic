@@ -42,7 +42,7 @@ from mosaic.core.pipeline.index import (
 )
 from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import read_run_params
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
 
@@ -190,7 +190,7 @@ def track_universe(ds: Dataset) -> list[TrackSource]:
     """
     found: list[TrackSource] = []
 
-    variants = read_tracks_index(ds)
+    variants = tracks_rows(ds)
     if not variants.empty and "run_id" in variants.columns:
         for run_id in sorted({str(value) for value in variants["run_id"]}):
             found.append(TrackSource(storage="tracks", run_id=run_id))

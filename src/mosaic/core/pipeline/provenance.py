@@ -47,7 +47,7 @@ from .index import feature_index, feature_index_path, feature_run_root
 from .inventory.params import read_run_params
 from .labels_index import read_labels_index
 from .sequence_index import decode_consumed_roots, encode_entry_composition
-from .tracks_index import consumed_composition_for, read_tracks_index
+from .tracks_index import consumed_composition_for, tracks_rows
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -81,10 +81,14 @@ PROVENANCE_COLUMNS: list[str] = [
     "current",
     "verdict",
     "via",
+    "link_id",
 ]
 """The returned frame's columns, in order.
 
 ``kind``/``name``/``run_id`` locate the artifact class, ``abs_path`` the file.
+``link_id`` names the link whose dataset holds the artifact, and is ``""`` for
+an artifact of this dataset: a dataset deletes only what it holds, so a reader
+deciding what to delete declines each row that names a link.
 ``via`` says how the row was reached -- ``direct`` for a recorded composition
 that moved, ``tracks`` for a feature run whose tracks variant moved under it --
 because the two are answerable by different evidence and a reader deciding what
@@ -111,6 +115,7 @@ def _row(
     recorded: str,
     current: str,
     via: str,
+    link_id: str = "",
 ) -> dict[str, object]:
     return {
         "kind": kind,
@@ -124,6 +129,7 @@ def _row(
         "current": current,
         "verdict": _verdict(recorded, current),
         "via": via,
+        "link_id": link_id,
     }
 
 
@@ -137,7 +143,7 @@ def _tracks_rows(
     one a feature *would* read today is a different question from which ones were
     built from bytes that moved.
     """
-    frame = read_tracks_index(ds)
+    frame = tracks_rows(ds)
     rows: list[dict[str, object]] = []
     for record in index_records(frame):
         entry = (str(record.get("group", "")), str(record.get("sequence", "")))
@@ -158,6 +164,7 @@ def _tracks_rows(
                 recorded=str(record.get("consumed_composition", "")),
                 current=consumed_composition_for(ds, entry[0], entry[1], declared),
                 via="direct",
+                link_id=str(record.get("link_id", "")),
             )
         )
     return rows

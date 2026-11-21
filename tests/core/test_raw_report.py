@@ -31,7 +31,13 @@ from mosaic.core.raw_report import (
 )
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import run_log_dir
-from tests.helpers import add_tracks_table, modules_loaded_by, track_table
+from tests.helpers import (
+    add_tracks_table,
+    copy_of,
+    make_dataset,
+    modules_loaded_by,
+    track_table,
+)
 
 
 def _dataset(root: Path) -> Dataset:
@@ -715,3 +721,20 @@ def test_the_module_loads_no_pandas_and_no_upper_layer() -> None:
         )
         == []
     )
+
+
+def test_a_copy_reports_the_frame_axis_of_its_sources_tables(tmp_path: Path) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    add_tracks_table(
+        source,
+        "tool",
+        track_table("g", "short", n_rows=2),
+        media_frames=100,
+        frames_read=95,
+    )
+    copy = copy_of(source, tmp_path / "copy")
+
+    report = raw_report(copy)
+
+    assert report.frame_axis == raw_report(source).frame_axis
+    assert report.frame_axis_tables == 1

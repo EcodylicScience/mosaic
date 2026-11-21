@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.pipeline.tracks_index import read_tracks_index, select_variant_rows
+from mosaic.core.pipeline.tracks_index import select_variant_rows, tracks_rows
 from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ def yield_sequences(
     shared variant selector an entry answering to two of them would be yielded
     twice under one name.
     """
-    df_idx = _filter_index(select_variant_rows(read_tracks_index(ds), run_id), scope)
+    df_idx = _filter_index(select_variant_rows(tracks_rows(ds), run_id), scope)
 
     for _, row in df_idx.iterrows():
         g, s = str(row["group"]), str(row["sequence"])

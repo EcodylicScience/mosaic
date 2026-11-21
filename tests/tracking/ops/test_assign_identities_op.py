@@ -30,7 +30,12 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
 from mosaic.tracking.ops.assign_identities import AssignIdentitiesParams
-from tests.helpers import add_tracks_table, add_tracks_variant, make_dataset
+from tests.helpers import (
+    add_tracks_table,
+    add_tracks_variant,
+    copy_of,
+    make_dataset,
+)
 
 KIND = "assign-identities"
 
@@ -951,3 +956,27 @@ def test_a_run_that_fails_every_scoped_entry_fails(tmp_path: Path) -> None:
 
     with pytest.raises(AllEntriesFailed, match=r"2 of 2 entries"):
         _ = _run(ds, _params(), scope=Scope(entries=[("", "s2"), ("", "s3")]))
+
+
+# --- a copy of a source ------------------------------------------------------------
+
+
+def test_a_copy_reads_its_sources_tables_and_their_appearance_through_the_link(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    _seed_standard(source)
+    recorded = read_tracks_index(source)["appearance_abs_path"]
+    assert all(cell and not Path(cell).is_absolute() for cell in recorded)
+    copy = copy_of(source, tmp_path / "copy")
+    params = _params()
+
+    _ = _run(copy, params)
+    _ = _run(source, params)
+
+    assert sorted(_output_rows(copy, params).index) == ["s1", "s2"]
+    for sequence in ("s1", "s2"):
+        pd.testing.assert_frame_equal(
+            _output(copy, params, sequence), _output(source, params, sequence)
+        )
+    assert not read_tracks_index(copy).empty

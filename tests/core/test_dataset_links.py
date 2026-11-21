@@ -59,9 +59,11 @@ from mosaic.tracking.model_refs import (
     resolve_op_model,
 )
 from tests.helpers import (
+    CONVERTED_ENTRIES,
     SUPERSEDED_RECIPE,
     MediaClip,
     assert_tree_unchanged,
+    converted_source,
     copy_of,
     link_forms,
     make_dataset,
@@ -1062,3 +1064,33 @@ def test_a_copy_writes_no_label_series_index(tmp_path: Path) -> None:
     copy = copy_of(source, tmp_path / "copy")
 
     assert list(copy.get_root("labels_raw").glob("*/index.csv")) == []
+
+
+# --- tracks -------------------------------------------------------------------
+
+
+def test_a_copy_lists_the_entries_and_groups_of_its_sources_tracks(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    assert copy.list_groups() == ["g"]
+    assert copy.list_entries() == list(CONVERTED_ENTRIES)
+    assert copy.list_entries("other") == []
+
+
+def test_a_copys_sequence_metadata_names_the_sources_tables(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    metadata = copy.get_sequence_metadata()
+
+    expected = source.get_sequence_metadata()
+    assert list(zip(metadata["group"], metadata["sequence"], strict=True)) == list(
+        CONVERTED_ENTRIES
+    )
+    assert [copy.resolve_path(cell) for cell in metadata["abs_path"]] == [
+        source.resolve_path(cell) for cell in expected["abs_path"]
+    ]
+    assert set(metadata["link_id"]) == {f"source-{source.uuid}"}

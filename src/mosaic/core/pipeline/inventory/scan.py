@@ -37,6 +37,7 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
+    tracks_rows,
 )
 from mosaic.core.scope import Scope
 
@@ -120,7 +121,7 @@ def entry_universe(ds: Dataset, tracks_run_id: str | None = None) -> frozenset[E
     is the same shape of wrong answer as measuring transcode against a run
     directory it never had.
     """
-    frame = select_variant_rows(read_tracks_index(ds), tracks_run_id)
+    frame = select_variant_rows(tracks_rows(ds), tracks_run_id)
     return _entries_of(existing_tracks_records(ds, _entry_columns(frame)))
 
 
@@ -317,9 +318,7 @@ def reportable_universe(
     try:
         return entry_universe(ds, tracks_run_id)
     except ValueError:
-        return _entries_of(
-            existing_tracks_records(ds, _entry_columns(read_tracks_index(ds)))
-        )
+        return _entries_of(existing_tracks_records(ds, _entry_columns(tracks_rows(ds))))
 
 
 def feature_run_target(

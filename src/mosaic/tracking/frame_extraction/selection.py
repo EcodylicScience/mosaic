@@ -55,9 +55,9 @@ from mosaic.core.pipeline.tracks_index import (
     read_frames_read,
     read_known_tail_loss,
     read_media_frames,
-    read_tracks_index,
     row_in_scope,
     select_variant_rows,
+    tracks_rows,
 )
 from mosaic.core.pipeline.writers import read_parquet_table, write_parquet_atomic
 from mosaic.core.pose_columns import pose_column_pairs
@@ -674,7 +674,7 @@ def _scoped_rows(ds: Dataset, variant: str, scope: ResolvedScope) -> _ScopedRows
         SelectFramesNotFound: No tracks-index row names *variant*.
         SelectFramesConflict: No scoped entry has a row in *variant*.
     """
-    rows = index_records(select_variant_rows(read_tracks_index(ds), variant))
+    rows = index_records(select_variant_rows(tracks_rows(ds), variant))
     if not rows:
         message = (
             f"No tracks-index row names the tracks variant {variant!r}. "

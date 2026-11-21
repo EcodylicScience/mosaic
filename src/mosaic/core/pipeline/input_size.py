@@ -29,10 +29,10 @@ from .tracks_index import (
     read_frame_extent,
     read_ids_per_frame,
     read_pair_frames,
-    read_tracks_index,
     records_no_ids,
     rows_in_scope,
     select_variant_rows,
+    tracks_rows,
 )
 
 if TYPE_CHECKING:
@@ -199,7 +199,7 @@ def tracks_covariates(
         neither *tracks_run_id* nor *variants* choose between, reads
         :data:`NO_COVARIATES`.
     """
-    rows = read_tracks_index(ds)
+    rows = tracks_rows(ds)
     if tracks_run_id is None and variants is not None:
         rows = rows[rows["run_id"].astype(str).isin({*variants, ""})]
     rows = rows_in_scope(rows, set(entries))

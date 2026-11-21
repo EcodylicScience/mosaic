@@ -34,7 +34,7 @@ import yaml
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.tracking.frame_extraction import get_frame_manifests
 from mosaic.core.annotations.split import default_group_key, split_filenames
 from mosaic.core.annotations.yolo_layout import YOLO_IMAGE_SUFFIXES
@@ -914,7 +914,7 @@ def tracks_to_yolo_pose(
     # bottom: an absent index and a genuine naming mismatch need different
     # answers, and routing this through the shared reader would otherwise make
     # them look identical.
-    tracks_idx = read_tracks_index(ds)
+    tracks_idx = tracks_rows(ds)
     if tracks_idx.empty:
         raise FileNotFoundError(
             "tracks/index.csv is empty or absent; convert tracks before building "

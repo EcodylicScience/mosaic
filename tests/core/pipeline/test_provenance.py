@@ -10,12 +10,14 @@ recorded cell on that run can say.
 from __future__ import annotations
 
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.provenance import PROVENANCE_COLUMNS, reached_by
 
-from tests.helpers import CropLike, PlainFeature
+from tests.helpers import CropLike, PlainFeature, converted_source, copy_of
 
 
 def _for(frame, kind: str, name: str):
@@ -285,3 +287,17 @@ class TestTheTransitiveArm:
 
         assert len(crop) == 1
         assert list(crop["via"]) == ["direct"]
+
+
+class TestLinkedRows:
+    def test_a_linked_tracks_row_names_its_link_and_an_own_row_names_none(
+        self, tmp_path: Path
+    ) -> None:
+        source = converted_source(tmp_path / "source")
+        copy = copy_of(source, tmp_path / "copy")
+
+        reached = reached_by(copy, [("g", "a")], "tracks_raw")
+
+        assert list(reached["link_id"]) == [f"source-{source.uuid}"]
+        assert list(reached["verdict"]) == ["current"]
+        assert list(reached_by(source, [("g", "a")], "tracks_raw")["link_id"]) == [""]

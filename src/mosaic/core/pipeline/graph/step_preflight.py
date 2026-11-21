@@ -227,10 +227,10 @@ def refuse_mixed_schemas(
         raise StepRefused("schema_family_mismatch", step_id, str(exc)) from exc
     if not readers:
         return
-    from ..tracks_index import read_tracks_index, select_variant_rows
+    from ..tracks_index import select_variant_rows, tracks_rows
 
     try:
-        _ = select_variant_rows(read_tracks_index(ds), None)
+        _ = select_variant_rows(tracks_rows(ds), None)
     except AmbiguousTracksVariant as ambiguous:
         raise _variant_ambiguous(step_id or readers[0], readers, ambiguous) from None
 
@@ -548,7 +548,7 @@ def _refuse_variant_disagreement(ds: Dataset, plan: Plan, planned: PlannedStep) 
     """
     if planned.spec.tracks_run_id is None:
         return
-    from ..tracks_index import read_tracks_index, variant_for_producer_run
+    from ..tracks_index import tracks_rows, variant_for_producer_run
 
     for parent_id in planned.parents:
         try:
@@ -557,7 +557,7 @@ def _refuse_variant_disagreement(ds: Dataset, plan: Plan, planned: PlannedStep) 
             continue
         if parent.kind != "op" or not parent.tracks_variant or not parent.run_id:
             continue
-        produced = variant_for_producer_run(read_tracks_index(ds), parent.run_id)
+        produced = variant_for_producer_run(tracks_rows(ds), parent.run_id)
         if produced is None or produced == parent.tracks_variant:
             # ``None`` is not a disagreement: the op has written no rows this
             # step can check against, which the coverage check already reports.

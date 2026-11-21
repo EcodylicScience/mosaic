@@ -56,7 +56,7 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.pipeline.tracks_index import (
     TracksRowDraft,
     read_carries_tracklets,
-    read_tracks_index,
+    tracks_rows,
 )
 from mosaic.core.params import (
     Declared,
@@ -211,7 +211,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         # Files that a run killed before this one left staged are no table of any
         # row, and a worker of this run stages under names of its own.
         _ = sweep_staged(variant_root)
-        tracks = read_tracks_index(ds)
+        tracks = tracks_rows(ds)
         indexed = set(
             zip(
                 tracks.loc[tracks["run_id"] == variant, "group"],

@@ -8,14 +8,30 @@ whoever changes the walk later.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.delete_set import delete_set
 from mosaic.core.pipeline.media_index import MediaIndexScope
+from mosaic.core.pipeline.composition import SequenceComposition
+from mosaic.core.pipeline.sequence_index import (
+    read_sequence_index,
+    write_sequence_compositions,
+)
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 
-from tests.helpers import CropLike
+from tests.helpers import (
+    CONVERTED_ENTRIES,
+    CropLike,
+    assert_tree_unchanged,
+    convert_tracks_from_raw,
+    converted_source,
+    copy_of,
+    tree_snapshot,
+)
 
 
 def _reorder(ds: Dataset, sequence: str = "seq_a") -> None:
@@ -277,3 +293,42 @@ class TestUnknownIsNeverDeleted:
             "the refusal was silent rather than reported"
         )
         assert output.exists(), "the file went"
+
+
+def _drift_tracks_raw(ds: Dataset) -> None:
+    """Record another composition for every sequence of ``tracks_raw`` in *ds*."""
+    frame = read_sequence_index(ds, "tracks_raw")
+    _ = write_sequence_compositions(
+        ds,
+        "tracks_raw",
+        compositions={
+            (str(row["group"]), str(row["sequence"])): SequenceComposition(
+                digest="moved", member_count=int(row["member_count"])
+            )
+            for _, row in frame.iterrows()
+        },
+    )
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "applied"])
+def test_a_linked_tracks_row_is_declined_with_its_link_and_the_source_is_left(
+    tmp_path: Path, apply: bool
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    convert_tracks_from_raw(copy, "conv.0.1-aaaaaaaaaa", "own")
+    _drift_tracks_raw(copy)
+    link_id = f"source-{source.uuid}"
+    before = tree_snapshot(source.base_dir)
+    scope = Scope(entries=[*CONVERTED_ENTRIES, ("", "own")])
+
+    report = delete_set(copy, "tracks_raw", scope=scope, apply=apply)
+
+    assert [candidate.sequence for candidate in report.candidates] == ["own"]
+    declined = [item for item in report.declined if item.kind == "tracks"]
+    assert len(declined) == len(CONVERTED_ENTRIES)
+    assert all(link_id in item.reason for item in declined)
+    assert report.applied is apply
+    own_rows = read_tracks_index(copy)
+    assert list(own_rows["sequence"]) == ([] if apply else ["own"])
+    assert_tree_unchanged(source.base_dir, before)

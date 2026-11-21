@@ -71,9 +71,9 @@ from mosaic.core.pipeline.tracks_index import (
     read_frames_read,
     read_known_tail_loss,
     read_media_frames,
-    read_tracks_index,
     rows_in_scope,
     select_variant_rows,
+    tracks_rows,
     write_tracks_row,
 )
 from mosaic.core.pipeline.writers import (
@@ -621,7 +621,7 @@ class AssignIdentitiesOp(Op[AssignIdentitiesParams]):
         identity = self.plan_identity(ds, params, scope)
         ctx.set_run_id(identity.run_id)
         source = params.source_tracks_run_id
-        variant_rows = select_variant_rows(read_tracks_index(ds), source)
+        variant_rows = select_variant_rows(tracks_rows(ds), source)
         rows = rows_in_scope(variant_rows, scope.op_entries)
         ctx.tracks_variant([source])
         written = 0

@@ -20,7 +20,8 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.entry import EntryKeyCollisionError, make_entry_key
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
@@ -42,6 +43,7 @@ from mosaic.core.pipeline.tracks_index import (
     read_media_frames,
     TRACKS_INDEX_COLUMNS,
     TRACKS_INDEX_PATH_COLUMNS,
+    TRACKS_ROWS_PATH_COLUMNS,
     TailAllowance,
     TracksIndexRow,
     TracksRowDraft,
@@ -51,6 +53,7 @@ from mosaic.core.pipeline.tracks_index import (
     rows_without_tracklets,
     tracklets_by_entry,
     legacy_view,
+    located_tracks_table,
     read_tracks_index,
     row_in_scope,
     rows_in_scope,
@@ -58,10 +61,20 @@ from mosaic.core.pipeline.tracks_index import (
     variant_candidate_rows,
     tracks_index,
     tracks_index_path,
+    tracks_rows,
+    tracks_variant_location,
     write_tracks_row,
     write_tracks_rows,
 )
-from tests.helpers import add_track_sequences, add_tracks_variant, track_table
+from tests.helpers import (
+    CONVERTED_ENTRIES,
+    add_track_sequences,
+    add_tracks_variant,
+    converted_source,
+    copy_of,
+    make_dataset,
+    track_table,
+)
 
 # The exact header the hand-written writer emitted, in its order. Pinned as a
 # literal rather than imported, because the point of the adoption tests is that
@@ -2198,3 +2211,120 @@ def test_an_empty_batch_creates_no_index(tmp_path: Path) -> None:
     write_tracks_rows(ds, [])
 
     assert not tracks_index_path(ds).exists()
+
+
+# --- The lookup through links --------------------------------------------------
+
+
+def test_a_copy_reads_the_tracks_rows_of_its_source(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    rows = tracks_rows(copy)
+
+    own = read_tracks_index(source)
+    assert list(zip(rows["group"], rows["sequence"], strict=True)) == list(
+        CONVERTED_ENTRIES
+    )
+    assert list(rows["run_id"]) == list(own["run_id"])
+    assert set(rows["link_id"]) == {f"source-{source.uuid}"}
+    assert read_tracks_index(copy).empty
+
+
+def test_the_located_table_is_the_sources_until_the_copy_publishes_its_own(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    (variant,) = set(read_tracks_index(source)["run_id"])
+    entry = CONVERTED_ENTRIES[0]
+    file_name = f"{make_entry_key(*entry)}.parquet"
+
+    linked = located_tracks_table(copy, variant, entry)
+    _ = copy.convert_all_tracks(overwrite=True)
+    own = located_tracks_table(copy, variant, entry)
+
+    assert linked == source.get_root("tracks") / variant / file_name
+    assert own == copy.get_root("tracks") / variant / file_name
+    assert own is not None
+    assert own.is_file()
+
+
+def test_an_entry_without_a_row_has_no_located_table(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    (variant,) = set(read_tracks_index(source)["run_id"])
+
+    assert located_tracks_table(copy, variant, ("g", "absent")) is None
+    assert (
+        located_tracks_table(copy, "convert-other.0.1-0000000000", ("g", "a")) is None
+    )
+
+
+def test_a_dataset_without_links_reads_its_own_rows_with_an_empty_link_id(
+    tmp_path: Path,
+) -> None:
+    ds = converted_source(tmp_path / "source")
+
+    rows = tracks_rows(ds)
+
+    pd.testing.assert_frame_equal(rows, read_tracks_index(ds).assign(link_id=""))
+
+
+def test_a_link_that_provides_no_tracks_adds_no_row(tmp_path: Path) -> None:
+    library = converted_source(tmp_path / "library")
+    project = make_dataset(tmp_path / "project", name="project")
+    _ = project.add_link(
+        DatasetLink(id="group", path="../library", provides=("models",))
+    )
+
+    rows = tracks_rows(project)
+
+    assert rows.empty
+    (variant,) = set(read_tracks_index(library)["run_id"])
+    assert tracks_variant_location(project, variant) is None
+
+
+def test_a_linked_rows_source_and_appearance_paths_name_the_sources_files(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    raw = source.get_root("tracks_raw") / "s1.npz"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    _ = raw.write_bytes(b"raw")
+    add_tracks_variant(
+        source, "convert-trex_npz.0.3-aaaaaaaaaa", "s1", source=raw, appearance_dim=4
+    )
+    reader = make_dataset(tmp_path / "reader", name="reader")
+    _ = reader.add_link(DatasetLink(id="source", path="../source"))
+
+    (row,) = tracks_rows(reader).to_dict("records")
+
+    stored = read_tracks_index(source).iloc[0]
+    for column in TRACKS_INDEX_PATH_COLUMNS:
+        cell = Path(str(row[column]))
+        assert cell.is_absolute(), column
+        assert cell == source.resolve_path(stored[column]), column
+        assert cell.is_file(), column
+
+
+def test_the_linked_path_columns_are_the_portability_passes_columns() -> None:
+    from mosaic.core.dataset import _INDEX_PATH_COLUMNS  # pyright: ignore[reportPrivateUsage]
+
+    assert TRACKS_ROWS_PATH_COLUMNS == ("abs_path", *_INDEX_PATH_COLUMNS["tracks"])
+
+
+def test_a_variant_is_located_in_the_first_dataset_that_holds_it(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    (variant,) = set(read_tracks_index(source)["run_id"])
+
+    linked = tracks_variant_location(copy, variant)
+    _ = copy.convert_all_tracks(overwrite=True)
+    own = tracks_variant_location(copy, variant)
+
+    assert linked == source.get_root("tracks") / variant
+    assert own == copy.get_root("tracks") / variant
+    assert tracks_variant_location(copy, "convert-other.0.1-0000000000") is None

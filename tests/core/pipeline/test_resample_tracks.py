@@ -37,6 +37,7 @@ from tests.helpers import (
     ANGULAR_VELOCITY,
     GAP_SECONDS,
     VELOCITY,
+    copy_of,
     dropped_frame_times,
     dropped_frame_tracks,
     make_dataset,
@@ -777,3 +778,20 @@ def test_a_recipe_can_wire_a_tracks_reference_to_this_op() -> None:
     assert trex is not None
     assert trex.produces.writes_tracks is True
     assert trex.consumes.reads_media is True
+
+
+def test_a_copy_re_grids_the_tables_of_its_source(tmp_path: Path) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    _seed_variant(source, ("s1", "s2"), 34.679)
+    copy = copy_of(source, tmp_path / "copy")
+
+    _ = run_op(copy, "resample-tracks", {"target_fps": 30.0}, track=False)
+
+    produced = read_tracks_index(copy)
+    assert sorted(produced["sequence"]) == ["s1", "s2"]
+    assert set(produced["run_id"]) != {SOURCE_VARIANT}
+    for path in produced["abs_path"]:
+        assert _rate(pd.read_parquet(copy.resolve_path(str(path)))) == (
+            pytest.approx(30.0)
+        )
+    assert set(read_tracks_index(source)["run_id"]) == {SOURCE_VARIANT}

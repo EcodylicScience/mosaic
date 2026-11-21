@@ -49,7 +49,7 @@ from mosaic.core.pipeline.parquet_reader import (
     read_head,
     summarize_numeric_columns,
 )
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.pipeline.types.data_config import BOOKKEEPING_COLS, META_COLS
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel
@@ -469,7 +469,7 @@ def _table_path(
             else:
                 stored = [str(cell) for cell in rows["abs_path"]]
         case TracksVariantRef():
-            rows = read_tracks_index(ds)
+            rows = tracks_rows(ds)
             mask = (
                 (rows["run_id"] == ref.run_id)
                 & (rows["group"] == group)

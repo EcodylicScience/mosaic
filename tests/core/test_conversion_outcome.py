@@ -18,12 +18,18 @@ from mosaic.core.schema import TrackSchemaError
 from mosaic.core.track_converter import EntryHints
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
 from tests.helpers import (
+    CONVERTED_ENTRIES,
     calms21_dataset,
+    converted_source,
+    copy_of,
     fail_calms21_sequence,
     make_dataset,
     write_tracktor_recording,
     write_trex_npz,
 )
+
+
+_THREE_PAIRS = {"train": {"a": {"s1": 4, "s2": 4, "s3": 4}}}
 
 
 def _dataset(tmp_path: Path, good: tuple[str, ...], bad: tuple[str, ...]) -> Dataset:
@@ -104,14 +110,67 @@ def test_a_file_per_sequence_format_counts_its_current_entry(tmp_path: Path) -> 
     assert (second.converted, second.current) == (1, 1)
 
 
+def _assert_a_copy_converts_nothing(source: Dataset, copy: Dataset) -> None:
+    """Convert *copy* and check it reports *source*'s tables current and adds none."""
+    entries = len(read_tracks_index(source))
+
+    outcome = copy.convert_all_tracks()
+
+    assert (outcome.converted, outcome.current, outcome.failed) == (
+        entries,
+        entries,
+        0,
+    )
+    assert read_tracks_index(copy).empty
+    assert sorted(copy.get_root("tracks").rglob("*.parquet")) == []
+
+
+def test_a_copy_reports_its_sources_merged_tables_current_and_writes_no_table(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    assert len(read_tracks_index(source)) == len(CONVERTED_ENTRIES)
+
+    _assert_a_copy_converts_nothing(source, copy_of(source, tmp_path / "copy"))
+
+
+def test_a_copy_reports_its_sources_per_file_table_current_and_writes_no_table(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    _ = write_tracktor_recording(source.base_dir / "raw")
+    _ = source.index_tracks_raw(
+        [source.base_dir / "raw"],
+        patterns=["*_tracked_fixed_final.tsv"],
+        src_format="tracktor_corrected_tsv",
+    )
+    _ = source.convert_all_tracks()
+    copy = copy_of(source, tmp_path / "copy")
+
+    _assert_a_copy_converts_nothing(source, copy)
+
+    (row,) = copy.read_tracks_raw_index()
+    file_outcome = copy.convert_track_file(pd.Series(row), {}, False)
+    (source_table,) = read_tracks_index(source)["abs_path"]
+    assert file_outcome.path == source.resolve_path(source_table)
+    assert file_outcome.tables == []
+
+
+def test_a_copy_reports_its_sources_enumerated_tables_current_and_writes_no_table(
+    tmp_path: Path,
+) -> None:
+    source = calms21_dataset(tmp_path / "source", _THREE_PAIRS)
+    _ = source.convert_all_tracks()
+    assert len(read_tracks_index(source)) == 3
+
+    _assert_a_copy_converts_nothing(source, copy_of(source, tmp_path / "copy"))
+
+
 def test_nothing_to_convert_is_not_a_loss() -> None:
     outcome = ConversionOutcome(converted=0, failed=0)
 
     assert outcome.ok
     assert not outcome.lost_everything
-
-
-_THREE_PAIRS = {"train": {"a": {"s1": 4, "s2": 4, "s3": 4}}}
 
 
 def _indexed_entries(ds: Dataset) -> list[tuple[str, str]]:

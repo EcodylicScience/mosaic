@@ -15,7 +15,7 @@ import pandas as pd
 
 from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 from mosaic.core.pipeline.iteration import yield_sequences
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.scope import Scope
 
 
@@ -107,7 +107,7 @@ def load_tracks_and_labels(
         # Two different problems, and they need two different answers. An
         # unconverted dataset reported as one missing sequence sends the user to
         # check a name rather than to run the conversion.
-        if read_tracks_index(ds).empty:
+        if tracks_rows(ds).empty:
             raise FileNotFoundError(
                 "tracks/index.csv is empty or absent; run conversion first "
                 "(ds.convert_all_tracks())."

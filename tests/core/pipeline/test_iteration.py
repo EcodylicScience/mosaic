@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.tracks_index import TRACKS_INDEX_COLUMNS
+from mosaic.core.pipeline.tracks_index import TRACKS_INDEX_COLUMNS, read_tracks_index
 from mosaic.core.scope import Scope
-from mosaic.core.pipeline.iteration import (
-    read_tracks_index,
-    yield_sequences,
+from mosaic.core.pipeline.iteration import yield_sequences
+from tests.helpers import (
+    CONVERTED_ENTRIES,
+    MockDataset,
+    add_track_sequences,
+    converted_source,
+    copy_of,
 )
-from tests.helpers import MockDataset, add_track_sequences
 
 # --- Fixtures ---
 
@@ -112,3 +117,15 @@ class TestYieldSequences:
         )
         assert len(results) == 1
         assert results[0][:2] == ("arena", "s2")
+
+
+def test_a_copy_yields_the_sequences_of_its_source(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    results = list(yield_sequences(copy))
+
+    assert [(group, sequence) for group, sequence, _ in results] == list(
+        CONVERTED_ENTRIES
+    )
+    assert all(not table.empty for _, _, table in results)

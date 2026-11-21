@@ -420,7 +420,7 @@ class DriftReads:
         records only the labelled variants it read. A row whose composition is
         blank counts too: it is absent from :meth:`tracks_cells` but present here.
         """
-        from .tracks_index import read_tracks_index
+        from .tracks_index import tracks_rows
 
         key = tuple(sorted(set(variants)))
         held = self._held.get(key)
@@ -428,7 +428,7 @@ class DriftReads:
             readable = {"", *key}
             held = frozenset(
                 (str(row.get("group", "")), str(row.get("sequence", "")))
-                for _, row in read_tracks_index(self._ds).iterrows()
+                for _, row in tracks_rows(self._ds).iterrows()
                 if str(row.get("run_id", "")) in readable
             )
             self._held[key] = held

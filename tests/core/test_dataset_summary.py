@@ -9,7 +9,6 @@ import pandas as pd
 import pytest
 import yaml
 
-from mosaic.core import dataset_summary as dataset_summary_module
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import (
     SUMMARY_KINDS,
@@ -37,6 +36,7 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.selections import save_selection
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    CONVERTED_ENTRIES,
     add_track_sequences,
     DIVISION_CREATED_UTC,
     MediaClip,
@@ -44,6 +44,8 @@ from tests.helpers import (
     UPDATE_GOLDEN_ENV,
     add_tracks_table,
     add_tracks_variant,
+    converted_source,
+    copy_of,
     make_dataset,
     read_golden,
     regenerate_command,
@@ -355,8 +357,7 @@ def _index_reads_describing(
         return real(dataset)
 
     with monkeypatch.context() as patch:
-        for module in (tracks_index_module, dataset_summary_module):
-            patch.setattr(module, "read_tracks_index", counting)
+        patch.setattr(tracks_index_module, "read_tracks_index", counting)
         _ = dataset_summary(reopened, found=found)
     return reads
 
@@ -608,3 +609,15 @@ def test_an_unreadable_selection_file_is_reported_among_the_errors(
     assert len(summary.inventory_errors) == 1
     assert summary.inventory_errors[0].startswith("selections: ")
     assert "day1 (1).json" in summary.inventory_errors[0]
+
+
+def test_a_copy_counts_the_entries_of_its_source(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    summary = dataset_summary(copy)
+
+    assert summary.counts.sequences == len(CONVERTED_ENTRIES)
+    assert sum(schema.tables for schema in summary.track_schemas) == len(
+        CONVERTED_ENTRIES
+    )

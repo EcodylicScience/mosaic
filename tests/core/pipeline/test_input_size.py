@@ -24,6 +24,9 @@ from mosaic.core.pipeline.manifest import ManifestEntry
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
 from mosaic.core.pipeline.types import ParquetLoadSpec
 from tests.helpers import (
+    CONVERTED_ENTRIES,
+    converted_source,
+    copy_of,
     MediaClip,
     add_track_sequences,
     add_tracks_variant,
@@ -277,3 +280,16 @@ def test_a_step_reading_the_unlabeled_tables_resolves_to_the_unlabeled_row(
 
     assert unlabeled_only[entry].frames == 20
     assert every_variant[entry].frames == 40
+
+
+def test_a_copy_reads_the_covariates_of_its_sources_entries(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    entries = list(CONVERTED_ENTRIES)
+
+    found = tracks_covariates(copy, entries, tracks_run_id=None, variants=None)
+
+    assert found == tracks_covariates(
+        source, entries, tracks_run_id=None, variants=None
+    )
+    assert all(covariates.frames for covariates in found.values())

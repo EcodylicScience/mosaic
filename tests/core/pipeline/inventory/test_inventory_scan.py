@@ -31,17 +31,23 @@ from mosaic.core.pipeline.inventory.scan import (
     entries_held,
     entry_universe,
     narrow_target,
+    reportable_universe,
     run_covers,
 )
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    CONVERTED_ENTRIES,
+    converted_source,
+    copy_of,
     LossyFeature,
     ScopedFeature,
     add_track_sequences,
+    add_tracks_table,
     add_tracks_variant,
     make_dataset,
     observed,
     run_fresh,
+    track_table,
 )
 
 STORAGE = "speed-angvel__from__tracks"
@@ -832,3 +838,23 @@ def test_a_variants_tables_are_checked_by_one_pass_over_its_rows(
     many = _index_record_reads_for(tmp_path, monkeypatch, 12)
 
     assert many == few
+
+
+def test_a_copy_has_the_entry_universe_of_its_source(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+
+    assert entry_universe(copy) == frozenset(CONVERTED_ENTRIES)
+    assert reportable_universe(copy) == frozenset(CONVERTED_ENTRIES)
+
+
+def test_a_report_over_a_copy_with_two_recipes_for_an_entry_names_the_linked_entries(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_table(copy, "other.0.1-bbbbbbbbbb", track_table(*CONVERTED_ENTRIES[0]))
+
+    with pytest.raises(ValueError):
+        _ = entry_universe(copy)
+    assert reportable_universe(copy) == frozenset(CONVERTED_ENTRIES)

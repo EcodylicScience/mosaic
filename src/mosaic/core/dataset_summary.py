@@ -39,8 +39,8 @@ from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.pipeline.tracks_index import (
     FrameExtents,
     frame_extents_of,
-    read_tracks_index,
     select_variant_rows,
+    tracks_rows,
 )
 from mosaic.core.raw_report import RawReport, raw_report
 from mosaic.core.recording import (
@@ -357,7 +357,7 @@ def dataset_summary(
     """
     held = found if found is not None else inventory(ds, kinds=SUMMARY_KINDS)
     manifest = ds.manifest
-    tracks_index = read_tracks_index(ds)
+    tracks_index = tracks_rows(ds)
     tracks = existing_tracks_records(ds, tracks_index)
     media_rows = _media_rows(ds)
     media = _media_files(media_rows)
@@ -600,7 +600,7 @@ def dataset_next_steps(
             counted them.
     """
     if converted_tracks is None:
-        converted_tracks = len(existing_tracks_records(ds, read_tracks_index(ds)))
+        converted_tracks = len(existing_tracks_records(ds, tracks_rows(ds)))
     steps: list[str] = []
     sources = ds.manifest.sources
     raw_tracks = _raw_rows(ds, "tracks_raw")

@@ -145,6 +145,20 @@ def delete_set(
         run_id = str(record.get("run_id", ""))
         if verdict == "current":
             continue
+        link_id = str(record.get("link_id", ""))
+        if link_id:
+            declined.append(
+                Declined(
+                    kind=kind,
+                    name=name,
+                    run_id=run_id,
+                    reason=(
+                        f"the artifact belongs to the dataset of link {link_id}, "
+                        "which this dataset does not change"
+                    ),
+                )
+            )
+            continue
         if verdict == "unknown":
             declined.append(
                 Declined(

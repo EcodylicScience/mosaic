@@ -311,10 +311,13 @@ from .pipeline.tracks_index import (
     consumed_composition_for,
     consumed_compositions_for,
     legacy_view,
+    located_tracks_table,
     read_frame_extent,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
+    tracks_row_table,
+    tracks_rows,
     variant_entry_rows,
 )
 from .pipeline.labels_index import (
@@ -557,7 +560,7 @@ class _EntryTracks:
         if self._paths is not None:
             return self._paths
         candidates = variant_candidate_rows(
-            read_tracks_index(self._dataset), self._tracks_run_id
+            tracks_rows(self._dataset), self._tracks_run_id
         )
         rows = candidates
         if self._tracks_run_id is None:
@@ -1794,11 +1797,24 @@ class ConversionFacts:
             is absent.
         current: The composition the raw source of each of those entries holds
             now.
+        tables: For each entry of *recorded*, the table that the row of each
+            variant names, or ``None`` when that file is absent, as
+            :func:`~mosaic.core.pipeline.tracks_index.tracks_row_table` answers.
+            The row may be a linked dataset's, and its table then lies there.
     """
 
     variants: frozenset[str]
     recorded: Mapping[tuple[str, str], Mapping[str, str]]
     current: Mapping[tuple[str, str], str]
+    tables: Mapping[tuple[str, str], Mapping[str, Path | None]]
+
+    def located_table(self, variant: str, group: str, sequence: str) -> Path | None:
+        """The table of an entry in *variant*, ``None`` without a row or a file.
+
+        Answers as :func:`~mosaic.core.pipeline.tracks_index.located_tracks_table`
+        does for a variant that the facts cover.
+        """
+        return self.tables.get((group, sequence), {}).get(variant)
 
     def is_current(self, variant: str, group: str, sequence: str) -> bool:
         """Whether the table of an entry was made from what its source holds now.
@@ -1825,6 +1841,9 @@ class ConversionFacts:
             },
             current={
                 entry: self.current[entry] for entry in entries if entry in self.current
+            },
+            tables={
+                entry: self.tables[entry] for entry in entries if entry in self.tables
             },
         )
 
@@ -4810,6 +4829,21 @@ class Dataset:
         except pd.errors.EmptyDataError:
             return None
 
+    def _located_table(
+        self, run_id: str, entry: Entry, facts: ConversionFacts | None = None
+    ) -> Path | None:
+        """The table that variant *run_id* holds for *entry*, here or through a link.
+
+        A table a linked dataset holds counts as this dataset's, so a conversion
+        skips an entry its source already converted and writes no own row or
+        table for it. *facts* answer for the variants they cover, as in
+        ``_conversion_is_current``; without them the merged rows are read for
+        this entry alone.
+        """
+        if facts is not None and run_id in facts.variants:
+            return facts.located_table(run_id, *entry)
+        return located_tracks_table(self, run_id, entry)
+
     def _conversion_is_current(
         self,
         run_id: str,
@@ -4842,7 +4876,7 @@ class Dataset:
         """
         if facts is not None and run_id in facts.variants:
             return facts.is_current(run_id, group, sequence)
-        index = read_tracks_index(self)
+        index = tracks_rows(self)
         rows = index[
             (index["run_id"] == run_id)
             & (index["group"] == group)
@@ -5190,23 +5224,25 @@ class Dataset:
         return stale
 
     def list_groups(self) -> list[str]:
-        """The group names in ``tracks/index.csv``, sorted. Empty when there are none.
+        """The group names of the tracks rows, sorted. Empty when there are none.
 
-        Absent and empty answer alike: both mean "this dataset has no
-        standardized tracks", and answering them differently is what left six
-        readers of this file with four different policies. A caller that wants to
-        tell a human to convert first checks for an empty result -- that check is
-        the same for both spellings.
+        The rows are :func:`tracks_rows`: ``tracks/index.csv`` and the tracks
+        indexes of the datasets this one links. Absent and empty answer alike:
+        both mean "this dataset has no standardized tracks", and answering them
+        differently is what left six readers of this file with four different
+        policies. A caller that wants to tell a human to convert first checks
+        for an empty result -- that check is the same for both spellings.
         """
-        return sorted({str(g) for g in read_tracks_index(self)["group"]})
+        return sorted({str(g) for g in tracks_rows(self)["group"]})
 
     def list_entries(self, group: str | None = None) -> list[Entry]:
-        """The ``(group, sequence)`` entries in ``tracks/index.csv``, sorted.
+        """The ``(group, sequence)`` entries of the tracks rows, sorted.
 
+        Read from :func:`tracks_rows`, as :meth:`list_groups` reads them.
         Optionally within one group. Empty when there are none; see
         :meth:`list_groups` on why absent is not an error.
         """
-        df = read_tracks_index(self)
+        df = tracks_rows(self)
         if group is not None:
             df = df[df["group"] == group]
         return sorted(
@@ -5258,6 +5294,7 @@ class Dataset:
             - group_safe, sequence_safe: URL-encoded versions
             - abs_path: Path to the parquet file
             - Additional columns from index (n_rows, etc.)
+            - link_id: The link a row is read through, ``""`` for an own row
             - If level_names provided: one column per level name
 
         Examples
@@ -5280,7 +5317,7 @@ class Dataset:
         # legacy_view re-derives the safe-name columns this method's docstring
         # promises. They are no longer stored -- they were a cache of a pure
         # function of group/sequence, recomputed on every write anyway.
-        df = legacy_view(read_tracks_index(self))
+        df = legacy_view(tracks_rows(self))
 
         # The label beside the token, never instead of it. Every other column
         # here is keyed on group/sequence and a caller filters with them, so
@@ -5369,7 +5406,7 @@ class Dataset:
         ...     sequence_endswith="loop_1"
         ... )
         """
-        df = read_tracks_index(self)
+        df = tracks_rows(self)
 
         mask = pd.Series([True] * len(df))
 
@@ -9004,7 +9041,7 @@ class Dataset:
         their clips, and *routing* is :meth:`media_routing_context`.
         """
         tracks = (
-            read_tracks_index(self)
+            tracks_rows(self)
             if self.has_root("tracks")
             else pd.DataFrame(columns=["run_id", "group", "sequence"])
         )
@@ -9405,7 +9442,7 @@ class Dataset:
         """
         Build a lookup of various sequence keys -> metadata for mapping media files to sequences.
         """
-        df = legacy_view(read_tracks_index(self))
+        df = legacy_view(tracks_rows(self))
         keymap: dict[str, list[dict[str, str]]] = {}
         for _, row in df.iterrows():
             group = str(row["group"])
@@ -10327,11 +10364,15 @@ class Dataset:
                     out_path = variant_root / f"{entry_key}.parquet"
                     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Respect overwrite flag when outputs already exist, unless the
-                    # sources moved under them (see ``_conversion_is_current``).
+                    # Respect overwrite flag when a table already exists, here or
+                    # in a linked dataset, unless the sources moved under it (see
+                    # ``_conversion_is_current``).
                     if (
-                        out_path.exists()
-                        and not overwrite
+                        not overwrite
+                        and self._located_table(
+                            variant, (out_group_canon, canon_seq), facts
+                        )
+                        is not None
                         and self._conversion_is_current(
                             variant, out_group_canon, canon_seq, facts
                         )
@@ -10424,13 +10465,16 @@ class Dataset:
         out_path = variant_root / rel_name
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if (
-            out_path.exists()
-            and not overwrite
-            and self._conversion_is_current(variant, group_value, seq_value, facts)
+        located = (
+            None
+            if overwrite
+            else self._located_table(variant, (group_value, seq_value), facts)
+        )
+        if located is not None and self._conversion_is_current(
+            variant, group_value, seq_value, facts
         ):
             outcome.current.append((group_value, seq_value))
-            outcome.path = out_path
+            outcome.path = located
             return
 
         # Which entry to produce. The hints always win: the caller knows the
@@ -10872,17 +10916,21 @@ class Dataset:
     def _conversion_facts(self, variant_ids: set[str]) -> ConversionFacts:
         """Read, once, what the tracks index and the raw sources say of *variant_ids*.
 
-        The facts that ``_conversion_is_current`` would otherwise read for each
-        entry: the composition each row of the variants records, and what the raw
-        source of each such entry holds now.
+        The facts that ``_located_table`` and ``_conversion_is_current`` would
+        otherwise read for each entry: the table each row of the variants names,
+        the composition it records, and what the raw source of each such entry
+        holds now. The rows are those of :func:`tracks_rows`, linked ones
+        included.
         """
-        index = read_tracks_index(self)
+        index = tracks_rows(self)
         recorded: dict[tuple[str, str], dict[str, str]] = {}
-        for run_id, group, sequence, composition in zip(
+        tables: dict[tuple[str, str], dict[str, Path | None]] = {}
+        for run_id, group, sequence, composition, table in zip(
             index["run_id"],
             index["group"],
             index["sequence"],
             index["consumed_composition"],
+            index["abs_path"],
             strict=True,
         ):
             if run_id in variant_ids:
@@ -10890,6 +10938,9 @@ class Dataset:
                 # of the entry answered before.
                 recorded.setdefault((group, sequence), {})[run_id] = text_cell(
                     composition
+                )
+                tables.setdefault((group, sequence), {})[run_id] = tracks_row_table(
+                    self, table
                 )
         entries = sorted(recorded)
         cells = consumed_compositions_for(
@@ -10899,6 +10950,7 @@ class Dataset:
             variants=frozenset(variant_ids),
             recorded=recorded,
             current=dict(zip(entries, cells, strict=True)),
+            tables=tables,
         )
 
     def track_conversion_sources(self, source_format: str) -> TrackConversionSources:
@@ -11115,12 +11167,13 @@ class Dataset:
         variant_root = tracks_variant_root(self.get_root("tracks"), variant)
         out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
         outcome.path = out_path
-        if (
-            out_path.exists()
-            and not overwrite
-            and self._conversion_is_current(variant, group, sequence, facts)
+        entry = (text_cell(group), text_cell(sequence))
+        located = None if overwrite else self._located_table(variant, entry, facts)
+        if located is not None and self._conversion_is_current(
+            variant, group, sequence, facts
         ):
-            outcome.current.append((text_cell(group), text_cell(sequence)))
+            outcome.current.append(entry)
+            outcome.path = located
             return outcome
 
         hints = _placed_hints(
