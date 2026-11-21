@@ -45,6 +45,7 @@ class UltralyticsOp(Op[UltralyticsParams]):
     version = ULTRALYTICS_VERSION
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = ULTRALYTICS_MODEL
     Params = UltralyticsParams
 

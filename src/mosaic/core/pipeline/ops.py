@@ -348,6 +348,16 @@ class Op(Generic[P]):
     identifier for two different computations.
     """
 
+    per_entry: ClassVar[bool] = False
+    """Whether each entry's output depends on that entry alone.
+
+    A planner leaves out of such a step's scope each entry that only a linked dataset's
+    output covers, which is then not computed again into this dataset.
+    ``scope_dependent`` does not answer this question. An op that reads its whole scope
+    to write any entry, such as ``assign-identities``, declares ``scope_dependent =
+    False`` and leaves this ``False``, and is asked for its whole scope.
+    """
+
     model_reference: ClassVar[ModelReference | None] = None
     """The trained model this op tracks or predicts with. See :class:`ModelReference`.
 

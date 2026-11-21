@@ -51,11 +51,17 @@ from mosaic.core.track_library.calms21 import Calms21Converter
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     ListedEntries,
+    MediaClip,
     add_tracks_variant,
     calms21_dataset,
+    copy_of,
     guppies_recipe,
     make_dataset,
+    run_speed,
+    take_link_offline,
+    write_data_yaml,
     write_listed_entries,
+    write_media_index,
 )
 
 runner = CliRunner()
@@ -782,3 +788,148 @@ def test_a_variant_an_op_mints_is_refused_when_the_reader_starts(
     [problem] = caught.value.problems
     assert (problem.step, problem.where) == ("speed", "inputs")
     assert minted in problem.message
+
+
+def _copy_of_a_source(tmp_path: Path) -> Dataset:
+    """A copy linked to its source, holding tracks and media of its own.
+
+    The copy's own ``speed-angvel`` run at step size 1 covers both entries. Its
+    videos need a playback derivative, which neither dataset holds.
+    """
+    source = make_dataset(tmp_path / "source", name="source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_variant(copy, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    write_media_index(
+        copy,
+        [
+            MediaClip(
+                sequence=sequence,
+                filename=f"{sequence}.mp4",
+                video_uuid=f"uid-{sequence}",
+                codec="prores",
+            )
+            for sequence in ("seq_a", "seq_b")
+        ],
+    )
+    _ = run_speed(copy, 1)
+    return copy
+
+
+def _copy_with_an_offline_source(tmp_path: Path) -> Dataset:
+    """The copy of :func:`_copy_of_a_source`, loaded again with its link offline."""
+    return take_link_offline(_copy_of_a_source(tmp_path))
+
+
+def _every_output_kind(tmp_path: Path) -> Recipe:
+    """A feature step the copy completed, one it has not, a training and two media ops.
+
+    ``transcode`` plans a media derivative, which no link provides, and
+    ``join`` plans no artifact.
+    """
+    return read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "params": {"step_size": 1},
+                },
+                {"id": "smooth", "type": "feature", "feature": "trajectory-smooth"},
+                {
+                    "id": "train",
+                    "type": "op",
+                    "kind": "train-pose",
+                    "params": {
+                        "data": str(write_data_yaml(tmp_path)),
+                        "epochs": 2,
+                        "device": "cpu",
+                    },
+                },
+                {
+                    "id": "transcode",
+                    "type": "op",
+                    "kind": "transcode",
+                    "params": {"target": "playback"},
+                },
+                {"id": "join", "type": "op", "kind": "export-joined"},
+            ]
+        }
+    )
+
+
+_ONE_JOIN = {"join": Scope(entries=[("", "seq_a")])}
+
+
+def test_a_step_whose_kind_an_offline_link_provides_is_a_problem(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_with_an_offline_source(tmp_path)
+    (link,) = copy.manifest.links
+
+    plan = plan_pipeline(
+        copy, _every_output_kind(tmp_path), refuse=False, step_scopes=_ONE_JOIN
+    )
+
+    offline = [p for p in plan.problems if p.where == "link_unreachable"]
+    assert [p.step for p in offline] == ["smooth", "train"]
+    for problem in offline:
+        assert link.id in problem.message
+        assert ", ".join(link.provides) in problem.message
+
+
+def test_a_step_its_own_rows_complete_is_not_refused_while_its_link_is_offline(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_with_an_offline_source(tmp_path)
+
+    plan = plan_pipeline(
+        copy, _every_output_kind(tmp_path), refuse=False, step_scopes=_ONE_JOIN
+    )
+
+    assert plan.step("speed").is_complete
+    assert not [p for p in plan.problems if p.step == "speed"]
+
+
+def test_a_step_without_a_linked_artifact_kind_is_not_refused_while_a_link_is_offline(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_with_an_offline_source(tmp_path)
+
+    plan = plan_pipeline(
+        copy, _every_output_kind(tmp_path), refuse=False, step_scopes=_ONE_JOIN
+    )
+
+    assert plan.step("join").artifact is None
+    assert not plan.step("transcode").is_complete
+    assert not [p for p in plan.problems if p.step in {"transcode", "join"}]
+
+
+def test_a_submission_is_refused_while_a_link_its_steps_read_is_offline(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_with_an_offline_source(tmp_path)
+
+    with pytest.raises(RecipeRefused) as caught:
+        _ = plan_pipeline(copy, _every_output_kind(tmp_path), step_scopes=_ONE_JOIN)
+
+    assert [(p.step, p.where) for p in caught.value.plan.problems] == [
+        ("smooth", "link_unreachable"),
+        ("train", "link_unreachable"),
+    ]
+
+
+def test_a_link_that_goes_offline_after_a_kept_lookup_is_a_problem(
+    tmp_path: Path,
+) -> None:
+    copy = _copy_of_a_source(tmp_path)
+    for kind in ("features", "models"):
+        assert len(copy.lookup_order(kind)) == 2
+    _ = take_link_offline(copy)
+
+    plan = plan_pipeline(
+        copy, _every_output_kind(tmp_path), refuse=False, step_scopes=_ONE_JOIN
+    )
+
+    offline = [p.step for p in plan.problems if p.where == "link_unreachable"]
+    assert offline == ["smooth", "train"]

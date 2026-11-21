@@ -52,6 +52,7 @@ class TrexOp(Op[TrexParams]):
     version = TREX_TRACK_VERSION
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = TREX_DETECT_MODEL
     Params = TrexParams
 

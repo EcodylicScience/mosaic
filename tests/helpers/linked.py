@@ -10,6 +10,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import DatasetLink
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
     feature_index,
@@ -37,6 +38,7 @@ __all__ = [
     "feature_edge",
     "link_forms",
     "raw_source",
+    "take_link_offline",
     "tracks_edge",
     "write_run_params",
 ]
@@ -225,11 +227,12 @@ def copy_of(
     *,
     entries: Collection[tuple[str, str]] | None = None,
     relative: bool = True,
+    provides: tuple[LinkedKind, ...] = LINKED_KINDS,
 ) -> Dataset:
     """A new dataset at *directory* that links *source* and adopts its raw rows.
 
     The copy gets a fresh ``uuid`` and a link named ``source-<uuid>`` that
-    provides every kind. Its path is relative to *directory* when *relative* is
+    provides *provides*. Its path is relative to *directory* when *relative* is
     true and *source*'s absolute base directory otherwise, the link form that
     decides how the adopted cells are stored.
 
@@ -239,6 +242,7 @@ def copy_of(
         entries: The ``(group, sequence)`` keys to adopt, or ``None`` for every
             row.
         relative: Whether the link names *source* by a relative path.
+        provides: The kinds the link provides.
 
     Returns:
         The saved copy.
@@ -249,7 +253,21 @@ def copy_of(
         if relative
         else str(source.base_dir)
     )
-    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path=path), save=False)
+    link = DatasetLink(id=f"source-{source.uuid}", path=path, provides=provides)
+    _ = copy.add_link(link, save=False)
     _ = copy.adopt_raw_rows(source, entries=entries)
     copy.save()
     return copy
+
+
+def take_link_offline(copy: Dataset) -> Dataset:
+    """Make the one link of *copy* unreachable, and return *copy* opened again.
+
+    The linked dataset's manifest is renamed away, so opening the link raises
+    ``FileNotFoundError``. The returned dataset is loaded afresh, so it holds no
+    link that an earlier lookup opened.
+    """
+    (link,) = copy.manifest.links
+    manifest = copy.resolve_link_path(link) / "dataset.yaml"
+    _ = manifest.rename(manifest.with_name("dataset.yaml.away"))
+    return Dataset(manifest_path=copy.manifest_path).load()

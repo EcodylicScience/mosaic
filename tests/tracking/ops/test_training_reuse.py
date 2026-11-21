@@ -44,7 +44,13 @@ from mosaic.tracking.ops.trained_models import (
     trained_model_index,
     trained_model_records,
 )
-from tests.helpers import FakeTrainer, copy_of, make_dataset, write_data_yaml
+from tests.helpers import (
+    FakeTrainer,
+    copy_of,
+    make_dataset,
+    take_link_offline,
+    write_data_yaml,
+)
 
 
 def _write(path: Path, content: bytes) -> Path:
@@ -827,11 +833,10 @@ def test_a_models_link_that_is_offline_refuses_a_training_no_own_row_finished(
     trainer.install(monkeypatch)
     copy, _run_id, params = _source_trained_and_copy_unfinished(tmp_path, trainer)
     (link,) = copy.manifest.links
-    source_manifest = copy.resolve_link_path(link) / "dataset.yaml"
-    _ = source_manifest.rename(source_manifest.with_name("dataset.yaml.away"))
+    offline = take_link_offline(copy)
 
     with pytest.raises(LinkUnreachableError) as refused:
-        _ = run_op(copy, "train-pose", dict(params))
+        _ = run_op(offline, "train-pose", dict(params))
 
     assert refused.value.reason == "link_unreachable"
     assert refused.value.detail["links"] == [
@@ -849,10 +854,7 @@ def test_an_own_finished_run_is_reused_while_a_models_link_is_offline(
     own = Dataset(manifest_path=copy.manifest_path).load()
     assert run_op(own, "train-pose", dict(params), overwrite=True) == run_id
     assert trainer.calls == 2
-    (link,) = copy.manifest.links
-    source_manifest = copy.resolve_link_path(link) / "dataset.yaml"
-    _ = source_manifest.rename(source_manifest.with_name("dataset.yaml.away"))
-    offline = Dataset(manifest_path=copy.manifest_path).load()
+    offline = take_link_offline(copy)
 
     assert run_op(offline, "train-pose", dict(params)) == run_id
 

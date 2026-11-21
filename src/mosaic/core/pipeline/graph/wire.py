@@ -98,7 +98,9 @@ class Problem:
     Attributes:
         step: The step id, or ``""`` for a fault of the graph as a whole.
         where: Which part of the step: ``feature``, ``kind``, ``inputs``,
-            ``tracks``, ``params.templates``, ``steps``.
+            ``tracks``, ``params.templates``, ``steps``, or
+            ``link_unreachable`` for a step whose output a link provides that
+            cannot be opened.
         message: What is wrong, phrased so it reads on its own.
     """
 

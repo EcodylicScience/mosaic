@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -26,7 +27,7 @@ import mosaic.core.pipeline.graph.step as step_module
 import mosaic.core.pipeline.parallelism as parallelism
 from mosaic.behavior.feature_library.kpms import KPMS_LICENSE_ENV, KPMS_PYTHON_ENV
 from mosaic.cli import app
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import Dataset, LinkUnreachableError
 from mosaic.core.pipeline.graph import (
     BoundRef,
     CoverageShortfall,
@@ -34,6 +35,7 @@ from mosaic.core.pipeline.graph import (
     PlannedStep,
     Recipe,
     RecipeInvalid,
+    RecipeRefusedAtStep,
     Request,
     StepAttempt,
     StepRefused,
@@ -78,13 +80,17 @@ from mosaic.runlog import (
 from tests.helpers import (
     FakeTrainer,
     add_tracks_variant,
+    assert_tree_unchanged,
     chain_with_sibling_recipe,
+    copy_of,
     hide_package,
     install_lightning_action_stub,
     kpms_params,
     lightning_action_params,
     make_dataset,
     run_speed,
+    take_link_offline,
+    tree_snapshot,
     write_data_yaml,
     write_driver_lease,
     recipe_saved_by_0_17,
@@ -2103,3 +2109,93 @@ def test_a_tool_unavailable_from_fit_leaves_one_terminal_event(
     assert _terminal_events(tracked, attempt) == ["failed"]
     recorded = _recorded_error(tracked, request, "tool")
     assert (recorded["reason"], recorded["cause"]) == ("tool_unavailable", "license")
+
+
+# --- a link that goes offline after the submission ---------------------------
+
+
+def _followed_by[**P, R](
+    call: Callable[P, R], after: Callable[[], object]
+) -> Callable[P, R]:
+    """*call*, then *after* once it returns."""
+
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+        result = call(*args, **kwargs)
+        _ = after()
+        return result
+
+    return wrapped
+
+
+def _speed_and_training(tmp_path: Path) -> tuple[Dataset, Request]:
+    """A request for speed and a training on a copy whose link provides models.
+
+    The request is submitted while the link is reachable. The copy holds tracks
+    of its own, and the link's dataset holds nothing.
+    """
+    source = make_dataset(tmp_path / "source", name="source")
+    copy = copy_of(source, tmp_path / "copy", provides=("models",))
+    add_tracks_variant(copy, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {"id": "speed", "type": "feature", "feature": "speed-angvel"},
+                {
+                    "id": "train",
+                    "type": "op",
+                    "kind": "train-pose",
+                    "params": {
+                        "data": str(write_data_yaml(tmp_path)),
+                        "epochs": 2,
+                        "device": "cpu",
+                    },
+                },
+            ],
+        }
+    )
+    return copy, submit_request(copy, recipe).request
+
+
+def test_a_step_whose_link_went_offline_after_the_submission_is_refused_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, request = _speed_and_training(tmp_path)
+    offline = take_link_offline(copy)
+    models = tree_snapshot(offline.get_root("models"))
+
+    ran = execute_step(offline, request, "speed")
+    with pytest.raises(RecipeRefusedAtStep) as caught:
+        _ = execute_step(offline, request, "train")
+
+    assert ran.run_id is not None
+    assert caught.value.reason == "recipe_refused"
+    assert [(p.step, p.where) for p in caught.value.problems] == [
+        ("train", "link_unreachable")
+    ]
+    recorded = _recorded_error(offline, request, "train")
+    assert recorded["reason"] == "recipe_refused"
+    assert recorded["problems"] == [caught.value.problems[0].as_json()]
+    assert trainer.calls == 0
+    assert_tree_unchanged(offline.get_root("models"), models)
+
+
+def test_a_training_whose_models_link_goes_offline_after_its_plan_records_the_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    copy, request = _speed_and_training(tmp_path)
+    monkeypatch.setattr(
+        step_module,
+        "plan_pipeline",
+        _followed_by(plan_pipeline, lambda: take_link_offline(copy)),
+    )
+
+    with pytest.raises(LinkUnreachableError):
+        _ = execute_step(copy, request, "train")
+
+    assert _recorded_error(copy, request, "train")["reason"] == "link_unreachable"
+    assert trainer.calls == 0

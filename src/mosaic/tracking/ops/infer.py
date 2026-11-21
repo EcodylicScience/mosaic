@@ -1151,6 +1151,7 @@ class InferPoseOp(Op[PoseInferParams]):
     version = "0.5"
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = _POSE_MODEL
     Params = PoseInferParams
 
@@ -1280,6 +1281,7 @@ class InferPointsOp(Op[PointInferParams]):
     version = "0.5"
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = _POINTS_MODEL
     Params = PointInferParams
 
@@ -1393,6 +1395,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     version = "0.4"
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = _LOCALIZER_MODEL
     Params = LocalizerInferParams
 

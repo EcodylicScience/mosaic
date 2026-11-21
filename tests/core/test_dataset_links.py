@@ -478,6 +478,41 @@ def test_an_unreachable_link_warns_once_while_it_stays_away(
     assert capsys.readouterr().err == warning, "a later outage warns again"
 
 
+def test_a_fresh_lookup_opens_again_a_link_an_earlier_lookup_kept(
+    tmp_path: Path,
+) -> None:
+    library, project = _library_and_project(tmp_path)
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
+    fresh = _reopened(project)
+    (link,) = fresh.links
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [
+        "",
+        "group",
+    ]
+    away = _take_offline(library)
+
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [
+        "",
+        "group",
+    ], "a kept lookup is not opened again"
+    assert [linked.link_id for linked in fresh.lookup_order("models", fresh=True)] == [
+        ""
+    ]
+    assert fresh.unreachable_links("models") == (link,)
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [""], (
+        "a fresh lookup that finds a link away drops the kept one"
+    )
+
+    _bring_back(library, away)
+    assert [linked.link_id for linked in fresh.lookup_order("models", fresh=True)] == [
+        "",
+        "group",
+    ]
+    assert fresh.unreachable_links("models") == ()
+
+
 @pytest.mark.parametrize("failing", ["resolve_manifest_path", "load"])
 def test_any_os_error_on_opening_a_link_reads_as_unreachable(
     tmp_path: Path,

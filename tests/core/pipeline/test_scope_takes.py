@@ -215,3 +215,41 @@ class TestRunOpRefusesAScope:
             if "check_scope_takes" in names_called_by(sys.modules[op.__module__], "run")
         }
         assert checking == set()
+
+
+class TestPerEntry:
+    """An op whose each entry's output depends on that entry alone says so."""
+
+    def test_the_trackers_the_inference_ops_and_frame_extraction_are_per_entry(
+        self,
+    ) -> None:
+        from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesOp
+        from mosaic.tracking.ops.infer import (
+            InferLocalizerOp,
+            InferPointsOp,
+            InferPoseOp,
+        )
+        from mosaic.tracking.ops.litpose import LitposeOp
+        from mosaic.tracking.ops.sleap import SleapOp
+        from mosaic.tracking.ops.trex import TrexOp
+        from mosaic.tracking.ops.ultralytics import UltralyticsOp
+
+        register_ops()
+        expected = {
+            op.kind
+            for op in (
+                TrexOp,
+                SleapOp,
+                UltralyticsOp,
+                LitposeOp,
+                InferPoseOp,
+                InferPointsOp,
+                InferLocalizerOp,
+                ExtractFramesOp,
+            )
+        }
+
+        per_entry = {kind for kind, op in OPS.items() if op.per_entry}
+
+        assert expected <= OPS.keys()
+        assert per_entry == expected

@@ -281,7 +281,22 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
 - An op step's scope comes from the plan through `_op_scope`. An op with `scope_takes =
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a
-  scope-free one for the remainder (`_entries_for`, `test_pipeline_plan.py`).
+  scope-free one for the remainder (`_entries_for`, `test_pipeline_plan.py`). A
+  `per_entry` op step is asked for its target less the entries that only a link covers
+  (`ArtifactView.linked_only`), and an entry this dataset's own rows cover stays in
+  scope (`test_plan_linked_coverage.py`).
+- `_link_unreachable_problems` (`plan.py`) makes a `Problem` at `link_unreachable` for a
+  step that is not complete when a link providing `LINKED_KIND` of its planned
+  artifact's kind is unreachable, read from `Dataset.unreachable_links` after
+  `lookup_order(kind, fresh=True)`. The lookup is fresh because a request run in one
+  process plans every step on one dataset, which may keep a link that has since gone
+  offline. Computing the step here would duplicate what the link holds. A step without
+  a planned artifact, or whose kind no link provides, is not refused. Under `refuse` the
+  problem raises `RecipeRefused`, and a step planned again at its start records
+  `recipe_refused` while the other steps run (`test_pipeline_plan_problems.py`,
+  `test_pipeline_step.py`). `linked_training_complete` also opens the models links
+  again, so a link that goes offline after the step's plan raises `LinkUnreachableError`
+  and the step records `link_unreachable`.
 - A feature step reading `complete-but-drifted` with drifted entries in its target has
   drift work (`PlannedStep.drift_work`). It is not `is_complete`: it is pending,
   computed and asked for those entries (`_entries_for`), and `execute_step` calls

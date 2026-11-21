@@ -53,6 +53,7 @@ class SleapOp(Op[SleapParams]):
     version = SLEAP_VERSION
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = SLEAP_MODEL
     Params = SleapParams
 

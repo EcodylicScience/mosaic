@@ -1181,6 +1181,7 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
     version = "0.1"
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     Params = ExtractFramesParams
 
     def target(self, params: ExtractFramesParams, scope: ResolvedScope) -> str:

@@ -50,6 +50,7 @@ class LitposeOp(Op[LitposeParams]):
     version = LITPOSE_VERSION
     scope_takes = "any"
     scope_dependent = False
+    per_entry = True
     model_reference = LITPOSE_MODEL
     Params = LitposeParams
 

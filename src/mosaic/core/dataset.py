@@ -3250,7 +3250,9 @@ class Dataset:
             self.save()
         return True
 
-    def lookup_order(self, kind: LinkedKind | None = None) -> tuple[LinkedDataset, ...]:
+    def lookup_order(
+        self, kind: LinkedKind | None = None, *, fresh: bool = False
+    ) -> tuple[LinkedDataset, ...]:
         """This dataset, then each reachable linked dataset in declaration order.
 
         One level deep: a dataset opened here through a link answers its own
@@ -3271,11 +3273,15 @@ class Dataset:
 
         The opened set is kept for the next call only when every link opened, so
         a linked dataset that was offline is looked for again and found once it
-        is back.
+        is back. A *fresh* lookup opens every link again and replaces the kept
+        set, for a caller that must know a link is reachable now rather than when
+        it was last opened.
 
         Args:
             kind: The kind of derived data looked up, or ``None`` for every
                 link.
+            fresh: Whether to open the links again instead of answering from
+                the kept set.
 
         Returns:
             The reading dataset first, with ``link`` ``None``, then one entry per
@@ -3294,7 +3300,7 @@ class Dataset:
             if kind is None or kind in link.provides
         )
         cached = self._linked.get(kind)
-        if cached is not None and cached[0] == links:
+        if not fresh and cached is not None and cached[0] == links:
             return cached[1]
         opened: list[LinkedDataset] = [itself]
         skipped: list[DatasetLink] = []
@@ -3309,7 +3315,9 @@ class Dataset:
             opened.append(LinkedDataset(link=link, dataset=target))
         found = tuple(opened)
         self._unreachable[kind] = tuple(skipped)
-        if not skipped:
+        if skipped:
+            _ = self._linked.pop(kind, None)
+        else:
             self._linked[kind] = (links, found)
         return found
 

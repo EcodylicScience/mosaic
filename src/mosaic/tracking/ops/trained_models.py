@@ -170,8 +170,10 @@ def linked_training_complete(ds: Dataset, kind: str, run_id: str) -> bool:
     """Has *ds*, or a dataset it links for models, already finished this run?
 
     Asks :func:`training_is_complete` of each dataset of
-    ``ds.lookup_order("models")``, this one first, and answers ``True`` for the
-    first that says so. A copy then reuses the run its source finished instead of
+    ``ds.lookup_order("models", fresh=True)``, this one first, and answers
+    ``True`` for the first that says so. The links are opened again rather than
+    taken from an earlier lookup, so a link that went offline since is seen as
+    offline. A copy then reuses the run its source finished instead of
     training it again, whatever its own index records for that run.
 
     A link that provides models and cannot be read is not evidence that the run
@@ -192,7 +194,7 @@ def linked_training_complete(ds: Dataset, kind: str, run_id: str) -> bool:
         LinkUnreachableError: If no reachable dataset finished the run and a link
             that provides models is unreachable.
     """
-    for linked in ds.lookup_order("models"):
+    for linked in ds.lookup_order("models", fresh=True):
         if training_is_complete(linked.dataset, kind, run_id):
             return True
     offline = ds.unreachable_links("models")

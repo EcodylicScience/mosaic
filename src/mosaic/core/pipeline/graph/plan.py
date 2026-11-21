@@ -88,6 +88,7 @@ from ..inventory.model import (
     TrainedModelRef,
     reclassify,
 )
+from ..artifact_kinds import LINKED_KIND
 from ..index import feature_run_roots
 from ..inventory.scan import (
     inventory as scan_inventory,
@@ -161,9 +162,10 @@ if TYPE_CHECKING:
     from mosaic_media import MediaProbeError
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.manifest import SplitRole
+    from mosaic.core.manifest import DatasetLink, SplitRole
     from mosaic.core.params import Params
 
+    from ..artifact_kinds import LinkedKind
     from ..inventory.model import AnyRecord, DatasetInventory
     from .cleanup import CleanupPlan
     from .compatibility import Declaration, DeclarationCatalog
@@ -1183,6 +1185,7 @@ def plan_pipeline(
             )
         )
         problems.extend(_bind_problems(ds, recipe, planned, bind))
+        problems.extend(_link_unreachable_problems(ds, steps))
         if findings.tracks:
             problems.extend(
                 check_recipe(
@@ -1505,6 +1508,42 @@ def _bind_problems(
                 f"which this dataset does not hold"
             )
             found.append(Problem(step_id, where, message))
+    return found
+
+
+def _link_unreachable_problems(
+    ds: Dataset, steps: Sequence[PlannedStep]
+) -> list[Problem]:
+    """The steps that would compute what an unreachable link provides.
+
+    A step is refused, at ``link_unreachable``, when the :data:`LINKED_KIND` of
+    its planned artifact's kind names a kind that a link of *ds* provides and
+    a fresh lookup of that kind cannot open the link. The lookup is fresh
+    because one dataset plans every step of a request run in one process, and a
+    link that opened for an earlier step may be offline by a later one.
+    Computing the step into this dataset would duplicate what the link holds. A
+    step that is complete over its target is not refused, nor is one without a
+    planned artifact or whose artifact kind no link provides.
+    """
+    found: list[Problem] = []
+    offline: dict[LinkedKind, tuple[DatasetLink, ...]] = {}
+    for planned in steps:
+        if planned.is_complete or planned.artifact is None:
+            continue
+        kind = LINKED_KIND.get(planned.artifact.kind)
+        if kind is None:
+            continue
+        if kind not in offline:
+            _ = ds.lookup_order(kind, fresh=True)
+            offline[kind] = ds.unreachable_links(kind)
+        for link in offline[kind]:
+            message = (
+                f"its {kind} are read through link {link.id!r} "
+                f"(provides {', '.join(link.provides)}), which is not reachable "
+                f"at {ds.resolve_link_path(link)}. Computing the step here would "
+                f"duplicate what the link holds; plan again once it is reachable"
+            )
+            found.append(Problem(planned.step_id, "link_unreachable", message))
     return found
 
 
@@ -2913,6 +2952,12 @@ class ArtifactView:
     status: ArtifactStatus
     drift: tuple[Entry, ...] = ()
     finished: bool = False
+    linked_only: frozenset[Entry] = frozenset()
+    """The present entries that only a linked dataset holds.
+
+    Filled for a feature run and a tracks variant, and empty for every other
+    kind.
+    """
 
     @property
     def held(self) -> int:
@@ -2962,11 +3007,15 @@ def coverage_against(
             coverage=Coverage[Entry](target=target, present=frozenset()),
             status="absent",
         )
+    linked_only: frozenset[Entry] = frozenset()
     if isinstance(ref, FeatureRunRef | TracksVariantRef):
         coverage = Coverage[Entry](
             target=target,
             present=cast("frozenset[Entry]", record.coverage.present),
             covers_all=record.coverage.covers_all,
+        )
+        linked_only = frozenset(
+            entry for entry in coverage.present if entry in record.linked_only
         )
     elif isinstance(ref, MediaVariantRef):
         coverage = Coverage[Entry](
@@ -2998,6 +3047,7 @@ def coverage_against(
         status=reclassify(record, coverage),
         drift=record.drift,
         finished=bool(record.finished_at),
+        linked_only=linked_only,
     )
 
 
@@ -3084,7 +3134,11 @@ def _extraction_cameras(
     return {entry: frozenset(names) for entry, names in cameras.items()}
 
 
-def _op_scope(kind: str, target: frozenset[Entry]) -> Scope:
+def _op_scope(
+    kind: str,
+    target: frozenset[Entry],
+    linked_only: frozenset[Entry] = frozenset(),
+) -> Scope:
     """What an op step of *kind* is asked to cover.
 
     An op that takes no scope is given none, whatever the graph is narrowed to.
@@ -3093,6 +3147,14 @@ def _op_scope(kind: str, target: frozenset[Entry]) -> Scope:
     :func:`~mosaic.core.pipeline.ops.check_scope_takes`, in the planner and
     again in the runner.
 
+    An op that declares ``per_entry`` is not asked for the entries of
+    *linked_only*, which only a linked dataset's output covers: each entry's
+    output depends on that entry alone, and the linked one is already computed.
+    An entry that this dataset's own output covers stays in its scope, and the
+    op's own reuse gate skips it. A target that a link covers whole is asked
+    for whole: such a step is complete unless its record is damaged, and a
+    scope naming no entry would read as unset.
+
     Every other op step is all-or-nothing. An op that reads a scope reads the
     whole of it, and the target therefore goes through unnarrowed by what is
     already covered.
@@ -3100,6 +3162,8 @@ def _op_scope(kind: str, target: frozenset[Entry]) -> Scope:
     op_cls = op_class_for_kind(kind)
     if op_cls is not None and op_cls.scope_takes == "none":
         return Scope()
+    if op_cls is not None and op_cls.per_entry:
+        return _named(sorted(target - linked_only or target))
     return _named(sorted(target))
 
 
@@ -3118,7 +3182,9 @@ def _entries_for(
     fit over 31 sequences under the name of a fit over 120.
 
     An op step is all-or-nothing for the same reason turned around, and one that
-    takes no scope is asked for nothing at all. :func:`_op_scope` decides both.
+    takes no scope is asked for nothing at all. An op that declares
+    ``per_entry`` is asked for its target less the entries that only a linked
+    dataset's output covers. :func:`_op_scope` decides all three.
 
     The completeness branch is not the same test as an empty remainder, and the
     case that separates them is a global fit: one artifact answers for every
@@ -3131,7 +3197,7 @@ def _entries_for(
     the same run id.
     """
     if isinstance(step, OpStepSpec):
-        return _op_scope(step.kind, target)
+        return _op_scope(step.kind, target, view.linked_only)
     if resolution.scope_dependent:
         return _named(sorted(target))
     if view.status in COMPLETE_STATUSES:

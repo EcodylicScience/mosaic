@@ -44,7 +44,7 @@ What lives where:
   run and its index row.
 - ``linked``: a source dataset holding raw rows of every kind, one whose raw
   tracks are converted, a copy of either that links it and adopts its raw
-  rows, and a feature run recorded in a dataset.
+  rows, a copy whose link is offline, and a feature run recorded in a dataset.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -444,6 +444,7 @@ from tests.helpers.linked import (
     feature_edge,
     link_forms,
     raw_source,
+    take_link_offline,
     tracks_edge,
     write_run_params,
 )
@@ -943,6 +944,7 @@ __all__ = [
     "feature_edge",
     "link_forms",
     "raw_source",
+    "take_link_offline",
     "tracks_edge",
     "write_run_params",
     "tree_snapshot",
