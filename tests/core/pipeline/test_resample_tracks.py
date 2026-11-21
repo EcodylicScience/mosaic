@@ -281,6 +281,165 @@ def test_a_gap_is_not_bridged() -> None:
     assert missing == pytest.approx(40 * 21.0 / 30.0, abs=2)
 
 
+def _hole_tables(
+    *, native_fps: float = 100.0, n: int = 100, hole: range = range(40, 60)
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One hole in one individual, written both ways a converter writes it.
+
+    The first table keeps the rows of the hole with NaN measurements and a missing
+    ``tracklet_start``. The second leaves those frames out, as the zebrafish
+    converter does.
+    """
+    frames = np.arange(n)
+    frame = pd.DataFrame(
+        {
+            "frame": frames.astype(np.int64),
+            "time": frames / native_fps,
+            "id": np.zeros(n, dtype=np.int64),
+            "group": [""] * n,
+            "sequence": ["s1"] * n,
+            "X": frames * 0.2,
+            "Y": np.sin(frames / 25.0) * 10.0,
+            "ANGLE": ((frames * 0.3 + np.pi) % (2 * np.pi)) - np.pi,
+            "tracklet_start": pd.array(frames // 10 * 10, dtype="Int64"),
+        }
+    )
+    in_hole = frame["frame"].isin(list(hole))
+    present = frame.copy()
+    present.loc[in_hole, ["X", "Y", "ANGLE"]] = np.nan
+    present.loc[in_hole, "tracklet_start"] = pd.NA
+    absent = frame.loc[~in_hole].reset_index(drop=True)
+    return present, absent
+
+
+def test_an_absent_row_is_a_hole_like_a_nan_row() -> None:
+    """A converter may write a missing frame as no row at all.
+
+    Bracketing across the rows on either side of it would interpolate straight
+    through the hole, so the two representations of one hole must give one table.
+    """
+    present, absent = _hole_tables()
+
+    from_nan_rows = resample_entry_table(present, 50.0)
+    from_absent_rows = resample_entry_table(absent, 50.0)
+
+    inside = (from_absent_rows["time"] >= 0.40) & (from_absent_rows["time"] < 0.60)
+    assert int(inside.sum()) == 10
+    assert int(from_absent_rows.loc[inside, "X"].notna().sum()) == 0
+    pd.testing.assert_frame_equal(from_absent_rows, from_nan_rows)
+
+
+def test_a_hole_keeps_its_duration_whichever_way_it_is_written() -> None:
+    _, absent = _hole_tables()
+
+    resampled = resample_entry_table(absent, 37.0)
+
+    missing = resampled.loc[resampled["X"].isna(), "time"].to_numpy()
+    assert missing.min() > 0.39
+    assert missing.max() < 0.60
+    assert missing.size == pytest.approx(20 * 37.0 / 100.0, abs=1)
+    for column in ("Y", "ANGLE"):
+        assert resampled[column].isna().tolist() == resampled["X"].isna().tolist()
+
+
+def test_a_sample_on_the_edge_of_a_hole_is_kept() -> None:
+    """The exact-hit carve-out holds for a bracket that spans absent frames."""
+    _, absent = _hole_tables()
+
+    resampled = resample_entry_table(absent, 100.0)
+
+    by_frame = resampled.set_index("frame")
+    assert by_frame["X"].notna().sum() == 80
+    assert by_frame.loc[39, "X"] == pytest.approx(39 * 0.2)
+    assert by_frame.loc[60, "X"] == pytest.approx(60 * 0.2)
+    assert by_frame.loc[40:59, "X"].isna().all()
+
+
+def test_a_gathered_column_claims_no_observation_inside_a_hole() -> None:
+    present, absent = _hole_tables()
+
+    resampled = resample_entry_table(absent, 50.0)
+
+    inside = (resampled["time"] >= 0.40) & (resampled["time"] < 0.60)
+    assert resampled.loc[inside, "tracklet_start"].isna().all()
+    assert resampled.loc[~inside, "tracklet_start"].notna().all()
+    assert resampled["tracklet_start"].dtype == present["tracklet_start"].dtype
+
+
+def test_a_float32_clock_does_not_hole_the_edge_of_an_absent_stretch() -> None:
+    """The snap tolerance of a float32 time is set by a native step, not the hole."""
+    present, absent = _hole_tables(native_fps=30.0, n=300, hole=range(100, 140))
+    for table in (present, absent):
+        table["time"] = table["time"].astype(np.float32)
+
+    from_absent_rows = resample_entry_table(absent, 30.0)
+    from_nan_rows = resample_entry_table(present, 30.0)
+
+    assert int(from_absent_rows["X"].isna().sum()) == 40
+    pd.testing.assert_frame_equal(from_absent_rows, from_nan_rows)
+
+
+def test_a_target_near_the_edge_of_a_wide_hole_is_inside_it() -> None:
+    """The snap distance beside a hole is a native step, not the width of the hole.
+
+    The target is 0.1 ms after the last sample before the hole, which is 0.001 of
+    the 0.21 s the hole spans and 0.01 of a native step. Beside a NaN row it is
+    not snapped, so it is not beside an absent stretch either.
+    """
+    present, absent = _hole_tables()
+    target_fps = 1.0 / 0.3901
+
+    from_nan_rows = resample_entry_table(present, target_fps)
+    from_absent_rows = resample_entry_table(absent, target_fps)
+
+    assert from_absent_rows["time"].tolist() == pytest.approx([0.0, 0.3901, 0.7802])
+    assert from_absent_rows["X"].isna().tolist() == [False, True, False]
+    measured = ["X", "Y", "ANGLE"]
+    pd.testing.assert_frame_equal(from_absent_rows[measured], from_nan_rows[measured])
+
+
+def test_a_frame_is_lost_against_the_step_of_the_whole_table() -> None:
+    """An individual on every other frame of a table that has them all is missing frames."""
+    dense, _ = _hole_tables(hole=range(0))
+    sparse = dense.loc[dense["frame"] % 2 == 0].copy()
+    sparse["id"] = 1
+    both = pd.concat([dense, sparse], ignore_index=True)
+
+    resampled = resample_entry_table(both, 100.0)
+
+    mine = resampled.loc[resampled["id"] == 1].set_index("frame")
+    assert mine.loc[mine.index % 2 == 0, "X"].notna().all()
+    assert mine.loc[mine.index % 2 == 1, "X"].isna().all()
+    assert resampled.loc[resampled["id"] == 0, "X"].notna().all()
+
+
+def test_a_decimated_table_is_not_a_hole_at_every_step() -> None:
+    """A table published on every second frame has no frame it lost."""
+    _, absent = _hole_tables(n=200, hole=range(0))
+    decimated = absent.loc[absent["frame"] % 2 == 0].reset_index(drop=True)
+
+    resampled = resample_entry_table(decimated, 100.0)
+
+    assert int(resampled["X"].isna().sum()) == 0
+
+
+def test_the_prefilter_does_not_read_a_hole_as_a_fast_step() -> None:
+    """The individual reappears elsewhere after the hole, which is not a mis-detection.
+
+    A displacement across lost frames has no step to divide it by, so the gate
+    leaves the first sample after the hole alone, as it does after a NaN row.
+    """
+    present, absent = _hole_tables()
+    for table in (present, absent):
+        table.loc[table["frame"] >= 60, "X"] += 50.0
+
+    from_nan_rows = resample_entry_table(present, 100.0, prefilter=100.0)
+    from_absent_rows = resample_entry_table(absent, 100.0, prefilter=100.0)
+
+    assert from_absent_rows.set_index("frame").loc[60, "X"] == pytest.approx(62.0)
+    pd.testing.assert_frame_equal(from_absent_rows, from_nan_rows)
+
+
 def test_an_integer_column_is_gathered_rather_than_averaged() -> None:
     """Interpolating a tracklet id yields an id that was never observed."""
     resampled = resample_entry_table(_table(34.679, n=600), 30.0)
@@ -424,7 +583,7 @@ def test_the_op_writes_a_second_variant_and_leaves_the_first_alone(
     assert len(variants) == 2
     assert SOURCE_VARIANT in variants
     produced = next(name for name in variants if name != SOURCE_VARIANT)
-    assert produced.startswith("resample-tracks.0.2-")
+    assert produced.startswith("resample-tracks.0.3-")
 
     rows = index[index["run_id"] == produced]
     assert sorted(rows["sequence"]) == ["s1", "s2"]

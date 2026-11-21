@@ -7,7 +7,7 @@ third of a second at 30 fps and 0.288 s at 34.679; a smoothing window of 31
 frames is 1.03 s or 0.89 s; a bad-frame gate stated in cm/s is divided by the
 frame rate to get cm/frame, so stating one number gives two thresholds. Making
 each of those per-video is possible for the long windows and impossible for the
-short ones -- five frames has no better neighbour than five -- and it makes every
+short ones -- five frames has no better neighbor than five -- and it makes every
 lag a per-entry quantity that pooled analysis then has to carry.
 
 Putting the tables on one grid instead makes all of it correct by construction,
@@ -32,11 +32,20 @@ jittery wall clock writes that jitter into positions, as every method that reads
 ``time`` does. ``frame_rate`` and ``fps`` columns the source carries are
 rewritten at the target rate and never consulted.
 
-**Nothing here bridges a gap.** A target sample is NaN unless both of the native
-samples bracketing it are finite, so a hole in the source stays a hole of the
-same duration. Filling holes belongs to ``trajectory-smooth``, under limits it
-declares and records; doing it here as a side effect of re-gridding would hide
-the interpolation inside an operation named for something else.
+**Nothing here bridges a gap.** A converter writes a missing frame either as a
+row of NaN measurements or as no row at all. Both are a hole, and a hole in the
+source stays a hole of the same duration. A target sample between two native
+samples is NaN unless both are finite and on adjacent frames of the table's
+frame axis (:func:`mosaic.core.timebase.frame_step`, so a table decimated by
+``k`` has no hole at every step). A target at a native sample takes that
+sample, which keeps a measured value next to a missing neighbor. Inside a hole,
+a column taken from the nearest native sample is missing if its dtype can hold
+a missing value. A plain integer or boolean column cannot, and takes the nearest
+sample's value. A jump in ``time`` between rows on adjacent frames is not a
+hole: the converter recorded those frames as consecutive, and the rows are
+placed by their time. Filling holes belongs to ``trajectory-smooth``, under
+limits it declares and records. Doing it here would hide the interpolation
+inside an operation named for something else.
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ import pandas as pd
 
 from mosaic.core.individuals import iter_individuals, refuse_repeated_rows
 from mosaic.core.pipeline.types import COLUMNS
+from mosaic.core.timebase import frame_step, row_frames
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -109,57 +119,94 @@ def _time_slack(native_times: NDArray[np.float64], is_float32: bool) -> float:
     return float(np.finfo(np.float32).eps) * float(np.max(np.abs(native_times)))
 
 
+def _lost_frames(frames: NDArray[np.float64], native_step: float) -> NDArray[np.bool_]:
+    """For each interval between consecutive rows, whether frames are missing in it.
+
+    A row that is absent leaves a larger frame gap than the table's own
+    :func:`~mosaic.core.timebase.frame_step`. A row present with NaN measurements
+    leaves none, and its NaN marks the hole.
+    """
+    return np.diff(frames) > native_step
+
+
 def _bracket(
     native_times: NDArray[np.float64],
     target_times: NDArray[np.float64],
     slack: float = 0.0,
+    lost: NDArray[np.bool_] | None = None,
 ) -> tuple[NDArray[np.intp], NDArray[np.float64]]:
     """Left-bracket index and interpolation weight for each target time.
 
     Every target time is inside the native span by construction (see
     :func:`_target_frames`), so no clipping is needed beyond keeping the right
     bracket in range for the final sample. A target within :data:`_SNAP` of a step,
-    or within *slack* seconds, of a bracket's end is that end's.
+    or within *slack* seconds, of a bracket's end is that end's. Across an interval
+    that *lost* frames, the step is the typical native step instead of the width of
+    the hole, so a sample at the edge of a hole snaps as it would beside a NaN row.
     """
     left = np.searchsorted(native_times, target_times, side="right") - 1
     left = np.clip(left, 0, native_times.size - 2)
     step = native_times[left + 1] - native_times[left]
     weight = np.where(step > 0.0, (target_times - native_times[left]) / step, 0.0)
     weight = np.clip(weight, 0.0, 1.0)
+    safe_step = np.where(step > 0.0, step, 1.0)
+    if lost is not None and lost.any():
+        spans = np.diff(native_times)
+        nominal = float(np.median(spans[~lost] if not lost.all() else spans))
+        share = np.where(lost[left], nominal / safe_step, 1.0)
+    else:
+        share = 1.0
     tolerance = np.where(
-        step > 0.0, np.maximum(_SNAP, slack / np.where(step > 0.0, step, 1.0)), _SNAP
+        step > 0.0, np.maximum(_SNAP * share, slack / safe_step), _SNAP
     )
     weight = np.where(weight < tolerance, 0.0, weight)
     return left, np.where(weight > 1.0 - tolerance, 1.0, weight)
 
 
+def _inside_hole(
+    lost: NDArray[np.bool_], left: NDArray[np.intp], weight: NDArray[np.float64]
+) -> NDArray[np.bool_]:
+    """Whether each target is strictly inside an interval that lost frames."""
+    return lost[left] & (weight > 0.0) & (weight < 1.0)
+
+
 def _both_ends_finite(
-    values: NDArray[np.float64], left: NDArray[np.intp], weight: NDArray[np.float64]
+    values: NDArray[np.float64],
+    left: NDArray[np.intp],
+    weight: NDArray[np.float64],
+    hole: NDArray[np.bool_],
 ) -> NDArray[np.bool_]:
     """Where an interpolated sample is defined.
 
-    Both bracketing samples must be finite -- a gap is not bridged. The two
-    exact-hit carve-outs are what make a resample onto the rate a table already
-    carries a genuine identity: at weight 0 the answer is the left sample alone,
-    so a missing *right* neighbour must not erase a value that was measured.
+    Both bracketing samples must be finite and on adjacent frames (*hole* is
+    false), so a gap is not bridged. The two exact-hit carve-outs are what make a
+    resample onto the rate a table already carries a genuine identity: at weight 0
+    the answer is the left sample alone, so a missing *right* neighbor must not
+    erase a value that was measured.
     """
     lo = np.isfinite(values[left])
     hi = np.isfinite(values[left + 1])
-    return np.where(weight <= 0.0, lo, np.where(weight >= 1.0, hi, lo & hi))
+    return np.where(weight <= 0.0, lo, np.where(weight >= 1.0, hi, lo & hi & ~hole))
 
 
 def _interpolate_linear(
-    values: NDArray[np.float64], left: NDArray[np.intp], weight: NDArray[np.float64]
+    values: NDArray[np.float64],
+    left: NDArray[np.intp],
+    weight: NDArray[np.float64],
+    hole: NDArray[np.bool_],
 ) -> NDArray[np.float64]:
     """Linear interpolation, NaN wherever the sample is not defined."""
     lo = np.where(np.isfinite(values[left]), values[left], 0.0)
     hi = np.where(np.isfinite(values[left + 1]), values[left + 1], 0.0)
     out = (1.0 - weight) * lo + weight * hi
-    return np.where(_both_ends_finite(values, left, weight), out, np.nan)
+    return np.where(_both_ends_finite(values, left, weight, hole), out, np.nan)
 
 
 def _interpolate_circular(
-    values: NDArray[np.float64], left: NDArray[np.intp], weight: NDArray[np.float64]
+    values: NDArray[np.float64],
+    left: NDArray[np.intp],
+    weight: NDArray[np.float64],
+    hole: NDArray[np.bool_],
 ) -> NDArray[np.float64]:
     """Interpolation on the unit circle, wrapped back to (-pi, pi].
 
@@ -168,10 +215,10 @@ def _interpolate_circular(
     samples 30 ms apart. Doing it on the raw angle instead sweeps the long way
     across the +pi/-pi wrap and writes a full rotation into the table.
     """
-    cos = _interpolate_linear(np.cos(values), left, weight)
-    sin = _interpolate_linear(np.sin(values), left, weight)
+    cos = _interpolate_linear(np.cos(values), left, weight, hole)
+    sin = _interpolate_linear(np.sin(values), left, weight, hole)
     out = np.arctan2(sin, cos)
-    return np.where(_both_ends_finite(values, left, weight), out, np.nan)
+    return np.where(_both_ends_finite(values, left, weight, hole), out, np.nan)
 
 
 def _nearest(
@@ -183,6 +230,24 @@ def _nearest(
     """The index of the native sample closest in time to each target."""
     del native_times, target_times
     return np.where(weight <= 0.5, left, left + 1)
+
+
+def _gathered(
+    column: pd.Series, nearest: NDArray[np.intp], hole: NDArray[np.bool_]
+) -> object:
+    """A column taken from the nearest native sample, missing inside a hole.
+
+    A target inside a hole has no sample, and the nearest one's value would
+    record an observation that was not made. A plain integer or boolean dtype
+    has no missing value and keeps the nearest sample's value.
+    """
+    taken = column.iloc[nearest].reset_index(drop=True)
+    holds_missing = not (
+        isinstance(taken.dtype, np.dtype) and taken.dtype.kind in "biu"
+    )
+    if holds_missing and hole.any():
+        return taken.mask(hole, pd.NA)
+    return taken.to_numpy()
 
 
 def _target_frames(
@@ -210,6 +275,7 @@ def _prefiltered(
     values: dict[str, NDArray[np.float64]],
     native_times: NDArray[np.float64],
     prefilter: float,
+    lost: NDArray[np.bool_],
 ) -> NDArray[np.bool_]:
     """Which native samples the displacement gate rejects.
 
@@ -217,12 +283,15 @@ def _prefiltered(
     threshold at every recording rate -- which is the defect this module exists
     to fix, and would be silly to reintroduce in its own gate. It is the same
     quantity ``trajectory-smooth`` thresholds, applied one step earlier so that a
-    mis-detection is removed before it is blended into its neighbours rather than
+    mis-detection is removed before it is blended into its neighbors rather than
     after.
 
     The first sample has no predecessor and is never rejected: there is nothing
     to measure a displacement against, and rejecting it by default would trim a
-    frame off every track.
+    frame off every track. The same holds for a sample whose predecessor is on an
+    earlier frame than the one before it (*lost*): an individual that reappears
+    elsewhere after a hole has no step to divide the displacement by, exactly as
+    after a row of NaN.
     """
     x, y = values.get(COLUMNS.x_col), values.get(COLUMNS.y_col)
     if x is None or y is None or x.size < 2:
@@ -231,7 +300,7 @@ def _prefiltered(
     speed = np.full(native_times.size, np.nan, dtype=float)
     with np.errstate(invalid="ignore", divide="ignore"):
         speed[1:] = np.hypot(np.diff(x), np.diff(y)) / np.where(
-            step > 0.0, step, np.nan
+            (step > 0.0) & ~lost, step, np.nan
         )
     return np.isfinite(speed) & (speed > prefilter)
 
@@ -273,9 +342,14 @@ def _resample_one_id(
     target_fps: float,
     prefilter: float | None,
     plan: tuple[list[str], list[str], list[str]],
+    native_step: float,
     source: str,
 ) -> pd.DataFrame:
-    """One individual's rows, given in frame order, re-gridded onto the target rate."""
+    """One individual's rows, given in frame order, re-gridded onto the target rate.
+
+    *native_step* is the table's own frame step, from which a missing row is told
+    from an adjacent one.
+    """
     interpolated, gathered, identity = plan
     refuse_repeated_rows(block, source or "this table")
     native_times = block[COLUMNS.time_col].to_numpy(dtype=float)
@@ -294,8 +368,10 @@ def _resample_one_id(
     if target.size == 0:
         return block.iloc[0:0]
     target_times = target.astype(float) / target_fps
-    left, weight = _bracket(native_times, target_times, slack)
+    lost = _lost_frames(row_frames(block), native_step)
+    left, weight = _bracket(native_times, target_times, slack, lost)
     nearest = _nearest(native_times, target_times, left, weight)
+    hole = _inside_hole(lost, left, weight)
 
     series = {
         name: block[name].to_numpy(dtype=float, na_value=np.nan)
@@ -304,7 +380,7 @@ def _resample_one_id(
         for name in interpolated
     }
     reject = (
-        _prefiltered(series, native_times, prefilter)
+        _prefiltered(series, native_times, prefilter, lost)
         if prefilter is not None
         else np.zeros(native_times.size, dtype=bool)
     )
@@ -321,7 +397,7 @@ def _resample_one_id(
         elif column in identity:
             out[column] = np.repeat(block[column].to_numpy()[:1], target.size)
         elif column in gathered:
-            out[column] = block[column].to_numpy()[nearest]
+            out[column] = _gathered(block[column], nearest, hole)
         else:
             values = np.where(reject, np.nan, series[column])
             # A column the flattener padded from a one-element array -- TRex
@@ -335,9 +411,9 @@ def _resample_one_id(
                 carried[0] = values[np.isfinite(values)][0]
                 out[column] = carried
             elif _base_field(column) in _ANGULAR_FIELDS:
-                out[column] = _interpolate_circular(values, left, weight)
+                out[column] = _interpolate_circular(values, left, weight, hole)
             else:
-                out[column] = _interpolate_linear(values, left, weight)
+                out[column] = _interpolate_linear(values, left, weight, hole)
 
     resampled = pd.DataFrame(out, columns=list(block.columns))
     return resampled.astype(
@@ -390,8 +466,9 @@ def resample_entry_table(
             )
 
     plan = _column_plan(frame)
+    native_step = frame_step(row_frames(frame))
     blocks = [
-        _resample_one_id(block, target_fps, prefilter, plan, source)
+        _resample_one_id(block, target_fps, prefilter, plan, native_step, source)
         for _, block in iter_individuals(frame)
     ]
     kept = [block for block in blocks if not block.empty]

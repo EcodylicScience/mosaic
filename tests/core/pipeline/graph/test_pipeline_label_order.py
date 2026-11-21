@@ -197,7 +197,7 @@ def test_a_pinned_tracks_variant_resolves_the_labels_whatever_the_steps_above(
     tmp_path: Path,
 ) -> None:
     ds = _dataset_with_timed_events(tmp_path)
-    pin = "resample-tracks.0.2-bbbbbbbbbb"
+    pin = "resample-tracks.0.3-bbbbbbbbbb"
     pinned: dict[str, JsonValue] = {
         **TIMED_LABELS,
         "params": {"source_format": "boris_pandas_pickle", "tracks_run_id": pin},

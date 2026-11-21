@@ -139,7 +139,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
     kind = "resample-tracks"
     category = "convert"
     domain = "tracking"
-    version = "0.2"
+    version = "0.3"
     writes_tracks = True
     scope_takes = "any"
     scope_dependent = True

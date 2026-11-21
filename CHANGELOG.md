@@ -8,6 +8,27 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
+
+`resample-tracks` is version `0.3`. Its variants are named
+`resample-tracks.0.3-<digest>`, and a variant resampled under `0.2` is not
+reused. Only a table with a frame that has no row changes. The zebrafish
+converter writes a missing frame as an absent row, and `0.2` interpolated across
+it. A hole of 20 frames at 100 Hz left no hole at 50 Hz, and a resampled
+dataset's missing frames fell from about 3% to 0.01%.
+
+A target sample between two rows on frames more than one step of the table's
+frame axis apart is now NaN in every measured column, as it is beside a row of
+NaN. A target at a measured row takes that row. A table decimated by `k` has a
+step of `k` and no hole. A gap in `time` between rows on adjacent frames is
+placed by its time.
+
+A column taken from the nearest row, such as a tracklet id or a label, is
+missing inside such a hole when its dtype can hold a missing value, such as
+`Int64` or `string`. A plain `int64` or `bool` column keeps the nearest row's
+value. The `prefilter` no longer rejects the first sample after a hole as a fast
+step. No other op or feature run id moves.
+
 ## 0.25.0: the synthetic and window track converters, and retiring recipes without a submission
 
 No run id or output byte of an existing format moves. Six track formats are new, each a

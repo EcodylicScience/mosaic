@@ -193,7 +193,7 @@ Merge revisions of keypoint annotation sets into one training dataset.
 
 #### `resample-tracks`
 
-Version `0.2` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
+Version `0.3` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
 
 Place a dataset's tracks tables on one uniform frame rate.
 
