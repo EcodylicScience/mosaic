@@ -25,7 +25,9 @@ sit, including storages the recipe no longer names, and a request of a retired
 recipe no longer keeps those runs as ``recipe_uses``. A retirement belongs to the
 one submission and to its plan. Tracks, models, media and the storages of other
 recipes are never candidates otherwise, and a run directory with no index rows is
-not in the inventory and is left to ``mosaic reindex``.
+not in the inventory and is left to ``mosaic reindex``. A run that the dataset
+reads through a link (a record with a ``link_id``) is never a candidate, since its
+directory belongs to the linked dataset, and it still keeps the runs it reads.
 
 A candidate is kept, by the first rule that matches:
 
@@ -497,11 +499,14 @@ def judge_runs(
     # A retirement needs the requests read before the candidates are known. A plain
     # plan with nothing to judge reads none.
     holds = request_holds() if retiring else None
+    # A run a link holds is never judged here: its directory belongs to the
+    # linked dataset. It still reads what it names, so ``records`` keeps it.
+    own = [record for record in records if not record.link_id]
     judged: list[AnyRecord] = []
     if candidates == "superseded":
         judged.extend(
             record
-            for record in records
+            for record in own
             if record.name in keepers and not _expects(keepers, record)
         )
     if holds is not None:
@@ -509,7 +514,7 @@ def judge_runs(
         # superseded candidates.
         judged.extend(
             record
-            for record in records
+            for record in own
             if (record.name, record.run_id) in holds.retired
             and not _expects(keepers, record)
             and (candidates == "retired" or record.name not in keepers)

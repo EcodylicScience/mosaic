@@ -3367,6 +3367,58 @@ class Dataset:
             raise LinkMismatchError(msg)
         return target
 
+    def link_mismatches(self) -> tuple[tuple[DatasetLink, LinkMismatchError], ...]:
+        """Each link whose path holds a dataset other than the one it recorded.
+
+        Every link is opened. One that raises ``OSError`` is unreachable, not
+        mismatched, and is left out.
+
+        Returns:
+            Each mismatched link with the error :meth:`lookup_order` raises for
+            it, in declaration order. Empty for a dataset with
+            :attr:`opened_as_link` set, which opens no link.
+        """
+        if self.opened_as_link:
+            return ()
+        mismatches: list[tuple[DatasetLink, LinkMismatchError]] = []
+        for link in self.manifest.links:
+            try:
+                _ = self._open_link(link)
+            except OSError:
+                continue
+            except LinkMismatchError as exc:
+                mismatches.append((link, exc))
+        return tuple(mismatches)
+
+    def without_links(self, link_ids: Collection[str]) -> Dataset:
+        """A reader of this dataset whose lookups skip the links in *link_ids*.
+
+        The reader reads the same tree through the same path map, and shares
+        this dataset's record of the links it has named as unreachable, so a
+        link that stays away is named once however many readers look for it. It
+        is for reads: saving it would drop those links from the manifest.
+
+        Args:
+            link_ids: The ids of the links to skip.
+
+        Returns:
+            A new dataset over this one's manifest, less those links.
+        """
+        reader = Dataset(
+            manifest_path=self.manifest_path,
+            manifest=self.manifest.model_copy(
+                update={
+                    "links": tuple(
+                        link for link in self.manifest.links if link.id not in link_ids
+                    )
+                }
+            ),
+        )
+        reader._path_map = list(self._path_map)
+        reader.opened_as_link = self.opened_as_link
+        reader._warned_unreachable = self._warned_unreachable
+        return reader
+
     def open_enclosing(self, paths: Iterable[Path]) -> dict[Path, Dataset | None]:
         """The dataset whose manifest is nearest around each of *paths*.
 

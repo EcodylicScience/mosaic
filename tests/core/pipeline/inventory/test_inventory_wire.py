@@ -729,3 +729,17 @@ def test_the_variants_an_own_run_read_through_the_source_are_known(
 
     [own] = [artifact for artifact in wire.artifacts if artifact.name == "down"]
     assert own.tracks_variants == ("v1",)
+
+
+def test_a_linked_run_is_listed_as_its_dataset_lists_it(tmp_path: Path) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    up_root = add_feature_run(source, "up", "0.1-1111111111")
+    write_run_params(up_root, {"_inputs": ["tracks"], "_resolved": [tracks_edge("v1")]})
+    copy = copy_of(source, tmp_path / "copy")
+
+    on_copy = inventory_wire(copy, inventory(copy), kinds=["feature"])
+    on_source = inventory_wire(source, inventory(source), kinds=["feature"])
+
+    [linked] = on_copy.artifacts
+    assert linked.tracks_variants == ("v1",)
+    assert linked == on_source.artifacts[0]

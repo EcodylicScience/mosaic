@@ -411,9 +411,11 @@ are in `graph/CLAUDE.md`.
 - The inventory only reads. Truth is the indexes and files on disk, every view is a
   cache, and `InventoryCache.revalidate()` stats the index files to find a stale one.
   A moved feature index rereads the `feature` kind alone, and any other moved index
-  every kind. `InventoryCache.generation` advances with each reread, and
-  `ParquetFooterMemo` keeps the parquet footers that parsed, by path, size and
-  modification time, so a scan reads only the outputs that moved. A scan reads each
+  every kind. It also stamps the indexes of each linked dataset for the kinds the link
+  provides, so a linked index that moves, and a link that becomes reachable or goes
+  away, moves the view the same way. `InventoryCache.generation` advances with each
+  reread, and `ParquetFooterMemo` keeps the parquet footers that parsed, by path, size
+  and modification time, so a scan reads only the outputs that moved. A scan reads each
   index once, so a per-entry lookup is one set or dict built per index, never a pass
   over its rows per entry (`tests/core/pipeline/inventory/test_inventory_scan.py`,
   `tests/core/pipeline/graph/test_pipeline_plan_scale.py`).

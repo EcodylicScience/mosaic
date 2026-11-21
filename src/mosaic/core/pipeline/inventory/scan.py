@@ -42,6 +42,8 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.scope import Scope
 
+from ..artifact_kinds import LINKED_KIND, LinkedKind
+from ._linked import Remeasure, grouped_by_ref, merged_record
 from ._read import IndexReader, ParquetFooterMemo
 from ._runs import finish_state, run_records
 from .contributors import inventory_contributor, registered_inventory_kinds
@@ -61,16 +63,17 @@ from .model import (
     classify,
     merged_coverage,
 )
-from .params import RunParams, read_run_params
+from .params import RunParams, linked_run_root, read_run_params
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     import pandas as pd
 
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, LinkMismatchError
+    from mosaic.core.manifest import DatasetLink
 
 __all__ = [
     "GLOBAL_ENTRY",
@@ -85,6 +88,7 @@ __all__ = [
     "run_covered_entries",
     "run_coverage",
     "run_covers",
+    "without_mismatched_links",
 ]
 
 GLOBAL_MARKER = "__global__"
@@ -427,14 +431,25 @@ def _feature_records(
     The orphan files and the ``present`` set therefore do not depend on that
     cut.
     """
-    universe = reportable_universe(ds, scope.tracks_run_id)
-    target = narrow_target(universe, scope.selector)
-    records: list[ArtifactRecord[Entry]] = []
-    # One read of each feature index and one tracks cell per variant set,
-    # shared by every run's drift.
-    drift_reads = DriftReads(
+    target = narrow_target(reportable_universe(ds, scope.tracks_run_id), scope.selector)
+    return _feature_runs(ds, reader, target, _drift_reads(ds, reader))
+
+
+def _drift_reads(ds: Dataset, reader: IndexReader) -> DriftReads:
+    """One read of each feature index and one tracks cell per variant set."""
+    return DriftReads(
         ds, lambda path: reader.frame(path, lambda: feature_index(path).read())
     )
+
+
+def _feature_runs(
+    ds: Dataset,
+    reader: IndexReader,
+    target: frozenset[Entry],
+    drift_reads: DriftReads,
+) -> list[ArtifactRecord[Entry]]:
+    """Every feature run of *ds*, measured over *target*, with one *drift_reads*."""
+    records: list[ArtifactRecord[Entry]] = []
     for name in feature_storages(ds):
         index_path = feature_index_path(ds, name)
         frame = reader.frame(index_path, lambda p=index_path: feature_index(p).read())
@@ -617,6 +632,15 @@ def inventory(
 ) -> DatasetInventory:
     """What this dataset holds: every artifact, its identity and its coverage.
 
+    A kind that a link provides, as ``LINKED_KIND`` maps it, is also read from
+    each linked dataset of ``ds.lookup_order`` by the same builder or
+    contributor, and the records of one artifact are joined by ref and measured
+    over the target of *ds*. A joined record names its link in ``link_id`` when
+    *ds* lacks the run directory, and the keys only a link holds in
+    ``linked_only``. A linked dataset is read for its own data alone. A link
+    whose path holds another dataset is skipped: each wanted kind it provides
+    names it in ``errors``, and the own records stay.
+
     Args:
         ds: The dataset to read. Never written to.
         kinds: Which artifact kinds to report. ``None`` means every kind the
@@ -644,44 +668,35 @@ def inventory(
     errors: list[str] = []
     unavailable: set[ArtifactKind] = set()
 
+    reading = _without_mismatched_links(ds, wanted, errors)
+    links = _Links(reading)
     for kind in sorted(wanted):
         if kind == "media-derivative":
             # Both targets, because they are independent verdicts with
             # independent derivatives: a playback transcode never satisfies an
             # analysis read, and reporting one would hide the other.
             for media_target in ("analysis", "playback"):
-                records.append(media_derivative_record(ds, media_target, asked, reader))
+                records.append(
+                    media_derivative_record(reading, media_target, asked, reader)
+                )
             continue
         if kind == "media-variant":
             # Media-variant records are keyed by entry and camera, and cannot
             # share the entry-keyed builder table below.
-            records.extend(media_variant_records(ds, asked, reader))
+            records.extend(media_variant_records(reading, asked, reader))
             continue
-        if kind == "label-series":
-            # Keyed by revision rather than by entry, so it cannot share the
-            # entry-keyed builder table below. Guarded like a contributor: a
-            # library's series index reaches into other datasets, and one
-            # unreadable row must not cost the rest of the answer.
-            try:
-                records.extend(label_series_records(ds, asked, reader))
-            except Exception as exc:
-                errors.append(f"{kind}: {exc}")
+        if kind == "feature":
+            records.extend(_merged_feature_records(reading, asked, reader, links))
             continue
-        builder = _CORE_BUILDERS.get(kind)
-        if builder is not None:
-            records.extend(builder(ds, asked, reader))
-            continue
-        contributor = inventory_contributor(kind)
-        if contributor is None:
+        build = _builder(kind)
+        if build is None:
             unavailable.add(kind)
             continue
-        try:
-            records.extend(contributor(ds, asked, reader))
-        except Exception as exc:
-            # One producer's failure costs its kind, never the whole answer: an
-            # inventory that raises because one tracker root is malformed tells
-            # a user nothing about the rest of their dataset.
-            errors.append(f"{kind}: {exc}")
+        held = _held_records(
+            kind, build, (("", reading), *links.of(kind)), asked, reader, errors
+        )
+        if held is not None:
+            records.extend(_merged(held, fills_linked_only=kind in _LINKED_ONLY_KINDS))
 
     return DatasetInventory(
         dataset_root=Path(ds.base_dir),
@@ -701,8 +716,194 @@ type _CoreBuilder = Callable[
     ["Dataset", InventoryScope, IndexReader], list[ArtifactRecord[Entry]]
 ]
 
+type _Builder = Callable[["Dataset", InventoryScope, IndexReader], Sequence[AnyRecord]]
+
 _CORE_BUILDERS: dict[ArtifactKind, _CoreBuilder] = {
     "feature": _feature_records,
     "tracks-variant": _variant_records,
     "labels-variant": _labels_records,
 }
+
+_LINKED_ONLY_KINDS: frozenset[ArtifactKind] = frozenset(
+    {"feature", "tracks-variant", "frame-run"}
+)
+"""The kinds whose records name the keys only a linked dataset holds."""
+
+
+def _builder(kind: ArtifactKind) -> _Builder | None:
+    """The builder of *kind*'s records, or ``None`` when nothing reports it."""
+    if kind == "label-series":
+        return label_series_records
+    core = _CORE_BUILDERS.get(kind)
+    return core if core is not None else inventory_contributor(kind)
+
+
+def _without_mismatched_links(
+    ds: Dataset, wanted: frozenset[ArtifactKind], errors: list[str]
+) -> Dataset:
+    """*ds* less each link whose path holds another dataset.
+
+    A mismatched link costs the linked records of each kind it provides, and one
+    error per wanted kind names it in *errors*. The own records and every other
+    link stay, so the own builders, whose reads follow the links of their
+    inputs too, read *ds* less that link.
+    """
+    reading, mismatches = without_mismatched_links(ds)
+    errors.extend(
+        f"{kind}: {exc}"
+        for kind in sorted(wanted)
+        for link, exc in mismatches
+        if (linked_kind := LINKED_KIND.get(kind)) is not None
+        and linked_kind in link.provides
+    )
+    return reading
+
+
+def without_mismatched_links(
+    ds: Dataset,
+) -> tuple[Dataset, tuple[tuple[DatasetLink, LinkMismatchError], ...]]:
+    """*ds* less each link whose path holds another dataset, and those links.
+
+    A lookup over every link, which *ds* keeps once it opens them all, finds
+    whether any link mismatches.
+
+    Args:
+        ds: The reading dataset.
+
+    Returns:
+        *ds* itself when no link mismatches, else a reader of it that skips
+        the mismatched links, with each such link and its error in declaration
+        order.
+    """
+    from mosaic.core.dataset import LinkMismatchError
+
+    try:
+        _ = ds.lookup_order()
+    except LinkMismatchError:
+        mismatches = ds.link_mismatches()
+    else:
+        return ds, ()
+    return ds.without_links({link.id for link, _ in mismatches}), mismatches
+
+
+class _Links:
+    """The linked datasets of each kind an inventory reads, looked up once each."""
+
+    def __init__(self, ds: Dataset) -> None:
+        self._ds: Dataset = ds
+        self._found: dict[LinkedKind, tuple[tuple[str, Dataset], ...]] = {}
+
+    def of(self, kind: ArtifactKind) -> tuple[tuple[str, Dataset], ...]:
+        """Each linked dataset that provides *kind*, with its link id, in order."""
+        linked_kind = LINKED_KIND.get(kind)
+        if linked_kind is None:
+            return ()
+        found = self._found.get(linked_kind)
+        if found is None:
+            found = tuple(
+                (linked.link_id, linked.dataset)
+                for linked in self._ds.lookup_order(linked_kind)[1:]
+            )
+            self._found[linked_kind] = found
+        return found
+
+
+def _held_records(
+    kind: ArtifactKind,
+    build: _Builder,
+    datasets: Iterable[tuple[str, Dataset]],
+    asked: InventoryScope,
+    reader: IndexReader,
+    errors: list[str],
+) -> list[tuple[str, Sequence[AnyRecord]]] | None:
+    """Each dataset's records of *kind*, with its link id, in lookup order.
+
+    A core builder raises. Any other builder is guarded: one producer's failure
+    costs its kind, never the whole answer, because an inventory that raises on
+    one malformed tracker root tells a user nothing about the rest of their
+    dataset, and a library's series index reaches into other datasets. A linked
+    dataset's failure costs its records alone.
+
+    Returns:
+        The records, or ``None`` when the own dataset's builder failed.
+    """
+    guarded = kind not in _CORE_BUILDERS
+    held: list[tuple[str, Sequence[AnyRecord]]] = []
+    for link_id, dataset in datasets:
+        if not guarded:
+            held.append((link_id, build(dataset, asked, reader)))
+            continue
+        try:
+            held.append((link_id, build(dataset, asked, reader)))
+        except Exception as exc:
+            if not link_id:
+                errors.append(f"{kind}: {exc}")
+                return None
+            errors.append(f"{kind} (link {link_id!r}): {exc}")
+    return held
+
+
+def _merged(
+    held: Sequence[tuple[str, Sequence[AnyRecord]]], *, fills_linked_only: bool
+) -> list[AnyRecord]:
+    """Join each artifact's records across *held*, an own record alone kept as read."""
+    if len(held) == 1:
+        return list(held[0][1])
+    return [
+        group[0][1]
+        if len(group) == 1 and not group[0][0]
+        else merged_record(group, fills_linked_only=fills_linked_only)
+        for group in grouped_by_ref(held)
+    ]
+
+
+def _merged_feature_records(
+    ds: Dataset, asked: InventoryScope, reader: IndexReader, links: _Links
+) -> Sequence[AnyRecord]:
+    """Every feature run of *ds* and of the datasets it links, measured over *ds*.
+
+    A run that a link holds is measured over the target of *ds*
+    (:func:`feature_run_target`) with the parameters the lookup reads
+    (:func:`~.params.linked_run_root`), and its drift is computed on *ds*, so an
+    entry whose tracks *ds* converted again reads as drifted. The own runs share
+    that target and one :class:`DriftReads`.
+    """
+    target = narrow_target(reportable_universe(ds, asked.tracks_run_id), asked.selector)
+    drift_reads = _drift_reads(ds, reader)
+    held: list[tuple[str, list[ArtifactRecord[Entry]]]] = [
+        ("", _feature_runs(ds, reader, target, drift_reads))
+    ]
+    held.extend(
+        (link_id, _feature_records(linked, asked, reader))
+        for link_id, linked in links.of("feature")
+    )
+    if len(held) == 1:
+        return held[0][1]
+    records: list[AnyRecord] = []
+    for group in grouped_by_ref(held):
+        link_id, first = group[0]
+        if len(group) == 1 and not link_id:
+            records.append(first)
+            continue
+        rows = frozenset[Entry]().union(*(record.rows for _, record in group))
+        params_root = linked_run_root(ds, first.name, first.run_id)
+        if not link_id and first.run_root == params_root and params_root.exists():
+            # The own run directory is kept and holds the params the lookup
+            # reads, so its drift over *ds* stands.
+            remeasure = Remeasure(
+                target=feature_run_target(target, first.params, rows),
+                drift=first.drift,
+            )
+        else:
+            read = read_run_params(params_root)
+            remeasure = Remeasure(
+                target=feature_run_target(target, read.params, rows),
+                drift=drifted_entries(
+                    ds, first.name, first.run_id, read.params, drift_reads
+                ),
+                params=read,
+            )
+        records.append(
+            merged_record(group, fills_linked_only=True, remeasure=remeasure)
+        )
+    return records

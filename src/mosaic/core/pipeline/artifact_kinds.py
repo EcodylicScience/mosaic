@@ -8,11 +8,14 @@ as the agent tool contract, imports the standard library alone.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final, Literal, TypeGuard
 
 __all__ = [
     "ARTIFACT_KINDS",
     "ARTIFACT_STATUSES",
+    "LINKED_KIND",
     "LINKED_KINDS",
     "ArtifactKind",
     "ArtifactStatus",
@@ -86,6 +89,21 @@ LINKED_KINDS: Final[tuple[LinkedKind, ...]] = (
 """Every :data:`LinkedKind`, in the order a manifest writes them.
 
 Spelled twice for the reason :data:`ARTIFACT_KINDS` is.
+"""
+
+LINKED_KIND: Final[Mapping[ArtifactKind, LinkedKind]] = MappingProxyType(
+    {
+        "feature": "features",
+        "tracks-variant": "tracks",
+        "label-series": "label-series",
+        "frame-run": "frames",
+        "trained-model": "models",
+        "prepared-dataset": "models",
+    }
+)
+"""The :data:`LinkedKind` through which a dataset reads each kind of artifact.
+
+An artifact kind it does not name is read from a dataset's own tree alone.
 """
 
 

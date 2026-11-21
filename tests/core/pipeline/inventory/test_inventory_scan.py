@@ -15,11 +15,15 @@ import pandas as pd
 import pytest
 
 from mosaic.cli._features import build_feature
+from mosaic.core import dataset as dataset_module
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.graph import Recipe, run_pipeline
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import (
+    Coverage,
     FeatureRunRef,
     TracksVariantRef,
     inventory,
@@ -27,7 +31,10 @@ from mosaic.core.pipeline.inventory import (
     reclassify,
 )
 from mosaic.core.pipeline.inventory import _read as read_module
-from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
+from mosaic.core.pipeline.inventory._read import IndexReader, ParquetFooterMemo
+from mosaic.core.pipeline.inventory.label_series import label_series_records
+from mosaic.core.pipeline.inventory.model import InventoryScope
+from mosaic.core.pipeline.inventory.params import read_linked_run_params
 from mosaic.core.pipeline.inventory.scan import (
     entries_held,
     entry_universe,
@@ -43,11 +50,13 @@ from tests.helpers import (
     copy_of,
     LossyFeature,
     ScopedFeature,
+    add_feature_run,
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
     make_dataset,
     observed,
+    raw_source,
     run_fresh,
     track_table,
 )
@@ -921,3 +930,216 @@ def test_a_footer_memo_reads_each_linked_footer_once(
 
     assert first == again
     assert sorted(read) == sorted([*own, *linked])
+
+
+# --- a dataset's links in its inventory -----------------------------------------
+
+LINKED_VARIANT = "convert-trex.0.2-1111111111"
+LINKED_ENTRIES = frozenset({("", "seq_a"), ("", "seq_b")})
+
+
+def _computed_source(base: Path) -> tuple[Dataset, str]:
+    """A dataset with two tracks tables of one variant and a feature run over both."""
+    source = make_dataset(base, name="source")
+    add_tracks_variant(source, LINKED_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    return source, _run(source)
+
+
+def test_a_copy_lists_the_sources_runs_as_linked_records(tmp_path: Path) -> None:
+    source, run_id = _computed_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    link_id = f"source-{source.uuid}"
+
+    found = inventory(copy, kinds=["feature", "tracks-variant"])
+
+    feature = found.record(FeatureRunRef(name=STORAGE, run_id=run_id))
+    assert feature is not None
+    assert feature.link_id == link_id
+    assert feature.run_root == feature_run_root(source, STORAGE, run_id)
+    assert not feature_run_root(copy, STORAGE, run_id).exists()
+    target = entry_universe(copy)
+    assert feature.coverage.target == target
+    assert feature.coverage.covered == LINKED_ENTRIES
+    over_copy = Coverage[Entry](target=target, present=LINKED_ENTRIES)
+    assert feature.status == reclassify(feature, over_copy) == "complete"
+    assert feature.linked_only == LINKED_ENTRIES
+    assert feature.params == read_linked_run_params(copy, STORAGE, run_id).params
+    assert feature.params is not None
+    tracks = found.record(TracksVariantRef(run_id=LINKED_VARIANT))
+    assert tracks is not None
+    assert (tracks.link_id, tracks.run_root) == (link_id, None)
+    assert tracks.status == reclassify(tracks, over_copy) == "complete"
+    assert tracks.linked_only == LINKED_ENTRIES
+
+
+def test_a_run_with_an_own_entry_keeps_its_own_root(tmp_path: Path) -> None:
+    source, run_id = _computed_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_variant(copy, LINKED_VARIANT, "seq_c", std_format="mosaic_v1")
+
+    assert _run(copy) == run_id
+    found = inventory(copy, kinds=["feature", "tracks-variant"])
+
+    feature = found.record(FeatureRunRef(name=STORAGE, run_id=run_id))
+    assert feature is not None
+    assert feature.run_root == feature_run_root(copy, STORAGE, run_id)
+    assert feature.link_id == ""
+    assert feature.linked_only == LINKED_ENTRIES
+    assert feature.coverage.covered == LINKED_ENTRIES | {("", "seq_c")}
+    assert feature.status == "complete"
+    tracks = found.record(TracksVariantRef(run_id=LINKED_VARIANT))
+    assert tracks is not None
+    assert (tracks.link_id, tracks.linked_only) == ("", LINKED_ENTRIES)
+
+
+def test_a_linked_entry_the_copy_converted_again_is_drift(tmp_path: Path) -> None:
+    source, run_id = _computed_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_table(
+        copy,
+        LINKED_VARIANT,
+        track_table("", "seq_a"),
+        std_format="mosaic_v1",
+        consumed_composition="converted-again",
+    )
+
+    feature = inventory(copy, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert feature is not None
+    assert feature.drift == (("", "seq_a"),)
+    assert feature.status == "complete-but-drifted"
+    assert (
+        inventory(source, kinds=["feature"]).status(
+            FeatureRunRef(name=STORAGE, run_id=run_id)
+        )
+        == "complete"
+    )
+
+
+def test_a_linked_series_is_the_record_its_dataset_lists(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    scope = InventoryScope(kinds=frozenset({"label-series"}))
+    [held] = label_series_records(source, scope, IndexReader())
+
+    [record] = inventory(copy, kinds=["label-series"]).of_kind("label-series")
+
+    assert record.ref == held.ref
+    assert record.link_id == f"source-{source.uuid}"
+    assert (record.coverage, record.status) == (held.coverage, held.status)
+
+
+def test_an_inventory_reads_one_level_of_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far = make_dataset(tmp_path / "far", name="far")
+    _ = add_feature_run(far, "far-store", "0.1-3333333333")
+    near = make_dataset(tmp_path / "near", name="near")
+    _ = add_feature_run(near, "near-store", "0.1-2222222222")
+    _ = near.add_link(DatasetLink(id="far", path=str(far.base_dir)))
+    reading = make_dataset(tmp_path / "reading", name="reading")
+    _ = add_feature_run(reading, "own-store", "0.1-1111111111")
+    _ = reading.add_link(DatasetLink(id="near", path=str(near.base_dir)))
+    fresh = Dataset(manifest_path=reading.manifest_path).load()
+    loaded: list[Path] = []
+    resolved: list[Path] = []
+    load = Dataset.load
+    resolve = dataset_module.resolve_manifest_path
+
+    def spy_load(self: Dataset, ensure_roots: bool = True) -> Dataset:
+        loaded.append(Path(self.manifest_path).resolve())
+        return load(self, ensure_roots)
+
+    def spy_resolve(path: Path) -> Path:
+        resolved.append(Path(path).resolve())
+        return resolve(path)
+
+    monkeypatch.setattr(Dataset, "load", spy_load)
+    monkeypatch.setattr(dataset_module, "resolve_manifest_path", spy_resolve)
+
+    found = inventory(fresh)
+
+    assert {record.name for record in found.of_kind("feature")} == {
+        "own-store",
+        "near-store",
+    }
+    assert found.errors == ()
+    far_base = far.base_dir.resolve()
+    assert not any(path.is_relative_to(far_base) for path in [*loaded, *resolved])
+
+
+def test_a_mismatched_link_costs_its_kinds_and_keeps_the_own_records(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="ds")
+    _ = add_feature_run(ds, "own-store", "0.1-1111111111")
+    other = make_dataset(tmp_path / "other", name="other")
+    _ = ds.add_link(
+        DatasetLink(id="other", path=str(other.base_dir), provides=("label-series",))
+    )
+    for child in other.base_dir.iterdir():
+        if child.is_file():
+            child.unlink()
+    _ = make_dataset(other.base_dir, name="impostor")
+    fresh = Dataset(manifest_path=ds.manifest_path).load()
+
+    found = inventory(fresh, kinds=["feature", "label-series"])
+
+    [error] = found.errors
+    assert error.startswith("label-series: ")
+    assert "was linked to dataset" in error
+    assert [record.name for record in found.of_kind("feature")] == ["own-store"]
+
+
+def test_a_mismatched_link_of_every_kind_keeps_the_own_records(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="ds")
+    add_tracks_variant(ds, LINKED_VARIANT, "seq_a", std_format="mosaic_v1")
+    _ = add_feature_run(ds, "own-store", "0.1-1111111111")
+    other = make_dataset(tmp_path / "other", name="other")
+    _ = ds.add_link(DatasetLink(id="other", path=str(other.base_dir)))
+    for child in other.base_dir.iterdir():
+        if child.is_file():
+            child.unlink()
+    _ = make_dataset(other.base_dir, name="impostor")
+    fresh = Dataset(manifest_path=ds.manifest_path).load()
+
+    found = inventory(fresh, kinds=["feature", "tracks-variant", "label-series"])
+
+    assert [error.split(": ", 1)[0] for error in found.errors] == [
+        "feature",
+        "label-series",
+        "tracks-variant",
+    ]
+    assert all("was linked to dataset" in error for error in found.errors)
+    assert [record.name for record in found.of_kind("feature")] == ["own-store"]
+    assert [record.run_id for record in found.of_kind("tracks-variant")] == [
+        LINKED_VARIANT
+    ]
+
+
+def test_a_linked_run_root_comes_with_the_linked_index_path(tmp_path: Path) -> None:
+    """An own index row whose run directory is gone yields to the linked record."""
+    import shutil
+
+    source, run_id = _computed_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_variant(copy, LINKED_VARIANT, "seq_c", std_format="mosaic_v1")
+    assert _run(copy) == run_id
+    shutil.rmtree(feature_run_root(copy, STORAGE, run_id))
+    held = inventory(source, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+    assert held is not None
+
+    feature = inventory(copy, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert feature is not None
+    assert feature.link_id == f"source-{source.uuid}"
+    assert feature.run_root == held.run_root
+    assert feature.index_path == held.index_path

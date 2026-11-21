@@ -370,6 +370,19 @@ class ArtifactRecord[KeyT]:
     Deliberately narrow and deliberately named as an exception: anything a second
     kind needs becomes a field.
     """
+    link_id: str = ""
+    """The link of the dataset that holds the artifact for the reading dataset.
+
+    ``""`` when the reading dataset holds the artifact's run directory, or holds
+    the artifact at all for a kind without one. Otherwise ``run_root`` is the
+    linked dataset's.
+    """
+    linked_only: frozenset[KeyT] = frozenset()
+    """The present keys that only a linked dataset holds.
+
+    Filled for a feature run, a tracks variant and a frame run. Empty for every
+    other kind and for an artifact no link adds to.
+    """
 
 
 type EntryRecord = ArtifactRecord[Entry]

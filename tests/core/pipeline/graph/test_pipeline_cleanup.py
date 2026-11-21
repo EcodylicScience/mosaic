@@ -17,6 +17,9 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     SUPERSEDED_SAMPLE,
+    execute_step,
+    plan_fingerprint,
+    run_cleanup,
     BoundRef,
     CandidateSet,
     CleanupPlan,
@@ -44,16 +47,20 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.storage_names import SHORTENED_MARKER
+from mosaic.core.pipeline import feature_run_removal
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import InventoryCache
+from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     LOOSE,
+    add_feature_run,
     add_tracks_variant,
     assert_tree_unchanged,
+    copy_of,
     make_dataset,
     managed_dataset,
     named_recipe,
@@ -68,6 +75,7 @@ from tests.helpers import (
     tree_snapshot,
     write_driver_lease,
     write_reader_params,
+    write_run_params,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -1527,3 +1535,62 @@ def test_judging_refuses_recorded_runs_beside_several_replacements(
             planned_name="",
             recorded={"speed": "0.1-recorded"},
         )
+
+
+# --- a copy of a dataset ------------------------------------------------------------
+
+
+def test_a_copy_never_removes_a_run_its_source_holds(
+    dataset: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    copy = copy_of(dataset, tmp_path / "copy")
+    walked: list[Path] = []
+    run_bytes = feature_run_removal.run_bytes
+
+    def spy(run_root: Path) -> tuple[int, int]:
+        walked.append(run_root)
+        return run_bytes(run_root)
+
+    monkeypatch.setattr(feature_run_removal, "run_bytes", spy)
+    before = tree_snapshot(dataset.base_dir)
+
+    plan = plan_with_cleanup(copy, speed_recipe_stepping(2), cleanup=LOOSE)
+    assert plan.cleanup is not None
+    request = submit_request(
+        copy,
+        speed_recipe_stepping(2),
+        cleanup=LOOSE,
+        expect_plan=plan_fingerprint(plan),
+    ).request
+    for step_id in request.step_executions:
+        _ = execute_step(copy, request, step_id)
+    outcome = run_cleanup(copy, request, token=CancelToken())
+
+    assert old not in reasons_by_run(plan.cleanup)
+    assert plan.cleanup.runs == ()
+    assert feature_run_root(dataset, STORAGE, old) not in walked
+    assert (outcome.status, outcome.removed) == ("finished", ())
+    assert_tree_unchanged(dataset.base_dir, before)
+
+
+def test_a_linked_run_that_reads_an_own_run_keeps_it(
+    dataset: Dataset, tmp_path: Path
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    copy = copy_of(source, tmp_path / "copy")
+    add_tracks_variant(copy, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    old = run_speed(copy, 1)
+    reader = add_feature_run(source, "reader", "0.1-9999999999")
+    write_run_params(
+        reader,
+        {
+            "_params": {},
+            "_inputs": [{"feature": STORAGE, "run_id": old}],
+            "_resolved": [{"where": "inputs[0]", "feature": STORAGE, "run_id": old}],
+        },
+    )
+
+    cleanup = _cleanup(copy, speed_recipe_stepping(2))
+
+    assert reasons_by_run(cleanup) == {old: "read_by"}

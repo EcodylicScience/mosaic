@@ -30,9 +30,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
-from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
+from mosaic.core.pipeline.dataset_indexes import DatasetIndex, iter_dataset_indexes
 from mosaic.core.pipeline.identity_scheme import FEATURE_IDENTITY_SCHEME
 from mosaic.core.pipeline.index_stamp import IndexStamp
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
@@ -42,14 +43,29 @@ from mosaic.core.scope import Scope
 from .contributors import registered_inventory_kinds
 from .model import ArtifactKind, DatasetInventory
 from ._read import ParquetFooterMemo
-from .scan import inventory
+from .scan import inventory, without_mismatched_links
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
     from mosaic.core.dataset import Dataset
 
-__all__ = ["InventoryCache", "RevalidationReport", "identity_schemes"]
+__all__ = [
+    "LINKED_ROOT_KEY",
+    "InventoryCache",
+    "RevalidationReport",
+    "identity_schemes",
+]
+
+
+LINKED_ROOT_KEY: Final[Mapping[LinkedKind, str]] = {
+    "models": "models",
+    "features": "features",
+    "tracks": "tracks",
+    "label-series": "labels_raw",
+    "frames": "frames",
+}
+"""The root whose indexes a link that provides each kind is stamped for."""
 
 
 def identity_schemes() -> tuple[str, str, str]:
@@ -195,14 +211,38 @@ class InventoryCache:
     ) -> tuple[dict[Path, IndexStamp], dict[Path, frozenset[str]]]:
         """Stat every index now, with the root keys that declare each one.
 
+        The indexes are the dataset's own and, for each kind, those of the
+        linked datasets that provide it, so a change in a link moves the view
+        as one in the dataset does.
+
         One file can be declared by two roots when a root sits inside another.
         """
         stamps: dict[Path, IndexStamp] = {}
         keys: dict[Path, set[str]] = {}
-        for index in iter_dataset_indexes(self.ds):
+        for index in (*iter_dataset_indexes(self.ds), *self._linked_indexes()):
             stamps[index.path] = IndexStamp.of(index.path)
             keys.setdefault(index.path, set()).add(index.root_key)
         return stamps, {path: frozenset(found) for path, found in keys.items()}
+
+    def _linked_indexes(self) -> Iterator[DatasetIndex]:
+        """The indexes of each reachable linked dataset, for the kinds it provides.
+
+        A link that does not provide a kind is not opened for it, one that is
+        unreachable has no indexes to stamp, and one whose path holds another
+        dataset is left out: its kinds are named in the inventory's errors.
+        The label series kind stamps the series indexes alone, not the raw
+        labels index beside them.
+        """
+        reading, _ = without_mismatched_links(self.ds)
+        for kind in LINKED_KINDS:
+            root_key = LINKED_ROOT_KEY[kind]
+            for linked in reading.lookup_order(kind)[1:]:
+                for index in iter_dataset_indexes(linked.dataset):
+                    if index.root_key == root_key and (
+                        kind != "label-series"
+                        or index.path.parent != linked.dataset.get_root(root_key)
+                    ):
+                        yield index
 
     def _kinds_of(
         self, moved: Iterable[Path], root_keys: Mapping[Path, frozenset[str]]
