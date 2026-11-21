@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import os
 import socket
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -21,8 +21,6 @@ from mosaic.core.pipeline import feature_run_removal
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.graph import (
     BoundRef,
-    CleanupOutcome,
-    CleanupPolicy,
     Recipe,
     Request,
     execute_step,
@@ -46,9 +44,14 @@ from mosaic.runlog import (
     run_log_path,
 )
 from tests.helpers import (
+    LOOSE,
+    act_after_judging,
     add_tracks_variant,
+    end_attempt,
     exited_pid,
+    kept_reasons,
     make_dataset,
+    observe_removals,
     record_open_attempt,
     run_id_of,
     run_speed,
@@ -63,8 +66,6 @@ VARIANT = "convert-trex.0.2-1111111111"
 STORAGE = "speed-angvel__from__tracks"
 
 HEADING = "heading__from__tracks"
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
 
 
 @pytest.fixture
@@ -168,14 +169,7 @@ def test_a_cancel_during_cleanup_stops_between_runs(
     request = _submit(dataset, speed_recipe_stepping(2))
     _run_steps(dataset, request)
     token = CancelToken()
-    remove = feature_run_removal.remove_feature_run
-
-    def remove_then_cancel(*args: object, **kwargs: object) -> object:
-        removed = remove(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-        token.cancel()
-        return removed
-
-    monkeypatch.setattr(feature_run_removal, "remove_feature_run", remove_then_cancel)
+    observe_removals(monkeypatch, after=token.cancel)
 
     outcome = run_cleanup(dataset, request, token=token)
 
@@ -361,19 +355,6 @@ def test_a_request_without_cleanup_rolls_up_as_before(dataset: Dataset) -> None:
 # --- what appears while the cleanup runs ---------------------------------------------
 
 
-def _during_cleanup(monkeypatch: pytest.MonkeyPatch, act: Callable[[], None]) -> None:
-    """Call *act* once the cleanup has judged its runs, before it removes any."""
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    judge = module.plan_cleanup
-
-    def judge_then_act(*args: object, **kwargs: object) -> object:
-        judged = judge(*args, **kwargs)
-        act()
-        return judged
-
-    monkeypatch.setattr(module, "plan_cleanup", judge_then_act)
-
-
 def test_a_run_read_by_an_attempt_that_ended_during_the_cleanup_is_kept(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -398,7 +379,7 @@ def test_a_run_read_by_an_attempt_that_ended_during_the_cleanup_is_kept(
             log.set_run_id("0.1-reader0000")
             log.finished()
 
-    _during_cleanup(monkeypatch, read_old_and_finish)
+    act_after_judging(monkeypatch, "plan_cleanup", read_old_and_finish)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
@@ -421,7 +402,7 @@ def test_a_run_a_request_submitted_during_the_cleanup_binds_is_kept(
             bind={"speed": BoundRef(feature=STORAGE, run_id=old)},
         )
 
-    _during_cleanup(monkeypatch, bind_old)
+    act_after_judging(monkeypatch, "plan_cleanup", bind_old)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
@@ -440,7 +421,7 @@ def test_an_attempt_of_another_storage_with_the_same_run_id_does_not_keep_a_run(
     def attempt_elsewhere() -> None:
         _ = record_open_attempt(dataset, old, target=HEADING)
 
-    _during_cleanup(monkeypatch, attempt_elsewhere)
+    act_after_judging(monkeypatch, "plan_cleanup", attempt_elsewhere)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
@@ -482,7 +463,7 @@ def test_a_request_submitted_during_the_cleanup_recording_the_id_in_another_stor
             log.entries_written(2)
             log.finished()
 
-    _during_cleanup(monkeypatch, record_old_under_heading)
+    act_after_judging(monkeypatch, "plan_cleanup", record_old_under_heading)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
@@ -535,7 +516,7 @@ def test_a_run_an_attempt_resolving_its_inputs_may_read_is_kept(
     def start_reader() -> None:
         _ = record_open_attempt(dataset, "", target=f"frame-aggregate__from__{STORAGE}")
 
-    _during_cleanup(monkeypatch, start_reader)
+    act_after_judging(monkeypatch, "plan_cleanup", start_reader)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
@@ -674,20 +655,11 @@ def _name_outside_every_request(dataset: Dataset, storage: str, run_id: str) -> 
     return record_open_attempt(dataset, run_id, target=storage)
 
 
-def _end_attempt(dataset: Dataset, execution_id: str) -> None:
-    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
-        log.finished()
-
-
-def _kept(outcome: CleanupOutcome) -> dict[str, str]:
-    return {run_id: reason for _, run_id, reason in outcome.kept}
-
-
 def test_an_approved_run_an_ended_outside_attempt_named_is_no_longer_a_candidate(
     dataset: Dataset, lapsed_request_holds: None
 ) -> None:
     request, heading, speed = _retiring_submission(dataset)
-    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+    end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
     _run_steps(dataset, request)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
@@ -697,7 +669,7 @@ def test_an_approved_run_an_ended_outside_attempt_named_is_no_longer_a_candidate
         "finished",
         request.cleanup.execution_id,
     )
-    assert _kept(outcome) == {heading: "no_longer_candidate"}
+    assert kept_reasons(outcome) == {heading: "no_longer_candidate"}
     assert feature_run_root(dataset, HEADING, heading).is_dir()
     assert not _exists(dataset, speed)
     status = request_status_wire(dataset.base_dir, request)
@@ -715,7 +687,7 @@ def test_an_approved_run_an_open_outside_attempt_names_is_kept_attempt_open(
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
-    assert _kept(outcome) == {heading: "attempt_open"}
+    assert kept_reasons(outcome) == {heading: "attempt_open"}
     assert feature_run_root(dataset, HEADING, heading).is_dir()
     assert not _exists(dataset, speed)
 
@@ -727,11 +699,13 @@ def test_an_approved_run_whose_outside_attempt_ended_during_the_cleanup_is_kept_
     request, heading, _ = _retiring_submission(dataset)
     attempt = _name_outside_every_request(dataset, HEADING, heading)
     _run_steps(dataset, request)
-    _during_cleanup(monkeypatch, lambda: _end_attempt(dataset, attempt))
+    act_after_judging(
+        monkeypatch, "plan_cleanup", lambda: end_attempt(dataset, attempt)
+    )
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
-    assert _kept(outcome) == {heading: "attempt_open"}
+    assert kept_reasons(outcome) == {heading: "attempt_open"}
     assert feature_run_root(dataset, HEADING, heading).is_dir()
 
 
@@ -771,11 +745,11 @@ def test_an_interrupted_removal_of_a_run_that_left_the_candidates_is_not_finishe
         )
     }
     assert states[heading] == "interrupted"
-    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+    end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
-    assert _kept(outcome) == {heading: "no_longer_candidate"}
+    assert kept_reasons(outcome) == {heading: "no_longer_candidate"}
     assert feature_run_root(dataset, HEADING, heading).is_dir()
 
 
@@ -785,12 +759,12 @@ def test_an_approved_run_that_left_the_candidates_is_kept_for_a_run_reading_it(
     request, heading, _ = _retiring_submission(dataset)
     reader = run_pipeline(dataset, _heading_reader())
     templates = run_id_of(reader, "templates")
-    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+    end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
     _run_steps(dataset, request)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
-    assert _kept(outcome) == {heading: "read_by"}
+    assert kept_reasons(outcome) == {heading: "read_by"}
     assert feature_run_root(dataset, HEADING, heading).is_dir()
     status = request_status_wire(dataset.base_dir, request)
     assert status.cleanup is not None
@@ -834,7 +808,7 @@ def test_an_approved_run_gone_from_the_index_is_absent(dataset: Dataset) -> None
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 
-    assert _kept(outcome) == {old: "absent"}
+    assert kept_reasons(outcome) == {old: "absent"}
 
 
 def test_an_interrupted_removal_whose_rows_remain_is_judged_as_a_candidate(

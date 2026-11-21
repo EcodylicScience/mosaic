@@ -10,11 +10,9 @@ The retired recipe ``old`` runs ``speed-angvel`` at step size 1 and ``heading``.
 
 from __future__ import annotations
 
-import importlib
 import os
 import socket
 import threading
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -57,11 +55,20 @@ from tests.helpers import (
     CANARY_NAME,
     CANARY_SOURCE,
     CANARY_VARIABLE,
+    HEADING_STORAGE,
+    LOOSE,
+    OldRuns,
+    SPEED_STORAGE,
+    act_after_judging,
     add_tracks_variant,
+    end_attempt,
     forget_imported_definitions,
     imported_definitions,
+    kept_reasons,
     make_dataset,
+    managed_dataset,
     named_recipe,
+    observe_removals,
     record_open_attempt,
     run_id_of,
     run_speed,
@@ -72,37 +79,12 @@ from tests.helpers import (
 
 VARIANT = "convert-trex.0.2-1111111111"
 
-STORAGE = "speed-angvel__from__tracks"
-
-HEADING = "heading__from__tracks"
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
-
 
 @pytest.fixture
 def dataset(tmp_path: Path, lapsed_request_holds: None) -> Dataset:
     ds = make_dataset(tmp_path / "ds")
     add_tracks_variant(ds, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
     return ds
-
-
-class _Old:
-    """The retired recipe's request, its runs and the approved retirement."""
-
-    def __init__(
-        self,
-        ds: Dataset,
-        keepers: list[RetirementKeeper] | None = None,
-        *,
-        manager: str = "",
-    ) -> None:
-        ran = run_pipeline(ds, speed_heading_recipe())
-        self.digest: str = ran.recipe_digest
-        self.speed: str = run_id_of(ran, "speed")
-        self.heading: str = run_id_of(ran, "heading")
-        self.spec: RetirementSpec = plan_retirement(
-            ds, [self.digest], keepers or [], LOOSE, manager
-        ).spec
 
 
 def _keeper(recipe: Recipe) -> RetirementKeeper:
@@ -142,38 +124,16 @@ def _records(ds: Dataset, execution_id: str) -> dict[str, RemovalRecord]:
     }
 
 
-def _kept(outcome: CleanupOutcome) -> dict[str, str]:
-    return {run_id: reason for _, run_id, reason in outcome.kept}
-
-
 def _removed(outcome: CleanupOutcome) -> list[str]:
     return [run.run_id for run in outcome.removed]
 
 
 def _speed_exists(ds: Dataset, run_id: str) -> bool:
-    return feature_run_root(ds, STORAGE, run_id).is_dir()
+    return feature_run_root(ds, SPEED_STORAGE, run_id).is_dir()
 
 
 def _heading_exists(ds: Dataset, run_id: str) -> bool:
-    return feature_run_root(ds, HEADING, run_id).is_dir()
-
-
-def _end_attempt(ds: Dataset, execution_id: str) -> None:
-    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
-        log.finished()
-
-
-def _after_judging(monkeypatch: pytest.MonkeyPatch, act: Callable[[], None]) -> None:
-    """Call *act* once the retirement has judged its runs, before it removes any."""
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    judge = module.judge_runs
-
-    def judge_then_act(*args: object, **kwargs: object) -> object:
-        judged = judge(*args, **kwargs)
-        act()
-        return judged
-
-    monkeypatch.setattr(module, "judge_runs", judge_then_act)
+    return feature_run_root(ds, HEADING_STORAGE, run_id).is_dir()
 
 
 class _Killed(BaseException):
@@ -186,7 +146,7 @@ class _Killed(BaseException):
 def test_each_approved_run_still_removable_is_removed_as_retired(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     outcome, execution_id = _retire(dataset, old.spec)
 
@@ -213,11 +173,11 @@ def test_a_run_the_plan_did_not_approve_is_not_removed_though_now_removable(
     ran = run_pipeline(dataset, speed_heading_recipe())
     heading = run_id_of(ran, "heading")
     write_reader_params(
-        dataset, "frame-aggregate", "0.1-reader0000", (HEADING, heading)
+        dataset, "frame-aggregate", "0.1-reader0000", (HEADING_STORAGE, heading)
     )
     reader = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
     spec = plan_retirement(dataset, [ran.recipe_digest], [], LOOSE, "").spec
-    _end_attempt(dataset, reader)
+    end_attempt(dataset, reader)
     again = plan_retirement(dataset, [ran.recipe_digest], [], LOOSE, "")
 
     outcome, _ = _retire(dataset, spec)
@@ -229,7 +189,7 @@ def test_a_run_the_plan_did_not_approve_is_not_removed_though_now_removable(
 
 
 def test_a_retirement_without_a_run_log_is_refused(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     with job_context(dataset, kind="retire-recipes", target="x", track=False) as ctx:
         with pytest.raises(ValueError, match="run-log"):
@@ -245,12 +205,12 @@ def test_an_approved_run_a_running_request_submitted_after_the_plan_runs_is_kept
     dataset: Dataset,
 ) -> None:
     """The request has not ended, and its recipe runs both features."""
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     running = submit_request(dataset, speed_heading_recipe("running")).request
 
     outcome, execution_id = _retire(dataset, old.spec)
 
-    assert _kept(outcome) == {
+    assert kept_reasons(outcome) == {
         old.speed: "held_by_request",
         old.heading: "held_by_request",
     }
@@ -264,22 +224,22 @@ def test_an_approved_run_a_request_submitted_during_the_retirement_pins_is_kept(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The request appears after the judging, so only the watch can see its pin."""
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     pinned: list[str] = []
 
     def pin_speed() -> None:
         request = submit_request(
             dataset,
             speed_recipe_stepping(5),
-            bind={"speed": BoundRef(feature=STORAGE, run_id=old.speed)},
+            bind={"speed": BoundRef(feature=SPEED_STORAGE, run_id=old.speed)},
         ).request
         pinned.append(request.request_id)
 
-    _after_judging(monkeypatch, pin_speed)
+    act_after_judging(monkeypatch, "judge_runs", pin_speed)
 
     outcome, execution_id = _retire(dataset, old.spec)
 
-    assert _kept(outcome) == {old.speed: "held_by_request"}
+    assert kept_reasons(outcome) == {old.speed: "held_by_request"}
     assert _removed(outcome) == [old.heading]
     assert _speed_exists(dataset, old.speed)
     record = _records(dataset, execution_id)[old.speed]
@@ -292,7 +252,7 @@ def test_no_request_is_written_between_the_replan_and_the_judging(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A submission waits for the retirement's judging to end."""
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     requests = requests_root(dataset.base_dir)
     before = set(requests.glob("*.json"))
     errors: list[BaseException] = []
@@ -311,7 +271,7 @@ def test_no_request_is_written_between_the_replan_and_the_judging(
         submitter.join(timeout=3)
         seen.append(set(requests.glob("*.json")) - before)
 
-    _after_judging(monkeypatch, submit_and_wait)
+    act_after_judging(monkeypatch, "judge_runs", submit_and_wait)
 
     _ = _retire(dataset, old.spec)
     submitter.join()
@@ -322,13 +282,13 @@ def test_no_request_is_written_between_the_replan_and_the_judging(
 
 
 def test_an_approved_run_a_keeper_now_expects_is_kept(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     keeper = _keeper(named_recipe(speed_recipe_stepping(1), "keeper"))
     spec = old.spec.model_copy(update={"keepers": [keeper]})
 
     outcome, execution_id = _retire(dataset, spec)
 
-    assert _kept(outcome) == {old.speed: "keeper"}
+    assert kept_reasons(outcome) == {old.speed: "keeper"}
     assert _removed(outcome) == [old.heading]
     assert _speed_exists(dataset, old.speed)
     record = _records(dataset, execution_id)[old.speed]
@@ -338,13 +298,13 @@ def test_an_approved_run_a_keeper_now_expects_is_kept(dataset: Dataset) -> None:
 def test_an_approved_run_an_attempt_of_a_later_request_writes_is_kept_open(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     request = submit_request(dataset, speed_heading_recipe("user")).request
     attempt = request.step_executions["speed"]
     with JsonlRunLog(run_log_path(dataset.base_dir, attempt), attempt) as log:
         log.started(
             kind="feature",
-            target=STORAGE,
+            target=SPEED_STORAGE,
             host=socket.gethostname(),
             pid=os.getpid(),
         )
@@ -352,7 +312,7 @@ def test_an_approved_run_an_attempt_of_a_later_request_writes_is_kept_open(
 
     outcome, _ = _retire(dataset, old.spec)
 
-    assert _kept(outcome) == {
+    assert kept_reasons(outcome) == {
         old.speed: "attempt_open",
         old.heading: "held_by_request",
     }
@@ -371,41 +331,48 @@ def test_an_approved_run_an_attempt_of_a_later_request_writes_is_kept_open(
 def test_an_approved_run_an_outside_attempt_names_after_the_plan_is_kept(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch, ends: str, reason: str
 ) -> None:
-    old = _Old(dataset)
-    attempt = record_open_attempt(dataset, old.heading, target=HEADING)
+    old = OldRuns(dataset)
+    attempt = record_open_attempt(dataset, old.heading, target=HEADING_STORAGE)
     if ends == "before":
-        _end_attempt(dataset, attempt)
+        end_attempt(dataset, attempt)
     if ends == "during":
-        _after_judging(monkeypatch, lambda: _end_attempt(dataset, attempt))
+        act_after_judging(
+            monkeypatch, "judge_runs", lambda: end_attempt(dataset, attempt)
+        )
 
     outcome, execution_id = _retire(dataset, old.spec)
 
-    assert _kept(outcome) == {old.heading: reason}
+    assert kept_reasons(outcome) == {old.heading: reason}
     assert _removed(outcome) == [old.speed]
     assert _heading_exists(dataset, old.heading)
     assert _records(dataset, execution_id)[old.heading]["reason"] == reason
 
 
 def test_an_approved_run_already_gone_is_absent(dataset: Dataset) -> None:
-    old = _Old(dataset)
-    _ = feature_index(feature_index_path(dataset, HEADING)).drop_runs({old.heading})
+    old = OldRuns(dataset)
+    _ = feature_index(feature_index_path(dataset, HEADING_STORAGE)).drop_runs(
+        {old.heading}
+    )
 
     outcome, _ = _retire(dataset, old.spec)
 
-    assert _kept(outcome) == {old.heading: "absent"}
+    assert kept_reasons(outcome) == {old.heading: "absent"}
     assert _removed(outcome) == [old.speed]
 
 
 def test_a_request_of_a_retired_recipe_made_after_the_plan_keeps_its_runs(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     again = run_pipeline(dataset, speed_heading_recipe())
 
     outcome, _ = _retire(dataset, old.spec)
 
     assert again.recipe_digest == old.digest
-    assert _kept(outcome) == {old.speed: "recipe_uses", old.heading: "recipe_uses"}
+    assert kept_reasons(outcome) == {
+        old.speed: "recipe_uses",
+        old.heading: "recipe_uses",
+    }
     assert _speed_exists(dataset, old.speed)
     assert _heading_exists(dataset, old.heading)
 
@@ -417,7 +384,7 @@ def test_the_judging_ranks_only_the_retired_runs(dataset: Dataset) -> None:
     The keeper's own run is computed, so the retired run covers no entry the
     keeper lacks.
     """
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     _ = run_speed(dataset, 2)
     newer = run_pipeline(dataset, named_recipe(speed_recipe_stepping(3), "other"))
     keeper = _keeper(named_recipe(speed_recipe_stepping(2), "keeper"))
@@ -431,14 +398,8 @@ def test_the_judging_ranks_only_the_retired_runs(dataset: Dataset) -> None:
     outcome, _ = _retire(dataset, spec)
 
     assert run_id_of(newer, "speed") != old.speed
-    assert _kept(outcome) == {old.speed: "newest", old.heading: "newest"}
+    assert kept_reasons(outcome) == {old.speed: "newest", old.heading: "newest"}
     assert _speed_exists(dataset, old.speed)
-
-
-def _managed(dataset: Dataset) -> Dataset:
-    with dataset.manifest_path.open("a", encoding="utf-8") as manifest:
-        _ = manifest.write("managed_by: mosaic-api\n")
-    return Dataset(manifest_path=dataset.manifest_path).load(ensure_roots=False)
 
 
 @pytest.mark.parametrize(
@@ -449,7 +410,7 @@ def test_a_managed_dataset_keeps_every_run_unless_its_manager_runs_it(
     dataset: Dataset, manager: str, removed: bool
 ) -> None:
     ran = run_pipeline(dataset, speed_heading_recipe())
-    managed = _managed(dataset)
+    managed = managed_dataset(dataset)
     spec = plan_retirement(managed, [ran.recipe_digest], [], LOOSE, "mosaic-api").spec
 
     outcome, _ = _retire(managed, spec, manager)
@@ -459,7 +420,7 @@ def test_a_managed_dataset_keeps_every_run_unless_its_manager_runs_it(
         assert (len(outcome.removed), outcome.kept) == (2, ())
     else:
         assert outcome.removed == ()
-        assert set(_kept(outcome).values()) == {"managed_dataset"}
+        assert set(kept_reasons(outcome).values()) == {"managed_dataset"}
         assert _speed_exists(managed, run_id_of(ran, "speed"))
 
 
@@ -469,7 +430,7 @@ def test_a_managed_dataset_keeps_every_run_unless_its_manager_runs_it(
 def test_a_removal_that_raises_is_a_lost_entry_and_the_others_go_on(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     rmtree = feature_run_removal.shutil.rmtree
     calls: list[Path] = []
 
@@ -499,7 +460,7 @@ def test_a_removal_that_raises_is_a_lost_entry_and_the_others_go_on(
 def test_every_removal_raising_fails_the_retirement(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     def refuse(path: Path) -> None:
         raise OSError(f"busy: {path}")
@@ -518,8 +479,8 @@ def test_a_kept_run_and_a_removal_that_raises_fail_the_retirement(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A kept run is no loss: the one removal tried raised."""
-    old = _Old(dataset)
-    _ = record_open_attempt(dataset, old.heading, target=HEADING)
+    old = OldRuns(dataset)
+    _ = record_open_attempt(dataset, old.heading, target=HEADING_STORAGE)
 
     def refuse(path: Path) -> None:
         raise OSError(f"busy: {path}")
@@ -538,19 +499,12 @@ def test_a_kept_run_and_a_removal_that_raises_fail_the_retirement(
 def test_a_rerun_after_an_earlier_removal_reports_a_raise_as_a_lost_entry(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     first, second = (target.run_id for target in old.spec.approved)
     token = CancelToken()
-    remove = feature_run_removal.remove_feature_run
-
-    def remove_then_cancel(*args: object, **kwargs: object) -> object:
-        removed = remove(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-        token.cancel()
-        return removed
-
     execution_id = new_execution_id()
     with monkeypatch.context() as patched:
-        patched.setattr(feature_run_removal, "remove_feature_run", remove_then_cancel)
+        observe_removals(patched, after=token.cancel)
         with pytest.raises(Cancelled):
             _ = _retire(dataset, old.spec, execution_id=execution_id, token=token)
 
@@ -572,16 +526,9 @@ def test_a_rerun_after_an_earlier_removal_reports_a_raise_as_a_lost_entry(
 def test_a_cancel_stops_between_runs(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     token = CancelToken()
-    remove = feature_run_removal.remove_feature_run
-
-    def remove_then_cancel(*args: object, **kwargs: object) -> object:
-        removed = remove(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-        token.cancel()
-        return removed
-
-    monkeypatch.setattr(feature_run_removal, "remove_feature_run", remove_then_cancel)
+    observe_removals(monkeypatch, after=token.cancel)
     execution_id = new_execution_id()
 
     with pytest.raises(Cancelled):
@@ -598,7 +545,7 @@ def test_a_cancel_stops_between_runs(
 def test_a_rerun_removes_nothing_twice_and_finishes_an_interrupted_removal(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     first, second = (target.run_id for target in old.spec.approved)
     rmtree = feature_run_removal.shutil.rmtree
     calls: list[Path] = []
@@ -619,14 +566,8 @@ def test_a_rerun_removes_nothing_twice_and_finishes_an_interrupted_removal(
         for run_id, record in _records(dataset, execution_id).items()
     }
     assert states == {first: "removed", second: "interrupted"}
-    remove = feature_run_removal.remove_feature_run
-    removals: list[object] = []
-
-    def counted(*args: object, **kwargs: object) -> object:
-        removals.append(args)
-        return remove(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-
-    monkeypatch.setattr(feature_run_removal, "remove_feature_run", counted)
+    removals: list[None] = []
+    observe_removals(monkeypatch, before=lambda: removals.append(None))
 
     outcome, _ = _retire(dataset, old.spec, execution_id=execution_id)
 

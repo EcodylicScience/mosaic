@@ -35,7 +35,6 @@ from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     LARGE_SCOPE_ENTRIES,
-    CleanupPolicy,
     OpenDuplicate,
     PlanWire,
     Recipe,
@@ -59,8 +58,9 @@ from tests.helpers import (
     CHAIN_RECIPE,
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
-    SPEED_RECIPE,
+    LOOSE,
     RecordingStarter,
+    SPEED_RECIPE,
     add_tracks_variant,
     calms21_dataset,
     classifier_recipe,
@@ -772,8 +772,6 @@ def test_a_request_that_never_started_is_cancelled_without_confirmation(
 
 
 # --- the cleanup of superseded runs ----------------------------------------------------
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
 
 SPEED_STEP_2: dict[str, object] = json.loads(speed_recipe_stepping(2).model_dump_json())
 

@@ -289,10 +289,11 @@ def retired_digest_of(
         retire: The retired digests, in the current canonical form.
         current: What each digest a request names digests to now, filled as the
             requests of one scan are read.
-        before: The ``created_at`` of the request being cleaned up, or ``""``
-            when it is not written yet. A request created at or after it is not
-            retired: it ran the recipe again after the retirement was reviewed,
-            and its runs keep the protection of any request of another recipe.
+        before: The instant before which a retired request was made: the
+            cleaning request's ``created_at``, or a retirement's ``planned_at``.
+            ``""`` for none. A request created at or after it is not retired: it
+            ran the recipe again after the retirement was reviewed, and its runs
+            keep the protection of any request of another recipe.
     """
     if not retire:
         return ""

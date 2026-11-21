@@ -30,7 +30,7 @@ removable, recording each run in the attempt's run-log.
 from __future__ import annotations
 
 import datetime
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -166,9 +166,7 @@ def plan_retirement(
     """
     from ..definitions.scope import definition_scope
     from ..inventory.cache import InventoryCache
-    from .cleanup import judge_runs
     from .digest import recipe_digest
-    from .plan import plan_pipeline
     from .resolve import declaration_catalog
     from .retirement import RetireUnknownRecipe, saved_digest
 
@@ -201,29 +199,16 @@ def plan_retirement(
     held = InventoryCache(ds) if inventory is None else inventory
     with definition_scope(ds, load=False):
         declarations = declaration_catalog() if catalog is None else catalog
-        plans = tuple(
-            plan_pipeline(
-                ds,
-                keeper.recipe,
-                scope=keeper.scope,
-                inventory=held,
-                catalog=declarations,
-                refuse=False,
-            )
-            for keeper in keepers
-        )
-        judged = judge_runs(
+        plans, judged = _judge_retirement(
             ds,
-            plans,
-            policy=policy,
+            keepers,
+            retired,
+            policy,
+            manager,
             inventory=held,
             catalog=declarations,
-            candidates="retired",
-            planned_digest="",
-            planned_name="",
             now=moment,
-            retire=retired,
-            manager=manager,
+            retired_before="",
         )
     dataset_uuid = ds.uuid or ""
     ordered = tuple(sorted(retired))
@@ -299,14 +284,11 @@ def run_retirement(
         RuntimeError: A run a keeper expects, whose directory existed before, is
             gone after.
     """
-    from mosaic.runlog import read_removal_records, run_log_dir
-
     from ..definitions.scope import definition_scope
     from ..inventory.cache import InventoryCache
     from ..job import Cancelled
     from ..run import AllEntriesFailed
-    from .cleanup import RemovalWatch, judge_runs, remove_approved_runs
-    from .plan import plan_pipeline
+    from .cleanup import RemovalWatch, read_prior_removals, remove_approved_runs
     from .resolve import declaration_catalog
     from .store import submission_lock
 
@@ -318,10 +300,7 @@ def run_retirement(
         )
     base = ds.base_dir
     ctx.set_total(len(plan.approved))
-    prior = {
-        (record["feature"], record["run_id"]): record["state"]
-        for record in read_removal_records(run_log_dir(base), ctx.execution_id)
-    }
+    prior = read_prior_removals(base, ctx.execution_id)
     held = InventoryCache(ds) if inventory is None else inventory
     with definition_scope(ds, load=False):
         declarations = declaration_catalog() if catalog is None else catalog
@@ -329,30 +308,16 @@ def run_retirement(
         # between the judging and a removal is read again before that removal.
         watch = RemovalWatch(base, exclude="")
         with submission_lock(base):
-            plans = tuple(
-                plan_pipeline(
-                    ds,
-                    keeper.recipe,
-                    scope=keeper.scope,
-                    inventory=held,
-                    catalog=declarations,
-                    refuse=False,
-                )
-                for keeper in plan.keepers
-            )
-            judged = judge_runs(
+            plans, judged = _judge_retirement(
                 ds,
-                plans,
-                policy=plan.policy,
+                plan.keepers,
+                plan.retire,
+                plan.policy,
+                manager,
                 inventory=held,
                 catalog=declarations,
-                candidates="retired",
-                planned_digest="",
-                planned_name="",
                 now=now,
-                retire=plan.retire,
                 retired_before=plan.planned_at,
-                manager=manager,
             )
         outcome = remove_approved_runs(
             ds,
@@ -381,6 +346,70 @@ def run_retirement(
             f"{', '.join(outcome.failed)}"
         )
     return outcome
+
+
+def _judge_retirement(
+    ds: Dataset,
+    keepers: Sequence[RetirementKeeper],
+    retire: Collection[str],
+    policy: CleanupPolicy,
+    manager: str,
+    *,
+    inventory: InventoryCache,
+    catalog: DeclarationCatalog,
+    now: datetime.datetime | None,
+    retired_before: str,
+) -> tuple[tuple[Plan, ...], CleanupPlan]:
+    """Plan every keeper and judge the runs of the retired recipes against them.
+
+    A plan and a removal judge through this one function, so the fingerprint a
+    person reviews and the judging a removal repeats cannot differ in what they
+    plan or judge. The caller must call it within a definition scope of *ds*.
+
+    Args:
+        ds: The dataset.
+        keepers: The pipelines that stay.
+        retire: The retired recipes, as their current digests.
+        policy: The age and recency rules.
+        manager: The manager the judging acts for.
+        inventory: The held inventory the plans and the judging read.
+        catalog: The declarations.
+        now: The instant ages are judged at. ``None`` reads the clock.
+        retired_before: A request of a retired recipe created at or after this
+            instant is not retired. ``""`` for none.
+
+    Returns:
+        The keepers' plans, in order, and the judged runs.
+    """
+    from .cleanup import judge_runs
+    from .plan import plan_pipeline
+
+    plans = tuple(
+        plan_pipeline(
+            ds,
+            keeper.recipe,
+            scope=keeper.scope,
+            inventory=inventory,
+            catalog=catalog,
+            refuse=False,
+        )
+        for keeper in keepers
+    )
+    judged = judge_runs(
+        ds,
+        plans,
+        policy=policy,
+        inventory=inventory,
+        catalog=catalog,
+        candidates="retired",
+        planned_digest="",
+        planned_name="",
+        now=now,
+        retire=retire,
+        retired_before=retired_before,
+        manager=manager,
+    )
+    return plans, judged
 
 
 def retirement_fingerprint(

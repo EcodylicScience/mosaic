@@ -16,7 +16,6 @@ from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import feature_run_removal
 from mosaic.core.pipeline.graph import (
-    CleanupPolicy,
     CleanupTarget,
     Recipe,
     RetirementSpec,
@@ -39,8 +38,13 @@ from mosaic.runlog import (
     run_log_path,
 )
 from tests.helpers import (
+    HEADING_STORAGE,
+    LOOSE,
+    OldRuns,
+    SPEED_STORAGE,
     add_tracks_variant,
     make_dataset,
+    managed_dataset,
     run_id_of,
     speed_heading_recipe,
 )
@@ -48,12 +52,6 @@ from tests.helpers import (
 runner = CliRunner()
 
 VARIANT = "convert-trex.0.2-1111111111"
-
-STORAGE = "speed-angvel__from__tracks"
-
-HEADING = "heading__from__tracks"
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
 
 KIND = "retire-recipes"
 
@@ -68,19 +66,8 @@ def dataset(tmp_path: Path, lapsed_request_holds: None) -> Dataset:
     return ds
 
 
-class _Old:
-    """The retired recipe's runs and the approved retirement."""
-
-    def __init__(self, ds: Dataset) -> None:
-        ran = run_pipeline(ds, speed_heading_recipe())
-        self.speed: str = run_id_of(ran, "speed")
-        self.heading: str = run_id_of(ran, "heading")
-        self.spec: RetirementSpec = plan_retirement(
-            ds, [ran.recipe_digest], [], LOOSE, ""
-        ).spec
-
-    def params(self, spec: RetirementSpec | None = None) -> dict[str, object]:
-        return {"retirement": (spec or self.spec).model_dump(mode="json")}
+def _params(spec: RetirementSpec) -> dict[str, object]:
+    return {"retirement": spec.model_dump(mode="json")}
 
 
 def _exists(ds: Dataset, storage: str, run_id: str) -> bool:
@@ -128,13 +115,13 @@ def test_the_op_declares_a_scope_free_cleanup_in_the_pipeline_domain() -> None:
 
 
 def test_the_run_id_is_the_identity_of_the_params(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     op = registered_op(KIND)()
-    params = op.Params.model_validate(old.params())
+    params = op.Params.model_validate(_params(old.spec))
 
     identity = op.plan_identity(dataset, params, dataset.resolve_scope(None))
     other = op.Params.model_validate(
-        old.params(RetirementSpec(planned_at="2026-01-01T00:00:00+00:00"))
+        _params(RetirementSpec(planned_at="2026-01-01T00:00:00+00:00"))
     )
 
     assert identity.run_id.startswith(f"{KIND}.0.1-")
@@ -154,14 +141,14 @@ def test_the_run_id_is_the_identity_of_the_params(dataset: Dataset) -> None:
 def test_run_op_removes_the_approved_runs_and_logs_the_attempt(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     execution_id = new_execution_id()
 
-    run_id = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+    run_id = run_op(dataset, KIND, _params(old.spec), execution_id=execution_id)
 
     assert run_id.startswith(f"{KIND}.0.1-")
-    assert not _exists(dataset, STORAGE, old.speed)
-    assert not _exists(dataset, HEADING, old.heading)
+    assert not _exists(dataset, SPEED_STORAGE, old.speed)
+    assert not _exists(dataset, HEADING_STORAGE, old.heading)
     snapshot = reduce_run_log(run_log_path(dataset.base_dir, execution_id))
     assert snapshot is not None
     assert (snapshot["kind"], snapshot["status"], snapshot["run_id"]) == (
@@ -185,33 +172,33 @@ def test_the_manager_param_lifts_the_hold_of_a_managed_dataset(
 ) -> None:
     """``None`` leaves the param out, which acts for no manager."""
     ran = run_pipeline(dataset, speed_heading_recipe())
-    with dataset.manifest_path.open("a", encoding="utf-8") as manifest:
-        _ = manifest.write("managed_by: mosaic-api\n")
-    managed = Dataset(manifest_path=dataset.manifest_path).load(ensure_roots=False)
+    managed = managed_dataset(dataset)
     spec = plan_retirement(managed, [ran.recipe_digest], [], LOOSE, "mosaic-api").spec
 
-    params: dict[str, object] = {"retirement": spec.model_dump(mode="json")}
+    params = _params(spec)
     if manager is not None:
         params["manager"] = manager
 
     _ = run_op(managed, KIND, params)
 
-    assert _exists(managed, STORAGE, run_id_of(ran, "speed")) is not removed
+    assert _exists(managed, SPEED_STORAGE, run_id_of(ran, "speed")) is not removed
 
 
 def test_a_rerun_judges_again_and_removes_nothing_twice(dataset: Dataset) -> None:
-    old = _Old(dataset)
-    _ = run_op(dataset, KIND, old.params(), overwrite=True)
+    old = OldRuns(dataset)
+    _ = run_op(dataset, KIND, _params(old.spec), overwrite=True)
     execution_id = new_execution_id()
 
-    _ = run_op(dataset, KIND, old.params(), overwrite=False, execution_id=execution_id)
+    _ = run_op(
+        dataset, KIND, _params(old.spec), overwrite=False, execution_id=execution_id
+    )
 
     records = read_removal_records(run_log_dir(dataset.base_dir), execution_id)
     assert {record["state"] for record in records} == {"kept"}
 
 
 def test_a_cancel_stops_the_op_as_a_cancelled_attempt(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     token = CancelToken()
     token.cancel()
     execution_id = new_execution_id()
@@ -220,7 +207,7 @@ def test_a_cancel_stops_the_op_as_a_cancelled_attempt(dataset: Dataset) -> None:
         _ = run_op(
             dataset,
             KIND,
-            old.params(),
+            _params(old.spec),
             execution_id=execution_id,
             cancel_token=token,
         )
@@ -228,7 +215,7 @@ def test_a_cancel_stops_the_op_as_a_cancelled_attempt(dataset: Dataset) -> None:
     snapshot = reduce_run_log(run_log_path(dataset.base_dir, execution_id))
     assert snapshot is not None
     assert snapshot["status"] == "cancelled"
-    assert _exists(dataset, STORAGE, old.speed)
+    assert _exists(dataset, SPEED_STORAGE, old.speed)
 
 
 # --- the report -----------------------------------------------------------------------
@@ -244,9 +231,9 @@ def _fail_every_removal(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_report_of_a_finished_retirement_counts_and_lists_its_removals(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     execution_id = new_execution_id()
-    _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+    _ = run_op(dataset, KIND, _params(old.spec), execution_id=execution_id)
 
     report = retirement_status_wire(
         dataset.base_dir, execution_id, len(old.spec.approved)
@@ -257,8 +244,8 @@ def test_the_report_of_a_finished_retirement_counts_and_lists_its_removals(
     assert (report.failed_runs, report.interrupted_runs) == (0, 0)
     assert report.removed_bytes > 0
     assert {(run.storage, run.run_id) for run in report.removed} == {
-        (STORAGE, old.speed),
-        (HEADING, old.heading),
+        (SPEED_STORAGE, old.speed),
+        (HEADING_STORAGE, old.heading),
     }
     assert sum(run.bytes for run in report.removed) == report.removed_bytes
     assert {run.retired for run in report.removed} == {old.spec.retire[0]}
@@ -269,10 +256,12 @@ def test_the_report_of_a_finished_retirement_counts_and_lists_its_removals(
 def test_the_report_of_a_rerun_lists_each_kept_run_with_its_reason(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
-    _ = run_op(dataset, KIND, old.params(), overwrite=True)
+    old = OldRuns(dataset)
+    _ = run_op(dataset, KIND, _params(old.spec), overwrite=True)
     execution_id = new_execution_id()
-    _ = run_op(dataset, KIND, old.params(), overwrite=False, execution_id=execution_id)
+    _ = run_op(
+        dataset, KIND, _params(old.spec), overwrite=False, execution_id=execution_id
+    )
 
     report = retirement_status_wire(dataset.base_dir, execution_id, 2)
 
@@ -287,7 +276,7 @@ def test_the_report_of_a_rerun_lists_each_kept_run_with_its_reason(
 def test_the_report_of_a_cancelled_retirement_removed_nothing(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     token = CancelToken()
     token.cancel()
     execution_id = new_execution_id()
@@ -295,7 +284,7 @@ def test_the_report_of_a_cancelled_retirement_removed_nothing(
         _ = run_op(
             dataset,
             KIND,
-            old.params(),
+            _params(old.spec),
             execution_id=execution_id,
             cancel_token=token,
         )
@@ -311,11 +300,11 @@ def test_the_report_of_a_cancelled_retirement_removed_nothing(
 def test_the_report_of_a_failed_retirement_carries_its_error_and_failures(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     _fail_every_removal(monkeypatch)
     execution_id = new_execution_id()
     with pytest.raises(AllEntriesFailed):
-        _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+        _ = run_op(dataset, KIND, _params(old.spec), execution_id=execution_id)
 
     report = retirement_status_wire(dataset.base_dir, execution_id, 2)
 
@@ -332,10 +321,10 @@ def test_the_report_of_a_failed_retirement_carries_its_error_and_failures(
 def test_the_report_of_a_partial_retirement_is_finished_with_a_failed_run(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     _fail_first_removal(monkeypatch)
     execution_id = new_execution_id()
-    _ = run_op(dataset, KIND, old.params(), execution_id=execution_id)
+    _ = run_op(dataset, KIND, _params(old.spec), execution_id=execution_id)
 
     report = retirement_status_wire(dataset.base_dir, execution_id, 2)
 
@@ -358,16 +347,18 @@ def test_the_report_lists_the_first_runs_of_each_kind_and_counts_the_rest(
         for index in range(total):
             removed = f"0.1-{index:010d}"
             log.run_removing(
-                feature=STORAGE,
+                feature=SPEED_STORAGE,
                 run_id=removed,
                 reason="superseded",
                 superseded_by="",
                 params={},
                 retired="retired-digest",
             )
-            log.run_removed(feature=STORAGE, run_id=removed, bytes=10, files=1, rows=1)
+            log.run_removed(
+                feature=SPEED_STORAGE, run_id=removed, bytes=10, files=1, rows=1
+            )
             log.run_kept(
-                feature=HEADING,
+                feature=HEADING_STORAGE,
                 run_id=f"0.1-{index:010d}",
                 reason="bound",
                 detail=f"detail {index}",
@@ -381,14 +372,16 @@ def test_the_report_lists_the_first_runs_of_each_kind_and_counts_the_rest(
     ]
     assert report.removed_omitted == extra
     assert {(run.storage, run.retired, run.bytes) for run in report.removed} == {
-        (STORAGE, "retired-digest", 10)
+        (SPEED_STORAGE, "retired-digest", 10)
     }
     assert report.kept_runs == total
     assert [run.detail for run in report.kept] == [
         f"detail {index}" for index in range(CLEANUP_RUN_SAMPLE)
     ]
     assert report.kept_omitted == extra
-    assert {(run.storage, run.reason) for run in report.kept} == {(HEADING, "bound")}
+    assert {(run.storage, run.reason) for run in report.kept} == {
+        (HEADING_STORAGE, "bound")
+    }
 
 
 def test_the_report_of_an_attempt_that_has_not_ended_is_running(
@@ -425,9 +418,9 @@ def test_the_report_of_an_attempt_without_a_run_log_is_pending(
 
 
 def test_mosaic_run_reports_a_clean_retirement_as_finished(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
-    code, payload = _run_cli(dataset, json.dumps(old.params()))
+    code, payload = _run_cli(dataset, json.dumps(_params(old.spec)))
 
     assert code == 0
     assert (payload["kind"], payload["status"], payload["entries_failed"]) == (
@@ -435,35 +428,35 @@ def test_mosaic_run_reports_a_clean_retirement_as_finished(dataset: Dataset) -> 
         "finished",
         0,
     )
-    assert not _exists(dataset, STORAGE, old.speed)
+    assert not _exists(dataset, SPEED_STORAGE, old.speed)
 
 
 def test_mosaic_run_reports_partial_after_one_failed_removal(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     _fail_first_removal(monkeypatch)
 
-    code, payload = _run_cli(dataset, json.dumps(old.params()))
+    code, payload = _run_cli(dataset, json.dumps(_params(old.spec)))
 
     assert code == 0
     assert (payload["status"], payload["entries_failed"]) == ("partial", 1)
     assert [
-        _exists(dataset, STORAGE, old.speed),
-        _exists(dataset, HEADING, old.heading),
+        _exists(dataset, SPEED_STORAGE, old.speed),
+        _exists(dataset, HEADING_STORAGE, old.heading),
     ].count(False) == 1
 
 
 def test_mosaic_run_reads_params_past_the_argument_limit_from_a_file(
     dataset: Dataset, tmp_path: Path
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     extra = [
-        CleanupTarget(storage=STORAGE, run_id=f"0.1-{index:010d}")
+        CleanupTarget(storage=SPEED_STORAGE, run_id=f"0.1-{index:010d}")
         for index in range(2500)
     ]
     many = old.spec.model_copy(update={"approved": [*old.spec.approved, *extra]})
-    document = json.dumps(old.params(many))
+    document = json.dumps(_params(many))
     assert len(document.encode()) > MAX_ARGUMENT_BYTES
     params_file = tmp_path / "params" / "retire.json"
     params_file.parent.mkdir()
@@ -473,8 +466,8 @@ def test_mosaic_run_reads_params_past_the_argument_limit_from_a_file(
 
     assert code == 0
     assert (payload["status"], payload["entries_failed"]) == ("finished", 0)
-    assert not _exists(dataset, STORAGE, old.speed)
-    assert not _exists(dataset, HEADING, old.heading)
+    assert not _exists(dataset, SPEED_STORAGE, old.speed)
+    assert not _exists(dataset, HEADING_STORAGE, old.heading)
 
 
 # --- no recipe runs it -----------------------------------------------------------------------

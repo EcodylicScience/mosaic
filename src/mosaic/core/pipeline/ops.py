@@ -300,7 +300,8 @@ class Op(Generic[P]):
     """
 
     kind: ClassVar[str]
-    category: ClassVar[str]  # "extract" | "train" | "infer" | "convert" | "transcode"
+    # "extract" | "train" | "infer" | "convert" | "transcode" | "preprocess" | "cleanup"
+    category: ClassVar[str]
     domain: ClassVar[str]  # "tracking" | "media" | "pipeline"
     version: ClassVar[str] = "0.1"
     # Compute-placement hint for schedulers / the execution router ("gpu" | "heavy" |

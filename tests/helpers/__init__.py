@@ -15,6 +15,9 @@ What lives where:
 - ``agents``: a stand-in for the detached driver that an MCP submission starts.
 - ``arenas``: a count of the arenas index reads that a run makes, and a damaged
   arenas index.
+- ``cleanup``: the policy a cleanup is planned under, the retired recipe's runs and
+  retirement, the reasons a judging gave, and the observers of a judging and of a
+  removal.
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
@@ -141,6 +144,20 @@ from tests.helpers.annotations import (
     revision_file,
 )
 from tests.helpers.catalogs import catalog_without_contract
+from tests.helpers.cleanup import (
+    HEADING_STORAGE,
+    LOOSE,
+    SPEED_STORAGE,
+    OldRuns,
+    act_after_judging,
+    end_attempt,
+    kept_reasons,
+    managed_dataset,
+    observe_removals,
+    planned_run_ids,
+    reasons_by_run,
+    runs_by_id,
+)
 from tests.helpers.column_contract import assert_writes_declared_columns, mirrored_rows
 from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
@@ -553,6 +570,18 @@ from tests.helpers.variants import (
 )
 
 __all__ = [
+    "HEADING_STORAGE",
+    "LOOSE",
+    "SPEED_STORAGE",
+    "OldRuns",
+    "act_after_judging",
+    "end_attempt",
+    "kept_reasons",
+    "managed_dataset",
+    "observe_removals",
+    "planned_run_ids",
+    "reasons_by_run",
+    "runs_by_id",
     "ANGULAR_VELOCITY",
     "GAP_SECONDS",
     "SPEED",

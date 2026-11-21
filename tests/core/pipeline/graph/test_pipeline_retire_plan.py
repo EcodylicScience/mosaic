@@ -26,8 +26,6 @@ from mosaic.core.pipeline.graph import (
     RetirementPlan,
     RetirementPlanWire,
     RetirementSpec,
-    SupersededRun,
-    plan_pipeline,
     plan_retirement,
     recipe_digest,
     recipe_path,
@@ -42,15 +40,22 @@ from tests.helpers import (
     CANARY_NAME,
     CANARY_SOURCE,
     CANARY_VARIABLE,
+    HEADING_STORAGE,
+    LOOSE,
+    SPEED_STORAGE,
     add_tracks_variant,
     assert_tree_unchanged,
     chain_recipe,
     forget_imported_definitions,
     imported_definitions,
     make_dataset,
+    managed_dataset,
     named_recipe,
+    planned_run_ids,
+    reasons_by_run,
     record_open_attempt,
     run_speed,
+    runs_by_id,
     speed_heading_recipe,
     speed_recipe_stepping,
     tree_snapshot,
@@ -59,14 +64,7 @@ from tests.helpers import (
 
 VARIANT = "convert-trex.0.2-1111111111"
 
-STORAGE = "speed-angvel__from__tracks"
-
-HEADING = "heading__from__tracks"
-
 TEMPLATES = "extract-templates__from__speed-angvel__from__tracks"
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
-"""The policy mosaic-api plans a cleanup under."""
 
 LATER = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
 """An instant after every request's hold window and every run's age floor."""
@@ -79,20 +77,8 @@ def dataset(tmp_path: Path) -> Dataset:
     return ds
 
 
-def _old(name: str = "old") -> Recipe:
-    return speed_heading_recipe(name)
-
-
 def _keeper(recipe: Recipe, scope: Scope | None = None) -> RetirementKeeper:
     return RetirementKeeper(recipe=recipe, scope=scope or Scope())
-
-
-def _run_ids(ds: Dataset, recipe: Recipe) -> dict[str, str]:
-    return {
-        step_id: run_id
-        for step_id, run_id in plan_pipeline(ds, recipe).run_ids.items()
-        if run_id is not None
-    }
 
 
 def _plan(
@@ -105,14 +91,6 @@ def _plan(
     now: datetime.datetime = LATER,
 ) -> RetirementPlan:
     return plan_retirement(ds, retire, keepers or [], policy, manager, now=now)
-
-
-def _by_run(plan: RetirementPlan) -> dict[str, SupersededRun]:
-    return {run.run_id: run for run in plan.cleanup.runs}
-
-
-def _reasons(plan: RetirementPlan) -> dict[str, str]:
-    return {run.run_id: run.reason for run in plan.cleanup.runs}
 
 
 # --- the digests ----------------------------------------------------------------------
@@ -129,8 +107,8 @@ def _reasons(plan: RetirementPlan) -> dict[str, str]:
 def test_a_digest_that_does_not_read_is_listed_and_the_others_are_judged(
     dataset: Dataset, kind: str, message: str
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     other = run_pipeline(dataset, named_recipe(speed_recipe_stepping(3), "other"))
     bad = {"malformed": "../escape", "missing": "f" * 16}.get(kind, other.recipe_digest)
     if kind == "unreadable":
@@ -142,7 +120,7 @@ def test_a_digest_that_does_not_read_is_listed_and_the_others_are_judged(
     assert (refused.digest, refused.reason) == (bad, "recipe_unreadable")
     assert message in refused.message
     assert plan.retired == (ran.recipe_digest,)
-    assert set(_reasons(plan)) == {ids["speed"], ids["heading"]}
+    assert set(reasons_by_run(plan.cleanup)) == {ids["speed"], ids["heading"]}
     assert all(run.removable for run in plan.cleanup.runs)
 
 
@@ -151,22 +129,24 @@ def test_the_recipe_a_keeper_runs_is_not_retired_and_its_runs_stay(
     dataset: Dataset, form: str
 ) -> None:
     """Two pipelines share ``old``: retiring it for one leaves the other's runs."""
-    shared = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    shared = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     other = run_pipeline(dataset, named_recipe(speed_recipe_stepping(3), "other"))
     given = shared.recipe_digest
     if form == "earlier":
-        legacy = _old().model_dump(mode="json")
+        legacy = speed_heading_recipe().model_dump(mode="json")
         legacy["steps"][0]["params"]["step_size"] = 1.0
         given = document_digest(legacy)
         _ = recipe_path(dataset.base_dir, given).write_text(json.dumps(legacy))
 
-    plan = _plan(dataset, [given, other.recipe_digest], [_keeper(_old())])
+    plan = _plan(
+        dataset, [given, other.recipe_digest], [_keeper(speed_heading_recipe())]
+    )
 
     [refused] = plan.not_retired
     assert (refused.digest, refused.reason) == (given, "keeper_recipe")
     assert plan.retired == (other.recipe_digest,)
-    runs = _by_run(plan)
+    runs = runs_by_id(plan.cleanup)
     assert ids["speed"] not in runs
     assert ids["heading"] not in runs
     [retired] = runs.values()
@@ -176,9 +156,9 @@ def test_the_recipe_a_keeper_runs_is_not_retired_and_its_runs_stay(
 def test_a_digest_in_an_earlier_canonical_form_retires_the_current_recipe(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
-    legacy = _old().model_dump(mode="json")
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
+    legacy = speed_heading_recipe().model_dump(mode="json")
     legacy["steps"][0]["params"]["step_size"] = 1.0
     given = document_digest(legacy)
     _ = recipe_path(dataset.base_dir, given).write_text(json.dumps(legacy))
@@ -187,7 +167,10 @@ def test_a_digest_in_an_earlier_canonical_form_retires_the_current_recipe(
 
     assert given != ran.recipe_digest
     assert plan.retired == (ran.recipe_digest,)
-    assert _reasons(plan) == {ids["speed"]: "superseded", ids["heading"]: "superseded"}
+    assert reasons_by_run(plan.cleanup) == {
+        ids["speed"]: "superseded",
+        ids["heading"]: "superseded",
+    }
 
 
 # --- what is removable ----------------------------------------------------------------
@@ -200,32 +183,35 @@ def test_a_digest_in_an_earlier_canonical_form_retires_the_current_recipe(
 def test_the_runs_a_retired_recipe_wrote_are_removable_after_the_hold_floor(
     dataset: Dataset, after: datetime.timedelta | None, reason: str
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     moment = LATER if after is None else datetime.datetime.now(datetime.UTC) + after
 
     plan = _plan(dataset, [ran.recipe_digest], now=moment)
 
-    assert _reasons(plan) == {ids["speed"]: reason, ids["heading"]: reason}
+    assert reasons_by_run(plan.cleanup) == {
+        ids["speed"]: reason,
+        ids["heading"]: reason,
+    }
     assert {run.retired_by for run in plan.cleanup.runs} == {ran.recipe_digest}
     assert plan.removable == plan.cleanup.removable
     assert plan.kept == plan.cleanup.kept
 
 
 def test_a_run_a_keeper_expects_is_no_candidate(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     outside = run_speed(dataset, 3)
     keeper = named_recipe(speed_recipe_stepping(1), "keeper")
 
     plan = _plan(dataset, [ran.recipe_digest], [_keeper(keeper)])
 
-    runs = _by_run(plan)
+    runs = runs_by_id(plan.cleanup)
     assert ids["speed"] not in runs
     assert outside not in runs
     heading = runs[ids["heading"]]
     assert (heading.storage, heading.step_id, heading.superseded_by) == (
-        HEADING,
+        HEADING_STORAGE,
         "",
         "",
     )
@@ -233,8 +219,8 @@ def test_a_run_a_keeper_expects_is_no_candidate(dataset: Dataset) -> None:
 
 
 def test_a_retired_run_with_entries_a_keeper_lacks_is_kept(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     keeper = named_recipe(speed_recipe_stepping(2), "keeper")
 
     plan = _plan(
@@ -243,37 +229,37 @@ def test_a_retired_run_with_entries_a_keeper_lacks_is_kept(dataset: Dataset) -> 
         [_keeper(keeper, Scope(entries=[("", "seq_a")]))],
     )
 
-    speed = _by_run(plan)[ids["speed"]]
+    speed = runs_by_id(plan.cleanup)[ids["speed"]]
     assert (speed.storage, speed.step_id, speed.reason) == (
-        STORAGE,
+        SPEED_STORAGE,
         "speed",
         "wider_coverage",
     )
 
 
 def test_a_run_a_recipe_not_retired_recorded_is_kept(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
-    user = run_pipeline(dataset, _old("user"))
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    user = run_pipeline(dataset, speed_heading_recipe("user"))
+    ids = planned_run_ids(dataset, speed_heading_recipe())
 
     plan = _plan(dataset, [ran.recipe_digest])
 
-    heading = _by_run(plan)[ids["heading"]]
+    heading = runs_by_id(plan.cleanup)[ids["heading"]]
     assert (heading.reason, heading.retired_by) == ("recipe_uses", ran.recipe_digest)
     assert user.request_id in heading.detail
 
 
 def test_a_run_a_kept_run_reads_is_kept(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
-    heading = _run_ids(dataset, _old())["heading"]
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    heading = planned_run_ids(dataset, speed_heading_recipe())["heading"]
     write_reader_params(
-        dataset, "frame-aggregate", "0.1-reader0000", (HEADING, heading)
+        dataset, "frame-aggregate", "0.1-reader0000", (HEADING_STORAGE, heading)
     )
     _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
 
     plan = _plan(dataset, [ran.recipe_digest])
 
-    run = _by_run(plan)[heading]
+    run = runs_by_id(plan.cleanup)[heading]
     assert run.reason == "read_by"
     assert "0.1-reader0000" in run.detail
 
@@ -313,15 +299,18 @@ def _pinning_keeper(templates_run: str) -> Recipe:
 def test_a_run_a_keepers_step_reads_names_that_keeper(dataset: Dataset) -> None:
     chain = named_recipe(chain_recipe(), "old chain")
     ran = run_pipeline(dataset, chain)
-    templates = _run_ids(dataset, chain)["templates"]
+    templates = planned_run_ids(dataset, chain)["templates"]
     pinning = _pinning_keeper(templates)
     other = named_recipe(speed_recipe_stepping(5), "other keeper")
 
     alone = _plan(dataset, [ran.recipe_digest], [_keeper(pinning)])
     beside = _plan(dataset, [ran.recipe_digest], [_keeper(other), _keeper(pinning)])
 
-    assert _by_run(alone)[templates].detail == "step 'scaler' of the plan reads it"
-    run = _by_run(beside)[templates]
+    assert (
+        runs_by_id(alone.cleanup)[templates].detail
+        == "step 'scaler' of the plan reads it"
+    )
+    run = runs_by_id(beside.cleanup)[templates]
     assert run.reason == "read_by"
     assert run.detail == (
         f"step 'scaler' of the plan of recipe {recipe_digest(pinning)} reads it"
@@ -331,14 +320,14 @@ def test_a_run_a_keepers_step_reads_names_that_keeper(dataset: Dataset) -> None:
 def test_a_retired_recipe_with_a_running_request_is_planned_and_its_runs_kept(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
-    running = submit_request(dataset, _old()).request
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
+    running = submit_request(dataset, speed_heading_recipe()).request
 
     plan = _plan(dataset, [ran.recipe_digest])
 
     assert plan.retired == (ran.recipe_digest,)
-    assert _reasons(plan) == {
+    assert reasons_by_run(plan.cleanup) == {
         ids["speed"]: "held_by_request",
         ids["heading"]: "held_by_request",
     }
@@ -356,26 +345,23 @@ def test_a_retired_recipe_with_a_running_request_is_planned_and_its_runs_kept(
 def test_a_managed_dataset_keeps_every_run_unless_its_manager_plans(
     dataset: Dataset, manager: str, reason: str
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
-    managed = _managed(dataset)
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
+    managed = managed_dataset(dataset)
 
     plan = _plan(managed, [ran.recipe_digest], manager=manager)
 
-    assert _reasons(plan) == {ids["speed"]: reason, ids["heading"]: reason}
-
-
-def _managed(dataset: Dataset) -> Dataset:
-    with dataset.manifest_path.open("a", encoding="utf-8") as manifest:
-        _ = manifest.write("managed_by: mosaic-api\n")
-    return Dataset(manifest_path=dataset.manifest_path).load(ensure_roots=False)
+    assert reasons_by_run(plan.cleanup) == {
+        ids["speed"]: reason,
+        ids["heading"]: reason,
+    }
 
 
 # --- the fingerprint ------------------------------------------------------------------
 
 
 def test_the_fingerprint_is_stable_and_ignores_the_instant(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     keeper = _keeper(named_recipe(speed_recipe_stepping(2), "keeper"))
 
     first = _plan(dataset, [ran.recipe_digest], [keeper])
@@ -389,7 +375,7 @@ def test_the_fingerprint_is_stable_and_ignores_the_instant(dataset: Dataset) -> 
 
 
 def test_the_fingerprint_moves_with_a_new_retired_run(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     later = named_recipe(speed_recipe_stepping(3), "later")
     waiting = submit_request(dataset, later).request
     _ = cancel_request(dataset, waiting.request_id)
@@ -404,7 +390,7 @@ def test_the_fingerprint_moves_with_a_new_retired_run(dataset: Dataset) -> None:
 
 
 def test_the_fingerprint_moves_with_a_digest_not_retired(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
 
     alone = _plan(dataset, [ran.recipe_digest])
     beside = _plan(dataset, [ran.recipe_digest, "f" * 16])
@@ -414,7 +400,7 @@ def test_the_fingerprint_moves_with_a_digest_not_retired(dataset: Dataset) -> No
 
 
 def test_the_fingerprint_moves_with_the_policy(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
 
     loose = _plan(dataset, [ran.recipe_digest])
     newest = _plan(
@@ -429,7 +415,7 @@ def test_the_fingerprint_moves_with_the_policy(dataset: Dataset) -> None:
 def test_the_fingerprint_moves_with_a_policy_that_removes_the_same_runs(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
 
     loose = _plan(dataset, [ran.recipe_digest])
     aged = _plan(
@@ -443,7 +429,7 @@ def test_the_fingerprint_moves_with_a_policy_that_removes_the_same_runs(
 
 
 def test_the_fingerprint_moves_with_the_dataset(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     plan = _plan(dataset, [ran.recipe_digest])
 
     def of(dataset_uuid: str) -> str:
@@ -464,7 +450,7 @@ def test_the_fingerprint_moves_with_the_dataset(dataset: Dataset) -> None:
 
 
 def test_the_fingerprint_moves_with_a_keepers_plan(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     keeper = _keeper(named_recipe(speed_recipe_stepping(2), "keeper"))
 
     before = _plan(dataset, [ran.recipe_digest], [keeper])
@@ -478,7 +464,7 @@ def test_the_fingerprint_moves_with_a_keepers_plan(dataset: Dataset) -> None:
 def test_the_fingerprint_moves_when_a_run_ages_past_the_policy(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     policy = CleanupPolicy(keep_newest=0, min_age_hours=2)
     start = datetime.datetime.now(datetime.UTC)
 
@@ -503,8 +489,8 @@ def test_the_fingerprint_moves_when_a_run_ages_past_the_policy(
 def test_the_fingerprint_moves_when_the_manager_lifts_the_hold(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
-    managed = _managed(dataset)
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    managed = managed_dataset(dataset)
 
     held = _plan(managed, [ran.recipe_digest])
     lifted = _plan(managed, [ran.recipe_digest], manager="mosaic-api")
@@ -516,10 +502,10 @@ def test_the_fingerprint_moves_when_the_manager_lifts_the_hold(
 
 
 def test_the_spec_holds_what_was_approved_and_round_trips(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
-    ids = _run_ids(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    ids = planned_run_ids(dataset, speed_heading_recipe())
     write_reader_params(
-        dataset, "frame-aggregate", "0.1-reader0000", (HEADING, ids["heading"])
+        dataset, "frame-aggregate", "0.1-reader0000", (HEADING_STORAGE, ids["heading"])
     )
     _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
     keeper = _keeper(named_recipe(speed_recipe_stepping(2), "keeper"))
@@ -531,13 +517,13 @@ def test_the_spec_holds_what_was_approved_and_round_trips(dataset: Dataset) -> N
     assert spec.keepers == [keeper]
     assert spec.policy == LOOSE
     assert [run.run_id for run in plan.kept] == [ids["heading"]]
-    assert spec.approved == [CleanupTarget(storage=STORAGE, run_id=ids["speed"])]
+    assert spec.approved == [CleanupTarget(storage=SPEED_STORAGE, run_id=ids["speed"])]
     assert (spec.planned_at, spec.fingerprint) == (plan.planned_at, plan.fingerprint)
     assert RetirementSpec.model_validate(spec.model_dump(mode="json")) == spec
 
 
 def test_the_wire_lists_every_run_and_round_trips(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     keeper = named_recipe(speed_recipe_stepping(2), "keeper")
 
     plan = _plan(
@@ -575,7 +561,7 @@ def test_the_wire_lists_every_run_and_round_trips(dataset: Dataset) -> None:
 
 
 def test_planning_a_retirement_writes_nothing(dataset: Dataset) -> None:
-    ran = run_pipeline(dataset, _old())
+    ran = run_pipeline(dataset, speed_heading_recipe())
     keeper = _keeper(named_recipe(speed_recipe_stepping(2), "keeper"))
     before = tree_snapshot(dataset.base_dir)
 

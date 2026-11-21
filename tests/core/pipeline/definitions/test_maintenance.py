@@ -60,6 +60,7 @@ from mosaic.core.pipeline.verify import verify_plan
 from tests.helpers import (
     GLOBAL_NAME,
     GLOBAL_SOURCE,
+    LOOSE,
     MINIMAL_NAME,
     MINIMAL_SOURCE,
     add_track_sequences,
@@ -68,6 +69,7 @@ from tests.helpers import (
     imported_definitions,
     make_dataset,
     noting_definition_loads,
+    reasons_by_run,
     record_open_attempt,
     run_speed,
     speed_recipe_stepping,
@@ -91,9 +93,6 @@ UNLABELED_SOURCE: Final = LABELED_SOURCE.replace(
     '\n        label: str = "a"', ""
 ).replace('version = "1"', 'version = "2"')
 """The next version of ``LABELED_SOURCE``, which holds no ``str`` param."""
-
-LOOSE: Final = CleanupPolicy(keep_newest=0, min_age_hours=0)
-"""A policy that keeps no run for its age or its recency."""
 
 LATER: Final = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
 """An instant after every request's hold window."""
@@ -126,10 +125,6 @@ def _run_of(name: str, source: str, dataset: Dataset) -> str:
     (outcome,) = run_pipeline(dataset, recipe).outcomes
     assert outcome.run_id is not None
     return outcome.run_id
-
-
-def _reasons(cleanup: CleanupPlan) -> dict[str, str]:
-    return {run.run_id: run.reason for run in cleanup.runs}
 
 
 def _cleanup(
@@ -204,7 +199,7 @@ def test_a_definition_storage_whose_params_hold_a_str_reads_every_run(
 
     cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "read_by"}
+    assert reasons_by_run(cleanup) == {old: "read_by"}
     assert not imported_definitions()
 
 
@@ -216,7 +211,7 @@ def test_a_definition_storage_whose_params_hold_no_str_reads_no_run(
 
     cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "superseded"}
+    assert reasons_by_run(cleanup) == {old: "superseded"}
 
 
 def test_a_run_of_unknown_version_reads_every_run_when_any_version_declares_a_str(
@@ -231,7 +226,7 @@ def test_a_run_of_unknown_version_reads_every_run_when_any_version_declares_a_st
 
     cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "read_by"}
+    assert reasons_by_run(cleanup) == {old: "read_by"}
 
 
 # --- a run of a version that is not current -------------------------------------------
@@ -272,7 +267,7 @@ def test_a_running_request_of_a_pinned_version_holds_every_run_of_the_definition
     assert {run.run_id: run.reason for run in cleanup.runs} == {
         first: "held_by_request"
     }
-    assert second not in _reasons(cleanup)
+    assert second not in reasons_by_run(cleanup)
 
 
 def test_a_request_of_a_pinned_version_submitted_during_a_cleanup_holds_its_runs(
@@ -317,7 +312,7 @@ def test_cleanup_of_unknown_params_reads_the_sidecars_under_a_load_scope(
     with definition_scope(speed_dataset, load=True):
         cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "read_by"}
+    assert reasons_by_run(cleanup) == {old: "read_by"}
     assert not imported_definitions()
 
 
@@ -332,7 +327,7 @@ def test_a_definition_whose_sidecar_cannot_be_read_may_declare_a_run_reference(
 
     cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "read_by"}
+    assert reasons_by_run(cleanup) == {old: "read_by"}
 
 
 def test_a_definition_whose_directory_was_removed_may_declare_a_run_reference(
@@ -344,7 +339,7 @@ def test_a_definition_whose_directory_was_removed_may_declare_a_run_reference(
 
     cleanup = _cleanup(speed_dataset, speed_recipe_stepping(2))
 
-    assert _reasons(cleanup) == {old: "read_by"}
+    assert reasons_by_run(cleanup) == {old: "read_by"}
 
 
 # --- reconcile and verify ----------------------------------------------------------

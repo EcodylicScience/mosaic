@@ -21,26 +21,20 @@ from mosaic.core.pipeline.graph import (
     RetirementPlan,
     RetirementPlanWire,
     RetirementSpec,
-    run_pipeline,
 )
 from mosaic.core.pipeline.graph import retire
 from mosaic.core.pipeline.job import Cancelled, JobContext
-from mosaic.core.pipeline.index import feature_run_root
 from tests.helpers import (
+    OldRuns,
     add_tracks_variant,
     invoke_json,
     make_dataset,
+    managed_dataset,
     named_recipe,
-    run_id_of,
-    speed_heading_recipe,
     speed_recipe_stepping,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
-
-STORAGE = "speed-angvel__from__tracks"
-
-HEADING = "heading__from__tracks"
 
 LOOSE = ["--keep-newest", "0", "--min-age-hours", "0"]
 
@@ -57,22 +51,6 @@ def dataset(tmp_path: Path, lapsed_request_holds: None) -> Dataset:
     return ds
 
 
-class _Old:
-    """The finished request of the recipe to retire, and the runs it wrote."""
-
-    def __init__(self, ds: Dataset) -> None:
-        ran = run_pipeline(ds, speed_heading_recipe())
-        self.digest: str = ran.recipe_digest
-        self.speed: str = run_id_of(ran, "speed")
-        self.heading: str = run_id_of(ran, "heading")
-
-    def exist(self, ds: Dataset) -> tuple[bool, bool]:
-        return (
-            feature_run_root(ds, STORAGE, self.speed).is_dir(),
-            feature_run_root(ds, HEADING, self.heading).is_dir(),
-        )
-
-
 def _retire(ds: Dataset, *arguments: str) -> list[str]:
     return ["pipeline", "retire", "--manifest", str(ds.manifest_path), *arguments]
 
@@ -85,15 +63,10 @@ def _status(report: dict[str, object]) -> CleanupStatusWire:
     )
 
 
-def _managed(dataset: Dataset) -> None:
-    with dataset.manifest_path.open("a", encoding="utf-8") as manifest:
-        _ = manifest.write("managed_by: mosaic-api\n")
-
-
 def test_the_dry_run_lists_the_removable_runs_and_removes_none(
     dataset: Dataset,
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     plan = RetirementPlanWire.model_validate(
         invoke_json(_retire(dataset, "--retire", old.digest, *LOOSE, "--json"))
@@ -114,7 +87,7 @@ def test_the_dry_run_lists_the_removable_runs_and_removes_none(
 
 
 def test_apply_removes_the_runs_and_reports_them(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     report = invoke_json(
         _retire(dataset, "--retire", old.digest, *LOOSE, "--apply", "--json")
@@ -130,7 +103,7 @@ def test_apply_removes_the_runs_and_reports_them(dataset: Dataset) -> None:
 
 
 def test_apply_prints_the_removals(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     result = runner.invoke(
         app, _retire(dataset, "--retire", old.digest, *LOOSE, "--apply")
@@ -145,7 +118,7 @@ def test_apply_prints_the_removals(dataset: Dataset) -> None:
 def test_an_unreadable_digest_is_listed_and_the_rest_applied(
     dataset: Dataset, as_json: bool
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     result = runner.invoke(
         app,
@@ -172,7 +145,7 @@ def test_an_unreadable_digest_is_listed_and_the_rest_applied(
 
 
 def test_the_dry_run_lists_an_unreadable_digest(dataset: Dataset) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     plan = RetirementPlanWire.model_validate(
         invoke_json(
@@ -191,8 +164,8 @@ def test_the_dry_run_lists_an_unreadable_digest(dataset: Dataset) -> None:
 
 
 def test_a_managed_dataset_keeps_every_run(dataset: Dataset) -> None:
-    old = _Old(dataset)
-    _managed(dataset)
+    old = OldRuns(dataset)
+    _ = managed_dataset(dataset)
 
     plan = RetirementPlanWire.model_validate(
         invoke_json(_retire(dataset, "--retire", old.digest, *LOOSE, "--json"))
@@ -212,7 +185,7 @@ def test_a_managed_dataset_keeps_every_run(dataset: Dataset) -> None:
 def test_a_keeper_keeps_the_runs_its_plan_expects(
     dataset: Dataset, tmp_path: Path
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     keeper = tmp_path / "keeper.recipe.json"
     _ = keeper.write_text(
         named_recipe(speed_recipe_stepping(1), "keeper").model_dump_json()
@@ -233,7 +206,7 @@ def test_a_keeper_keeps_the_runs_its_plan_expects(
 def test_a_keeper_is_planned_over_the_entries_named(
     dataset: Dataset, tmp_path: Path
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     keeper = tmp_path / "keeper.recipe.json"
     _ = keeper.write_text(
         named_recipe(speed_recipe_stepping(2), "keeper").model_dump_json()
@@ -254,7 +227,7 @@ def test_a_keeper_is_planned_over_the_entries_named(
 def test_a_retirement_whose_every_removal_raised_exits_one(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     def refuse(path: Path, *_: object, **__: object) -> None:
         raise OSError(f"busy: {path}")
@@ -278,7 +251,7 @@ def test_a_retirement_whose_every_removal_raised_exits_one(
 def test_a_cancelled_retirement_exits_130(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     def cancel(*_: object, **__: object) -> CleanupOutcome:
         raise Cancelled()
@@ -303,7 +276,7 @@ class _Busy(ClassifiedError):
 def test_a_classified_error_of_the_removal_is_reported(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     def busy(*_: object, **__: object) -> CleanupOutcome:
         raise _Busy("the dataset is busy")
@@ -326,7 +299,7 @@ def test_a_classified_error_of_the_removal_is_reported(
 def test_a_classified_error_of_the_plan_is_reported(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
 
     def busy(*_: object, **__: object) -> RetirementPlan:
         raise _Busy("the keeper does not plan")
@@ -346,7 +319,7 @@ def test_a_classified_error_of_the_plan_is_reported(
 def test_what_the_removal_prints_goes_to_stderr(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    old = _Old(dataset)
+    old = OldRuns(dataset)
     real = retire.run_retirement
 
     def noisy(

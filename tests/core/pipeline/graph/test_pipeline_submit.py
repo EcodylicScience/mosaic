@@ -23,7 +23,6 @@ from mosaic.core.pipeline.graph import (
     BoundRef,
     CleanupNeedsPlan,
     CleanupOnManagedDataset,
-    CleanupPolicy,
     CleanupSpec,
     CleanupTarget,
     Plan,
@@ -53,8 +52,11 @@ from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.scope import Scope
 from mosaic.core.selections import delete_selection, save_selection, selection_scope
 from tests.helpers import (
+    LOOSE,
+    SPEED_STORAGE,
     add_tracks_variant,
     make_dataset,
+    managed_dataset,
     observed,
     run_speed,
     speed_heading_recipe,
@@ -391,10 +393,6 @@ def test_a_shell_loop_over_the_printed_commands_runs_the_graph(
 
 # --- a cleanup ----------------------------------------------------------------------
 
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
-
-SPEED_STORAGE = "speed-angvel__from__tracks"
-
 
 def _cleanup_fingerprint(
     dataset: Dataset, recipe: Recipe, bind: dict[str, BoundRef] | None = None
@@ -413,9 +411,7 @@ def test_cleanup_requires_an_expected_plan(tracked: Dataset) -> None:
 
 
 def test_cleanup_is_refused_on_a_managed_dataset(tracked: Dataset) -> None:
-    with tracked.manifest_path.open("a", encoding="utf-8") as manifest:
-        _ = manifest.write("managed_by: mosaic-api\n")
-    managed = Dataset(manifest_path=tracked.manifest_path).load(ensure_roots=False)
+    managed = managed_dataset(tracked)
 
     with pytest.raises(CleanupOnManagedDataset) as raised:
         _ = submit_request(

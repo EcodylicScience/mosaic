@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    LOOSE,
     SPEED_RECIPE,
     add_tracks_variant,
     convert_tracks_from_raw,
@@ -265,9 +266,6 @@ def test_an_integral_float_and_its_integer_plan_one_fingerprint(
         return plan_fingerprint(plan_pipeline(tracked, Recipe.model_validate(document)))
 
     assert fingerprint(1.0) == fingerprint(1)
-
-
-LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
 
 
 def test_a_plan_without_cleanup_fingerprints_as_before(

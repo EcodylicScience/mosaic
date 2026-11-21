@@ -122,6 +122,7 @@ __all__ = [
     "judge_runs",
     "plan_cleanup",
     "plan_with_cleanup",
+    "read_prior_removals",
     "remove_approved_runs",
     "run_cleanup",
 ]
@@ -591,15 +592,18 @@ type CleanupStatus = Literal["finished", "failed", "cancelled"]
 
 @dataclass(frozen=True, slots=True)
 class CleanupOutcome:
-    """What one run of a request's cleanup did.
+    """What one run of a cleanup or a retirement did.
 
     Attributes:
-        execution_id: The cleanup's attempt, whose run-log records each run.
+        execution_id: The attempt whose run-log records each run: the request's
+            cleanup, or the retirement op's attempt.
         status: How it ended.
         removed: The runs it removed.
         kept: The approved runs it kept, as ``(storage, run_id, reason)``.
         failed: The approved runs whose removal raised, as ``storage/run_id``.
-        error: What failed the cleanup as a whole, ``""`` otherwise.
+        error: What failed a request's cleanup as a whole, ``""`` otherwise.
+            :func:`run_cleanup` records the failure and returns it. A retirement
+            raises instead, so its outcome never carries one.
     """
 
     execution_id: str
@@ -659,12 +663,7 @@ def run_cleanup(
     import socket
     import traceback
 
-    from mosaic.runlog import (
-        JsonlRunLog,
-        read_removal_records,
-        run_log_dir,
-        run_log_path,
-    )
+    from mosaic.runlog import JsonlRunLog, run_log_path
 
     from ..markers import current_boot_id, current_pid_namespace
 
@@ -685,10 +684,7 @@ def run_cleanup(
             pid_ns=current_pid_namespace(),
         )
         log.set_total(len(spec.approved))
-        prior = {
-            (record["feature"], record["run_id"]): record["state"]
-            for record in read_removal_records(run_log_dir(base), spec.execution_id)
-        }
+        prior = read_prior_removals(base, spec.execution_id)
         try:
             with definition_scope(ds, load=False, pins=request.definitions):
                 outcome = _remove_approved(
@@ -718,6 +714,25 @@ def run_cleanup(
         else:
             log.finished()
         return outcome
+
+
+def read_prior_removals(base: Path, execution_id: str) -> dict[tuple[str, str], str]:
+    """Read the removals an attempt recorded before, by ``(storage, run_id)``.
+
+    Args:
+        base: The dataset's base directory.
+        execution_id: The attempt whose run-log is read.
+
+    Returns:
+        The state of each removal the attempt recorded, so a run is not removed
+        twice and a removal it began is finished.
+    """
+    from mosaic.runlog import read_removal_records, run_log_dir
+
+    return {
+        (record["feature"], record["run_id"]): record["state"]
+        for record in read_removal_records(run_log_dir(base), execution_id)
+    }
 
 
 def _remove_approved(
