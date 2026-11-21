@@ -29,6 +29,16 @@ missing inside such a hole when its dtype can hold a missing value, such as
 value. The `prefilter` no longer rejects the first sample after a hole as a fast
 step. No other op or feature run id moves.
 
+## Unreleased: `load_run_matrix` returns `time` in its index
+
+`RunMatrix.index` holds a run's `time` column, after `frame`, when the run writes one.
+It was in neither the index nor the values, so a caller recomputed it from the frame and
+a rate. A run that writes no `time` has none in its index, and `time` is still not a
+value that `columns=` can select. The refusals of a `columns=` that matches no numeric
+column, and of a table with no numeric payload column, now name the text columns that
+are not values. A caller that selects `index` columns by position or compares the frame
+with a fixed list of names sees one more column.
+
 ## Unreleased: a definition's track-space refusal names its fix
 
 The refusal that a planar step meets over world-frame tracks (`schema_family_mismatch`)

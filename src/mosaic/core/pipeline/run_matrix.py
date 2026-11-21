@@ -114,7 +114,7 @@ Measured at 1.9 for a row group of 400,000 rows, whatever the batch size.
 MEMORY_HEADROOM: Final = 0.20
 """The share of available memory that a read leaves free, as ``temporal-stack`` does."""
 
-_IDENTITY_COLUMNS: Final = ("frame", "id", "id1", "id2", "perspective")
+_IDENTITY_COLUMNS: Final = ("frame", "time", "id", "id1", "id2", "perspective")
 """The columns of a row's identity, after ``group`` and ``sequence``, in index order."""
 
 _ENTRY_COLUMNS: Final = ("group", "sequence")
@@ -181,7 +181,7 @@ class RunMatrix:
             :func:`~mosaic.core.pipeline.track_universe.current_run_id` names.
         entries: The ``(group, sequence)`` pairs that were read, sorted.
         index: One row per row of *values*, in the same order: ``group``,
-            ``sequence``, each of ``frame``, ``id``, ``id1``, ``id2`` and
+            ``sequence``, each of ``frame``, ``time``, ``id``, ``id1``, ``id2`` and
             ``perspective`` that the run writes, and then the keys read.
         values: The cells, shape ``(len(index), len(columns))``, in the dtype
             asked for. A missing value is NaN.
@@ -805,7 +805,7 @@ def _select_columns(
             msg = (
                 f"{where}: entry {entry_label(entry)} has no numeric payload column. Name "
                 f"the columns to read with columns=. Its numeric columns are: "
-                f"{list_names(candidates)}."
+                f"{list_names(candidates)}.{_text_columns_clause(footer, keys)}"
             )
             raise RunReadInvalid(
                 msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
@@ -820,14 +820,33 @@ def _select_columns(
             msg = (
                 f"{where}: columns={pattern!r} matches no numeric column of entry "
                 f"{entry_label(entry)}. An identity column (frame, time, id, id1, id2, "
-                f"perspective) is not a value, and nor is a string column. The "
-                f"numeric columns are: {list_names(candidates)}."
+                f"perspective) is not a value. The numeric columns are: "
+                f"{list_names(candidates)}.{_text_columns_clause(footer, keys)}"
             )
             raise RunReadInvalid(
                 msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
             )
         taken.extend(name for name in matched if name not in taken)
     return tuple(taken)
+
+
+def _text_columns_clause(footer: ParquetFooter, keys: tuple[str, ...]) -> str:
+    """A sentence naming the text columns that a matrix leaves out, or none.
+
+    A matrix holds one float dtype, so a string column is not a value. A key is
+    read beside the identity and is not named.
+    """
+    left_out = [
+        repr(column.name)
+        for column in footer.columns
+        if column.kind == "string"
+        and column.name not in META_COLS
+        and column.name not in keys
+        and not column.name.startswith("__index_level_")
+    ]
+    if not left_out:
+        return ""
+    return f" Text columns are not values: {list_names(left_out)}."
 
 
 def _batch_rows(n_columns: int) -> int:

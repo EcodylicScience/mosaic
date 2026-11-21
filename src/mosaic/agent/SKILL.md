@@ -927,14 +927,15 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   holds two.
 - To fit or score on a run's columns in your own code, do not read the parquet files.
   `load_run_matrix(ds, result, columns="prob_*", perspective=0, scope=...)` returns
-  `.index` (group, sequence, frame, and id or id1/id2/perspective), `.values` (float32,
-  one row per row of the index) and `.columns`, in order of group and sequence. It
-  refuses a run that is not finished, an entry of the scope the run lacks, and a read
-  too large for the memory, and the message says how to narrow it. Pass
-  `allow_partial=True` only once the user accepts results over fewer entries, and
-  report `.entries` as what was read: `.finished` is then False for a run that lost
-  entries, and `.missing` lists only the scope's entries that have no file. It
-  carries no labels, so take those from `align_predictions_to_labels`.
+  `.index` (group, sequence, frame, `time` when the run writes it, and id or
+  id1/id2/perspective), `.values` (float32, one row per row of the index) and
+  `.columns`, in order of group and sequence. A text column is not a value, and a
+  refusal names it. It refuses a run that is not finished, an entry of the scope the
+  run lacks, and a read too large for the memory, and the message says how to narrow
+  it. Pass `allow_partial=True` only once the user accepts results over fewer
+  entries, and report `.entries` as what was read: `.finished` is then False for a run
+  that lost entries, and `.missing` lists only the scope's entries that have no file.
+  It carries no labels, so take those from `align_predictions_to_labels`.
 - To compare groups, such as strains or sexes, reduce the run to one row per entry or
   individual with `sequence-aggregate` or `individual-aggregate`. Keep the labels with
   `keep_columns`, and list `"tracks"` after the feature's output among the inputs for a

@@ -128,6 +128,25 @@ class PairWideFeature(PairClusterFeature):
         return table
 
 
+class TimedFeature(WideFeature):
+    """The wide table with the ``time`` column of its tracks, as most features write it."""
+
+    name = "prov-timed"
+    n_wide = 2
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        table = super().apply(df)
+        table["time"] = df["time"].to_numpy()
+        return table
+
+
+def timed_run(tmp_path: Path) -> tuple[Dataset, Result]:
+    """A dataset with ``ENTRIES`` and one run of :class:`TimedFeature` over them."""
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *ENTRIES, n_rows=10, n_ids=2)
+    return ds, ds.run_feature(TimedFeature())
+
+
 def wide_run(
     tmp_path: Path, *, n_rows: int = 10, n_ids: int = 2
 ) -> tuple[Dataset, Result]:
@@ -366,6 +385,47 @@ def test_a_pattern_that_matches_no_numeric_column_is_refused(
 
     with pytest.raises(ValueError, match="matches no numeric column"):
         _ = load_run_matrix(ds, result, columns=pattern)
+
+
+def test_time_is_in_the_index_beside_frame_and_not_in_the_values(
+    tmp_path: Path,
+) -> None:
+    ds, result = timed_run(tmp_path)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert list(matrix.index.columns) == ["group", "sequence", "frame", "time", "id"]
+    assert "time" not in matrix.columns
+    assert matrix.values.shape[1] == len(matrix.columns)
+    expected = load_values(
+        ds,
+        [ResultColumn(feature=result.feature, run_id=result.run_id, column="time")],
+    )
+    np.testing.assert_array_equal(
+        matrix.index["time"].to_numpy(), expected["time"].to_numpy()
+    )
+
+
+def test_a_run_without_time_has_none_in_the_index(tmp_path: Path) -> None:
+    ds, result = wide_run(tmp_path)
+
+    matrix = load_run_matrix(ds, result)
+
+    assert "time" not in matrix.index.columns
+
+
+def test_time_is_not_a_value_a_pattern_can_select(tmp_path: Path) -> None:
+    ds, result = timed_run(tmp_path)
+
+    with pytest.raises(ValueError, match="matches no numeric column"):
+        _ = load_run_matrix(ds, result, columns="time")
+
+
+def test_a_refusal_names_the_text_columns_that_are_not_values(tmp_path: Path) -> None:
+    ds, result = wide_run(tmp_path)
+
+    with pytest.raises(ValueError, match=r"Text columns are not values: 'note'"):
+        _ = load_run_matrix(ds, result, columns="nope*")
 
 
 def test_the_dtype_is_the_one_asked_for(tmp_path: Path) -> None:

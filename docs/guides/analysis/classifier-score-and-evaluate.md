@@ -219,19 +219,20 @@ one array with the columns you name, instead of building a frame of every column
 from mosaic.core.pipeline import load_run_matrix
 
 rows = load_run_matrix(ds, xgb_result, columns="prob_*", perspective=0)
-rows.index     # group, sequence, frame and id (id1, id2 and perspective on pair output)
+rows.index     # group, sequence, frame, time, id (id1, id2, perspective on pairs)
 rows.values    # float32, one row for each row of rows.index
 rows.columns   # ("prob_0", "prob_1", ...)
 ```
 
-`columns` takes a name, a glob or a list. `scope=` narrows the entries, `perspective=`
-keeps one ordering of a pair, and `dtype=` replaces `float32`. Rows come in order of
-group and sequence. The call refuses a run that is not finished, a scope that names an
-entry the run lacks, and a read that does not fit in the available memory, and the
-message says how to narrow the read. `allow_partial=True` reads what the run holds:
-`rows.entries` is what was read, `rows.finished` is `False` for a run that lost an entry
-or is still going, and `rows.missing` lists the entries of the scope that have no file.
-For the label of each row, use
+`columns` takes a name, a glob or a list. A text column is not a value, and the run's
+`time` comes back in `rows.index` when it writes one. `scope=` narrows the entries,
+`perspective=` keeps one ordering of a pair, and `dtype=` replaces `float32`. Rows come
+in order of group and sequence. The call refuses a run that is not finished, a scope
+that names an entry the run lacks, and a read that does not fit in the available memory,
+and the message says how to narrow the read. `allow_partial=True` reads what the run
+holds: `rows.entries` is what was read, `rows.finished` is `False` for a run that lost
+an entry or is still going, and `rows.missing` lists the entries of the scope that have
+no file. For the label of each row, use
 [`align_predictions_to_labels`](discover-behaviors.md#score-the-result).
 
 Draw them onto the video to see what the model learned:
