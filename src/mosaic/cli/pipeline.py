@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Twelve verbs, and the split between them is the split the library makes.
+Thirteen verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -28,6 +28,10 @@ nothing under the dataset.
 the study, adds held-out data to the copy, refuses when that would move the run
 id of any step, and otherwise runs the recipe and its evaluations there.
 
+``retire`` removes the runs that saved recipes' requests wrote, without a
+submission (``pipeline_retire.py``). It previews by default and, with
+``--apply``, runs the ``retire-recipes`` op in this process.
+
 ``--recipe`` takes the same ``@file.json`` / inline-JSON argument every other
 JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
 """
@@ -40,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 import typer
+from typer.models import OptionInfo
 
 from mosaic.cli._context import definitions_of, load_dataset
 from mosaic.cli._io import (
@@ -132,21 +137,32 @@ CleanupOption = Annotated[
         ),
     ),
 ]
+KEEP_NEWEST = 1
+"""How many runs of each storage a cleanup or a retirement keeps by default."""
+
+MIN_AGE_HOURS = 24.0
+"""The age in hours below which a cleanup or a retirement keeps a run by default."""
+
+
+def keep_newest_option(help_text: str) -> OptionInfo:
+    """The ``--keep-newest`` option, with the help a verb gives it."""
+    return typer.Option("--keep-newest", min=0, help=help_text)
+
+
+def min_age_option(help_text: str) -> OptionInfo:
+    """The ``--min-age-hours`` option, with the help a verb gives it."""
+    return typer.Option("--min-age-hours", min=0, help=help_text)
+
+
 KeepNewestOption = Annotated[
     int,
-    typer.Option(
-        "--keep-newest",
-        min=0,
-        help="With --cleanup, keep this many superseded runs per storage, newest first.",
+    keep_newest_option(
+        "With --cleanup, keep this many superseded runs per storage, newest first."
     ),
 ]
 MinAgeOption = Annotated[
     float,
-    typer.Option(
-        "--min-age-hours",
-        min=0,
-        help="With --cleanup, keep every run younger than this many hours.",
-    ),
+    min_age_option("With --cleanup, keep every run younger than this many hours."),
 ]
 
 RetireOption = Annotated[
@@ -413,8 +429,8 @@ def plan_command(
     tag: TagOption = None,
     step_scope: StepScopeOption = None,
     cleanup: CleanupOption = "none",
-    keep_newest: KeepNewestOption = 1,
-    min_age_hours: MinAgeOption = 24.0,
+    keep_newest: KeepNewestOption = KEEP_NEWEST,
+    min_age_hours: MinAgeOption = MIN_AGE_HOURS,
     retire: RetireOption = None,
     assume_added: AssumeAddedOption = None,
     tracks_run_id: TracksRunIdOption = None,
@@ -866,8 +882,8 @@ def run_command(
         str, typer.Option("--owner", help="Recorded on each attempt.")
     ] = "",
     cleanup: CleanupOption = "none",
-    keep_newest: KeepNewestOption = 1,
-    min_age_hours: MinAgeOption = 24.0,
+    keep_newest: KeepNewestOption = KEEP_NEWEST,
+    min_age_hours: MinAgeOption = MIN_AGE_HOURS,
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
     pin: PinOption = None,
@@ -1083,7 +1099,7 @@ def run_command(
             return
         render_table(rows, ["step", "type", "run_id", "state"])
         if removal is not None:
-            _render_cleanup_status(removal)
+            render_cleanup_status(removal)
         for outcome in done.outcomes:
             if outcome.diverged:
                 # The plan is a preview. A step that recorded a different identifier
@@ -1250,8 +1266,8 @@ def submit_command(
         ),
     ] = False,
     cleanup: CleanupOption = "none",
-    keep_newest: KeepNewestOption = 1,
-    min_age_hours: MinAgeOption = 24.0,
+    keep_newest: KeepNewestOption = KEEP_NEWEST,
+    min_age_hours: MinAgeOption = MIN_AGE_HOURS,
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
     pin: PinOption = None,
@@ -1641,17 +1657,17 @@ def _render_request_status(report: RequestStatusWire) -> None:
             "not started step(s) are not listed"
         )
     if report.cleanup is not None:
-        _render_cleanup_status(report.cleanup)
+        render_cleanup_status(report.cleanup)
     if report.poll_after_seconds is not None:
         log(f"note: poll again in {report.poll_after_seconds} s")
 
 
-def _render_cleanup_status(cleanup: CleanupStatusWire) -> None:
+def render_cleanup_status(cleanup: CleanupStatusWire) -> None:
     """Print a request's cleanup: its status, its totals and the runs it kept."""
     typer.echo(
         f"cleanup {cleanup.execution_id}: {cleanup.status}, removed "
         f"{cleanup.removed_runs} of {cleanup.approved_runs} approved run(s) "
-        f"({_size(cleanup.removed_bytes)}), kept {cleanup.kept_runs}, failed "
+        f"({human_size(cleanup.removed_bytes)}), kept {cleanup.kept_runs}, failed "
         f"{cleanup.failed_runs}, interrupted {cleanup.interrupted_runs}"
     )
     if cleanup.kept:
@@ -1669,7 +1685,7 @@ def _render_cleanup_status(cleanup: CleanupStatusWire) -> None:
         )
 
 
-def _size(size: int) -> str:
+def human_size(size: int) -> str:
     """*size* bytes in the largest unit that keeps it at least 1."""
     amount = float(size)
     for unit in ("B", "KB", "MB", "GB"):
@@ -1800,7 +1816,7 @@ def _emit_plan(
                         "run_id": run.run_id,
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
-                        "size": _size(run.bytes),
+                        "size": human_size(run.bytes),
                         "recipe": run.retired or "-",
                     }
                     for step in wire.steps
@@ -1819,7 +1835,7 @@ def _emit_plan(
                         "run_id": run.run_id,
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
-                        "size": _size(run.bytes),
+                        "size": human_size(run.bytes),
                     }
                     for run in wire.cleanup.retired_runs
                 ],
@@ -1831,8 +1847,8 @@ def _emit_plan(
         )
         log(
             f"cleanup: {wire.cleanup.removable_runs} superseded run(s) removable "
-            f"({_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
-            f"kept ({_size(wire.cleanup.kept_bytes)})"
+            f"({human_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
+            f"kept ({human_size(wire.cleanup.kept_bytes)})"
             + (f"; {omitted} not listed" if omitted else "")
         )
         if wire.retirable:

@@ -381,6 +381,9 @@ def _other_recipe_file(fixture: ReadDataset) -> Path:
 
 type CliArguments = Callable[[ReadDataset], list[str]]
 
+UNSAVED_DIGEST = "f" * 16
+"""A well-formed recipe digest that names no saved recipe."""
+
 CLI_READS: dict[str, CliArguments] = {
     "arenas show": lambda _: ["arenas", "show"],
     "arenas show --recording": lambda _: ["arenas", "show", "--recording", "seq_a"],
@@ -460,6 +463,29 @@ CLI_READS: dict[str, CliArguments] = {
         "0",
         "--retire",
         load_request(f.root, f.request_id).recipe_digest,
+    ],
+    "pipeline retire --dry-run": lambda f: [
+        "pipeline",
+        "retire",
+        "--retire",
+        load_request(f.root, f.request_id).recipe_digest,
+        "--dry-run",
+    ],
+    "pipeline retire --dry-run with a keeper of a definition": lambda f: [
+        "pipeline",
+        "retire",
+        "--retire",
+        load_request(f.root, f.request_id).recipe_digest,
+        "--keeper",
+        f"@{f.definition_recipe_path}",
+        "--dry-run",
+    ],
+    "pipeline retire --dry-run of no saved recipe": lambda _: [
+        "pipeline",
+        "retire",
+        "--retire",
+        UNSAVED_DIGEST,
+        "--dry-run",
     ],
     "pipeline input-size": lambda f: [
         "pipeline",
@@ -565,6 +591,7 @@ CLI_READS_OF_NOTHING = (
     "measure-tracks --dry-run",
     "notes show",
     "pipeline list",
+    "pipeline retire --dry-run of no saved recipe",
     "pipeline validate",
     "prerequisites",
     "prune-joined --dry-run",

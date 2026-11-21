@@ -32,6 +32,7 @@ from mosaic.cli.sources import sources_app
 from mosaic.cli.splits import splits_app
 from mosaic.cli.tags import notes_app, tags_app
 from mosaic.cli.pipeline import pipeline_app
+from mosaic.cli.pipeline_retire import retire_command
 from mosaic.cli.pipeline_score import score_command
 from mosaic.cli.preview import preview_command
 from mosaic.cli.prerequisites import prerequisites_command
@@ -105,6 +106,7 @@ _ = app.command(name="summarize")(summarize_command)
 app.add_typer(inventory_app, name="inventory")
 app.add_typer(models_app, name="models")
 _ = pipeline_app.command(name="score")(score_command)
+_ = pipeline_app.command(name="retire")(retire_command)
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(agent_app, name="agent")
 

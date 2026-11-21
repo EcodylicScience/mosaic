@@ -1161,6 +1161,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `input-size`: Say how much one step of a submission...
 * `settle`: Record a step that needs no work, after...
 * `score`: Score a finished recipe on held-out data...
+* `retire`: Retire saved recipes: remove the runs...
 
 ### `mosaic pipeline catalog`
 
@@ -1633,6 +1634,47 @@ $ mosaic pipeline score [OPTIONS]
 * `--parallel-mode <thread|process>`: With more than one worker, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With more than one worker, the share of the memory limit that applies, a container's or else the host's, that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--admission-margin <float range>`: With more than one worker, start an entry beside the ones in flight only when its predicted memory times this factor fits the memory limit, learned from the run's own entries. The first entry runs alone and entries start largest first. 0 (the default) turns the gate off; otherwise from 1 to 4, such as 1.5.  [default: 0.0; 0.0<=x<=4.0]
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline retire`
+
+Retire saved recipes: remove the runs their requests wrote that no rule keeps.
+
+The keepers are the pipelines that stay, each planned over the scope that
+``--entry``, ``--group`` or ``--tag`` names, all entries when none is given.
+A run a keeper expects, reads or that another request recorded, binds or
+pins is kept, as is a run younger than ``--min-age-hours`` and the
+``--keep-newest`` newest of each storage.
+
+The dry run prints the plan's fingerprint, each run judged with its reason,
+and each digest not retired; ``--json`` prints the plan's wire. It writes
+nothing. ``--apply`` runs the approved plan as the ``retire-recipes`` op,
+which judges every run again and removes only an approved run still
+removable, and prints what it removed and kept. ``--json`` adds the op's
+``run_id``, the attempt's facts, with its status ``partial`` when some
+removal raised, and ``not_retired``, the digests left out with their
+reasons. It exits 1 when every approved removal raised, reporting the
+attempt as ``failed`` without ``run_id``, which the op returns only when it
+ends, and 130 when cancelled.
+
+**Usage**:
+
+```console
+$ mosaic pipeline retire [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--retire DIGEST`: A saved recipe to retire, by its digest (repeatable, at least one). The runs its requests wrote are judged for removal. A digest that names no readable recipe, or the recipe a keeper runs, is listed and left out.  [required]
+* `--keeper RECIPE`: A pipeline that stays (repeatable), as a path to a JSON recipe, @file.json, @- or inline JSON. The runs its plan expects are never removed.
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable), or to a saved selection as @name, alone. Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--tag <str>`: Narrow to the entries holding a sequence tag, as NAME=VALUE (repeatable). A value is read by its tag's type. The values of one name are alternatives and different names must all match. NAME alone names a label tag and matches the entries it is assigned to. With --group, keeps the selected entries of those groups. Not with --entry.
+* `--keep-newest <int range>`: Keep this many of the runs the retirement judges per storage, newest first.  [default: 1; x>=0]
+* `--min-age-hours <float range>`: Keep every run the retirement judges that is younger than this many hours.  [default: 24.0; x>=0]
+* `--apply / --dry-run`: Remove the removable runs. Default is a dry-run report.  [default: dry-run]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
