@@ -34,6 +34,7 @@ from mosaic.core.pipeline.graph.retirement import (
     NAME_LIMIT,
     exclusively_written,
     retired_digest_of,
+    saved_digest,
     validate_retirement,
     written_runs,
 )
@@ -154,6 +155,49 @@ def test_a_digest_in_an_earlier_canonical_form_names_the_current_one(
     assert checked == (old,)
     with pytest.raises(RetireOwnRecipe):
         _ = validate_retirement(dataset.base_dir, old, [legacy_digest], cleanup=True)
+
+
+# --- the current digest of a saved recipe ---------------------------------------------
+
+
+def test_a_saved_digest_answers_the_current_digest_of_its_own_form(
+    dataset: Dataset,
+) -> None:
+    _, old = _ran(dataset, 1, "old")
+
+    assert saved_digest(dataset.base_dir, old) == old
+
+
+def test_a_saved_digest_answers_the_current_digest_of_an_earlier_form(
+    dataset: Dataset,
+) -> None:
+    done, current = _ran(dataset, 1, "old")
+    legacy = _saved_only_in_an_earlier_form(dataset, done, current)
+
+    assert saved_digest(dataset.base_dir, legacy) == current
+    assert saved_digest(dataset.base_dir, current) == current
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("malformed", "lowercase hex"),
+        ("missing", "no saved recipe"),
+        ("unreadable", "does not read"),
+    ],
+)
+def test_a_saved_digest_refuses_an_unknown_recipe(
+    dataset: Dataset, kind: str, message: str
+) -> None:
+    _, old = _ran(dataset, 1, "old")
+    digest = {"malformed": "../escape", "missing": "f" * 16, "unreadable": old}[kind]
+    if kind == "unreadable":
+        _ = recipe_path(dataset.base_dir, old).write_text("{not json")
+
+    with pytest.raises(RetireUnknownRecipe, match=message) as raised:
+        _ = saved_digest(dataset.base_dir, digest)
+
+    assert raised.value.error_detail() == {"digest": digest}
 
 
 # --- which requests and runs are the recipe's -----------------------------------------

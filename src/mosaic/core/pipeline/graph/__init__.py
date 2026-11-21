@@ -48,13 +48,17 @@ if TYPE_CHECKING:
         claims_root as claims_root,
     )
     from .cleanup import (
+        CandidateSet as CandidateSet,
         CleanupPlan as CleanupPlan,
         KeptReason as KeptReason,
+        RemovalWatch as RemovalWatch,
         SupersededRun as SupersededRun,
+        judge_runs as judge_runs,
         plan_cleanup as plan_cleanup,
         plan_with_cleanup as plan_with_cleanup,
         CLEANUP_KIND as CLEANUP_KIND,
         CleanupOutcome as CleanupOutcome,
+        remove_approved_runs as remove_approved_runs,
         run_cleanup as run_cleanup,
     )
     from .columns import (
@@ -293,6 +297,7 @@ if TYPE_CHECKING:
         RetireUnknownRecipe as RetireUnknownRecipe,
         retirable_recipes as retirable_recipes,
         retired_recipe_names as retired_recipe_names,
+        saved_digest as saved_digest,
     )
     from .status import (
         FAILED_ENTRY_SAMPLE as FAILED_ENTRY_SAMPLE,
@@ -753,8 +758,11 @@ _MODULE_OF: Final[dict[str, str]] = {
     "ValidationReport": ".wire",
     "WaitingOnResourceWire": ".wire",
     "render_location": ".wire",
+    "CandidateSet": ".cleanup",
     "CleanupPlan": ".cleanup",
     "KeptReason": ".cleanup",
+    "RemovalWatch": ".cleanup",
+    "judge_runs": ".cleanup",
     "SupersededRun": ".cleanup",
     "plan_cleanup": ".cleanup",
     "plan_with_cleanup": ".cleanup",
@@ -776,6 +784,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "cleanup_status_wire": ".status",
     "CLEANUP_KIND": ".cleanup",
     "CleanupOutcome": ".cleanup",
+    "remove_approved_runs": ".cleanup",
     "run_cleanup": ".cleanup",
     "RETIRABLE_REQUEST_IDS": ".status",
     "RetirableRecipeWire": ".status",
@@ -785,6 +794,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "RetireUnknownRecipe": ".retirement",
     "retirable_recipes": ".retirement",
     "retired_recipe_names": ".retirement",
+    "saved_digest": ".retirement",
 }
 """The submodule that defines each public name."""
 
@@ -849,6 +859,7 @@ __all__ = [
     "CleanupNeedsPlan",
     "CleanupOnManagedDataset",
     "CleanupOutcome",
+    "CandidateSet",
     "CleanupPlan",
     "CleanupPlanWire",
     "CleanupPolicy",
@@ -931,6 +942,7 @@ __all__ = [
     "RecordedErrorWire",
     "ReferenceKind",
     "ReferenceSite",
+    "RemovalWatch",
     "RemoveStep",
     "RepeatInvalid",
     "ReplaceStep",
@@ -1042,6 +1054,7 @@ __all__ = [
     "intended_scope",
     "is_stalled",
     "join_verdicts",
+    "judge_runs",
     "lane_for",
     "lane_for_step",
     "lease_is_live",
@@ -1088,6 +1101,7 @@ __all__ = [
     "refuse_unusable_pins",
     "reject_unless_valid",
     "release_driver_lease",
+    "remove_approved_runs",
     "render_location",
     "request_path",
     "request_rollup",
@@ -1113,6 +1127,7 @@ __all__ = [
     "save_computes",
     "save_recipe",
     "save_request",
+    "saved_digest",
     "score_heldout",
     "search_catalog",
     "snapshot_liveness",

@@ -18,6 +18,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     SUPERSEDED_SAMPLE,
     BoundRef,
+    CandidateSet,
     CleanupPlan,
     CleanupPolicy,
     DeclarationCatalog,
@@ -29,6 +30,7 @@ from mosaic.core.pipeline.graph import (
     RetireUnknownRecipe,
     SupersededRun,
     declaration_catalog,
+    judge_runs,
     plan_cleanup,
     plan_pipeline,
     plan_wire,
@@ -40,6 +42,7 @@ from mosaic.core.pipeline.graph import (
     storage_name_of,
     submit_request,
 )
+from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.storage_names import SHORTENED_MARKER
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
@@ -1344,3 +1347,200 @@ def test_a_sample_of_retired_runs_lists_the_removable_ones_first(
         "0.1-kept0",
     ]
     assert wire.cleanup.retired_omitted == 1
+
+
+# --- judging for several replacements -------------------------------------------------
+
+
+def _judge(
+    ds: Dataset,
+    recipes: list[Recipe],
+    *,
+    candidates: CandidateSet,
+    planned_digest: str = "",
+    planned_name: str = "",
+    retire: tuple[str, ...] = (),
+    manager: str = "",
+) -> CleanupPlan:
+    """Judge *ds*'s runs against the plans of *recipes*, as a retirement does."""
+    inventory = InventoryCache(ds)
+    catalog = declaration_catalog()
+    plans = [
+        plan_pipeline(ds, recipe, inventory=inventory, catalog=catalog, refuse=False)
+        for recipe in recipes
+    ]
+    with definition_scope(ds, load=False):
+        return judge_runs(
+            ds,
+            plans,
+            policy=LOOSE,
+            inventory=inventory,
+            catalog=catalog,
+            candidates=candidates,
+            planned_digest=planned_digest,
+            planned_name=planned_name,
+            now=LATER,
+            retire=retire,
+            manager=manager,
+        )
+
+
+def test_several_replacements_union_the_runs_their_storages_expect(
+    dataset: Dataset,
+) -> None:
+    old, second, third = (run_speed(dataset, size) for size in (1, 2, 3))
+
+    cleanup = _judge(
+        dataset,
+        [speed_recipe_stepping(2), speed_recipe_stepping(3)],
+        candidates="superseded",
+    )
+
+    [run] = cleanup.runs
+    assert (run.run_id, run.reason) == (old, "superseded")
+    assert run.superseded_by == ", ".join(sorted((second, third)))
+
+
+def test_the_retired_candidates_are_the_retired_runs_a_replacement_does_not_expect(
+    dataset: Dataset,
+) -> None:
+    ran = run_pipeline(dataset, _old())
+    ids = _run_ids(dataset, _old())
+    outside = run_speed(dataset, 3)
+
+    cleanup = _judge(
+        dataset,
+        [named_recipe(speed_recipe_stepping(1), "keeper")],
+        candidates="retired",
+        retire=(ran.recipe_digest,),
+    )
+
+    [run] = cleanup.runs
+    assert (run.run_id, run.storage, run.reason) == (
+        ids["heading"],
+        HEADING,
+        "superseded",
+    )
+    assert (run.step_id, run.superseded_by, run.retired_by) == (
+        "",
+        "",
+        ran.recipe_digest,
+    )
+    assert outside not in _by_run(cleanup)
+    assert cleanup.retired == (ran.recipe_digest,)
+
+
+def test_a_retired_run_in_a_storage_a_replacement_names_is_a_retired_candidate(
+    dataset: Dataset,
+) -> None:
+    ran = run_pipeline(dataset, _old())
+    ids = _run_ids(dataset, _old())
+    expected = run_speed(dataset, 2)
+
+    cleanup = _judge(
+        dataset,
+        [named_recipe(speed_recipe_stepping(2), "keeper")],
+        candidates="retired",
+        retire=(ran.recipe_digest,),
+    )
+
+    runs = _by_run(cleanup)
+    assert set(runs) == {ids["speed"], ids["heading"]}
+    speed = runs[ids["speed"]]
+    assert (speed.step_id, speed.superseded_by, speed.reason) == (
+        "speed",
+        expected,
+        "superseded",
+    )
+
+
+def test_a_superseded_judging_lists_each_retired_run_once(dataset: Dataset) -> None:
+    ran = run_pipeline(dataset, _old())
+    ids = _run_ids(dataset, _old())
+
+    cleanup = _judge(
+        dataset,
+        [named_recipe(speed_recipe_stepping(2), "keeper")],
+        candidates="superseded",
+        retire=(ran.recipe_digest,),
+    )
+
+    assert sorted(run.run_id for run in cleanup.runs) == sorted(
+        (ids["speed"], ids["heading"])
+    )
+
+
+def test_nothing_retired_has_no_retired_candidate(dataset: Dataset) -> None:
+    _ = run_pipeline(dataset, _old())
+    _ = run_speed(dataset, 3)
+
+    cleanup = _judge(dataset, [speed_recipe_stepping(2)], candidates="retired")
+
+    assert cleanup.runs == ()
+
+
+def test_a_judging_without_a_planned_recipe_treats_no_request_as_its_version(
+    dataset: Dataset,
+) -> None:
+    _ = run_pipeline(dataset, named_recipe(speed_recipe_stepping(1), "chain"))
+    old = _run_ids(dataset, speed_recipe_stepping(1))["speed"]
+    keeper = named_recipe(speed_recipe_stepping(2), "chain")
+
+    as_version = _judge(
+        dataset,
+        [keeper],
+        candidates="superseded",
+        planned_digest=recipe_digest(keeper),
+        planned_name="chain",
+    )
+    without = _judge(dataset, [keeper], candidates="superseded")
+
+    assert _reasons(as_version) == {old: "superseded"}
+    assert _reasons(without) == {old: "recipe_uses"}
+
+
+@pytest.mark.parametrize(
+    ("manager", "reason"),
+    [
+        ("mosaic-api", "superseded"),
+        ("someone-else", "managed_dataset"),
+        ("", "managed_dataset"),
+    ],
+)
+def test_only_the_datasets_own_manager_lifts_the_managed_hold(
+    dataset: Dataset, manager: str, reason: str
+) -> None:
+    old = run_speed(dataset, 1)
+    with dataset.manifest_path.open("a", encoding="utf-8") as manifest:
+        _ = manifest.write("managed_by: mosaic-api\n")
+    managed = Dataset(manifest_path=dataset.manifest_path).load(ensure_roots=False)
+
+    cleanup = _judge(
+        managed, [speed_recipe_stepping(2)], candidates="superseded", manager=manager
+    )
+
+    assert _reasons(cleanup) == {old: reason}
+
+
+def test_judging_refuses_recorded_runs_beside_several_replacements(
+    dataset: Dataset,
+) -> None:
+    inventory = InventoryCache(dataset)
+    catalog = declaration_catalog()
+    plans = [
+        plan_pipeline(dataset, speed_recipe_stepping(size), inventory=inventory)
+        for size in (2, 3)
+    ]
+
+    with definition_scope(dataset, load=False), pytest.raises(ValueError, match="one"):
+        _ = judge_runs(
+            dataset,
+            plans,
+            policy=LOOSE,
+            inventory=inventory,
+            catalog=catalog,
+            candidates="superseded",
+            planned_digest="",
+            planned_name="",
+            recorded={"speed": "0.1-recorded"},
+        )

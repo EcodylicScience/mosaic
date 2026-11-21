@@ -13,6 +13,8 @@ This module holds what retiring reads and refuses, and none of the judging:
 
 - :func:`validate_retirement` refuses a digest that no saved recipe has, the
   submitted recipe's own, and a recipe with a request that has not ended.
+- :func:`saved_digest` reads a digest as that of a saved recipe, in its current
+  canonical form.
 - :func:`retired_digest_of`, :func:`written_runs` and :func:`exclusively_written` say
   which requests are retired and which runs they wrote. The judging in
   :mod:`~.cleanup` calls them from the loop over the requests it already reads.
@@ -74,6 +76,7 @@ __all__ = [
     "retirable_recipes",
     "retired_digest_of",
     "retired_recipe_names",
+    "saved_digest",
     "validate_retirement",
     "written_runs",
 ]
@@ -218,7 +221,7 @@ def validate_retirement(
         raise RetireNeedsCleanup()
     retired: set[str] = set()
     for digest in given:
-        current = _saved_digest(base_dir, digest)
+        current = saved_digest(base_dir, digest)
         if current == own_digest:
             raise RetireOwnRecipe(current)
         retired.add(current)
@@ -232,12 +235,23 @@ def validate_retirement(
     return tuple(sorted(retired))
 
 
-def _saved_digest(base_dir: Path | str, digest: str) -> str:
+def saved_digest(base_dir: Path | str, digest: str) -> str:
     """What the saved recipe named *digest* digests to now.
 
     *digest* may name the file as it was saved or the recipe in the current
     canonical form, which ``mosaic pipeline show`` and the plan's ``retirable``
-    list print (:func:`_saved_recipe`).
+    list print.
+
+    Args:
+        base_dir: The dataset root.
+        digest: The digest as given.
+
+    Returns:
+        The recipe's digest in the current canonical form.
+
+    Raises:
+        RetireUnknownRecipe: *digest* is malformed, names no saved recipe, or its
+            saved recipe does not read.
     """
     if not _DIGEST.fullmatch(digest):
         raise RetireUnknownRecipe(

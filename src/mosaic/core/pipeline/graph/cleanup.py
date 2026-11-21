@@ -5,6 +5,13 @@ other runs of those storages are **superseded** candidates. :func:`plan_cleanup`
 reports each one as removable or as kept with its reason, and :func:`run_cleanup`
 removes the ones a submission approved, after the request's steps have finished.
 
+:func:`judge_runs` is the judging both share, over one replacement plan or
+several. It judges one of two candidate sets: ``superseded``, the other runs of
+the replacements' storages plus the retired runs (a submission's cleanup), or
+``retired``, the runs the retired recipes' requests wrote, less every run a
+replacement expects (a retirement without a submission).
+:func:`remove_approved_runs` removes the approved runs for both.
+
 Two recipes are versions of each other when they have the same digest or the same
 non-empty ``name``. An unnamed recipe is a version only of itself. A candidate that
 a request of another recipe recorded, binds or pins stays kept after that request's
@@ -52,6 +59,15 @@ A candidate is kept, by the first rule that matches:
     params reference or its fit record, directly or through other runs
     (``read_by``).
 
+A managed dataset keeps every candidate (``managed_dataset``) unless the judging
+names its manager, the manifest's ``managed_by``.
+
+When the runs are removed, an approved run is judged again. One that is no longer
+in the feature index is kept as ``absent``. One still in it that the judging no
+longer lists among the candidates, such as a retired run that a feature attempt
+outside every request has named since, is kept as ``no_longer_candidate``, unless
+an attempt or a run that reads it keeps it with that reason.
+
 Planning is a read. It takes no lock and writes nothing, and its module imports
 the standard library and pydantic alone; the inventory, the run-log readers and
 the request store are imported inside the functions that use them. It never
@@ -62,7 +78,7 @@ from __future__ import annotations
 
 import datetime
 import os
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -91,18 +107,22 @@ if TYPE_CHECKING:
     from ..inventory.params import RunParams
     from ..label_series import LabelRevisionRef
     from .compatibility import DeclarationCatalog
-    from .model import BoundRef, Recipe, Request
+    from .model import BoundRef, CleanupTarget, Recipe, Request
     from .plan import Plan
     from .rollup import RequestRollup
 
 __all__ = [
     "CLEANUP_KIND",
+    "CandidateSet",
     "CleanupOutcome",
     "CleanupPlan",
     "KeptReason",
+    "RemovalWatch",
     "SupersededRun",
+    "judge_runs",
     "plan_cleanup",
     "plan_with_cleanup",
+    "remove_approved_runs",
     "run_cleanup",
 ]
 
@@ -129,9 +149,15 @@ type KeptReason = Literal[
     "newest",
     "read_by",
     "absent",
+    "no_longer_candidate",
 ]
-"""Why a superseded run is kept. ``keeper`` and ``absent`` are answered only when
-the cleanup runs: an approved run the plan now expects, and one already gone."""
+"""Why a superseded run is kept. ``keeper``, ``absent`` and ``no_longer_candidate``
+are answered only when the runs are removed: an approved run a plan now expects,
+one already gone, and one still indexed that the judging no longer lists."""
+
+type CandidateSet = Literal["superseded", "retired"]
+"""Which runs a judging considers: the other runs of the replacements' storages
+and the retired runs (``superseded``), or the retired runs alone (``retired``)."""
 
 _FROM: Final = "__from__"
 """What joins a feature's slug to the storages it reads in a storage name."""
@@ -359,12 +385,95 @@ def plan_cleanup(
     Returns:
         The superseded runs, removable or kept.
     """
+    return judge_runs(
+        ds,
+        (plan,),
+        policy=policy,
+        inventory=inventory,
+        catalog=catalog,
+        candidates="superseded",
+        planned_digest=plan.recipe_digest,
+        planned_name=recipe_name,
+        own_request=own_request,
+        recorded=recorded,
+        now=now,
+        short_storages=short_storages,
+        retire=retire,
+        retired_before=retired_before,
+    )
+
+
+def judge_runs(
+    ds: Dataset,
+    replacements: Sequence[Plan],
+    *,
+    policy: CleanupPolicy,
+    inventory: InventoryCache,
+    catalog: DeclarationCatalog,
+    candidates: CandidateSet,
+    planned_digest: str,
+    planned_name: str,
+    own_request: Request | None = None,
+    recorded: Mapping[str, str] | None = None,
+    now: datetime.datetime | None = None,
+    short_storages: Iterable[str] = (),
+    retire: Collection[str] = (),
+    retired_before: str = "",
+    manager: str = "",
+) -> CleanupPlan:
+    """Judge the candidate runs against *replacements*. Writes nothing.
+
+    The runs each replacement's feature steps expect are kept, unioned per
+    storage, and are never candidates. The rules are listed in the module
+    docstring, and the first that matches is the reason a run is kept. A run of
+    a feature definition is judged from the sidecar of the version it recorded.
+    The caller must call it within a definition scope of *ds*.
+
+    Args:
+        ds: The dataset.
+        replacements: The plans whose runs are kept. A candidate in a storage
+            one of them names is judged against what they expect there.
+        policy: The age and recency rules.
+        inventory: The held inventory the plans read, which lists the runs.
+        catalog: The declarations, for ``costly_fit``.
+        candidates: ``superseded`` judges the other runs of the replacements'
+            storages and the retired runs; ``retired`` judges the retired runs
+            alone.
+        planned_digest: The digest of the recipe being planned. A request of
+            it, or of a saved recipe that digests to it now, holds its runs only
+            for its hold window. ``""`` names no recipe.
+        planned_name: The planned recipe's ``name``. A request of a saved recipe
+            with this name, when it is not empty, holds its runs only for its
+            hold window.
+        own_request: The request being cleaned up: its binds are kept, and its
+            own file and attempts hold nothing.
+        recorded: The run id each step's attempt recorded, which replaces the
+            plan's prediction for that step. It names the steps of one plan.
+        now: The instant ages are judged at. ``None`` reads the clock.
+        short_storages: Storages whose run in this request lost entries. Each
+            of their candidates is kept as ``wider_coverage``.
+        retire: The recipes retired, as their current digests. The runs their
+            requests wrote are candidates, wherever they sit. Nothing is
+            validated here, because a judging that runs again must keep a run,
+            not fail, when a retired recipe has a request open by then.
+        retired_before: A request of a retired recipe created at or after this
+            instant is not retired. ``""`` for none.
+        manager: The manager the judging acts for. It lifts the
+            ``managed_dataset`` hold when it equals the manifest's
+            ``managed_by``. ``""`` lifts nothing.
+
+    Returns:
+        The candidate runs, removable or kept.
+
+    Raises:
+        ValueError: *recorded* is given with other than one replacement.
+    """
     from ..feature_run_removal import run_bytes
     from ..fit_scope import read_fit_scope
     from ..inventory.scan import GLOBAL_ENTRY
 
     moment = now or datetime.datetime.now(datetime.UTC)
-    keepers = _keepers(plan, recorded or {})
+    keepers = _keepers(replacements, recorded)
     records = inventory.get().of_kind("feature")
     for record in records:
         keeper = keepers.get(record.name)
@@ -379,40 +488,45 @@ def plan_cleanup(
         now=moment,
         hold_hours=max(policy.min_age_hours, REQUEST_HOLD_FLOOR_HOURS),
         exclude=own_id,
-        planned_digest=plan.recipe_digest,
-        planned_name=recipe_name,
+        planned_digest=planned_digest,
+        planned_name=planned_name,
         retire=retiring,
         retired_before=retired_before,
     )
     # A retirement needs the requests read before the candidates are known. A plain
     # plan with nothing to judge reads none.
     holds = request_holds() if retiring else None
-    candidates = [
-        record
-        for record in records
-        if record.name in keepers and record.run_id not in keepers[record.name].run_ids
-    ]
-    if holds is not None:
-        candidates.extend(
+    judged: list[AnyRecord] = []
+    if candidates == "superseded":
+        judged.extend(
             record
             for record in records
-            if record.name not in keepers
-            and (record.name, record.run_id) in holds.retired
+            if record.name in keepers and not _expects(keepers, record)
         )
-    if not candidates:
+    if holds is not None:
+        # A retired run in a storage a replacement names is already among the
+        # superseded candidates.
+        judged.extend(
+            record
+            for record in records
+            if (record.name, record.run_id) in holds.retired
+            and not _expects(keepers, record)
+            and (candidates == "retired" or record.name not in keepers)
+        )
+    if not judged:
         return CleanupPlan(policy=policy, retired=tuple(sorted(retiring)))
 
     bound = _bound_pairs(own_request)
     if holds is None:
         holds = request_holds()
-    whole = _whole_plan_hold(ds, holds)
+    whole = _whole_plan_hold(ds, holds, manager)
     opened, unnamed = _open_attempts(base, now=moment)
     short = frozenset(short_storages)
-    ranks = _newest_ranks(candidates)
+    ranks = _newest_ranks(judged)
     fits: dict[tuple[str, str], FitScope | None] = {}
 
     decided: dict[tuple[str, str], tuple[str, str]] = {}
-    for record in candidates:
+    for record in judged:
         key = (record.name, record.run_id)
         keeper = keepers.get(record.name)
         fit = read_fit_scope(record.run_root) if record.run_root is not None else None
@@ -432,10 +546,10 @@ def plan_cleanup(
             global_entry=GLOBAL_ENTRY,
         )
 
-    _keep_what_is_read(ds, records, decided, opened, unnamed, fits, plan)
+    _keep_what_is_read(ds, records, decided, opened, unnamed, fits, replacements)
 
     runs: list[SupersededRun] = []
-    for record in candidates:
+    for record in judged:
         key = (record.name, record.run_id)
         reason, detail = decided[key]
         keeper = keepers.get(record.name)
@@ -617,13 +731,8 @@ def _remove_approved(
     catalog: DeclarationCatalog | None,
     now: datetime.datetime | None,
 ) -> CleanupOutcome:
-    """Remove each approved run still removable, recording every one in *log*."""
-    import json
-
-    from ..feature_run_removal import finish_feature_run_removal, remove_feature_run
-    from ..index import feature_run_root
+    """Judge *request*'s plan again and remove each approved run still removable."""
     from ..inventory.cache import InventoryCache
-    from ..inventory.params import read_run_params
     from .plan import plan_pipeline
     from .request import load_recipe_for_request
     from .resolve import declaration_catalog
@@ -636,7 +745,7 @@ def _remove_approved(
     declarations = declaration_catalog() if catalog is None else catalog
     # Before the runs are judged, so an attempt or a request that appears
     # between the judging and a removal is read again before that removal.
-    watch = _Watch(base, exclude=request.request_id)
+    watch = RemovalWatch(base, exclude=request.request_id)
     recipe = load_recipe_for_request(base, request)
     rollup = request_rollup(base, request)
     recorded = {
@@ -664,8 +773,89 @@ def _remove_approved(
         retire=spec.retired,
         retired_before=request.created_at,
     )
-    judged = {(run.storage, run.run_id): run for run in found.runs}
-    keepers = _keepers(plan, recorded)
+    return remove_approved_runs(
+        ds,
+        spec.approved,
+        execution_id=spec.execution_id,
+        judged=found,
+        replacements=(plan,),
+        recorded=recorded,
+        watch=watch,
+        inventory=held,
+        log=log,
+        token=token,
+        prior=prior,
+        progress=lambda done, total: log.heartbeat(done, total),
+        label=f"the cleanup of request {request.request_id}",
+    )
+
+
+def remove_approved_runs(
+    ds: Dataset,
+    approved: Sequence[CleanupTarget],
+    *,
+    execution_id: str,
+    judged: CleanupPlan,
+    replacements: Sequence[Plan],
+    recorded: Mapping[str, str] | None = None,
+    watch: RemovalWatch,
+    inventory: InventoryCache,
+    log: JsonlRunLog,
+    token: CancelToken,
+    prior: Mapping[tuple[str, str], str],
+    progress: Callable[[int, int], None],
+    label: str,
+) -> CleanupOutcome:
+    """Remove each approved run still removable, recording every one in *log*.
+
+    An approved run is removed only when *judged* lists it removable and nothing
+    has begun to read or write it since *watch* began. Every other approved run
+    is recorded kept with its reason: the reason *judged* gives, ``keeper`` for a
+    run a replacement now expects, ``absent`` for a run no longer in the feature
+    index, and ``no_longer_candidate`` for one still in it that *judged* does not
+    list, unless an attempt or a run that reads it keeps it with that reason. A
+    removal *prior* records as begun is finished only for a run whose rows are
+    gone. The cancel token is read between runs, and a run whose removal raises
+    is recorded as a lost entry while the others go on.
+
+    Args:
+        ds: The dataset.
+        approved: The runs approved for removal, in order.
+        execution_id: The attempt whose run-log *log* is.
+        judged: The runs judged again, after *watch* began.
+        replacements: The plans the runs were judged against. A run they
+            expect is never removed, and their runs on disk are checked to be
+            there after.
+        recorded: The run id each step's attempt recorded, which replaces the
+            plan's prediction for that step. It names the steps of one plan.
+        watch: What may read a run, begun before the judging.
+        inventory: The held inventory the judging read.
+        log: The run-log that records each run.
+        token: Fired to stop between runs.
+        prior: The state of each removal that this attempt recorded before, by
+            ``(storage, run_id)``.
+        progress: Called with the runs done and their total after each run.
+        label: What names the work in an error, as "the cleanup of request X".
+
+    Returns:
+        What it removed, kept and failed to remove, and whether it was cancelled.
+
+    Raises:
+        ValueError: *recorded* is given with other than one replacement.
+        RuntimeError: A run a replacement expects, whose directory existed
+            before, is gone after.
+    """
+    import json
+
+    from ..feature_run_removal import finish_feature_run_removal, remove_feature_run
+    from ..index import feature_run_root
+    from ..inventory.params import read_run_params
+
+    keepers = _keepers(replacements, recorded)
+    judged_runs = {(run.storage, run.run_id): run for run in judged.runs}
+    indexed = {
+        (record.name, record.run_id) for record in inventory.get().of_kind("feature")
+    }
     kept_roots = [
         feature_run_root(ds, storage, run_id)
         for storage, keeper in keepers.items()
@@ -677,29 +867,37 @@ def _remove_approved(
     kept: list[tuple[str, str, str]] = []
     failed: list[str] = []
     status: CleanupStatus = "finished"
-    for done, target in enumerate(spec.approved, start=1):
+    total = len(approved)
+    for done, target in enumerate(approved, start=1):
         if token.is_cancelled():
             status = "cancelled"
             break
         key = (target.storage, target.run_id)
         run_root = feature_run_root(ds, target.storage, target.run_id)
-        judged_run = judged.get(key)
+        judged_run = judged_runs.get(key)
         reason, detail = "", ""
         if prior.get(key) == "removed":
             pass
         elif judged_run is not None and not judged_run.removable:
             reason, detail = judged_run.reason, judged_run.detail
-        elif (
-            target.storage in keepers
-            and target.run_id in keepers[target.storage].run_ids
-        ):
-            reason, detail = "keeper", "the request's plan now expects it"
+        elif _expects_run(keepers, target.storage, target.run_id):
+            reason, detail = "keeper", "a replacement's plan now expects it"
+        elif judged_run is None and key in indexed:
+            reason, detail = (
+                watch.holding(ds, key)
+                or _read_by_any(inventory.get().of_kind("feature"), key)
+                or (
+                    "no_longer_candidate",
+                    "it is still indexed, and the judging no longer lists it "
+                    "among the candidates",
+                )
+            )
         elif judged_run is None:
             if prior.get(key) in ("interrupted", "failed"):
                 # Its rows are gone and its files may not be: finish only what
                 # nothing has started to read or write since.
                 hold = watch.holding(ds, key) or _read_by_any(
-                    held.get().of_kind("feature"), key
+                    inventory.get().of_kind("feature"), key
                 )
                 if hold is not None:
                     reason, detail = hold
@@ -748,16 +946,15 @@ def _remove_approved(
                 reason=reason,
                 detail=detail,
             )
-        log.heartbeat(done, len(spec.approved))
+        progress(done, total)
 
     lost = [root for root in kept_roots if not root.is_dir()]
     if lost:
         raise RuntimeError(
-            f"the cleanup of request {request.request_id} left kept runs missing: "
-            f"{', '.join(str(root) for root in lost)}"
+            f"{label} left kept runs missing: {', '.join(str(root) for root in lost)}"
         )
     return CleanupOutcome(
-        execution_id=spec.execution_id,
+        execution_id=execution_id,
         status=status,
         removed=tuple(removed),
         kept=tuple(kept),
@@ -765,7 +962,7 @@ def _remove_approved(
     )
 
 
-class _Watch:
+class RemovalWatch:
     """What may read a run, read again before each removal.
 
     An attempt that may still run, or one that ended after the watch began, is
@@ -775,6 +972,11 @@ class _Watch:
     recipe names, and one that does not read holds every run. The watch begins
     before the runs are judged, so nothing that appears between the judging and
     a removal is missed.
+
+    Args:
+        base_dir: The dataset root.
+        exclude: The request whose file holds nothing, the one being cleaned
+            up; ``""`` for none.
     """
 
     def __init__(self, base_dir: Path, *, exclude: str) -> None:
@@ -899,28 +1101,54 @@ class _Keeper:
     unresolved: str = ""
 
 
-def _keepers(plan: Plan, recorded: Mapping[str, str]) -> dict[str, _Keeper]:
-    """Every feature storage of *plan*, with the runs its steps expect.
+def _keepers(
+    plans: Sequence[Plan], recorded: Mapping[str, str] | None
+) -> dict[str, _Keeper]:
+    """Every feature storage of *plans*, with the runs their steps expect.
 
     Unioned per storage, as two steps of one feature with other params share a
-    storage. A step whose run id is unknown keeps its whole storage.
+    storage, and so do two plans. A step whose run id is unknown keeps its whole
+    storage. *recorded* replaces a step's predicted run id with the one its
+    attempt recorded.
+
+    Raises:
+        ValueError: *recorded* is given with other than one plan, since it is
+            keyed by the step ids of one.
     """
     from .plan import step_target
 
-    keepers: dict[str, _Keeper] = {}
-    for planned in plan.steps:
-        if planned.kind != "feature" or not planned.storage_name:
-            continue
-        keeper = keepers.setdefault(
-            planned.storage_name, _Keeper(step_id=planned.step_id)
+    if recorded is not None and len(plans) != 1:
+        raise ValueError(
+            f"recorded names the steps of one replacement plan, and "
+            f"{len(plans)} were given"
         )
-        run_id = recorded.get(planned.step_id) or planned.run_id
-        if run_id is None:
-            keeper.unresolved = keeper.unresolved or planned.step_id
-        else:
-            keeper.run_ids.add(run_id)
-        keeper.entries.update(step_target(planned, plan))
+    expected = recorded or {}
+    keepers: dict[str, _Keeper] = {}
+    for plan in plans:
+        for planned in plan.steps:
+            if planned.kind != "feature" or not planned.storage_name:
+                continue
+            keeper = keepers.setdefault(
+                planned.storage_name, _Keeper(step_id=planned.step_id)
+            )
+            run_id = expected.get(planned.step_id) or planned.run_id
+            if run_id is None:
+                keeper.unresolved = keeper.unresolved or planned.step_id
+            else:
+                keeper.run_ids.add(run_id)
+            keeper.entries.update(step_target(planned, plan))
     return keepers
+
+
+def _expects(keepers: Mapping[str, _Keeper], record: AnyRecord) -> bool:
+    """Whether a replacement expects *record*'s run."""
+    return _expects_run(keepers, record.name, record.run_id)
+
+
+def _expects_run(keepers: Mapping[str, _Keeper], storage: str, run_id: str) -> bool:
+    """Whether a replacement expects run *run_id* of *storage*."""
+    keeper = keepers.get(storage)
+    return keeper is not None and run_id in keeper.run_ids
 
 
 def _bound_pairs(request: Request | None) -> frozenset[tuple[str, str]]:
@@ -1130,12 +1358,18 @@ def _request_holds(
     return holds
 
 
-def _whole_plan_hold(ds: Dataset, holds: _Holds) -> tuple[str, str] | None:
-    """The reason every candidate is kept, or ``None`` when none holds them all."""
-    if ds.manifest.is_managed:
+def _whole_plan_hold(
+    ds: Dataset, holds: _Holds, manager: str
+) -> tuple[str, str] | None:
+    """The reason every candidate is kept, or ``None`` when none holds them all.
+
+    A managed dataset holds them all unless *manager* is its ``managed_by``.
+    """
+    managed_by = ds.manifest.managed_by
+    if ds.manifest.is_managed and not (manager and manager == managed_by):
         return (
             "managed_dataset",
-            f"the dataset is managed by {ds.manifest.managed_by!r}",
+            f"the dataset is managed by {managed_by!r}",
         )
     if holds.unreadable:
         return ("request_unreadable", holds.unreadable)
@@ -1358,7 +1592,7 @@ def _keep_what_is_read(
     opened: Mapping[tuple[str, str], str],
     unnamed: Mapping[str, str],
     fits: Mapping[tuple[str, str], FitScope | None],
-    plan: Plan,
+    plans: Iterable[Plan],
 ) -> None:
     """Keep every removable run that a kept run reads, until nothing changes.
 
@@ -1366,15 +1600,16 @@ def _keep_what_is_read(
     run of every attempt that may still run, found by its ``params.json``,
     which an attempt writes once it names its run, an attempt that has not
     named its run yet, read by the storage it writes as a run of unknown params
-    is, and every feature step of *plan*, which reads what its resolved inputs
-    and params name.
+    is, and every feature step of *plans*, which reads what its resolved inputs
+    and params name. Two plans may each have a step of one id, so the steps are
+    readers apart from the runs.
     """
     from ..fit_scope import read_fit_scope
 
-    readers: dict[tuple[str, str], _Reads] = {}
-    for planned in plan.steps:
-        if planned.kind == "feature":
-            readers[(f"step {planned.step_id!r} of the plan", "")] = _literal_reads(
+    steps: list[tuple[tuple[str, str], _Reads]] = [
+        (
+            (f"step {planned.step_id!r} of the plan", ""),
+            _literal_reads(
                 {
                     **{
                         f"inputs[{i}]": item
@@ -1382,7 +1617,13 @@ def _keep_what_is_read(
                     },
                     **planned.spec.params,
                 }
-            )
+            ),
+        )
+        for plan in plans
+        for planned in plan.steps
+        if planned.kind == "feature"
+    ]
+    readers: dict[tuple[str, str], _Reads] = {}
     for record in records:
         key = (record.name, record.run_id)
         fit = (
@@ -1409,7 +1650,7 @@ def _keep_what_is_read(
         removable = [
             key for key, (reason, _) in decided.items() if reason == "superseded"
         ]
-        for reader, reads in readers.items():
+        for reader, reads in (*steps, *readers.items()):
             if decided.get(reader, ("kept", ""))[0] == "superseded":
                 continue
             for key in removable:
@@ -1543,4 +1784,5 @@ _REASONS: Final[tuple[KeptReason | Literal["superseded"], ...]] = (
     "newest",
     "read_by",
     "absent",
+    "no_longer_candidate",
 )

@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,7 @@ from mosaic.core.pipeline import feature_run_removal
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.graph import (
     BoundRef,
+    CleanupOutcome,
     CleanupPolicy,
     Recipe,
     Request,
@@ -620,3 +621,220 @@ def test_a_retired_recipe_run_again_after_the_review_keeps_the_runs_it_used(
         heading: "recipe_uses",
         speed: "recipe_uses",
     }
+
+
+# --- an approved run that left the candidates ----------------------------------------
+
+
+def _retiring_submission(dataset: Dataset) -> tuple[Request, str, str]:
+    """A submission that retires a recipe and approves its heading and speed runs.
+
+    The heading run sits in a storage the submitted recipe does not name, and the
+    speed run in one it names.
+
+    Returns:
+        The request, the heading run and the speed run.
+    """
+    old = run_pipeline(dataset, speed_heading_recipe())
+    heading, speed = run_id_of(old, "heading"), run_id_of(old, "speed")
+    request = _submit(dataset, speed_recipe_stepping(2), retire=(old.recipe_digest,))
+    assert request.cleanup is not None
+    assert {target.run_id for target in request.cleanup.approved} == {heading, speed}
+    return request, heading, speed
+
+
+def _name_outside_every_request(dataset: Dataset, storage: str, run_id: str) -> str:
+    """Record a feature attempt that belongs to no request and names *run_id*."""
+    return record_open_attempt(dataset, run_id, target=storage)
+
+
+def _end_attempt(dataset: Dataset, execution_id: str) -> None:
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.finished()
+
+
+def _kept(outcome: CleanupOutcome) -> dict[str, str]:
+    return {run_id: reason for _, run_id, reason in outcome.kept}
+
+
+def test_an_approved_run_an_ended_outside_attempt_named_is_no_longer_a_candidate(
+    dataset: Dataset, lapsed_request_holds: None
+) -> None:
+    request, heading, speed = _retiring_submission(dataset)
+    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+    _run_steps(dataset, request)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert request.cleanup is not None
+    assert (outcome.status, outcome.execution_id) == (
+        "finished",
+        request.cleanup.execution_id,
+    )
+    assert _kept(outcome) == {heading: "no_longer_candidate"}
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+    assert not _exists(dataset, speed)
+    status = request_status_wire(dataset.base_dir, request)
+    assert status.cleanup is not None
+    [kept] = status.cleanup.kept
+    assert (kept.run_id, kept.reason) == (heading, "no_longer_candidate")
+
+
+def test_an_approved_run_an_open_outside_attempt_names_is_kept_attempt_open(
+    dataset: Dataset, lapsed_request_holds: None
+) -> None:
+    request, heading, speed = _retiring_submission(dataset)
+    _ = _name_outside_every_request(dataset, HEADING, heading)
+    _run_steps(dataset, request)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _kept(outcome) == {heading: "attempt_open"}
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+    assert not _exists(dataset, speed)
+
+
+def test_an_approved_run_whose_outside_attempt_ended_during_the_cleanup_is_kept_open(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch, lapsed_request_holds: None
+) -> None:
+    """The attempt was open when the cleanup began and ended before the removal."""
+    request, heading, _ = _retiring_submission(dataset)
+    attempt = _name_outside_every_request(dataset, HEADING, heading)
+    _run_steps(dataset, request)
+    _during_cleanup(monkeypatch, lambda: _end_attempt(dataset, attempt))
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _kept(outcome) == {heading: "attempt_open"}
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+
+
+def test_an_interrupted_removal_of_a_run_that_left_the_candidates_is_not_finished(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch, lapsed_request_holds: None
+) -> None:
+    """Its rows remain, so it is judged as an indexed run, not as a removal to finish."""
+    import pandas as pd
+
+    from mosaic.core.pipeline.index import FeatureIndexRow
+    from mosaic.core.pipeline.index_csv import IndexCSV
+
+    request, heading, _ = _retiring_submission(dataset)
+    _run_steps(dataset, request)
+    drop_runs = IndexCSV[FeatureIndexRow].drop_runs
+
+    def killed_at_heading(
+        index: IndexCSV[FeatureIndexRow],
+        run_ids: Iterable[str],
+        *,
+        dry_run: bool = False,
+    ) -> pd.DataFrame:
+        listed = list(run_ids)
+        if heading in listed:
+            raise _Killed("drop_runs")
+        return drop_runs(index, listed, dry_run=dry_run)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(IndexCSV, "drop_runs", killed_at_heading)
+        with pytest.raises(_Killed):
+            _ = run_cleanup(dataset, request, token=CancelToken())
+    assert request.cleanup is not None
+    states = {
+        record["run_id"]: record["state"]
+        for record in read_removal_records(
+            run_log_dir(dataset.base_dir), request.cleanup.execution_id
+        )
+    }
+    assert states[heading] == "interrupted"
+    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _kept(outcome) == {heading: "no_longer_candidate"}
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+
+
+def test_an_approved_run_that_left_the_candidates_is_kept_for_a_run_reading_it(
+    dataset: Dataset, lapsed_request_holds: None
+) -> None:
+    request, heading, _ = _retiring_submission(dataset)
+    reader = run_pipeline(dataset, _heading_reader())
+    templates = run_id_of(reader, "templates")
+    _end_attempt(dataset, _name_outside_every_request(dataset, HEADING, heading))
+    _run_steps(dataset, request)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _kept(outcome) == {heading: "read_by"}
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+    status = request_status_wire(dataset.base_dir, request)
+    assert status.cleanup is not None
+    [kept] = status.cleanup.kept
+    assert templates in kept.detail
+
+
+def _heading_reader() -> Recipe:
+    """``heading`` and an ``extract-templates`` step that reads its run."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "reader",
+            "steps": [
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "params": {},
+                },
+                {
+                    "id": "templates",
+                    "type": "feature",
+                    "feature": "extract-templates",
+                    "inputs": [{"step": "heading"}],
+                    "params": {"n_templates": 4},
+                },
+            ],
+        }
+    )
+
+
+def test_an_approved_run_gone_from_the_index_is_absent(dataset: Dataset) -> None:
+    from mosaic.core.pipeline.index import feature_index, feature_index_path
+
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+    _ = feature_index(feature_index_path(dataset, STORAGE)).drop_runs({old})
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _kept(outcome) == {old: "absent"}
+
+
+def test_an_interrupted_removal_whose_rows_remain_is_judged_as_a_candidate(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline.index_csv import IndexCSV
+
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+    assert request.cleanup is not None
+
+    def killed(*_: object, **__: object) -> None:
+        raise _Killed("drop_runs")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(IndexCSV, "drop_runs", killed)
+        with pytest.raises(_Killed):
+            _ = run_cleanup(dataset, request, token=CancelToken())
+    [record] = read_removal_records(
+        run_log_dir(dataset.base_dir), request.cleanup.execution_id
+    )
+    assert record["state"] == "interrupted"
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.kept == ()
+    assert [removed.run_id for removed in outcome.removed] == [old]
+    assert not _exists(dataset, old)

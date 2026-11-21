@@ -493,8 +493,8 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   records no step. It removes only the approved runs that are still removable. Before
   each removal it rereads the attempts that may still run or ended since it began, an
   attempt that has not named its run among them, and the requests submitted since
-  (`_Watch`), and it begins that watch before it judges the runs. It records every run
-  in its own run-log (`kind` `feature-cleanup`). `request_rollup` reads `running` until that
+  (`RemovalWatch`), and it begins that watch before it judges the runs. It records every
+  run in its own run-log (`kind` `feature-cleanup`). `request_rollup` reads `running` until that
   run-log ends, and a failed or cancelled cleanup leaves the verdict to the steps.
   `request_verdict` reads the steps alone, because mosaic-api calls it. A killed
   driver leaves the request `orphaned`, and a resume finishes the cleanup. A queue
