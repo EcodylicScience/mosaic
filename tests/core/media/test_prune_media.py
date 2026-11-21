@@ -34,6 +34,8 @@ from mosaic.core.pipeline.store_export import (
     export_recipe_hash,
 )
 
+from tests.helpers import copy_of, link_forms, raw_source
+
 UUID_A = "11111111-1111-4111-8111-111111111111"
 UUID_B = "22222222-2222-4222-8222-222222222222"
 
@@ -1000,3 +1002,24 @@ def test_a_decline_exits_zero_and_says_why(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "declined" in result.stdout
     assert "would delete" not in result.stdout
+
+
+@link_forms
+def test_a_copy_keeps_the_sources_derivatives_and_the_adopted_rows(
+    tmp_path: Path, relative: bool
+) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy", relative=relative)
+    source_files = sorted((source.get_root("media") / "transcode").iterdir())
+    index_path = copy.get_root("media") / "index.csv"
+    adopted = read_media_index(index_path)
+    assert len(adopted) == 4
+
+    report = copy.prune_media(
+        apply=True, min_age_hours=0.0, relink=True, include_stray=True
+    )
+
+    assert sorted((source.get_root("media") / "transcode").iterdir()) == source_files
+    assert read_media_index(index_path) == adopted
+    assert {entry.verdict for entry in report.entries} == {"outside_kind_directory"}
+    assert len(report.of("outside_kind_directory")) == 4

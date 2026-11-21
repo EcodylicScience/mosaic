@@ -442,6 +442,22 @@ def _sources_for(
     ]
 
 
+def _names_recipe_output(
+    ds: "Dataset", cell: str, dest: Path, media_root: Path
+) -> bool:
+    """Whether *cell* names an existing file called *dest*'s name.
+
+    The file name holds the source uuid, the recipe hash and the target, so a
+    file of that name is this recipe's output wherever it lies, including in
+    another dataset that this one adopted the cell from. The cell is read
+    against *media_root* when it is relative.
+    """
+    if not cell:
+        return False
+    named = ds.resolve_path(cell, media_root)
+    return named.name == dest.name and named.is_file()
+
+
 def _source_uuids_for(ds: "Dataset", entry: tuple[str, str]) -> list[str]:
     """Every source's identity for one entry, read from the index rather than probed.
 
@@ -638,10 +654,13 @@ class TranscodeOp(Op[TranscodeParams]):
                 transcode_root / f"{source_uuids[i]}.{recipe_hash}.{params.target}.mp4"
             )
 
-            already_linked = derivative_cell(
-                row_mapping(row), params.target
-            ) == relative_to_anchor(dest, media_root)
-            if dest.exists() and already_linked and not overwrite:
+            cell = derivative_cell(row_mapping(row), params.target)
+            already_linked = dest.exists() and cell == relative_to_anchor(
+                dest, media_root
+            )
+            if (
+                already_linked or _names_recipe_output(ds, cell, dest, media_root)
+            ) and not overwrite:
                 # The name carries the whole recipe, so an existing file at this
                 # path is this recipe's output. The link is checked too, and it
                 # is a completion marker only because registration writes the
@@ -654,6 +673,9 @@ class TranscodeOp(Op[TranscodeParams]):
                 # fresh read, and that is correct: each source's own link is
                 # written after its own iteration, so no earlier iteration can
                 # have changed this row's cell.
+                #
+                # A cell naming another dataset's derivative, as an adopted row
+                # does, is reused as it stands and nothing is written.
                 ctx.progress.on_phase(
                     "transcode", f"{group}/{sequence}[{i}]: {params.target} reused"
                 )

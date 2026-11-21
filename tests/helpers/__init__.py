@@ -42,6 +42,8 @@ What lives where:
   predict-frames run and its index row.
 - ``frame_selections`` writes an entry's ``selection.parquet`` of a select-frames
   run and its index row.
+- ``linked``: a source dataset holding raw rows of every kind, and a copy of it
+  that links it and adopts those rows.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -428,6 +430,13 @@ from tests.helpers.labels import (
     write_listed_entries,
     write_predictions,
     write_sparse_labels,
+)
+from tests.helpers.linked import (
+    SOURCE_ENTRIES,
+    SUPERSEDED_RECIPE,
+    copy_of,
+    link_forms,
+    raw_source,
 )
 from tests.helpers.lightning_action import (
     LA_CLASS_NAMES,
@@ -913,6 +922,11 @@ __all__ = [
     "synthetic_dataset",
     "track_table",
     "tag_table",
+    "SOURCE_ENTRIES",
+    "SUPERSEDED_RECIPE",
+    "copy_of",
+    "link_forms",
+    "raw_source",
     "tree_snapshot",
     "ultralytics_probe_response",
     "unpickling_member",

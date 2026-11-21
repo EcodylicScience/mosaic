@@ -240,6 +240,7 @@ from .pipeline.labels_identity import (
     write_labels_variant,
 )
 from .pipeline.composition import (
+    SequenceComposition,
     labels_raw_composition,
     media_composition,
     tracks_raw_composition,
@@ -256,9 +257,11 @@ from .pipeline.label_series_index import (
     write_label_series_rows,
 )
 from .pipeline.sequence_index import (
+    SEQUENCE_LABEL_COLUMNS,
     SequenceLabelRow,
     SourceRoot,
     amend_sequence_labels,
+    read_sequence_index,
     read_sequence_labels,
     sequence_index_path,
     sequence_label_path,
@@ -724,6 +727,16 @@ def _dataset_base_dir(ds) -> Path:
         base = Path(ds.get_root("features")).parent.resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _refuse_adopting_into(index_path: Path) -> None:
+    """Refuse to adopt raw rows into *index_path* when it already has a row."""
+    if _read_media_index(index_path):
+        msg = (
+            f"{index_path} already has rows; raw rows are adopted only into a "
+            "dataset that has none"
+        )
+        raise ValueError(msg)
 
 
 def _unresolved_root_message(
@@ -3310,6 +3323,220 @@ class Dataset:
             )
             raise LinkMismatchError(msg)
         return target
+
+    def adopt_raw_rows(
+        self,
+        source: Dataset,
+        *,
+        entries: Collection[tuple[str, str]] | None = None,
+    ) -> dict[str, int]:
+        """Write this dataset's raw index rows to name *source*'s raw files.
+
+        Establishes a new dataset's raw state from a dataset it links. The rows
+        of *source*'s ``media_raw``, ``tracks_raw`` and ``labels_raw`` indexes
+        are written into this dataset's, each index atomically under its lock and
+        followed by that root's ``sequences.csv`` with *source*'s recorded
+        compositions. The derivative rows of *source*'s ``media/index.csv`` that
+        an adopted ``analysis_derivative_path`` or ``playback_derivative_path``
+        cell names follow, so an analysis read finds the derivative's facts
+        here, and then the dataset-level ``sequences.csv`` with *source*'s
+        labels. Label series stay a linked kind and are not written.
+
+        Each cell names *source*'s file in the form of this dataset's link to
+        it. Under a relative link, a file inside *source* is stored relative to
+        the cell's anchor (the base directory for an ``abs_path``, the ``media``
+        root for a derivative link cell), so datasets that move together keep
+        resolving. Under an absolute link, and for a file outside *source* such
+        as one of a scan source, the absolute path is stored, which a path map
+        repairs after the source moves.
+
+        Args:
+            source: The dataset whose raw rows are adopted.
+            entries: The ``(group, sequence)`` keys to adopt, or ``None`` for
+                every row. The compositions, labels and derivative rows written
+                are those of the adopted sequences.
+
+        Returns:
+            The rows written per index: ``media_raw``, ``tracks_raw``,
+            ``labels_raw`` and ``media``.
+
+        Raises:
+            ValueError: If *source* has this dataset's ``uuid``, no link of this
+                dataset records *source*'s ``uuid``, either dataset's media root
+                is not ``media_raw``, or one of the indexes written already has
+                a row. Nothing is written then.
+        """
+        from mosaic.core.media.prune import LINK_COLUMNS
+        from mosaic.core.pipeline.transcode import relative_to_anchor
+
+        link = self._link_to_adopt_from(source)
+        indexes = {
+            root: self.get_root(root) / "index.csv"
+            for root in ("media_raw", "tracks_raw", "labels_raw", "media")
+        }
+        for path in indexes.values():
+            _refuse_adopting_into(path)
+
+        wanted = None if entries is None else set(entries)
+
+        def adopted(row: Mapping[str, object]) -> bool:
+            entry = (str(row.get("group", "")), str(row.get("sequence", "")))
+            return wanted is None or entry in wanted
+
+        source_base = _dataset_base_dir(source)
+        source_media = source.get_root("media")
+        base = _dataset_base_dir(self)
+        media_anchor = self.get_root("media").resolve()
+        relative = not user_path(link.path).is_absolute()
+
+        def stored(resolved: Path, anchor: Path) -> str:
+            if relative and resolved.resolve().is_relative_to(source_base):
+                return relative_to_anchor(resolved, anchor)
+            return str(resolved)
+
+        live: set[Path] = set()
+        media_rows: list[dict[str, object]] = []
+        for record in _read_media_index(source.get_root("media_raw") / "index.csv"):
+            if not adopted(record):
+                continue
+            row: dict[str, object] = dict(record)
+            row["abs_path"] = stored(source.resolve_path(record["abs_path"]), base)
+            for column in LINK_COLUMNS:
+                cell = read_link_cell(record, column)
+                if cell:
+                    derivative = source.resolve_path(cell, source_media)
+                    live.add(derivative.resolve())
+                    row[column] = stored(derivative, media_anchor)
+            media_rows.append(row)
+        raw_rows: dict[SourceRoot, list[dict[str, object]]] = {}
+        for root in ("tracks_raw", "labels_raw"):
+            raw_rows[root] = [
+                {
+                    **record,
+                    "abs_path": stored(source.resolve_path(record["abs_path"]), base),
+                }
+                for record in _read_tracks_raw_index(
+                    source.get_root(root) / "index.csv"
+                )
+                if adopted(record)
+            ]
+        derivative_rows: list[dict[str, object]] = []
+        for record in _read_media_index(source_media / "index.csv"):
+            if not record.get("abs_path"):
+                continue
+            resolved = source.resolve_path(record["abs_path"])
+            if resolved.resolve() in live:
+                derivative_rows.append({**record, "abs_path": stored(resolved, base)})
+
+        if media_rows:
+            with index_lock(indexes["media_raw"]):
+                _refuse_adopting_into(indexes["media_raw"])
+                write_media_index_rows(
+                    indexes["media_raw"], frame_from_rows(media_rows)
+                )
+            self._adopt_compositions(source, "media_raw", media_rows)
+        for root, rows in raw_rows.items():
+            if not rows:
+                continue
+            with index_lock(indexes[root]):
+                _refuse_adopting_into(indexes[root])
+                write_tracks_raw_index_rows(
+                    indexes[root], _tracks_frame_from_rows(rows)
+                )
+            self._adopt_compositions(source, root, rows)
+        if derivative_rows:
+            with index_lock(indexes["media"]):
+                _refuse_adopting_into(indexes["media"])
+                write_media_index_rows(
+                    indexes["media"], frame_from_rows(derivative_rows)
+                )
+        self._adopt_sequence_labels(source, adopted)
+        return {
+            "media_raw": len(media_rows),
+            "tracks_raw": len(raw_rows["tracks_raw"]),
+            "labels_raw": len(raw_rows["labels_raw"]),
+            "media": len(derivative_rows),
+        }
+
+    def _link_to_adopt_from(self, source: Dataset) -> DatasetLink:
+        """This dataset's link to *source*, refusing a source rows cannot come from.
+
+        Raises:
+            ValueError: If *source* has this dataset's ``uuid``, no link records
+                *source*'s ``uuid``, or either dataset's media root is not
+                ``media_raw``.
+        """
+        if source.uuid == self.uuid:
+            msg = (
+                f"dataset {source.uuid} has this dataset's uuid; a dataset "
+                "cannot adopt its own raw rows"
+            )
+            raise ValueError(msg)
+        link = next(
+            (link for link in self.links if source.uuid and link.uuid == source.uuid),
+            None,
+        )
+        if link is None:
+            msg = (
+                f"no link of this dataset records dataset {source.uuid} "
+                f"({source.name!r}); declare a link to it before adopting its "
+                "raw rows"
+            )
+            raise ValueError(msg)
+        for dataset in (source, self):
+            if dataset.resolve_media_root() != "media_raw":
+                msg = (
+                    f"dataset {dataset.name!r} keeps its originals under 'media' "
+                    "beside its derivatives, with no 'media_raw' index of "
+                    "originals to adopt"
+                )
+                raise ValueError(msg)
+        return link
+
+    def _adopt_compositions(
+        self,
+        source: Dataset,
+        root: SourceRoot,
+        rows: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Write *root*'s ``sequences.csv`` with *source*'s recorded compositions.
+
+        Only the sequences of *rows* are written. Called after the index write
+        and outside its lock, the order
+        :mod:`mosaic.core.pipeline.sequence_index` requires.
+        """
+        sequences = {
+            (str(row.get("group", "")), str(row.get("sequence", ""))) for row in rows
+        }
+        recorded = read_sequence_index(source, root)
+        compositions = {
+            (str(row["group"]), str(row["sequence"])): SequenceComposition(
+                digest=str(row["composition"]),
+                member_count=int(str(row["member_count"]) or 0),
+            )
+            for _, row in recorded.iterrows()
+            if (str(row["group"]), str(row["sequence"])) in sequences
+        }
+        _ = write_sequence_compositions(self, root, compositions=compositions)
+
+    def _adopt_sequence_labels(
+        self, source: Dataset, adopted: Callable[[Mapping[str, object]], bool]
+    ) -> None:
+        """Record *source*'s label of each sequence that *adopted* accepts."""
+        labels = read_sequence_labels(source)
+        rows = {
+            (row.group, row.sequence): row
+            for row in (
+                SequenceLabelRow(
+                    **{column: str(cells[column]) for column in SEQUENCE_LABEL_COLUMNS}
+                )
+                for cells in labels.to_dict("records")
+            )
+            if adopted({"group": row.group, "sequence": row.sequence})
+        }
+        amend_sequence_labels(
+            self, sorted(rows), lambda row: rows[(row.group, row.sequence)]
+        )
 
     # ---- Declared scan sources ----
 

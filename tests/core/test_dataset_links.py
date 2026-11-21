@@ -13,9 +13,12 @@ library serve many projects under one identity.
 from __future__ import annotations
 
 import errno
+import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
+from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, LinkMismatchError
 from mosaic.core.manifest import (
@@ -24,9 +27,27 @@ from mosaic.core.manifest import (
     MediaScanSource,
     read_manifest,
 )
+from mosaic.core.media.facts_columns import derivative_cell, derivative_path_for_target
+from mosaic.core.media.prune import LINK_COLUMNS
 from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
+from mosaic.core.pipeline.composition import (
+    labels_raw_composition,
+    media_composition,
+    tracks_raw_composition,
+)
 from mosaic.core.pipeline.error_envelope import error_envelope
+from mosaic.core.pipeline.media_index import media_members_from_rows, read_media_index
 from mosaic.core.pipeline.ops import ModelReference, registered_op
+from mosaic.core.pipeline.sequence_index import (
+    SourceRoot,
+    read_sequence_index,
+    read_sequence_labels,
+)
+from mosaic.core.pipeline.tracks_raw_index import (
+    TracksRawIndexScope,
+    read_tracks_raw_index,
+    source_members_from_rows,
+)
 from mosaic.tracking import register_ops
 from mosaic.tracking.model_refs import (
     ModelNotFoundError,
@@ -38,11 +59,17 @@ from mosaic.tracking.model_refs import (
     resolve_op_model,
 )
 from tests.helpers import (
+    SUPERSEDED_RECIPE,
     MediaClip,
+    assert_tree_unchanged,
+    copy_of,
+    link_forms,
     make_dataset,
+    raw_source,
     register_sleap_model,
     register_trained_model,
     revision_file,
+    tree_snapshot,
     write_media_index,
 )
 
@@ -748,3 +775,290 @@ def test_a_file_source_that_really_declares_a_walk_is_still_refused() -> None:
         _ = MediaScanSource(
             id="pilot", path="/footage", files=("a.mp4",), extensions=(".mkv",)
         )
+
+
+# --- raw rows -----------------------------------------------------------------
+
+RAW_ROOTS: tuple[SourceRoot, ...] = ("media_raw", "tracks_raw", "labels_raw")
+"""The roots whose per-file index a copy adopts, in write order."""
+
+COMPOSITION_COLUMNS = [
+    "group",
+    "sequence",
+    "composition",
+    "member_count",
+    "identity_scheme",
+]
+"""The cells of a ``sequences.csv`` row that a copy carries over.
+
+``computed_at`` records when a row was written and is left out.
+"""
+
+
+def _index_rows(ds: Dataset, root: str) -> list[dict[str, str]]:
+    path = ds.get_root(root) / "index.csv"
+    if root in ("media", "media_raw"):
+        return read_media_index(path)
+    return read_tracks_raw_index(path)
+
+
+def _assert_stored_form(
+    cell: str, target: Path, anchor: Path, *, relative: bool
+) -> None:
+    """*cell* names *target*, relative to *anchor* under a relative link."""
+    if relative:
+        expected = target.relative_to(anchor.resolve(), walk_up=True).as_posix()
+        assert cell == expected, "a relative link stores a path from the copy"
+        assert not Path(cell).is_absolute()
+    else:
+        assert cell == str(target), "an absolute link stores the absolute path"
+
+
+def _derivative(ds: Dataset, row: dict[str, str], target: Target) -> Path:
+    path = derivative_path_for_target(row, target, ds.get_root("media"))
+    assert path is not None, f"{row['name']} has no {target} derivative"
+    return path.resolve()
+
+
+def test_adopting_returns_the_rows_written_per_index(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="../source"))
+
+    written = copy.adopt_raw_rows(source)
+
+    assert written == {"media_raw": 2, "tracks_raw": 2, "labels_raw": 2, "media": 4}
+
+
+@link_forms
+def test_adopted_raw_rows_name_the_sources_files(
+    tmp_path: Path, relative: bool
+) -> None:
+    source = raw_source(tmp_path / "source")
+
+    copy = copy_of(source, tmp_path / "copy", relative=relative)
+
+    for root in RAW_ROOTS:
+        theirs = _index_rows(source, root)
+        ours = _index_rows(copy, root)
+        assert len(ours) == len(theirs) == 2, root
+        for mine, original in zip(ours, theirs, strict=True):
+            target = source.resolve_path(original["abs_path"]).resolve()
+            assert copy.resolve_path(mine["abs_path"]).resolve() == target
+            _assert_stored_form(
+                mine["abs_path"], target, copy.base_dir, relative=relative
+            )
+            kept = set(original) - {"abs_path", *LINK_COLUMNS}
+            assert {k: mine[k] for k in kept} == {k: original[k] for k in kept}
+        own = read_sequence_index(copy, root)[COMPOSITION_COLUMNS]
+        recorded = read_sequence_index(source, root)[COMPOSITION_COLUMNS]
+        pd.testing.assert_frame_equal(own, recorded)
+
+    media = media_members_from_rows(
+        [dict(row) for row in _index_rows(copy, "media_raw")]
+    )
+    tracks = source_members_from_rows(
+        [dict(row) for row in _index_rows(copy, "tracks_raw")]
+    )
+    labels = source_members_from_rows(
+        [dict(row) for row in _index_rows(copy, "labels_raw")]
+    )
+    recomputed: dict[SourceRoot, dict[tuple[str, str], str]] = {
+        "media_raw": {key: media_composition(m).digest for key, m in media.items()},
+        "tracks_raw": {
+            key: tracks_raw_composition(m).digest for key, m in tracks.items()
+        },
+        "labels_raw": {
+            key: labels_raw_composition(m).digest for key, m in labels.items()
+        },
+    }
+    for root, digests in recomputed.items():
+        recorded = read_sequence_index(source, root)
+        assert digests == {
+            (str(row["group"]), str(row["sequence"])): str(row["composition"])
+            for _, row in recorded.iterrows()
+        }, root
+        assert all(digests.values()), f"{root} compositions are established"
+
+    pd.testing.assert_frame_equal(
+        read_sequence_labels(copy), read_sequence_labels(source)
+    )
+    assert copy.display_name("g", "s1") == "Sequence s1"
+
+
+@link_forms
+def test_adopted_derivative_cells_and_rows_name_the_sources_derivatives(
+    tmp_path: Path, relative: bool
+) -> None:
+    source = raw_source(tmp_path / "source")
+
+    copy = copy_of(source, tmp_path / "copy", relative=relative)
+
+    live: set[Path] = set()
+    targets: tuple[Target, ...] = ("analysis", "playback")
+    for mine, original in zip(
+        _index_rows(copy, "media_raw"), _index_rows(source, "media_raw"), strict=True
+    ):
+        for target in targets:
+            theirs = _derivative(source, original, target)
+            assert theirs.is_file()
+            assert _derivative(copy, mine, target) == theirs
+            _assert_stored_form(
+                derivative_cell(mine, target),
+                theirs,
+                copy.get_root("media"),
+                relative=relative,
+            )
+            live.add(theirs)
+
+    rows = _index_rows(copy, "media")
+    by_file = {copy.resolve_path(row["abs_path"]).resolve(): row for row in rows}
+    assert set(by_file) == live, "one row per live derivative"
+    assert SUPERSEDED_RECIPE not in {row["recipe_hash"] for row in rows}
+    originals = {
+        source.resolve_path(row["abs_path"]).resolve(): row
+        for row in _index_rows(source, "media")
+    }
+    for path, row in by_file.items():
+        assert row["recipe_hash"] == originals[path]["recipe_hash"]
+        assert row["recipe_hash"]
+        _assert_stored_form(row["abs_path"], path, copy.base_dir, relative=relative)
+
+
+def test_a_link_stored_from_the_home_directory_counts_as_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = raw_source(tmp_path / "source")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="~/source"))
+
+    _ = copy.adopt_raw_rows(source)
+
+    cells = [row["abs_path"] for root in RAW_ROOTS for row in _index_rows(copy, root)]
+    cells += [row["abs_path"] for row in _index_rows(copy, "media")]
+    cells += [
+        derivative_cell(row, target)
+        for row in _index_rows(copy, "media_raw")
+        for target in ("analysis", "playback")
+    ]
+    assert cells
+    assert all(Path(cell).is_absolute() for cell in cells), cells
+
+
+@link_forms
+def test_a_raw_file_outside_the_source_stays_absolute(
+    tmp_path: Path, relative: bool
+) -> None:
+    source = raw_source(tmp_path / "source")
+    outside = tmp_path / "elsewhere" / "s3"
+    outside.mkdir(parents=True)
+    _ = (outside / "s3.npy").write_bytes(b"s3")
+    _ = source.write_tracks_raw_index(
+        [
+            TracksRawIndexScope(
+                directory=outside, group="g", sequence="s3", src_format="trex_npz"
+            )
+        ],
+        patterns="*.npy",
+    )
+    stored = {
+        row["sequence"]: row["abs_path"] for row in _index_rows(source, "tracks_raw")
+    }
+    assert Path(stored["s3"]).is_absolute(), "a scan source's file is stored absolute"
+
+    copy = copy_of(source, tmp_path / "copy", relative=relative)
+
+    cells = {
+        row["sequence"]: row["abs_path"] for row in _index_rows(copy, "tracks_raw")
+    }
+    assert cells["s3"] == str((outside / "s3.npy").resolve())
+    assert copy.resolve_path(cells["s3"]) == source.resolve_path(stored["s3"])
+    assert Path(cells["s1"]).is_absolute() is not relative
+
+
+def test_entries_adopt_only_the_named_sequences(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+
+    copy = copy_of(source, tmp_path / "copy", entries={("g", "s1")})
+
+    for root in (*RAW_ROOTS, "media"):
+        assert {(row["group"], row["sequence"]) for row in _index_rows(copy, root)} == {
+            ("g", "s1")
+        }, root
+    assert len(_index_rows(copy, "media")) == 2, "the two derivatives of s1"
+    for root in RAW_ROOTS:
+        recorded = read_sequence_index(source, root)
+        expected = recorded[recorded["sequence"] == "s1"][COMPOSITION_COLUMNS]
+        pd.testing.assert_frame_equal(
+            read_sequence_index(copy, root)[COMPOSITION_COLUMNS],
+            expected.reset_index(drop=True),
+        )
+    labels = read_sequence_labels(copy)
+    assert list(zip(labels["group"], labels["sequence"], strict=True)) == [("g", "s1")]
+
+
+def _refuses_without_writing(copy: Dataset, source: Dataset, match: str) -> None:
+    before = tree_snapshot(copy.base_dir)
+    source_before = tree_snapshot(source.base_dir)
+
+    with pytest.raises(ValueError, match=match):
+        _ = copy.adopt_raw_rows(source)
+
+    assert_tree_unchanged(copy.base_dir, before)
+    assert_tree_unchanged(source.base_dir, source_before)
+
+
+@pytest.mark.parametrize("root", [*RAW_ROOTS, "media"])
+def test_adopting_into_an_index_that_has_a_row_is_refused(
+    tmp_path: Path, root: str
+) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="../source"))
+    _ = shutil.copyfile(
+        source.get_root(root) / "index.csv", copy.get_root(root) / "index.csv"
+    )
+
+    _refuses_without_writing(copy, source, "already has")
+
+
+def test_adopting_from_a_dataset_with_the_same_uuid_is_refused(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = make_dataset(tmp_path / "copy", uuid=source.uuid)
+
+    _refuses_without_writing(copy, source, "uuid")
+
+
+def test_adopting_without_a_link_to_the_source_is_refused(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+    other = make_dataset(tmp_path / "other")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="other", path="../other"))
+    assert other.uuid != source.uuid
+
+    _refuses_without_writing(copy, source, "no link")
+
+
+@pytest.mark.parametrize("without", ["source", "copy"])
+def test_a_dataset_whose_media_root_is_not_media_raw_is_refused(
+    tmp_path: Path, without: str
+) -> None:
+    source = raw_source(tmp_path / "source")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="../source"))
+    legacy = source if without == "source" else copy
+    legacy.roots = {
+        key: value for key, value in legacy.roots.items() if key != "media_raw"
+    }
+
+    _refuses_without_writing(copy, source, "media_raw")
+
+
+def test_a_copy_writes_no_label_series_index(tmp_path: Path) -> None:
+    source = raw_source(tmp_path / "source")
+    assert list(source.get_root("labels_raw").glob("*/index.csv"))
+
+    copy = copy_of(source, tmp_path / "copy")
+
+    assert list(copy.get_root("labels_raw").glob("*/index.csv")) == []

@@ -47,6 +47,28 @@ mount, now reads as unreachable, where only `FileNotFoundError` did before.
 kind skipped. The warning for an unreachable link names the kinds it provides, and is
 printed once while the link stays unreachable.
 
+`Dataset.adopt_raw_rows(source, *, entries=None)` writes a new dataset's `media_raw`,
+`tracks_raw` and `labels_raw` index rows to name `source`'s raw files, with each root's
+`sequences.csv` holding `source`'s recorded compositions and the dataset-level
+`sequences.csv` holding `source`'s labels, and returns the rows written per index.
+`entries` names the `(group, sequence)` keys to adopt, every row by default. The adopted
+`analysis_derivative_path` and `playback_derivative_path` cells name `source`'s
+derivatives, and each row of `source`'s `media/index.csv` that such a cell names is
+written into this dataset's, so a copy reads the derivatives in place. Label series
+indexes are not written. It refuses with `ValueError`, writing nothing, when no link of
+the dataset records `source`'s `uuid` (declare the link first), when `source` has the
+dataset's `uuid`, when either dataset's media root is not `media_raw`, and when one of
+the indexes it writes already has a row. A cell naming a file inside `source` is stored
+relative to the dataset under a relative link and absolute under an absolute one, and a
+cell naming a file outside `source`'s base directory stays absolute under either.
+
+The `transcode` op reuses a derivative that a row's link cell names in another dataset
+when the file name equals the one the recipe would write, which is the case for the
+cells `Dataset.adopt_raw_rows` adopts, relative or absolute. It then encodes nothing and
+writes no link cell and no derivative row. A derivative the source later removes is
+encoded into the dataset's own `media/transcode` directory, and the adopted derivative
+rows stay.
+
 `DatasetSummary.libraries`, the `libraries` key of `mosaic describe --json` and of the
 `describe_dataset` tool's output, is `links`.
 

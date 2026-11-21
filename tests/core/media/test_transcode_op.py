@@ -27,7 +27,10 @@ from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.scope import Scope
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
+    copy_of,
     entry_error_lines,
+    link_forms,
+    make_dataset,
     resolved_scope,
     run_fresh,
 )
@@ -346,6 +349,32 @@ def test_an_existing_linked_derivative_is_reused(
     assert dest.stat().st_mtime_ns == first
 
 
+def _spy_on_encodes(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record each destination ``run_transcode`` is asked to encode.
+
+    Each call is then forwarded to the real encoder. *real* is bound as a
+    default so it keeps the open callable type this wrapper forwards to. Read as
+    a module attribute it narrows back to the concrete signature, which a
+    ``*args`` forward cannot satisfy.
+    """
+    import mosaic.core.pipeline.transcode as transcode_module
+
+    encodes: list[Path] = []
+
+    def counted(
+        source: Path,
+        dest: Path,
+        *args: object,
+        real: Callable[..., object] = transcode_module.run_transcode,
+        **kwargs: object,
+    ) -> object:
+        encodes.append(dest)
+        return real(source, dest, *args, **kwargs)
+
+    monkeypatch.setattr(transcode_module, "run_transcode", counted)
+    return encodes
+
+
 def test_overwrite_forces_a_re_encode(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
@@ -364,31 +393,11 @@ def test_overwrite_forces_a_re_encode(
     assertions are needed. One skip and one run together say the gate closed
     and then opened.
     """
-    import mosaic.core.pipeline.transcode as transcode_module
-
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
     params = TranscodeParams(target="analysis")
     _ = run_op(ds, "transcode", params, scope=GS)
 
-    encodes: list[Path] = []
-
-    def counted(
-        source: Path,
-        dest: Path,
-        *args: object,
-        real: Callable[..., object] = transcode_module.run_transcode,
-        **kwargs: object,
-    ) -> object:
-        """Record the destination, then encode it for real.
-
-        *real* is bound as a default so it keeps the open callable type this
-        wrapper forwards to. Read as a module attribute it narrows back to the
-        concrete signature, which a ``*args`` forward cannot satisfy.
-        """
-        encodes.append(dest)
-        return real(source, dest, *args, **kwargs)
-
-    monkeypatch.setattr(transcode_module, "run_transcode", counted)
+    encodes = _spy_on_encodes(monkeypatch)
 
     _ = run_op(ds, "transcode", params, scope=GS)
     assert encodes == [], "the reuse gate must skip an entry already linked"
@@ -440,6 +449,98 @@ def test_a_cancel_during_the_last_encode_is_recorded_as_cancelled(
     assert snapshot["status"] == "cancelled"
     assert snapshot["entries_failed"] == 0
     assert entry_error_lines(ds, "cancelled") == []
+
+
+def _transcoded_copy(
+    tmp_path: Path, *, relative: bool
+) -> tuple[Dataset, Dataset, Path]:
+    """A transcoded source, a copy that adopts its rows, and the derivative."""
+    source, video_uuid = _analysis_required_dataset(tmp_path, make_dataset)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(source, "transcode", params, scope=GS)
+    recipe = transcode_recipe_hash(
+        params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
+    )
+    derivative = (
+        source.get_root("media") / "transcode" / f"{video_uuid}.{recipe}.analysis.mp4"
+    )
+    copy = copy_of(source, (tmp_path / "copy").resolve(), relative=relative)
+    return source, copy, derivative
+
+
+def _first_raw_row(ds: Dataset) -> pd.Series:
+    rows = read_media_index(ds.get_root("media_raw") / "index.csv")
+    return pd.Series(dict(rows[0]))
+
+
+@link_forms
+def test_a_transcode_on_a_copy_reuses_the_adopted_derivative(
+    tmp_path: Path,
+    requires_ffmpeg: None,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: bool,
+) -> None:
+    _source, copy, _derivative = _transcoded_copy(tmp_path, relative=relative)
+    raw_index = copy.get_root("media_raw") / "index.csv"
+    media_index = copy.get_root("media") / "index.csv"
+    raw_before = raw_index.read_bytes()
+    media_before = media_index.read_bytes()
+    encodes = _spy_on_encodes(monkeypatch)
+
+    _ = run_op(
+        copy,
+        "transcode",
+        TranscodeParams(target="analysis"),
+        scope=GS,
+        execution_id="reuse",
+    )
+
+    assert encodes == []
+    assert raw_index.read_bytes() == raw_before
+    assert media_index.read_bytes() == media_before
+    assert not list((copy.get_root("media") / "transcode").glob("*.mp4"))
+    snapshot = reduce_run_log(run_log_path(copy.base_dir, "reuse"))
+    assert snapshot is not None
+    assert snapshot["status"] == "finished"
+    assert snapshot["entries_failed"] == 0
+
+
+@link_forms
+def test_an_analysis_read_on_a_fresh_copy_returns_the_sources_derivative(
+    tmp_path: Path, requires_ffmpeg: None, relative: bool
+) -> None:
+    _source, copy, derivative = _transcoded_copy(tmp_path, relative=relative)
+    route_derivatives, derivative_df = copy.media_routing_context()
+
+    path, facts = copy.route_media_row(
+        "g", "s", _first_raw_row(copy), route_derivatives, derivative_df
+    )
+
+    assert path.resolve() == derivative.resolve()
+    assert facts.frame_count == probe_media(derivative).frame_count
+
+
+@link_forms
+def test_a_derivative_the_source_removed_is_written_into_the_copy(
+    tmp_path: Path, requires_ffmpeg: None, relative: bool
+) -> None:
+    _source, copy, derivative = _transcoded_copy(tmp_path, relative=relative)
+    derivative.unlink()
+    route_derivatives, derivative_df = copy.media_routing_context()
+    with pytest.raises(MediaProbeError, match="does not exist"):
+        _ = copy.route_media_row(
+            "g", "s", _first_raw_row(copy), route_derivatives, derivative_df
+        )
+
+    _ = run_op(copy, "transcode", TranscodeParams(target="analysis"), scope=GS)
+
+    own = list((copy.get_root("media") / "transcode").glob("*.mp4"))
+    assert [path.name for path in own] == [derivative.name]
+    route_derivatives, derivative_df = copy.media_routing_context()
+    path, _facts = copy.route_media_row(
+        "g", "s", _first_raw_row(copy), route_derivatives, derivative_df
+    )
+    assert path.resolve() == own[0].resolve()
 
 
 def test_an_existing_but_unlinked_derivative_is_relinked(

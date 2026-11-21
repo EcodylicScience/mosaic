@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.manifest import TracksScanSource
+from tests.helpers import assert_tree_unchanged, copy_of, raw_source, tree_snapshot
 
 runner = CliRunner()
 VideoWriter = Callable[..., None]
@@ -974,3 +975,21 @@ class TestSourcesOverOneFolder:
         assert "over the same folder" in result.output
         assert "reindex" not in result.output
         assert "prune-media" not in result.output
+
+
+class TestACopy:
+    def test_scan_prune_unsourced_refuses_a_copy_without_writing(
+        self, tmp_path: Path
+    ) -> None:
+        """A copy declares no scan source, so a prune would drop every adopted row."""
+        source = raw_source(tmp_path / "source")
+        copy = copy_of(source, tmp_path / "copy")
+        before = tree_snapshot(copy.base_dir)
+
+        result = runner.invoke(
+            app, ["scan", "-m", str(copy.manifest_path), "--prune-unsourced"]
+        )
+
+        assert result.exit_code != 0
+        assert "no scan sources" in result.output
+        assert_tree_unchanged(copy.base_dir, before)

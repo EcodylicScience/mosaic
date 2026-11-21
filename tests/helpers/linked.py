@@ -1,0 +1,157 @@
+"""A source dataset holding raw rows, and a copy that adopts them through a link."""
+
+from __future__ import annotations
+
+from collections.abc import Collection
+from pathlib import Path
+
+import pytest
+
+from mosaic.core.dataset import Dataset
+from mosaic.core.manifest import DatasetLink
+from mosaic.core.pipeline.media_index import (
+    frame_from_rows,
+    read_media_index,
+    write_media_index_rows,
+)
+from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
+from tests.helpers.datasets import make_dataset
+from tests.helpers.media import MediaClip, add_transcode_derivative, write_media_index
+from tests.helpers.tag_tables import tag_table, write_tags
+
+__all__ = [
+    "SOURCE_ENTRIES",
+    "SUPERSEDED_RECIPE",
+    "copy_of",
+    "link_forms",
+    "raw_source",
+]
+
+SOURCE_ENTRIES: tuple[tuple[str, str], ...] = (("g", "s1"), ("g", "s2"))
+"""The entries :func:`raw_source` holds, in index order."""
+
+SUPERSEDED_RECIPE = "superseded0"
+"""The ``recipe_hash`` of the derivative row of :func:`raw_source` no cell names."""
+
+link_forms = pytest.mark.parametrize(
+    "relative", [True, False], ids=["relative-link", "absolute-link"]
+)
+"""Runs a test once per path form of a link: relative and absolute."""
+
+
+def raw_source(base: Path) -> Dataset:
+    """A saved dataset at *base* holding raw rows of every kind for two sequences.
+
+    Each entry of :data:`SOURCE_ENTRIES` has one video with an analysis and a
+    playback derivative, one raw tracks file, one raw labels file and a display
+    name. ``media/index.csv`` also holds a derivative row of the first video that
+    no cell names, under :data:`SUPERSEDED_RECIPE`, and the ``tags`` series holds
+    one revision. Every stored path is relative to *base*.
+    """
+    source = make_dataset(base, name="source")
+    write_media_index(
+        source,
+        [
+            MediaClip(
+                group=group,
+                sequence=sequence,
+                filename=f"{sequence}.mp4",
+                video_uuid=f"uid-{sequence}",
+            )
+            for group, sequence in SOURCE_ENTRIES
+        ],
+    )
+    _ = source.rebuild_sequence_index("media_raw")
+    for _group, sequence in SOURCE_ENTRIES:
+        for target in ("analysis", "playback"):
+            _ = add_transcode_derivative(source, sequence, target=target)
+    _add_superseded_derivative(source, SOURCE_ENTRIES[0])
+
+    scopes: list[TracksRawIndexScope] = []
+    labels = source.get_root("labels_raw") / "g"
+    labels.mkdir(parents=True)
+    for group, sequence in SOURCE_ENTRIES:
+        tracks = source.get_root("tracks_raw") / group / sequence
+        tracks.mkdir(parents=True)
+        _ = (tracks / f"{sequence}.npy").write_bytes(sequence.encode())
+        scopes.append(
+            TracksRawIndexScope(
+                directory=tracks, group=group, sequence=sequence, src_format="trex_npz"
+            )
+        )
+        _ = (labels / f"{sequence}.csv").write_text(f"{sequence}\n", encoding="utf-8")
+        source.set_display_name(group, sequence, f"Sequence {sequence}")
+    _ = source.write_tracks_raw_index(scopes, patterns="*.npy")
+    _ = source.index_labels_raw(
+        [labels], patterns="*.csv", group_from_path=lambda _path: "g"
+    )
+    _ = write_tags(
+        source,
+        tag_table({SOURCE_ENTRIES[0]: {"site": "a"}}, {"site": "text"}),
+    )
+    return source
+
+
+def _add_superseded_derivative(source: Dataset, entry: tuple[str, str]) -> None:
+    """Write a derivative file of *entry* and its row, named by no cell."""
+    from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
+
+    group, sequence = entry
+    media = source.get_root("media")
+    derivative = (
+        media
+        / TRANSCODE_KIND_DIRECTORY
+        / f"uid-{sequence}.{SUPERSEDED_RECIPE}.playback.mp4"
+    )
+    _ = derivative.write_bytes(b"superseded")
+    index = media / "index.csv"
+    rows: list[dict[str, object]] = [dict(row) for row in read_media_index(index)]
+    row: dict[str, object] = {key: "" for key in rows[0]}
+    row.update(
+        {
+            "name": derivative.name,
+            "group": group,
+            "sequence": sequence,
+            "abs_path": source.relative_to_root(derivative),
+            "source_video_uuid": f"uid-{sequence}",
+            "recipe_hash": SUPERSEDED_RECIPE,
+        }
+    )
+    rows.append(row)
+    write_media_index_rows(index, frame_from_rows(rows))
+
+
+def copy_of(
+    source: Dataset,
+    directory: Path,
+    *,
+    entries: Collection[tuple[str, str]] | None = None,
+    relative: bool = True,
+) -> Dataset:
+    """A new dataset at *directory* that links *source* and adopts its raw rows.
+
+    The copy gets a fresh ``uuid`` and a link named ``source-<uuid>`` that
+    provides every kind. Its path is relative to *directory* when *relative* is
+    true and *source*'s absolute base directory otherwise, the link form that
+    decides how the adopted cells are stored.
+
+    Args:
+        source: The dataset whose raw rows are adopted.
+        directory: Where the copy is made.
+        entries: The ``(group, sequence)`` keys to adopt, or ``None`` for every
+            row.
+        relative: Whether the link names *source* by a relative path.
+
+    Returns:
+        The saved copy.
+    """
+    copy = make_dataset(directory, name=f"copy of {source.name}")
+    path = (
+        source.base_dir.relative_to(copy.base_dir, walk_up=True).as_posix()
+        if relative
+        else str(source.base_dir)
+    )
+    _ = copy.add_link(DatasetLink(id=f"source-{source.uuid}", path=path), save=False)
+    _ = copy.adopt_raw_rows(source, entries=entries)
+    copy.save()
+    return copy
