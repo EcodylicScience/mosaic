@@ -119,6 +119,24 @@ importing `mosaic.tracking` registers neither.
   (`tests/core/pipeline/test_labels_index.py`).
   `overlap_frames` checks the declaration against recorded frame extents
   (`core/pipeline/manifest.py`).
+- `Dataset.lookup_order(kind)` is the one way to read a linked dataset's data. It
+  returns the dataset, then each reachable link that provides the kind. A link opens
+  with `ensure_roots=False` and `opened_as_link`, which limits links to one level. An
+  unreachable link is skipped with one warning and listed by
+  `Dataset.unreachable_links`. No code writes, renames, locks or deletes a path under a
+  link (`tests/meta/test_link_reads.py`).
+- `Dataset.adopt_raw_rows(source)` writes a new dataset's raw rows to name `source`'s
+  files. The link to `source` comes first, and the call raises `ValueError` without it.
+  The stored form follows the link's path. A cell naming a file inside `source` is
+  relative under a relative link and absolute under an absolute one. A cell naming a
+  file outside `source`'s base directory stays absolute under either
+  (`tests/core/test_dataset_links.py`).
+- **A stored path follows one rule.** A dataset's own cells are relative to its base
+  directory. The cells `adopt_raw_rows` writes take the link's form, except a file
+  outside the source's base directory. Every other writer stores a path outside the
+  dataset absolute through `Dataset.relative_to_root`, annotation revisions
+  (`anchored_keypoint_set`) included. A path map repairs an absolute cell and leaves a
+  relative one that names another dataset as it is.
 - `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
   and moved no `MANIFEST_VERSION`, so older code preserves it without enforcing it.
   Read it through `core/splits.py` (`role_of`, `groups_with_role`, `held_out_groups`)

@@ -68,24 +68,28 @@ Which rule applies is declared, never guessed from a folder name: a series direc
 carries a marker file, and a folder you happen to call `keypoints` elsewhere is an
 ordinary folder.
 
-## Libraries: a dataset that holds models
+## Links: a dataset that reads another's derived data
 
 A model trained on annotations from several datasets belongs to none of them. It lives
-in a **library**, which is an ordinary dataset used for that purpose, and other
-datasets **link** it:
+in a **library**, which is an ordinary dataset used for that purpose, and other datasets
+**link** it. A link serves the kinds of derived data that it provides: `models`,
+`features`, `tracks`, `label-series` and `frames`.
 
 ```yaml
 links:
   - id: lab
     path: ../libraries/lab
-    uuid: 6f1c...            # the library's own id, recorded when the link was made
+    uuid: 6f1c...            # the linked dataset's id, recorded when the link was made
     provides: [models]
 ```
 
-A link is to models what a source is to raw files: a declared place outside the
-dataset that it reads and never writes. A model reference that the dataset itself
-cannot resolve is looked up in each linked library, so a model is named by run id the
-same way wherever it is used, and that name does not change when the library moves.
+A link is to derived data what a source is to raw files: a declared place outside the
+dataset that it reads and never writes. A read of a kind that the link provides looks in
+the dataset first, which wins, and then in each link in declaration order. A model
+reference that the dataset itself cannot resolve is looked up in each link that provides
+`models`, so a model is named by run id the same way wherever it is used, and that name
+does not change when the linked dataset moves. A dataset that links the tracks and
+features of another reads them in place and computes only what the other lacks.
 
 Training in a library **copies** the annotated images it uses. That costs disk and buys
 independence: a dataset the library drew from can be archived without breaking any

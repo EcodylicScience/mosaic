@@ -278,7 +278,8 @@ mOKS is not Ultralytics' pose mAP, which uses sigma `1/n_keypoints` unless
 ### Use the model from any dataset
 
 ```bash
-mosaic links add -m /data/mice/dataset.yaml --id lab --path ../../libraries/lab
+mosaic links add -m /data/mice/dataset.yaml --id lab --path ../../libraries/lab \
+  --provides models
 mosaic run -m /data/mice/dataset.yaml --kind infer-pose --params '{"model": "<run_id>"}'
 ```
 

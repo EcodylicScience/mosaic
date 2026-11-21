@@ -213,6 +213,19 @@ A dataset is a directory with `dataset.yaml` and named roots
   holds is telling you to pass a selection. Show the user the caution. A request made
   through a selection cannot be read by a mosaic that predates selections.
   (https://ecodylicscience.github.io/mosaic/dataset/#save-a-selection)
+- To read another dataset's derived data instead of computing it again, link that
+  dataset: `mosaic links add --id ID --path PATH`, or `Dataset.add_link` from Python.
+  `--provides` (repeatable) names the kinds the link serves, from `models`, `features`,
+  `tracks`, `label-series` and `frames`, and every kind by default. The manifest records
+  the link under `links:`, and `mosaic links list` prints the kinds of each link. A link
+  is read and not written, the dataset's data wins over a link's, and a linked dataset
+  answers for its data alone, one level deep. To build a copy on another dataset's raw
+  files, declare the link to the source first, then call
+  `Dataset.adopt_raw_rows(source)`, which refuses without the link. The form of the
+  link's path sets the form of the adopted cells: relative under a relative link and
+  absolute under an absolute one, and absolute under either for a file outside the
+  source's base directory. Give a relative link for datasets that move together.
+  (https://ecodylicscience.github.io/mosaic/dataset/#link-a-dataset)
 - A scan replaces the rows its sources claim and keeps every other row. A files source
   (`mosaic sources add --file ...`) claims only the paths it lists, and indexes each
   that exists, whatever its suffix. A source whose path is missing keeps its rows
@@ -740,8 +753,8 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Annotation revisions (`labels_raw/keypoints/<set>/rev<N>/`) are immutable. A changed
   save becomes a new revision, and an edited revision is refused.
 - Refer to a model by its run id. To use a model trained in another dataset, link that
-  dataset with `mosaic links add`. Do not pass a path into its `models/`.
-  `mosaic models provenance <run_id>` shows what a model was trained on.
+  dataset with `mosaic links add --provides models`. Do not pass a path into its
+  `models/`. `mosaic models provenance <run_id>` shows what a model was trained on.
 - A hand-corrected track set becomes source data through `promote_correction`, as
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/ describes.
 

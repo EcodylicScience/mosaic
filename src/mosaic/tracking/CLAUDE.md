@@ -15,7 +15,16 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
 - **Name a model by its run id.** Across datasets, link the dataset that holds it with
   `links:` instead of a path into another dataset's `models/`. The reference string
   enters the inference identity (`resolve_model` in `tracking/model_refs.py`,
-  `tests/core/test_dataset_links.py`).
+  `tests/core/test_dataset_links.py`). A lookup walks `Dataset.lookup_order("models")`
+  and a training op asks `linked_training_complete` (`ops/trained_models.py`) whether a
+  link finished the run. Neither opens a linked dataset's index by path
+  (`tests/meta/test_link_reads.py`).
+- **The owner of an annotated image is found by its resolved path.** `video_frames_of`
+  (`frame_extraction/frame_runs.py`) gives an image path that resolves outside the image
+  root's directory tree, absolute or through `..`, to the dataset whose manifest is
+  nearest around it (`Dataset.open_enclosing`). A relative path that stays inside the
+  tree belongs to the image root's dataset
+  (`tests/tracking/frame_extraction/test_video_frames_of.py`).
 - **A revision's content is hashed, and its number is not**
   (`tests/tracking/ops/test_prepare_training_data.py`).
 

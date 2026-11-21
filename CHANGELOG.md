@@ -117,6 +117,61 @@ have a reconcilable opener when it looks for paths from another machine, so a co
 absolute link is offline no longer skips the pruning or prints the rewrite advice
 because of the raw rows it adopted. It names each unreachable link on stderr.
 
+A dataset reads feature runs through the links that provide `features`.
+`feature_rows(ds, storage, run_id=None)` (`mosaic.core.pipeline.index`) returns the
+feature index of a storage merged with those of the linked datasets, keyed on
+`(run_id, group, sequence)` with a `link_id` column. An own row shadows a linked row,
+and the `abs_path` of a linked row is absolute. `feature_run_roots(ds, storage, run_id)`
+lists each existing run root in lookup order,
+`feature_run_file(ds, storage, run_id, name)` returns the first run-level file that a
+root contains, and `readable_feature_storages(ds)` lists the storages of the dataset and
+its links. `run_coverage(ds, storage, run_id, target)`
+(`mosaic.core.pipeline.inventory.scan`) measures a run across those roots. A run that
+the dataset and a link each hold in part reads as complete, and a copy serves the
+entries of a linked run from its outputs, counted as written and done. A run's fit
+state, reports and params are read from the first run root that contains them.
+
+The `read_params` keyword of `upstream_runs`, `TracksVariantWalk` and
+`run_tracks_variants` (`mosaic.core.pipeline.inventory.params`) takes a params reader.
+`linked_run_params(ds)` finds each node's `params.json` in a linked dataset, and a
+caller over bare roots keeps its read of the roots. `delete_set` declines a feature run
+or row that a link holds, with a reason naming the link, and deletes only the dataset's
+own.
+
+`SeriesRevision` gains `origin_uuid`, the `uuid` of the dataset that saved the revision.
+A label series reference without an origin resolves through the dataset's links, and a
+copy's first save is numbered after the latest revision that a link holds. A model's
+consumed revisions are found in the holder's series rows and then in the reader's merged
+rows.
+
+A dataset reads frame runs through the links that provide `frames`.
+`frame_rows(ds, method=None)` and `frame_run_file(ds, method, run_id, name)`
+(`mosaic.tracking.frame_extraction.frame_runs`) return the merged index and the first
+run file that a root contains, for a caller such as mosaic-api. The `abs_path` and a
+single-path `video_abs_path` of a linked frames row are absolute, and a JSON array cell
+is kept as stored. `video_frames_of` gives an image path that resolves outside the image
+root's directory tree, absolute or through `..`, to the dataset whose manifest is
+nearest around it, found by `Dataset.open_enclosing(paths)` and
+`enclosing_dataset(path)` (`mosaic.core.dataset_discovery`). That owner is opened with
+`ensure_roots=False`, and its `uuid` is not checked as a link's is.
+
+The inventory lists the runs, variants, frame runs, label series and models of a
+dataset's links, measured over the dataset's target. `ArtifactRecord` gains `link_id`,
+the link of the record's `run_root` when the dataset has no run directory for it and
+`""` otherwise, and `linked_only`, the present entries that only a link has. Neither is
+on the inventory wire. A cleanup is not offered a linked run.
+
+`Op.per_entry` declares that one entry's output depends on that entry alone. A plan
+leaves the entries that only a link covers out of such a step's scope. A copy that adds
+a sequence then tracks or extracts frames for that sequence alone. The four trackers,
+`infer-pose`, `infer-points`, `infer-localizer` and `extract-frames` declare it. An op
+that reads its whole scope to write any entry, such as `assign-identities`, does not.
+
+`plan_pipeline` reports a plan problem at `where` `link_unreachable` for a step whose
+kind an offline link provides. A submission with that problem is refused. A step that a
+running request plans again at its start refuses itself alone, recording
+`recipe_refused`, and the other steps run.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

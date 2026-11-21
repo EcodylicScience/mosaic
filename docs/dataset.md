@@ -828,13 +828,13 @@ A request file that names a selection holds a `selections` key, which an older m
 refuses to read, as it refuses a request that records a cleanup. A request made without
 a selection is the file an older mosaic reads.
 
-## Link a model library
+## Link a dataset
 
-A trained model is named by its run id. To use one that was trained in another
-dataset, link that dataset as a library:
+A dataset can read the derived data of another dataset instead of computing it again.
+Declare the other dataset as a link:
 
 ```bash
-mosaic links add -m dataset.yaml --id lab --path ../libraries/lab
+mosaic links add -m dataset.yaml --id lab --path ../libraries/lab --provides models
 mosaic links list -m dataset.yaml
 ```
 
@@ -845,16 +845,68 @@ links:
   - id: lab
     path: ../libraries/lab
     uuid: 6f1c...
-    provides: [models, features, tracks, label-series, frames]
+    provides: [models]
 ```
 
-A model the dataset does not hold is then looked up in each linked library, so
-`infer-pose --params '{"model": "<run_id>"}'` and a tracker's `detect_model=<run_id>`
-work as they do for a local model. Like a source, a library may sit outside the
-dataset and nothing is written through the link. The link records the library's own
-id, so if a different dataset later appears at that path it is refused instead of
-being used by mistake. See [train one model from several
-datasets](guides/tracking/train-a-pose-model.md#5-train-one-model-from-several-datasets).
+`provides` names the kinds of derived data that the link serves: `models`, `features`,
+`tracks`, `label-series` and `frames`. Repeat `--provides` to name several. A link
+declared without it serves every kind. A read of a kind that the link does not provide
+skips the link, without opening it.
+
+A read looks in the dataset first and then in each link that provides the kind, in the
+order the links are declared. The dataset's data wins: a run, a tracks table or a label
+revision in the dataset shadows the same one in a link, and an earlier link shadows a
+later one. A model that the dataset lacks is looked up in each link that provides
+`models`. `infer-pose --params '{"model": "<run_id>"}'` and a tracker's
+`detect_model=<run_id>` work as they do for a local model. A feature run, a tracks
+variant or a frame run in a link is read in place, and a pipeline reports it done
+instead of running it again. A step that produces each entry independently, such as a
+tracker or a feature run, computes only the entries that no link covers into the
+dataset. A step that reads its whole scope, such as `assign-identities`, computes all
+of it into the dataset.
+
+A link is read and not written. The dataset writes its outputs under its own roots, and
+no path under a linked dataset is created, renamed, locked or removed. Links are
+followed one level deep: a linked dataset answers for its own data, and the links it
+declares are ignored. The link records the linked dataset's `uuid`. A different dataset
+that later appears at that path is refused instead of used.
+
+A linked dataset that cannot be opened, such as a disconnected disk or an unmounted
+share, is offline. Mosaic warns once and reads the rest. It refuses a step with the
+reason `link_unreachable` when the step depends on a kind that an offline link provides,
+because reading the dataset alone would report data as not computed that the link may
+contain. The refusal writes no output. Bring the disk back and run again. A training
+that the dataset or a reachable link already finished is reused while a link is offline.
+
+A dataset that links another reads data that the other removed as absent, and computes
+it again at its next run, into its own roots.
+
+To train one model from several datasets, see
+[train one model from several datasets](guides/tracking/train-a-pose-model.md#5-train-one-model-from-several-datasets).
+
+### Build a dataset on another dataset's raw files
+
+`Dataset.adopt_raw_rows(source, entries=None)` writes the raw index rows of a new
+dataset to name the raw media, tracks and labels of `source`, and the derivatives that
+those media rows name. Declare the link to `source` first:
+
+```python
+from mosaic.core.dataset import open_dataset
+from mosaic.core.manifest import DatasetLink
+
+ds = open_dataset("dataset.yaml")
+source = open_dataset("../source/dataset.yaml")
+ds.add_link(DatasetLink(id="source", path="../source"))
+ds.adopt_raw_rows(source)
+```
+
+The call raises `ValueError` and writes no row when no link names `source`. The form of
+the link's `path` sets the form of the adopted cells. Under a relative link, a cell for
+a file inside the source is stored relative to the new dataset, which suits datasets
+that move together. Under an absolute link it is stored absolute, which suits a source
+on another mount, and a path map repairs it after the source moves. A cell for a file
+outside the source's base directory, such as a file of a scan source, is absolute under
+either form.
 
 ## Describe a dataset
 
