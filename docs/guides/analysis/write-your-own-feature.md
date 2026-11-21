@@ -193,6 +193,15 @@ Start from the per-sequence template above, with these differences:
   `fits` and `costly_fit` from the class, and an instance that sets one runs under a
   different value than it was planned with. `parallelizable`, `scope_dependent`,
   `accepts_overlap`, `emits` and `consumed_roots` are required.
+- **Declare `track_spaces` when the feature reads tracks.** A feature that declares
+  nothing computes in `image_px` and `plane_cm`, and a plan or run over world-frame
+  tracks (`world_m`, meters, `mosaic_world_v1`) refuses it with
+  `schema_family_mismatch`. `define` reads no tracks and cannot see that. Declare
+  `track_spaces = frozenset({"world_m"})` for a feature that reads `Z`. Declare every
+  space (`frozenset(TRACK_SPACES)`, from `mosaic.core.spaces`) only for a feature whose
+  result does not depend on the units or on the number of axes. The per-sequence
+  template declares the two planar spaces, so a feature copied from it stays refused
+  over world-frame tracks until its author widens the set.
 - **Give `temporal_reach` as an int or `None`.** A function of the params and a
   `temporal_reach_by_option` are refused, because planning reads the reach without
   the class.

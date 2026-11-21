@@ -29,6 +29,15 @@ missing inside such a hole when its dtype can hold a missing value, such as
 value. The `prefilter` no longer rejects the first sample after a hole as a fast
 step. No other op or feature run id moves.
 
+## Unreleased: a definition's track-space refusal names its fix
+
+The refusal that a planar step meets over world-frame tracks (`schema_family_mismatch`)
+now adds, for a `def:` feature, that the class declares `track_spaces` and the
+definition is defined again. The per-sequence feature template declares
+`track_spaces = frozenset({"image_px", "plane_cm"})`, says what an undeclared feature
+computes in and when to widen the set. A plan already refuses such a definition before
+it runs, and `define` reads no tracks, so it cannot. No run id moves.
+
 ## Unreleased: the per-sequence feature template reads another feature's output
 
 `feature_template__per_sequence.py` declares `Inputs[TrackInput | Result]` where it

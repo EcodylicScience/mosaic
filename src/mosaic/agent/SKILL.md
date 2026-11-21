@@ -642,6 +642,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   - `parallelizable`, `scope_dependent`, `accepts_overlap`, `emits`, `consumed_roots`,
     `fits` and `costly_fit` as class constants, set outside `__init__`, and
     `temporal_reach` an int or `None`;
+  - `track_spaces` as a class constant when the feature reads tracks, since an
+    undeclared one computes in `image_px` and `plane_cm` only and a plan over
+    world-frame tracks refuses it with `schema_family_mismatch`, which `define` cannot
+    see. Use `frozenset({"world_m"})` for a feature that reads `Z`, and
+    `frozenset(TRACK_SPACES)` (`mosaic.core.spaces`) only for one whose result does not
+    depend on the units or on the number of axes;
   - params with a default on every field, typed from scalars, `Literal`, `list`,
     `tuple`, `dict` with `str` keys, unions of these, toolkit config models such as
     `PoseConfig` and models defined in the file from the same types, with `Declared` and

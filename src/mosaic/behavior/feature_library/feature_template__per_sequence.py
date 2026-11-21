@@ -21,7 +21,7 @@ See SpeedAngvel for a real per-sequence feature.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TrackSpace
 
 from .helpers import feature_columns, meta_columns
 
@@ -80,6 +81,17 @@ class MyPerSequenceFeature:
     # the conservative answer.
     follows_ids: bool = True
     consumed_roots: tuple[str, ...] = ()
+
+    # The coordinate spaces the feature computes in: `image_px`, `plane_cm` and
+    # `world_m` (meters, tracks of `mosaic_world_v1`). Undeclared is this same
+    # planar set, and a run over world-frame tracks is refused with
+    # `schema_family_mismatch`, which `define` cannot see because it knows no
+    # tracks. Keep the planar set when `_compute` uses X and Y alone, or a
+    # threshold in pixels or centimeters. Widen it to `frozenset(TRACK_SPACES)`
+    # (`mosaic.core.spaces`) only when the result does not depend on the units or
+    # on the number of axes, and declare `frozenset({"world_m"})` for a feature
+    # that reads `Z`.
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset({"image_px", "plane_cm"})
 
     # What the feature reads: raw tracks (`("tracks",)`), the output of another
     # feature (a `Result`), or both. `Inputs[TrackInput | Result]` accepts any of

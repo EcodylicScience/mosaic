@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Final, TypeIs
 
+from mosaic.core.pipeline.definitions.store import is_definition_slug
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.manifest import tracks_table_schemas
@@ -126,10 +127,14 @@ class TrackSpaceRefused(Refusal, ValueError):
                 "A feature that computes in 3D needs a world-frame table "
                 "(mosaic_world_v1), and a planar table has no third axis"
             )
+        remedy = "run a feature that declares the space, or narrow the scope"
+        if is_definition_slug(feature_name):
+            remedy += (
+                ". Declare `track_spaces` on the definition's class and define it again"
+            )
         super().__init__(
             f"Feature {feature_name!r} computes in {sorted(accepts)} and this scope's "
-            f"tracks are in {unsupported}. {explanation}; run a feature that "
-            "declares the space, or narrow the scope.",
+            f"tracks are in {unsupported}. {explanation}; {remedy}.",
             reason="schema_family_mismatch",
             detail={"feature": feature_name, "accepts": accepted, "found": resolved},
         )

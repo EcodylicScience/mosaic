@@ -10,7 +10,7 @@ import pytest
 from mosaic.behavior.feature_library import feature_template__per_sequence as template
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.definitions.scope import definition_scope
-from mosaic.core.pipeline.graph import Recipe, check_recipe
+from mosaic.core.pipeline.graph import Recipe, check_recipe, declaration_catalog
 from tests.helpers import defined_dataset
 
 NAME: Final = "template-copy"
@@ -57,3 +57,11 @@ def test_the_template_validates_over_tracks(dataset: Dataset) -> None:
 def test_the_template_validates_over_another_features_output(dataset: Dataset) -> None:
     with definition_scope(dataset, load=False):
         assert check_recipe(_recipe("keypoint-kinematics")) == ()
+
+
+def test_the_template_declares_the_planar_track_spaces(dataset: Dataset) -> None:
+    with definition_scope(dataset, load=False):
+        declared = declaration_catalog().get(f"def:{NAME}")
+
+    assert declared is not None
+    assert declared.track_spaces == ("image_px", "plane_cm")
