@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## 0.25.0: the synthetic and window track converters
+## 0.25.0: the synthetic and window track converters, and retiring recipes without a submission
 
 No run id or output byte of an existing format moves. Six track formats are new, each a
 `--src-format` of `convert-tracks`: `synthetic` (`mosaic_v1`, pixels, 2D) and
@@ -30,6 +30,18 @@ what the written tracks record, and a window whose source records another answer
 refused. A window keeps its source's frame numbers and times. A source converted again
 under the same variant leaves its windows as they were until
 `convert-tracks --overwrite` rewrites them.
+
+The op kind `retire-recipes` is new, in a new `pipeline` domain. It removes the runs
+that saved recipes' requests wrote, without a submission, and `mosaic pipeline retire`
+runs it. Its run ids are `retire-recipes.0.1-<digest>`, and its run-log has the kind
+`retire-recipes`. It writes the same removal records a cleanup does, for each run it
+removes or keeps, and no recipe can run it. A run that an approved retirement or cleanup
+lists, and that has left the candidates since the plan, such as a run that an attempt
+outside every request now names, is kept with the new reason `no_longer_candidate`,
+which a cleanup reports as well. Before, it was reported `absent`. No existing run id or
+file moves. Among the new public names are `plan_retirement`, `run_retirement`,
+`RetirementKeeper`, `RetirementSpec`, `RetirementPlanWire`, `retirement_wire`,
+`retirement_status_wire` and `fitting_steps`.
 
 A sequence that fails to convert no longer loses the rest of its file. For a file that
 holds several sequences, such as a CalMS21 `.npy` or `.json`, `convert-tracks` converts

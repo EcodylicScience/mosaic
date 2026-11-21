@@ -75,6 +75,7 @@ inventory_wire(ds, found, status_not=["complete"], limit=20)
 | `mosaic prune-joined` | Delete joined exports an earlier `export-joined` version made |
 | `mosaic upgrade-tracks` | Rescale centimeter-era TRex tables to pixels |
 | `mosaic pipeline plan --cleanup superseded` | List the feature runs a recipe's new params superseded, and which may go |
+| `mosaic pipeline retire` | Remove the runs of recipes you no longer keep, without submitting a recipe |
 
 `sweep-tracking` is the one that matters for disk: raw tracker output under
 `_tracking/<tool>/<run_id>/` is often far larger than the parquet it produced, and it
@@ -131,6 +132,40 @@ reads, which `--keep-newest 1` avoids.
 
 `upgrade-tracks` **refuses** a table that does not record its conversion factor,
 rather than guessing one. Nothing can divide back out a number nobody wrote down.
+
+### Retiring a recipe without a submission
+
+Removing an old version of a pipeline, or a pipeline with its results, needs no new
+recipe. `mosaic pipeline retire` takes the digests of the recipes to retire and the
+pipelines that stay, and judges the runs the retired recipes' requests wrote by the
+rules above. `mosaic pipeline plan --cleanup superseded` lists the digests. Each
+`--keeper` is a recipe, as a path, `@file.json`, `@-` or inline JSON, planned over the
+scope `--entry`, `--group` or `--tag` names, or over every entry when none is given.
+Without `--apply` the verb is a dry run: it writes nothing and prints a fingerprint,
+each run with its reason for going or staying, and each digest it did not retire.
+
+```bash
+mosaic pipeline retire -m dataset.yaml --retire <digest of the old recipe> \
+    --keeper @current.json
+mosaic pipeline retire -m dataset.yaml --retire <digest of the old recipe> \
+    --keeper @current.json --apply
+```
+
+`--apply` judges every run again and removes the ones still removable, so a run that
+stopped being removable since the preview stays. `--json` prints the plan, or with
+`--apply` the report, whose status is `partial` when a removal failed. The verb exits 1
+when every removal failed and 130 when cancelled. `--keep-newest` keeps that many of
+the newest runs of each storage (1 by default) and `--min-age-hours` keeps every run
+younger than that (24 by default), so the newest run of each storage stays unless you
+pass `--keep-newest 0`.
+
+It never removes a run a keeper's plan expects or reads, a run another request recorded,
+binds or pins, a run a notebook also used, or a run of a request that has not ended. It
+never touches tracks, models or media. A digest that names no readable recipe, or that
+is a keeper's own recipe, is listed as not retired and left out. A dataset that a
+service manages keeps every run. Each removed run's `params.json` is recorded in the
+run-log of the `retire-recipes` run, which `mosaic status --execution-id <id>` reads, so
+the run can be computed again.
 
 ### After an upgrade that moves an identifier
 

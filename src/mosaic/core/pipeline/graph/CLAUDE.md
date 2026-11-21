@@ -154,19 +154,19 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   (`tests/core/pipeline/definitions/test_planning.py`).
 - `Request.applies_request_id` names a finished request whose fit the request applies
   (`apply.py`). `derive_applied_fit` locks every feature step that fits without a
-  `model` and every step it reads (`ancestors_of`), refuses a locked step that differs
-  from the named request's recipe in any field but `id` and `after`, params compared as
-  written (a key restated at its default is a change), pins each locked step that fits
-  over its scope to the run its attempt recorded, and takes the named request's tracks
-  variant. `plan_pipeline` derives the fit only when given `applies_request_id` as an
-  argument; given a request, it reads the recorded `pins`, `tracks_run_id` and
-  `locked`, so a step's re-plan never reads the named request. `submit_request`
-  derives once and records all four on the `Request` through `planning_request`.
-  `pins` beside `applies_request_id` as arguments raises `ValueError`, which the CLI
-  turns into a usage error and the MCP input models into an invalid argument before
-  they call. `Plan.locked` fills `PlanWire.locked_steps`, outside the fingerprint, and
-  `save_request` leaves `applies_request_id` and `locked` out when unset
-  (`test_pipeline_apply.py`).
+  `model` (`fitting_steps`, `resolve.py`, beside `declared_fit`) and every step it reads
+  (`ancestors_of`), refuses a locked step that differs from the named request's recipe
+  in any field but `id` and `after`, params compared as written (a key restated at its
+  default is a change), pins each locked step that fits over its scope to the run its
+  attempt recorded, and takes the named request's tracks variant. `plan_pipeline`
+  derives the fit only when given `applies_request_id` as an argument; given a request,
+  it reads the recorded `pins`, `tracks_run_id` and `locked`, so a step's re-plan never
+  reads the named request. `submit_request` derives once and records all four on the
+  `Request` through `planning_request`. `pins` beside `applies_request_id` as arguments
+  raises `ValueError`, which the CLI turns into a usage error and the MCP input models
+  into an invalid argument before they call. `Plan.locked` fills
+  `PlanWire.locked_steps`, outside the fingerprint, and `save_request` leaves
+  `applies_request_id` and `locked` out when unset (`test_pipeline_apply.py`).
 - `plan_with_cleanup` (`cleanup.py`) is the one planner of superseded feature runs,
   which the CLI's `pipeline plan`, the MCP tools and `submit_request` share.
   `plan_cleanup` only reads: no lock, no write (`test_planning_a_cleanup_writes_nothing`
@@ -191,6 +191,29 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   after the cleaning request is not retired. A written run is one whose attempt names
   it, is not a full cache hit and ran in a process (`pid`), because a stalled or cached
   step records the run it found.
+- A **standalone retirement** (`retire.py`) retires recipes without a submission.
+  `plan_retirement` only reads and refuses no digest; a keeper that does not plan
+  raises. A digest that is malformed, names no readable recipe (`recipe_unreadable`) or
+  is a keeper's own `recipe_digest` (`keeper_recipe`) goes to
+  `RetirementPlan.not_retired`. Its candidates are the runs the retired requests wrote,
+  so a keeper's storages add none and the runs a keeper's plan expects are never
+  candidates, where a submission's cleanup judges every other run of its plan's storages
+  too. Keepers are planned with `refuse=False`, so an unresolved keeper step keeps its
+  storage (`keeper_unresolved`). `judge_runs` is the judge `plan_cleanup` also calls,
+  and `remove_approved_runs` the removal loop `run_cleanup` also calls, so nothing of
+  the rules is copied. `RetirementPlan.planned_at` is the cutoff: a request of a retired
+  recipe made after it is not retired. `retirement_fingerprint` leaves out `planned_at`,
+  sizes and the kept runs. `RetirementSpec` (`model.py`) is the approved form and the
+  params of the `retire-recipes` op (`core/pipeline/retire_recipes.py`), which a worker
+  receives, so a keeper's recipe travels as a document. `run_retirement` writes the op
+  attempt's run-log and refuses a `ctx.run_log` of `None`. It enters
+  `definition_scope(ds, load=False)` and holds `submission_lock`, the nearest thing to a
+  dataset lock, over the replan and the judging alone, with a `RemovalWatch` guarding
+  the removals. A run that left the candidates since the plan is kept as `absent` when
+  its rows are gone, and as `no_longer_candidate` when the feature index still lists it,
+  unless an attempt or a run that reads it keeps it with that reason. `retire-recipes`
+  is in `EXCLUDED_KINDS`, so no recipe runs it (`test_pipeline_retire_plan.py`,
+  `test_pipeline_retire_run.py`, `test_pipeline_retire_op.py`).
 - `plan_fingerprint` covers the cleanup's policy and removable runs only when a plan
   was asked for a cleanup, so every other fingerprint is unchanged
   (`test_pipeline_plan_fingerprint.py`). Given a policy, `submit_request` needs

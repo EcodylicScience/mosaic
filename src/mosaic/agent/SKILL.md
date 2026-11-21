@@ -178,6 +178,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   also lists the saved recipes whose requests wrote runs. Give a digest to `--retire`
   on the plan and again on the submission to reclaim the runs that recipe wrote in
   storages the new recipe no longer names.
+  To reclaim the runs of a recipe without submitting a new one, run `mosaic pipeline
+  retire --retire <digest> --keeper <recipe>`, which is a dry run, show the user its
+  plan, then repeat it with `--apply`. Each `--keeper` is a pipeline that stays, and its
+  runs are kept.
 - Give a recipe a `name` and keep it across the recipe's versions. A cleanup can then
   remove the runs of its earlier versions, and it keeps every run that a request of
   another recipe recorded, unless you retire that recipe. An unnamed recipe is a version
