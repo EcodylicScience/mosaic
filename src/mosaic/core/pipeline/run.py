@@ -1797,6 +1797,11 @@ class _ApplySettings:
         )
 
 
+def _asks_for_processes(mode: str | None) -> bool:
+    """Whether *mode* names process mode, in any case."""
+    return (mode or "thread").lower() == "process"
+
+
 def _apply_settings(
     feature: Feature,
     *,
@@ -1809,13 +1814,16 @@ def _apply_settings(
     """Return the settings a phase runs with, from what was asked of it.
 
     Several workers need a parallelizable feature, and the gate is for several
-    workers.
+    workers. A feature that is not :func:`process_capable` runs its workers in
+    threads when processes are asked.
     """
     count = workers if workers is not None and workers > 1 else 1
     if count > 1 and not feature.parallelizable:
         count = 1
     resolved: ParallelMode = (
-        "process" if (mode or "thread").lower() == "process" else "thread"
+        "process"
+        if _asks_for_processes(mode) and process_capable(feature)
+        else "thread"
     )
     return _ApplySettings(
         workers=count,
@@ -1824,6 +1832,15 @@ def _apply_settings(
         min_free_memory_fraction=min_free_memory_fraction,
         measure_worker_base=measure_worker_base,
     )
+
+
+def _asked_processes(
+    workers: int | None, mode: str | None, phases: Sequence[ApplyPhase] | None
+) -> bool:
+    """Whether a run asks for several workers in processes, in a phase or overall."""
+    if phases is None:
+        return workers is not None and workers > 1 and _asks_for_processes(mode)
+    return any(phase.workers > 1 and phase.mode == "process" for phase in phases)
 
 
 def _phased_manifest(
@@ -2685,6 +2702,15 @@ def _run_feature_impl(
             file=sys.stderr,
         )
     capable = process_capable(feature)
+    if (
+        feature.parallelizable
+        and not capable
+        and _asked_processes(parallel_workers, parallel_mode, phases)
+    ):
+        print(
+            f"[feature:{feature.name}] parallel_mode process requested but feature cannot run in worker processes; running in threads.",
+            file=sys.stderr,
+        )
 
     # Measuring. One watch, one estimate and one sampling thread span the fit and
     # the apply, so a fit is measured and an attempt killed mid-fit leaves its memory

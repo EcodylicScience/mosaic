@@ -187,6 +187,16 @@ labels, and a conversion step whose variant a link holds plans complete. No run 
 output byte of a dataset without links moves. Playback of an entry with two converted
 variants now raises, as the other label readers do.
 
+## Unreleased: a feature that needs its scope computes in threads when processes are asked
+
+`run_feature` with `parallel_mode="process"` computes a feature that defines
+`set_scope` in threads. Before, it started process workers that rebuilt the
+feature without its scope, so `InteractionCropPipeline` picked a tracks table
+for itself and refused an entry that has two tracks variants. The run's
+`resources` events record `parallel_mode: thread` for such a step, as the
+step's graph run already planned it, and the run prints that processes were
+asked and threads were used. No run id or output moves.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

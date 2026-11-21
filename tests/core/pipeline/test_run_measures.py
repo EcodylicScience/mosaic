@@ -108,13 +108,24 @@ def _no_sampler_alive() -> bool:
     return not any(thread.name == _SAMPLER for thread in threading.enumerate())
 
 
-class _Scoped(ParallelFeature):
-    """A parallelizable feature that needs its scope, so it cannot run in workers."""
+class _NeedsScope(ParallelFeature):
+    """A parallelizable feature whose ``apply`` fails on an instance without its scope.
 
-    name = "prov-parallel-scoped"
+    A process worker rebuilds the feature from its class and parameters, and
+    ``run_feature`` calls ``set_scope`` on the instance it holds alone.
+    """
+
+    name = "prov-parallel-needs-scope"
+    resolved: object | None = None
 
     def set_scope(self, scope: object) -> None:
-        _ = scope
+        self.resolved = scope
+
+    @override
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.resolved is None:
+            raise RuntimeError("apply ran without the run's scope")
+        return super().apply(df)
 
 
 # --- per-entry measures ------------------------------------------------------
@@ -267,9 +278,77 @@ def test_a_feature_that_needs_its_scope_is_not_process_capable(
 ) -> None:
     ds = _dataset(tmp_path)
 
-    _ = run_feature(ds, _Scoped(), execution_id="TESTSCOPED")
+    _ = run_feature(ds, _NeedsScope(), execution_id="TESTSCOPED")
 
     assert _last_resources(ds, "TESTSCOPED")["process_capable"] is False
+
+
+@pytest.mark.parametrize("mode", ["process", "Process"])
+def test_a_feature_that_needs_its_scope_computes_in_threads_when_processes_are_asked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    ds = _dataset(tmp_path)
+
+    result = run_feature(
+        ds,
+        _NeedsScope(),
+        parallel_workers=2,
+        parallel_mode=mode,
+        execution_id="TESTSCOPEDPROCESS",
+    )
+
+    assert result.failed_entries == ()
+    report = _last_resources(ds, "TESTSCOPEDPROCESS")
+    assert report["parallel_mode"] == "thread"
+    assert report["workers"] == 2
+    assert report["process_capable"] is False
+    assert _number(report, "worker_base_rss_bytes") == 0
+    assert (
+        "[feature:prov-parallel-needs-scope] parallel_mode process requested but "
+        "feature cannot run in worker processes; running in threads."
+    ) in capsys.readouterr().err
+
+
+def test_a_phase_that_asks_for_processes_runs_a_scope_feature_in_threads(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    entries = tuple(("", sequence) for sequence in _SEQUENCES)
+
+    result = run_feature(
+        ds,
+        _NeedsScope(),
+        phases=[
+            run_module.ApplyPhase(
+                entries=entries,
+                workers=2,
+                mode="process",
+                admission_margin=0.0,
+                measure_worker_base=False,
+            )
+        ],
+        execution_id="TESTSCOPEDPHASE",
+    )
+
+    assert result.failed_entries == ()
+    assert _last_resources(ds, "TESTSCOPEDPHASE")["parallel_mode"] == "thread"
+
+
+def test_a_feature_without_a_scope_still_computes_in_processes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _dataset(tmp_path)
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id="TESTPLAINPROCESS",
+    )
+
+    assert _last_resources(ds, "TESTPLAINPROCESS")["parallel_mode"] == "process"
+    assert "running in threads" not in capsys.readouterr().err
 
 
 # --- the in-flight record -------------------------------------------------------
@@ -583,7 +662,7 @@ def test_a_feature_that_needs_its_scope_has_no_worker_measured(
     ds = _dataset(tmp_path)
 
     _ = run_feature(
-        ds, _Scoped(), execution_id="TESTWORKERSCOPED", measure_worker_base=True
+        ds, _NeedsScope(), execution_id="TESTWORKERSCOPED", measure_worker_base=True
     )
 
     assert (
