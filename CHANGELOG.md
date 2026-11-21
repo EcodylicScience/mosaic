@@ -29,6 +29,14 @@ missing inside such a hole when its dtype can hold a missing value, such as
 value. The `prefilter` no longer rejects the first sample after a hole as a fast
 step. No other op or feature run id moves.
 
+## Unreleased: the per-sequence feature template reads another feature's output
+
+`feature_template__per_sequence.py` declares `Inputs[TrackInput | Result]` where it
+declared `TrackInputs`, so a definition copied from it can read another feature's
+output. A recipe refuses a `TrackInputs` class after a feature that writes no `X` and
+`Y`, such as `keypoint-kinematics`. No run id moves, and a definition that already
+declares its inputs keeps its digest.
+
 ## Unreleased: a sequence-tag bool is read in any case
 
 `mosaic sequence-tags import` and a `--tag NAME=VALUE` selection read a `bool` tag as

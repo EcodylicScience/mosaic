@@ -213,7 +213,12 @@ Start from the per-sequence template above, with these differences:
   contains. Planning rebuilds the model from its fields alone, and each of these
   changes validation or the dump outside them.
 - **Subclass the toolkit's `Inputs`** with items of `TrackInput`, `Result` or both,
-  and declare nothing on it but `_require` and `_track_input`.
+  and declare nothing on it but `_require` and `_track_input`. The per-sequence
+  template declares `Inputs[TrackInput | Result]`, which reads raw tracks, another
+  feature's output or both. `TrackInputs` is for a feature that needs the track frame
+  (`X` and `Y`). A recipe refuses it after a feature that writes neither, such as
+  `keypoint-kinematics`, so a definition that reads such a feature's columns declares
+  `Inputs[TrackInput | Result]` or `Inputs[Result]`.
 
 The class must also build as `MyFeature(MyFeature.Inputs(...), None)`, as the template
 does.

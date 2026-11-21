@@ -648,7 +648,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
     constraints at the top level of a field (`Annotated[list[str] | None,
     Declared(...)]`) and no `Result`, `ArtifactSpec` or labels field;
   - no validator, serializer, computed field, alias, `model_config`, `model_post_init`
-    or `__init__` on a params model.
+    or `__init__` on a params model;
+  - `TrackInputs` as the inputs class for a feature that reads `X` and `Y`, and
+    `Inputs[TrackInput | Result]` (the template's) otherwise, so the feature reads
+    tracks, another feature's output or both. A recipe refuses a `TrackInputs` class
+    after a feature that writes no `X` and `Y`, such as `keypoint-kinematics`.
 
   A definition is Python that runs with the privileges of whoever runs a step naming it,
   with no sandbox. Planning, validation and every other read import none of it. `mosaic

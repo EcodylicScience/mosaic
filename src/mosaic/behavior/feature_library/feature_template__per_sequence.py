@@ -28,8 +28,10 @@ import pandas as pd
 
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
-    TrackInputs,
+    Result,
+    TrackInput,
     resolve_order_col,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
@@ -79,7 +81,14 @@ class MyPerSequenceFeature:
     follows_ids: bool = True
     consumed_roots: tuple[str, ...] = ()
 
-    class Inputs(TrackInputs):
+    # What the feature reads: raw tracks (`("tracks",)`), the output of another
+    # feature (a `Result`), or both. `Inputs[TrackInput | Result]` accepts any of
+    # them. `Inputs[TrackInput]` reads tracks only and `Inputs[Result]` features
+    # only. `TrackInputs` is for a feature that needs the track frame (X and Y): a
+    # recipe refuses it after a feature that writes neither, such as
+    # `keypoint-kinematics`, so a feature that reads such a feature's columns
+    # must not use it.
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
