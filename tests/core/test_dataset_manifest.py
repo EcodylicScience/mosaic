@@ -10,19 +10,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
 from mosaic.core.dataset import open_dataset
+from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import (
     MANAGED_BY_KEY,
     DIVISION_MANIFEST_VERSION,
+    GROUP_PATH_MANIFEST_VERSION,
     MANIFEST_VERSION,
     NOTES_MAX_CHARS,
     TAGS_MAX_COUNT,
     UNDIVIDED_MANIFEST_VERSION,
+    DatasetLink,
     DatasetManifest,
     DatasetTag,
     LabelsScanSource,
@@ -45,6 +49,7 @@ from mosaic.core.manifest import (
     validate_root_inside,
     write_manifest,
 )
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
 from tests.helpers import make_dataset
@@ -880,7 +885,7 @@ class TestDivision:
         )
         write_manifest(path, DatasetManifest(sources=ScanSources(tracks=(source,))))
         written = yaml.safe_load(path.read_text())
-        assert written["manifest_version"] == MANIFEST_VERSION == 5
+        assert written["manifest_version"] == GROUP_PATH_MANIFEST_VERSION == 5
         assert (
             written["sources"]["tracks"][0]["group_path_pattern"]
             == r"Behavior_data/([^/]+)/"
@@ -934,6 +939,17 @@ class TestDivision:
         with pytest.raises(ManifestVersionError, match="declares version 4"):
             _ = read_manifest(path)
 
+    def test_version_6_under_version_5_code_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mosaic.core.manifest as manifest_module
+
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 6\nname: d\n", encoding="utf-8")
+        monkeypatch.setattr(manifest_module, "MANIFEST_VERSION", 5)
+        with pytest.raises(ManifestVersionError, match="declares version 6"):
+            _ = read_manifest(path)
+
     @pytest.mark.parametrize(
         ("division", "fragment"),
         [
@@ -953,3 +969,167 @@ class TestDivision:
             _ = MediaScanSource.model_validate(
                 {"id": "s", "path": "/s", "division": division}
             )
+
+
+V5_LIBRARIES_MANIFEST = """\
+manifest_version: 5
+name: project
+libraries:
+- id: group
+  path: ../libraries/7
+  uuid: 6b1f3f9e-3c2c-4c1b-9a2e-71f1c0c9a0d1
+  added_at: '2026-01-02T03:04:05+00:00'
+"""
+
+
+class TestLinks:
+    """The ``links`` key, the kinds each link provides, and version 6."""
+
+    def test_a_version_5_libraries_block_loads_as_models_only_links(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(V5_LIBRARIES_MANIFEST, encoding="utf-8")
+        before = path.read_bytes()
+
+        manifest = read_manifest(path)
+
+        assert manifest.links == (
+            DatasetLink(
+                id="group",
+                path="../libraries/7",
+                uuid="6b1f3f9e-3c2c-4c1b-9a2e-71f1c0c9a0d1",
+                added_at="2026-01-02T03:04:05+00:00",
+                provides=("models",),
+            ),
+        )
+        assert "libraries" not in manifest.preserved
+        assert path.read_bytes() == before, "reading never writes"
+
+    def test_saving_a_migrated_manifest_writes_links_at_version_6(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(V5_LIBRARIES_MANIFEST, encoding="utf-8")
+
+        write_manifest(path, read_manifest(path))
+
+        written = yaml.safe_load(path.read_text())
+        assert written["manifest_version"] == MANIFEST_VERSION == 6
+        assert "libraries" not in written
+        assert written["links"] == [
+            {
+                "id": "group",
+                "path": "../libraries/7",
+                "uuid": "6b1f3f9e-3c2c-4c1b-9a2e-71f1c0c9a0d1",
+                "added_at": "2026-01-02T03:04:05+00:00",
+                "provides": ["models"],
+            }
+        ]
+        assert "(v6)" in path.read_text()
+
+    def test_a_libraries_key_at_version_6_is_preserved_and_not_followed(self) -> None:
+        libraries: list[JsonValue] = [{"id": "group", "path": "../libraries/7"}]
+        manifest = migrate_to_current(
+            {"manifest_version": 6, "name": "d", "libraries": libraries}
+        )
+
+        assert manifest.links == ()
+        assert manifest.preserved["libraries"] == libraries
+        assert manifest_payload(manifest)["libraries"] == libraries
+
+    def test_a_version_6_link_without_provides_provides_every_kind(self) -> None:
+        manifest = migrate_to_current(
+            {"manifest_version": 6, "links": [{"id": "src", "path": "../source"}]}
+        )
+
+        assert manifest.links[0].provides == LINKED_KINDS
+
+    def test_every_link_writes_provides_in_the_declared_order(self) -> None:
+        link = DatasetLink(id="src", path="../source", provides=("tracks", "models"))
+        manifest = DatasetManifest(links=(link,))
+
+        payload = manifest_payload(manifest)
+
+        assert payload["links"] == [
+            {"id": "src", "path": "../source", "provides": ["models", "tracks"]}
+        ]
+        assert (
+            DatasetManifest(links=(DatasetLink(id="a", path="b"),)).links[0].provides
+            == LINKED_KINDS
+        )
+
+    @pytest.mark.parametrize(
+        ("manifest", "version"),
+        [
+            (DatasetManifest(), UNDIVIDED_MANIFEST_VERSION),
+            (
+                DatasetManifest(
+                    sources=ScanSources(
+                        media=(
+                            MediaScanSource(
+                                id="m", path="/m", division=MediaDivision(frames=600)
+                            ),
+                        )
+                    )
+                ),
+                DIVISION_MANIFEST_VERSION,
+            ),
+            (
+                DatasetManifest(
+                    sources=ScanSources(
+                        tracks=(
+                            TracksScanSource(
+                                id="t", path="/t", group_path_pattern="([^/]+)/"
+                            ),
+                        )
+                    )
+                ),
+                GROUP_PATH_MANIFEST_VERSION,
+            ),
+        ],
+    )
+    def test_a_manifest_without_links_keeps_the_version_it_writes_today(
+        self, manifest: DatasetManifest, version: int
+    ) -> None:
+        assert manifest_payload(manifest)["manifest_version"] == version
+        assert "links" not in manifest_payload(manifest)
+
+    def test_a_manifest_with_a_link_is_written_at_version_6(self) -> None:
+        manifest = DatasetManifest(links=(DatasetLink(id="src", path="../source"),))
+
+        assert manifest_payload(manifest)["manifest_version"] == 6
+
+    def test_version_7_is_refused(self) -> None:
+        with pytest.raises(ManifestVersionError, match="declares version 7"):
+            _ = migrate_to_current({"manifest_version": 7})
+
+    def test_two_links_may_not_share_an_id(self) -> None:
+        with pytest.raises(ValidationError, match="share the id 'src'"):
+            _ = DatasetManifest(
+                links=(
+                    DatasetLink(id="src", path="../a"),
+                    DatasetLink(id="src", path="../b"),
+                )
+            )
+
+    @pytest.mark.parametrize(
+        ("provides", "fragment"),
+        [((), "at least one kind"), (("models", "models"), "more than once")],
+    )
+    def test_provides_names_each_kind_at_most_once_and_at_least_one(
+        self, provides: tuple[str, ...], fragment: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=fragment):
+            _ = DatasetLink.model_validate(
+                {"id": "src", "path": "../a", "provides": list(provides)}
+            )
+
+    def test_an_unknown_kind_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="provides"):
+            _ = DatasetLink.model_validate(
+                {"id": "src", "path": "../a", "provides": ["weights"]}
+            )
+
+    def test_the_linked_kinds_value_matches_the_literal(self) -> None:
+        assert LINKED_KINDS == get_args(LinkedKind)

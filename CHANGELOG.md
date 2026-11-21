@@ -8,6 +8,38 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: derived data through linked datasets
+
+No run id or output byte moves. The manifest key `libraries` becomes `links`, and each
+link names the kinds of derived data it provides in `provides`: `models`, `features`,
+`tracks`, `label-series` and `frames`, every kind by default. A manifest that declares a
+link is written at manifest version 6, which an older mosaic refuses with
+`ManifestVersionError` instead of computing again what the link holds. A manifest
+without a link is written at the version it was written at before. A manifest below
+version 6 reads its `libraries` as links that provide `models`, and its next save writes
+`links` at version 6. A `libraries` key in a version 6 manifest is kept as an unknown
+key and resolves nothing.
+
+The Python names and the CLI group follow: `LibraryLink` is `DatasetLink`,
+`LibraryMismatchError` is `LinkMismatchError`, `LinkedLibrary` is `LinkedDataset`,
+`Dataset.libraries`, `add_library`, `remove_library` and `linked_libraries` are
+`Dataset.links`, `add_link`, `remove_link` and `linked_datasets`, and
+`ResolvedModel.library_id` and `library_uuid` are `link_id` and `link_uuid`.
+`mosaic libraries list|add|remove` is `mosaic links list|add|remove`, and
+`mosaic links list --json` emits `{"links": [...]}`. The `model_source` key that a
+tracks variant sidecar records keeps its name and its `<id>@<uuid>` value.
+
+`mosaic links add` takes a repeatable `--provides <kind>`, every kind by default, and
+refuses a kind that is not one of the five. `mosaic links list` prints a `provides`
+column, and its JSON entries carry `provides`. `Dataset.add_link` also refuses a link
+to a dataset that records this dataset's `uuid`, and a second link to a `uuid` that a
+link already records. `Dataset.resolve_link_path(link)` returns a link's path as an
+absolute one, for a caller such as mosaic-api that declares a source's links on a new
+dataset.
+
+`DatasetSummary.libraries`, the `libraries` key of `mosaic describe --json` and of the
+`describe_dataset` tool's output, is `links`.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

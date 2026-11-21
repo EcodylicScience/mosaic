@@ -148,10 +148,10 @@ from .recording import (
 from .json_value import JsonValue
 from .manifest import (
     AnyScanSource,
+    DatasetLink,
     DatasetManifest,
     DatasetTag,
     LabelsScanSource,
-    LibraryLink,
     DIVISION_MANIFEST_VERSION,
     MediaDivision,
     MediaLayout,
@@ -1966,20 +1966,21 @@ type _RateMedia = tuple[pd.DataFrame, bool, pd.DataFrame | None]
 """The originals index, whether reads route to derivatives, and the derivative index."""
 
 
-class LibraryMismatchError(ValueError):
-    """A library link resolves to a dataset other than the one it was made to.
+class LinkMismatchError(ValueError):
+    """A link resolves to a dataset other than the one it was made to.
 
-    The link records the library manifest's ``uuid``. A different ``uuid`` at the
-    linked path means another dataset now sits there, and resolving a model
-    through it would hand back weights under a name they do not own.
+    The link records the linked manifest's ``uuid``. A different ``uuid`` at the
+    linked path means another dataset now sits there, and reading through it
+    would hand back data, such as a model's weights, under a name they do not
+    own.
     """
 
 
 @dataclass(frozen=True, slots=True)
-class LinkedLibrary:
-    """A library link and the dataset it opened."""
+class LinkedDataset:
+    """A link and the dataset it opened."""
 
-    link: LibraryLink
+    link: DatasetLink
     dataset: Dataset
 
 
@@ -2313,7 +2314,7 @@ class Dataset:
             )
         self._path_map: list[tuple[Path, Path]] = []
         self._linked: (
-            tuple[tuple[LibraryLink, ...], tuple[LinkedLibrary, ...]] | None
+            tuple[tuple[DatasetLink, ...], tuple[LinkedDataset, ...]] | None
         ) = None
         self._media_rows: dict[str, tuple[_MediaRowsKey, MediaRows]] = {}
         self._rate_media: tuple[_RateMediaKey, _RateMedia] | None = None
@@ -3097,20 +3098,20 @@ class Dataset:
             self._ensure_roots()
             write_manifest(self.manifest_path, current)
 
-    # ---- Linked libraries ----
+    # ---- Linked datasets ----
 
     @property
-    def libraries(self) -> tuple[LibraryLink, ...]:
-        """The datasets a model reference may resolve through, in lookup order."""
-        return self.manifest.libraries
+    def links(self) -> tuple[DatasetLink, ...]:
+        """The datasets whose derived data this one may read, in lookup order."""
+        return self.manifest.links
 
-    def add_library(self, link: LibraryLink, *, save: bool = True) -> LibraryLink:
+    def add_link(self, link: DatasetLink, *, save: bool = True) -> DatasetLink:
         """Declare *link* and persist the manifest. Returns the link as stored.
 
         The target is opened once, here, so a link that names nothing fails at
-        the gesture that made it and not at the first inference that needs it.
-        A link declared without a ``uuid`` records the target's, so that the
-        library moving and a different dataset taking its place are told apart
+        the gesture that made it and not at the first read that needs it. A link
+        declared without a ``uuid`` records the target's, so that the linked
+        dataset moving and a different dataset taking its place are told apart
         from then on.
 
         Args:
@@ -3118,30 +3119,44 @@ class Dataset:
             save: Write the manifest. Pass ``False`` to batch several changes.
 
         Raises:
-            ValueError: If the id is taken, or the link points at this dataset.
+            ValueError: If the id is taken, the link points at this dataset by
+                path or by ``uuid``, or another link already records the
+                target's ``uuid``.
             FileNotFoundError: If no manifest is at the linked path.
-            LibraryMismatchError: If *link* names a ``uuid`` the target does not
+            LinkMismatchError: If *link* names a ``uuid`` the target does not
                 carry.
         """
-        if any(existing.id == link.id for existing in self.manifest.libraries):
-            msg = f"a library named {link.id!r} is already linked"
+        if any(existing.id == link.id for existing in self.manifest.links):
+            msg = f"a link named {link.id!r} is already declared"
             raise ValueError(msg)
-        target = self._open_library(link)
-        if target.manifest_path.resolve() == self.manifest_path.resolve():
-            msg = f"library {link.id!r} points at this dataset; a dataset cannot link itself"
+        target = self._open_link(link)
+        target_uuid = link.uuid or (target.uuid or "")
+        if target.manifest_path.resolve() == self.manifest_path.resolve() or (
+            target_uuid and target_uuid == self.uuid
+        ):
+            msg = (
+                f"link {link.id!r} points at this dataset; a dataset cannot link itself"
+            )
             raise ValueError(msg)
+        for existing in self.manifest.links:
+            if target_uuid and existing.uuid == target_uuid:
+                msg = (
+                    f"dataset {target_uuid} is already linked as {existing.id!r}; "
+                    f"a second link ({link.id!r}) would repeat every lookup"
+                )
+                raise ValueError(msg)
         stored = link.model_copy(
             update={
-                "uuid": link.uuid or (target.uuid or ""),
+                "uuid": target_uuid,
                 "added_at": link.added_at or now_stamp(),
             }
         )
-        self._adopt_manifest({"libraries": (*self.manifest.libraries, stored)})
+        self._adopt_manifest({"links": (*self.manifest.links, stored)})
         if save:
             self.save()
         return stored
 
-    def remove_library(self, link_id: str, *, save: bool = True) -> bool:
+    def remove_link(self, link_id: str, *, save: bool = True) -> bool:
         """Drop the link called *link_id*. Returns whether one was there.
 
         Nothing on disk changes. A run that named a model by run identifier
@@ -3149,68 +3164,69 @@ class Dataset:
         the model in this dataset's own ``models/``, provides it again.
         """
         remaining = tuple(
-            existing for existing in self.manifest.libraries if existing.id != link_id
+            existing for existing in self.manifest.links if existing.id != link_id
         )
-        if len(remaining) == len(self.manifest.libraries):
+        if len(remaining) == len(self.manifest.links):
             return False
-        self.manifest = self.manifest.model_copy(update={"libraries": remaining})
+        self.manifest = self.manifest.model_copy(update={"links": remaining})
         if save:
             self.save()
         return True
 
-    def linked_libraries(self) -> tuple[LinkedLibrary, ...]:
-        """Every linked library that is reachable now, opened, in lookup order.
+    def linked_datasets(self) -> tuple[LinkedDataset, ...]:
+        """Every linked dataset that is reachable now, opened, in lookup order.
 
-        One level deep: a library's own links are never followed, so a lookup
-        terminates and a model is served by a dataset this manifest names.
+        One level deep: a linked dataset's own links are never followed, so a
+        lookup terminates and data is served by a dataset this manifest names.
 
         An unreachable link is skipped with a warning, the tolerance a source on
         an unmounted share gets, because a dataset must stay usable while a
-        library is offline. A reachable target carrying the wrong ``uuid`` is not
-        tolerated: that is a different dataset, not an absent one.
+        linked dataset is offline. A reachable target carrying the wrong
+        ``uuid`` is not tolerated: that is a different dataset, not an absent
+        one.
 
         Raises:
-            LibraryMismatchError: If a link's recorded ``uuid`` disagrees with
-                the dataset found at its path.
+            LinkMismatchError: If a link's recorded ``uuid`` disagrees with the
+                dataset found at its path.
         """
-        links = self.manifest.libraries
+        links = self.manifest.links
         if self._linked is not None and self._linked[0] == links:
             return self._linked[1]
-        opened: list[LinkedLibrary] = []
+        opened: list[LinkedDataset] = []
         for link in links:
             try:
-                target = self._open_library(link)
+                target = self._open_link(link)
             except FileNotFoundError:
-                where = self._resolve_declared_path(link.path)
+                where = self.resolve_link_path(link)
                 print(
-                    f"[libraries] {link.id!r} is not reachable at {where}; "
-                    "models it holds will not resolve until it is.",
+                    f"[links] {link.id!r} is not reachable at {where}; "
+                    "what it holds will not resolve until it is.",
                     file=sys.stderr,
                 )
                 continue
-            opened.append(LinkedLibrary(link=link, dataset=target))
+            opened.append(LinkedDataset(link=link, dataset=target))
         found = tuple(opened)
-        # Cached only when every link opened. A library that was offline must be
-        # looked for again, or a long-lived process would go on reporting its
-        # models missing after the share came back.
+        # Cached only when every link opened. A linked dataset that was offline
+        # must be looked for again, or a long-lived process would go on reporting
+        # its data missing after the share came back.
         if len(found) == len(links):
             self._linked = (links, found)
         return found
 
-    def _open_library(self, link: LibraryLink) -> Dataset:
+    def _open_link(self, link: DatasetLink) -> Dataset:
         """Open the dataset *link* names, checking it is the one the link recorded."""
-        where = self._resolve_declared_path(link.path)
+        where = self.resolve_link_path(link)
         target = Dataset(manifest_path=resolve_manifest_path(where)).load(
             ensure_roots=False
         )
         if link.uuid and target.uuid and link.uuid != target.uuid:
             msg = (
-                f"library {link.id!r} was linked to dataset {link.uuid}, but "
+                f"link {link.id!r} was linked to dataset {link.uuid}, but "
                 f"{where} holds dataset {target.uuid} ({target.name!r}). If the "
-                "library moved, repoint the link at where it is now; if this is "
-                "the intended dataset, remove the link and add it again."
+                "linked dataset moved, repoint the link at where it is now; if "
+                "this is the intended dataset, remove the link and add it again."
             )
-            raise LibraryMismatchError(msg)
+            raise LinkMismatchError(msg)
         return target
 
     # ---- Declared scan sources ----
@@ -7852,6 +7868,15 @@ class Dataset:
         is the whole reason it exists.
         """
         return self._resolve_declared_path(source.path)
+
+    def resolve_link_path(self, link: DatasetLink) -> Path:
+        """Where a link's dataset is, as an absolute path.
+
+        Relative resolves against this dataset, absolute is taken as written.
+        Nothing is opened and nothing is checked, so the path may name a dataset
+        that is offline.
+        """
+        return self._resolve_declared_path(link.path)
 
     def source_claim(self, source: ScanSource) -> ScanClaim:
         """What *source* is responsible for, whether or not its path is there.

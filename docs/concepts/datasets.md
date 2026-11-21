@@ -75,10 +75,11 @@ in a **library**, which is an ordinary dataset used for that purpose, and other
 datasets **link** it:
 
 ```yaml
-libraries:
+links:
   - id: lab
     path: ../libraries/lab
     uuid: 6f1c...            # the library's own id, recorded when the link was made
+    provides: [models]
 ```
 
 A link is to models what a source is to raw files: a declared place outside the

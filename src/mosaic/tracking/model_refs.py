@@ -343,8 +343,8 @@ class ResolvedModel:
     weights handed in as a bare path -- there is no run to name. ``digest`` is
     what makes that second case identifiable anyway.
 
-    ``library_id`` and ``library_uuid`` say which linked library served a
-    registered run, and are empty when this dataset's own index did. They are
+    ``link_id`` and ``link_uuid`` say which linked dataset served a registered
+    run, and are empty when this dataset's own index did. They are
     provenance and never reach identity: the run identifier already names the
     model, and naming where it was found would make one model two.
 
@@ -366,8 +366,8 @@ class ResolvedModel:
     digest: str
     members: tuple[str, ...]
     model_types: tuple[str, ...] = ()
-    library_id: str = ""
-    library_uuid: str = ""
+    link_id: str = ""
+    link_uuid: str = ""
 
     @property
     def model_type(self) -> str:
@@ -708,8 +708,8 @@ class _RegisteredArtifact:
     """Where a registered run's artifact is, and which dataset's index said so."""
 
     path: Path
-    library_id: str = ""
-    library_uuid: str = ""
+    link_id: str = ""
+    link_uuid: str = ""
 
 
 def _artifact_path_in(ds: Dataset, ref: str, kind: str) -> Path | None:
@@ -726,7 +726,7 @@ def _artifact_path_in(ds: Dataset, ref: str, kind: str) -> Path | None:
 
     The cell is resolved against *ds*, the dataset that wrote it. A model index
     stores its paths relative to its own root, so a row found in a linked
-    library and resolved against the dataset that followed the link would name
+    dataset and resolved against the dataset that followed the link would name
     a path under the wrong tree.
     """
     idx_path = model_index_path(ds, kind)
@@ -748,13 +748,14 @@ def _artifact_path_in(ds: Dataset, ref: str, kind: str) -> Path | None:
 def _registered_artifact(ds: Dataset, ref: str, kind: str) -> _RegisteredArtifact:
     """The artifact a registered training run left behind, or raise.
 
-    This dataset's own index is asked first, then each linked library in
-    declaration order. Own-first is what makes a model copied in beside a
-    library keep resolving locally: the copy shares the run identifier, so both
-    rows name the same content and the nearer one is the right answer.
+    This dataset's own index is asked first, then each linked dataset in declaration
+    order. Own-first is what makes a model copied in beside a linked dataset keep
+    resolving locally: the copy shares the run identifier, so both rows name the same
+    content and the nearer one is the right answer.
 
     Raises:
-        FileNotFoundError: No index for *kind* exists here or in any library.
+        FileNotFoundError: No index for *kind* exists here or in any linked
+            dataset.
         KeyError: An index exists and none of them registers *ref*.
     """
     own = _artifact_path_in(ds, ref, kind)
@@ -763,7 +764,7 @@ def _registered_artifact(ds: Dataset, ref: str, kind: str) -> _RegisteredArtifac
 
     searched = [str(model_index_path(ds, kind))]
     any_index = model_index_path(ds, kind).exists()
-    for linked in ds.linked_libraries():
+    for linked in ds.linked_datasets():
         idx_path = model_index_path(linked.dataset, kind)
         searched.append(str(idx_path))
         any_index = any_index or idx_path.exists()
@@ -771,22 +772,22 @@ def _registered_artifact(ds: Dataset, ref: str, kind: str) -> _RegisteredArtifac
         if found is not None:
             return _RegisteredArtifact(
                 path=found,
-                library_id=linked.link.id,
-                library_uuid=linked.dataset.uuid or "",
+                link_id=linked.link.id,
+                link_uuid=linked.dataset.uuid or "",
             )
 
     own_index = searched[0]
-    libraries = (
-        f" Linked libraries searched: {', '.join(searched[1:])}."
+    searched_links = (
+        f" Linked datasets searched: {', '.join(searched[1:])}."
         if len(searched) > 1
         else ""
     )
     if not any_index:
         raise FileNotFoundError(
             f"Model reference '{ref}' is not a path and {own_index} does not "
-            f"exist; cannot resolve as a run_id.{libraries}"
+            f"exist; cannot resolve as a run_id.{searched_links}"
         )
-    raise KeyError(f"No model run_id '{ref}' found in {own_index}.{libraries}")
+    raise KeyError(f"No model run_id '{ref}' found in {own_index}.{searched_links}")
 
 
 def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
@@ -794,7 +795,7 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
 
     *ref* is either a filesystem path to a model artifact or a prior training
     ``run_id`` in ``models/<kind>/index.csv`` -- this dataset's, or that of a
-    library its manifest links. This powers
+    dataset its manifest links. This powers
     retrain-from-existing-model and the trained-model -> TREx ``detect_model``
     handoff.
 
@@ -821,7 +822,7 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
             missing a required file.
         NotADirectoryError: A directory-shaped kind was given a file.
         KeyError: A ``run_id`` absent from this dataset's index and from every
-            linked library's.
+            linked dataset's.
     """
     spec = spec_for(kind)
     # Only the filesystem probe is expanded. `ref` itself stays as given, because
@@ -875,7 +876,7 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
     """Return the model a registered run left behind, never probing *ref* as a path.
 
     Raises:
-        FileNotFoundError: No index for *kind* exists here or in any library,
+        FileNotFoundError: No index for *kind* exists here or in any link,
             or the artifact a row names is missing a required file.
         NotADirectoryError: The artifact a row names is not a directory, where
             its kind declares one.
@@ -890,8 +891,8 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         digest=_identity((artifact,), spec),
         members=(ref,),
         model_types=(_model_type_of(artifact, spec),),
-        library_id=registered.library_id,
-        library_uuid=registered.library_uuid,
+        link_id=registered.link_id,
+        link_uuid=registered.link_uuid,
     )
 
 
@@ -900,7 +901,7 @@ def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
 
     Merged into the ``observed`` mapping a variant sidecar records. It names
     every member of every model given, in order (:func:`observed_models`), and
-    the linked libraries that served any of them. A ``None`` is a model the run
+    the linked datasets that served any of them. A ``None`` is a model the run
     was not given, such as TREx's identification model on a run without one.
 
     Provenance and never identity. The run identifier already names the model;
@@ -912,11 +913,7 @@ def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
     """
     present = [model for model in resolved if model is not None]
     sources = sorted(
-        {
-            f"{model.library_id}@{model.library_uuid}"
-            for model in present
-            if model.library_id
-        }
+        {f"{model.link_id}@{model.link_uuid}" for model in present if model.link_id}
     )
     served = {"model_source": ",".join(sources)} if sources else {}
     members = [member for model in present for member in model.members]
@@ -988,8 +985,8 @@ def resolve_model_set(
         digest=_identity(artifacts, spec),
         members=tuple(members),
         model_types=tuple(_model_type_of(artifact, spec) for artifact in artifacts),
-        library_id=served[0].library_id if single else "",
-        library_uuid=served[0].library_uuid if single else "",
+        link_id=served[0].link_id if single else "",
+        link_uuid=served[0].link_uuid if single else "",
     )
 
 
@@ -1244,12 +1241,12 @@ def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
 
     The op's :class:`~mosaic.core.pipeline.ops.ModelReference` says which
     training kinds it accepts. The run resolves against this dataset's
-    ``models/<kind>/index.csv`` and then each linked library's. An op whose
+    ``models/<kind>/index.csv`` and then each linked dataset's. An op whose
     field takes a list resolves the one run the same way, and the caller passes
     it as a one-element list.
 
     Args:
-        ds: The dataset whose model index, and linked libraries, hold the run.
+        ds: The dataset whose model index, and linked datasets, hold the run.
         kind: The registered op kind the model is for.
         ref: A training run identifier.
 

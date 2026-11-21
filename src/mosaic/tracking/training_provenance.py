@@ -130,7 +130,8 @@ class TrainingProvenance:
     Attributes:
         kind: The training op.
         run_id: The model.
-        served_by: The linked library that holds it, or ``""`` for this dataset.
+        served_by: The link to the dataset that holds it, or ``""`` for this
+            dataset.
         data_path: What the run was trained on, as its row recorded it.
         data_fingerprint: The content fingerprint that entered its identifier.
         base_run_id: What it was fine-tuned from, or ``""``.
@@ -227,14 +228,14 @@ def _row(index_path: Path, run_id: str) -> dict[str, str] | None:
 def _holder(
     ds: Dataset, kind: str, run_id: str
 ) -> tuple[Dataset, str, dict[str, str]] | None:
-    """The dataset whose index registers the model: this one, then each library.
+    """The dataset whose index registers the model: this one, then each link.
 
     Returns ``None`` when no index registers it.
     """
     own = _row(model_index_path(ds, kind), run_id)
     if own is not None:
         return ds, "", own
-    for linked in ds.linked_libraries():
+    for linked in ds.linked_datasets():
         found = _row(model_index_path(linked.dataset, kind), run_id)
         if found is not None:
             return linked.dataset, linked.link.id, found
@@ -244,7 +245,7 @@ def _holder(
 def _unregistered(kind: str, run_id: str) -> str:
     """The reason that a model no index registers has no provenance."""
     msg = (
-        f"no {kind} run {run_id!r} is registered in this dataset or in a library "
+        f"no {kind} run {run_id!r} is registered in this dataset or in a dataset "
         "it links"
     )
     return msg
@@ -407,7 +408,7 @@ def training_provenance(ds: Dataset, kind: str, run_id: str) -> TrainingProvenan
         run_id: The model.
 
     Raises:
-        KeyError: No such run is registered here or in a linked library.
+        KeyError: No such run is registered here or in a linked dataset.
     """
     walk = _walk(ds, kind, run_id)
     if walk is None:

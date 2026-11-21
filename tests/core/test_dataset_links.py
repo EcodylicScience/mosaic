@@ -1,10 +1,10 @@
 """A model trained in one dataset is named, and found, from another.
 
 A trained model is identified by its run identifier, which is content and carries
-no location. Before library links, that name resolved only inside the dataset
-that trained the model, so a second dataset could reach the weights by absolute
-path alone -- and a path reference mints a different inference identifier from a
-run-identifier one, for the same bytes.
+no location. Before links, that name resolved only inside the dataset that trained
+the model, so a second dataset could reach the weights by absolute path alone -- and
+a path reference mints a different inference identifier from a run-identifier one,
+for the same bytes.
 
 A link makes the name resolve across datasets, which is what lets a shared
 library serve many projects under one identity.
@@ -16,9 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.dataset import Dataset, LibraryMismatchError
+from mosaic.core.dataset import Dataset, LinkMismatchError
 from mosaic.core.manifest import (
-    LibraryLink,
+    MANIFEST_VERSION,
+    DatasetLink,
     MediaScanSource,
     read_manifest,
 )
@@ -66,33 +67,39 @@ def _library_and_project(tmp_path: Path) -> tuple[Dataset, Dataset]:
 def test_a_link_records_the_uuid_it_found(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
 
-    stored = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    stored = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     assert stored.uuid == library.uuid, "the link pins the dataset it was made to"
     assert stored.added_at
     reread = read_manifest(project.manifest_path)
-    assert [link.id for link in reread.libraries] == ["group"]
-    assert reread.libraries[0].path == "../libraries/7", "relative, as declared"
+    assert [link.id for link in reread.links] == ["group"]
+    assert reread.links[0].path == "../libraries/7", "relative, as declared"
 
 
 def test_a_registered_model_resolves_through_the_link(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     weights = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     resolved = resolve_model(project, RUN_ID, KIND)
 
     assert resolved.path == weights, "resolved against the library's root, not ours"
     assert resolved.run_id == RUN_ID
-    assert resolved.library_id == "group"
-    assert resolved.library_uuid == library.uuid
+    assert resolved.link_id == "group"
+    assert resolved.link_uuid == library.uuid
 
 
 def test_the_identity_is_the_same_from_every_dataset(tmp_path: Path) -> None:
     """The point of naming by run: one model, one identifier, wherever it is read."""
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     in_library = resolve_model(library, RUN_ID, KIND)
     from_project = resolve_model(project, RUN_ID, KIND)
@@ -107,18 +114,22 @@ def test_a_models_own_index_wins_over_a_library(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
     local = _register(project)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     resolved = resolve_model(project, RUN_ID, KIND)
 
     assert resolved.path == local
-    assert resolved.library_id == "", "served locally, so no library is recorded"
+    assert resolved.link_id == "", "served locally, so no library is recorded"
 
 
 def test_provenance_names_the_library_only_when_one_served(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     served = resolve_model(project, RUN_ID, KIND)
     local = resolve_model(library, RUN_ID, KIND)
@@ -134,9 +145,11 @@ def test_provenance_names_the_library_only_when_one_served(tmp_path: Path) -> No
 def test_a_run_nobody_registers_says_where_it_looked(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
-    with pytest.raises(KeyError, match="Linked libraries searched"):
+    with pytest.raises(KeyError, match="Linked datasets searched"):
         _ = resolve_model(project, "train-pose.0.2-0000000000", KIND)
 
 
@@ -146,13 +159,15 @@ def test_a_run_nobody_registers_says_where_it_looked(tmp_path: Path) -> None:
 def test_an_op_resolves_its_model_through_the_link(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     weights = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     resolved = resolve_op_model(project, "infer-pose", RUN_ID)
 
     assert resolved.path == weights
     assert resolved.run_id == RUN_ID
-    assert resolved.library_id == "group"
+    assert resolved.link_id == "group"
     assert resolved.model_id == resolve_model(project, RUN_ID, KIND).model_id
 
 
@@ -164,7 +179,7 @@ def test_an_op_resolves_a_model_its_own_dataset_registered(tmp_path: Path) -> No
 
     assert resolved.path == weights
     assert resolved.run_id == RUN_ID
-    assert resolved.library_id == ""
+    assert resolved.link_id == ""
 
 
 def test_an_op_accepting_several_kinds_resolves_under_the_references_own(
@@ -187,13 +202,15 @@ def test_an_op_accepting_several_kinds_resolves_under_the_references_own(
 def test_an_op_taking_a_list_resolves_one_run_id(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     model_dir = register_sleap_model(library, SLEAP_RUN_ID, b"sleap-weights")
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     resolved = resolve_op_model(project, "sleap", SLEAP_RUN_ID)
 
     assert resolved.paths == [model_dir]
     assert resolved.run_id == SLEAP_RUN_ID
-    assert resolved.library_id == "group"
+    assert resolved.link_id == "group"
 
 
 def test_an_op_is_never_handed_a_path(tmp_path: Path) -> None:
@@ -291,11 +308,13 @@ def test_an_op_that_runs_no_model_refuses_every_reference(tmp_path: Path) -> Non
 def test_an_unregistered_run_is_not_found_rather_than_refused(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
     alone = make_dataset(tmp_path / "53", name="alone")
     missing = "train-pose.0.2-0000000000"
 
-    with pytest.raises(ModelNotFoundError, match="Linked libraries searched") as caught:
+    with pytest.raises(ModelNotFoundError, match="Linked datasets searched") as caught:
         _ = resolve_op_model(project, "infer-pose", missing)
     with pytest.raises(ModelNotFoundError, match="does not exist"):
         _ = resolve_op_model(alone, "infer-pose", missing)
@@ -328,7 +347,9 @@ def test_a_row_naming_the_wrong_shape_of_artifact_is_not_found(
 def test_a_different_dataset_at_the_linked_path_is_refused(tmp_path: Path) -> None:
     """A library that moved is one repair; another dataset in its place is a fault."""
     _library, project = _library_and_project(tmp_path)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     impostor_root = tmp_path / "libraries" / "7"
     for child in impostor_root.iterdir():
@@ -337,8 +358,8 @@ def test_a_different_dataset_at_the_linked_path_is_refused(tmp_path: Path) -> No
     _ = make_dataset(impostor_root, name="impostor")
 
     fresh = Dataset(manifest_path=project.manifest_path).load()
-    with pytest.raises(LibraryMismatchError, match="was linked to dataset"):
-        _ = fresh.linked_libraries()
+    with pytest.raises(LinkMismatchError, match="was linked to dataset"):
+        _ = fresh.linked_datasets()
 
 
 def test_an_unreachable_library_is_skipped_not_fatal(
@@ -346,12 +367,14 @@ def test_an_unreachable_library_is_skipped_not_fatal(
 ) -> None:
     """A dataset stays usable while a library is offline, as it does for a source."""
     library, project = _library_and_project(tmp_path)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
     library.manifest_path.unlink()
 
     fresh = Dataset(manifest_path=project.manifest_path).load()
 
-    assert fresh.linked_libraries() == ()
+    assert fresh.linked_datasets() == ()
     assert "is not reachable" in capsys.readouterr().err
 
 
@@ -359,41 +382,123 @@ def test_a_link_to_nothing_fails_when_it_is_made(tmp_path: Path) -> None:
     project = make_dataset(tmp_path / "52", name="project")
 
     with pytest.raises(FileNotFoundError):
-        _ = project.add_library(LibraryLink(id="group", path="../libraries/9"))
-    assert project.libraries == ()
+        _ = project.add_link(
+            DatasetLink(id="group", path="../libraries/9", provides=("models",))
+        )
+    assert project.links == ()
 
 
 def test_a_dataset_cannot_link_itself_or_reuse_an_id(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
+
+    with pytest.raises(ValueError, match="already declared"):
+        _ = project.add_link(
+            DatasetLink(id="group", path="../libraries/7", provides=("models",))
+        )
+    with pytest.raises(ValueError, match="cannot link itself"):
+        _ = library.add_link(DatasetLink(id="me", path=".", provides=("models",)))
+
+
+def test_a_dataset_cannot_link_itself_by_path_or_repeat_an_id_without_saving(
+    tmp_path: Path,
+) -> None:
+    _, project = _library_and_project(tmp_path)
+    _ = project.add_link(DatasetLink(id="group", path="../libraries/7"))
+    saved = project.manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="cannot link itself"):
+        _ = project.add_link(DatasetLink(id="me", path="."))
+    with pytest.raises(ValueError, match="already declared"):
+        _ = project.add_link(DatasetLink(id="group", path="../libraries/7"))
+
+    assert project.manifest_path.read_bytes() == saved
+    assert [link.id for link in project.links] == ["group"]
+
+
+def test_a_dataset_cannot_link_itself_by_uuid(tmp_path: Path) -> None:
+    """A second dataset that records this dataset's uuid is this dataset."""
+    _, project = _library_and_project(tmp_path)
+    twin = make_dataset(tmp_path / "twin", name="twin")
+    twin.manifest = twin.manifest.model_copy(update={"uuid": project.uuid})
+    twin.save()
+    saved = project.manifest_path.read_bytes()
+
+    with pytest.raises(ValueError, match="cannot link itself"):
+        _ = project.add_link(DatasetLink(id="twin", path="../twin"))
+
+    assert project.links == ()
+    assert project.manifest_path.read_bytes() == saved
+
+
+def test_a_second_link_to_one_uuid_is_refused_without_saving(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    library_uuid = library.uuid
+    assert library_uuid
+    mirror = make_dataset(tmp_path / "mirror", name="mirror")
+    mirror.manifest = mirror.manifest.model_copy(update={"uuid": library_uuid})
+    mirror.save()
+    _ = project.add_link(DatasetLink(id="group", path="../libraries/7"))
+    saved = project.manifest_path.read_bytes()
 
     with pytest.raises(ValueError, match="already linked"):
-        _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
-    with pytest.raises(ValueError, match="cannot link itself"):
-        _ = library.add_library(LibraryLink(id="me", path="."))
+        _ = project.add_link(DatasetLink(id="again", path="../mirror"))
+    with pytest.raises(ValueError, match="already linked"):
+        _ = project.add_link(
+            DatasetLink(id="pinned", path="../libraries/7", uuid=library_uuid)
+        )
+
+    assert [link.id for link in project.links] == ["group"]
+    assert project.manifest_path.read_bytes() == saved
+
+
+def test_a_relative_link_resolves_against_the_dataset(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    link = DatasetLink(id="group", path="../libraries/7")
+
+    resolved = project.resolve_link_path(link)
+
+    assert resolved.is_absolute()
+    assert resolved.resolve() == library.base_dir.resolve()
+
+
+def test_an_absolute_link_resolves_unchanged(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    link = DatasetLink(id="group", path=str(library.base_dir))
+
+    assert project.resolve_link_path(link) == library.base_dir
 
 
 def test_removing_a_link_stops_resolution_and_touches_nothing(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     weights = _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
-    assert project.remove_library("group") is True
-    assert project.remove_library("group") is False
+    assert project.remove_link("group") is True
+    assert project.remove_link("group") is False
 
     assert weights.exists()
     with pytest.raises(FileNotFoundError):
         _ = resolve_model(project, RUN_ID, KIND)
 
 
-def test_an_older_reader_keeps_a_links_block_it_does_not_model(tmp_path: Path) -> None:
-    """``libraries`` is a top-level key, and unknown top-level keys are preserved."""
+def test_a_link_is_written_at_the_version_older_readers_refuse(
+    tmp_path: Path,
+) -> None:
+    """Code older than ``links`` would compute into its own tree what a link holds."""
     _library, project = _library_and_project(tmp_path)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     text = project.manifest_path.read_text()
-    assert "libraries:" in text
-    assert "manifest_version: " in text
+    assert "links:" in text
+    assert "libraries:" not in text
+    assert f"manifest_version: {MANIFEST_VERSION}" in text
 
 
 def test_a_files_source_no_longer_kills_manifest_edits(tmp_path: Path) -> None:

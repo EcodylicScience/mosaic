@@ -892,7 +892,7 @@ def run_trex(
         kind=TREX_KIND,
         version=TREX_TRACK_VERSION,
         settings=settings,
-        # Both models, and a linked library that served either. A run without
+        # Both models, and a linked dataset that served either. A run without
         # a model records that it used none.
         observed=observed_model_source(resolved_model, resolved_vi),
     )

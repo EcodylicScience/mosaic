@@ -972,8 +972,8 @@ def _covering(
         f"None of the annotated images is predicted by {', '.join(files)}. The "
         f"predictions name images of dataset {origin!r}, and the labels images of "
         f"{sorted({item.origin_uuid for item in sets})}. Predictions and labels must "
-        "name images of one dataset, and a set from a linked library is predicted "
-        "in that library."
+        "name images of one dataset, and a set from a linked dataset is predicted "
+        "in that dataset."
     )
     raise ScorePredictionsConflict(message)
 

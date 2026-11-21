@@ -13,8 +13,10 @@ from typing import Final, Literal, TypeGuard
 __all__ = [
     "ARTIFACT_KINDS",
     "ARTIFACT_STATUSES",
+    "LINKED_KINDS",
     "ArtifactKind",
     "ArtifactStatus",
+    "LinkedKind",
     "is_artifact_kind",
     "is_artifact_status",
 ]
@@ -66,6 +68,25 @@ def is_artifact_kind(name: str) -> TypeGuard[ArtifactKind]:
     declaration once, instead of asserted past it at each call site.
     """
     return name in ARTIFACT_KINDS
+
+
+LinkedKind = Literal["models", "features", "tracks", "label-series", "frames"]
+"""A kind of derived data that a dataset may read through a link to another one.
+
+See :attr:`~mosaic.core.manifest.DatasetLink.provides`.
+"""
+
+LINKED_KINDS: Final[tuple[LinkedKind, ...]] = (
+    "models",
+    "features",
+    "tracks",
+    "label-series",
+    "frames",
+)
+"""Every :data:`LinkedKind`, in the order a manifest writes them.
+
+Spelled twice for the reason :data:`ARTIFACT_KINDS` is.
+"""
 
 
 ArtifactStatus = Literal[

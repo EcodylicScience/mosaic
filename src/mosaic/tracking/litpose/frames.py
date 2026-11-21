@@ -9,7 +9,7 @@ alone. The snippet does not use DALI, and its answer is the only file that it
 writes.
 
 ``Model.predict_on_label_csv`` is not used, because it writes into the model
-directory, which can belong to a linked library's dataset.
+directory, which can belong to a linked dataset.
 
 ``Model.predict_frame`` is verified from Lightning Pose
 :data:`LITPOSE_PREDICT_FRAME_MIN` on. :func:`probe_litpose_version` reads the

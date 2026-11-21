@@ -557,7 +557,7 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - `mosaic cancel --assume-exited`, which records as cancelled an attempt that no
   machine can check, on your word that its process has exited;
 - any change to the manifest beyond `manage_dataset`'s, and every change when the
-  server has no `dataset_roots` and `source_roots`: `notes`, `libraries`, `splits`,
+  server has no `dataset_roots` and `source_roots`: `notes`, `links`, `splits`,
   `sources add-files`;
 - `mosaic pipeline score`, which adds held-out data to a copy of the dataset;
 - `extract-frames`, whose frames annotation tools refer to by path;

@@ -1,7 +1,7 @@
 """The two command-line gestures a shared model library is built from.
 
-``mosaic libraries`` links the dataset a model resolves from, and ``mosaic sources
-add --series`` claims the exact annotation revisions a library trains on.
+``mosaic links`` links the dataset a model resolves from, and ``mosaic sources add
+--series`` claims the exact annotation revisions a library trains on.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.annotations.projection import COCO_EXPORT_FILENAME
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS
 from mosaic.core.pipeline.label_series_index import (
     read_label_series,
     write_series_revision,
@@ -38,7 +39,7 @@ def _project_with_revisions(tmp_path: Path, count: int) -> Dataset:
     return project
 
 
-def test_libraries_add_list_and_remove(tmp_path: Path) -> None:
+def test_links_add_list_and_remove(tmp_path: Path) -> None:
     library = make_dataset(tmp_path / "libraries" / "7", name="library")
     project = make_dataset(tmp_path / "52", name="project")
     manifest = str(project.manifest_path)
@@ -46,7 +47,7 @@ def test_libraries_add_list_and_remove(tmp_path: Path) -> None:
     added = runner.invoke(
         app,
         [
-            "libraries",
+            "links",
             "add",
             "-m",
             manifest,
@@ -58,21 +59,107 @@ def test_libraries_add_list_and_remove(tmp_path: Path) -> None:
     )
     assert added.exit_code == 0, added.output
 
-    listed = runner.invoke(app, ["libraries", "list", "-m", manifest, "--json"])
-    assert json.loads(listed.output)["libraries"] == [
+    listed = runner.invoke(app, ["links", "list", "-m", manifest, "--json"])
+    emitted = json.loads(listed.output)
+    assert "libraries" not in emitted
+    assert emitted["links"] == [
         {
             "id": "group",
             "path": "../libraries/7",
             "uuid": library.uuid,
-            "added_at": json.loads(listed.output)["libraries"][0]["added_at"],
+            "added_at": emitted["links"][0]["added_at"],
+            "provides": list(LINKED_KINDS),
         }
     ]
 
-    removed = runner.invoke(
-        app, ["libraries", "remove", "-m", manifest, "--id", "group"]
-    )
+    removed = runner.invoke(app, ["links", "remove", "-m", manifest, "--id", "group"])
     assert removed.exit_code == 0, removed.output
-    assert Dataset(manifest_path=project.manifest_path).load().libraries == ()
+    assert Dataset(manifest_path=project.manifest_path).load().links == ()
+
+
+def test_links_add_stores_the_kinds_it_is_given_in_the_order_kinds_are_listed(
+    tmp_path: Path,
+) -> None:
+    _ = make_dataset(tmp_path / "libraries" / "7", name="library")
+    project = make_dataset(tmp_path / "52", name="project")
+    manifest = str(project.manifest_path)
+
+    added = runner.invoke(
+        app,
+        [
+            "links",
+            "add",
+            "-m",
+            manifest,
+            "--id",
+            "group",
+            "--path",
+            "../libraries/7",
+            "--provides",
+            "tracks",
+            "--provides",
+            "models",
+        ],
+    )
+    assert added.exit_code == 0, added.output
+
+    listed = json.loads(
+        runner.invoke(app, ["links", "list", "-m", manifest, "--json"]).output
+    )
+    assert listed["links"][0]["provides"] == ["models", "tracks"]
+    table = runner.invoke(app, ["links", "list", "-m", manifest])
+    assert "models,tracks" in table.output
+
+
+def test_links_add_without_provides_stores_every_kind(tmp_path: Path) -> None:
+    _ = make_dataset(tmp_path / "libraries" / "7", name="library")
+    project = make_dataset(tmp_path / "52", name="project")
+
+    added = runner.invoke(
+        app,
+        [
+            "links",
+            "add",
+            "-m",
+            str(project.manifest_path),
+            "--id",
+            "group",
+            "--path",
+            "../libraries/7",
+        ],
+    )
+
+    assert added.exit_code == 0, added.output
+    reread = Dataset(manifest_path=project.manifest_path).load()
+    assert reread.links[0].provides == LINKED_KINDS
+
+
+def test_links_add_refuses_an_unknown_kind_and_names_the_choices(
+    tmp_path: Path,
+) -> None:
+    _ = make_dataset(tmp_path / "libraries" / "7", name="library")
+    project = make_dataset(tmp_path / "52", name="project")
+
+    result = runner.invoke(
+        app,
+        [
+            "links",
+            "add",
+            "-m",
+            str(project.manifest_path),
+            "--id",
+            "group",
+            "--path",
+            "../libraries/7",
+            "--provides",
+            "weights",
+        ],
+    )
+
+    assert result.exit_code != 0
+    for kind in LINKED_KINDS:
+        assert kind in result.output
+    assert Dataset(manifest_path=project.manifest_path).load().links == ()
 
 
 def test_linking_a_path_that_holds_no_dataset_fails_clearly(tmp_path: Path) -> None:
@@ -81,7 +168,7 @@ def test_linking_a_path_that_holds_no_dataset_fails_clearly(tmp_path: Path) -> N
     result = runner.invoke(
         app,
         [
-            "libraries",
+            "links",
             "add",
             "-m",
             str(project.manifest_path),

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.manifest import LibraryLink
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
@@ -132,11 +132,13 @@ def test_a_model_served_by_a_linked_library_is_found(tmp_path: Path) -> None:
     _ = weights.write_bytes(b"weights")
     register_trained_model(library, "train-pose", model, weights)
     project = make_dataset(tmp_path / "52", name="project")
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     # What an inference run writes for this model, resolved as the run resolves it.
     resolved = resolve_model(project, model, "train-pose")
-    assert resolved.library_id == "group", "served by the library, not the project"
+    assert resolved.link_id == "group", "served by the library, not the project"
     params = PoseInferParams(model=model)
     identity = InferPoseOp().plan_identity(project, params, project.resolve_scope(None))
     _ = write_tracks_variant(

@@ -1251,7 +1251,7 @@ def test_labels_that_no_prediction_frame_covers_are_refused(tmp_path: Path) -> N
     message = str(caught.value)
     assert message.count(dataset.uuid or "") == 2
     assert "one dataset" in message
-    assert "linked library" in message
+    assert "linked dataset" in message
 
 
 def test_two_sets_that_share_an_annotated_image_are_refused(ds: Dataset) -> None:

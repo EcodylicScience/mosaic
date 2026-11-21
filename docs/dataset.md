@@ -834,8 +834,18 @@ A trained model is named by its run id. To use one that was trained in another
 dataset, link that dataset as a library:
 
 ```bash
-mosaic libraries add -m dataset.yaml --id lab --path ../libraries/lab
-mosaic libraries list -m dataset.yaml
+mosaic links add -m dataset.yaml --id lab --path ../libraries/lab
+mosaic links list -m dataset.yaml
+```
+
+The manifest then records the link under `links:`:
+
+```yaml
+links:
+  - id: lab
+    path: ../libraries/lab
+    uuid: 6f1c...
+    provides: [models, features, tracks, label-series, frames]
 ```
 
 A model the dataset does not hold is then looked up in each linked library, so
@@ -859,7 +869,7 @@ dataset_summary(ds, found=dataset_inventory(ds))  # what `mosaic describe --json
 mosaic describe -m ~/dataset/dataset.yaml
 ```
 
-The summary gives the manifest's name, `uuid`, notes, tags, libraries, `splits` and
+The summary gives the manifest's name, `uuid`, notes, tags, links, `splits` and
 [saved selections](#save-a-selection), and counts the sequences, recordings, videos,
 tracks variants, feature runs and trained models the dataset holds. `sequences` counts
 the entries with a tracks table, and `recordings` counts over the entries of the media

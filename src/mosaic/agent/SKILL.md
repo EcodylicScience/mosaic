@@ -163,7 +163,7 @@ A dataset is a directory with `dataset.yaml` and named roots
   `.mosaic/selections/`, the user's saved entry sets (see Bringing data in). Never
   delete a selection: it is the user's record of which entries an analysis used.
 - Change `dataset.yaml` with `mosaic sources`, `mosaic tags`, `mosaic notes` and
-  `mosaic libraries`, or the matching `Dataset` methods. A top-level key added by hand
+  `mosaic links`, or the matching `Dataset` methods. A top-level key added by hand
   survives. A newer `manifest_version` raises `ManifestVersionError`. Upgrade mosaic
   then, and leave the version as it is.
 - `splits` in `dataset.yaml` gives a group the role `train`, `test` or `sealed`. Read it
@@ -740,7 +740,7 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Annotation revisions (`labels_raw/keypoints/<set>/rev<N>/`) are immutable. A changed
   save becomes a new revision, and an edited revision is refused.
 - Refer to a model by its run id. To use a model trained in another dataset, link that
-  dataset with `mosaic libraries add`. Do not pass a path into its `models/`.
+  dataset with `mosaic links add`. Do not pass a path into its `models/`.
   `mosaic models provenance <run_id>` shows what a model was trained on.
 - A hand-corrected track set becomes source data through `promote_correction`, as
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/ describes.

@@ -90,7 +90,7 @@ class TrainedModelIndexRow(RunIndexRowBase):
     # the ``models`` entry of ``_INDEX_PATH_COLUMNS``.
     data_path: str = ""
     data_fingerprint: str = ""
-    # Which linked library served the base weights, as ``<link id>@<uuid>``.
+    # Which linked dataset served the base weights, as ``<link id>@<uuid>``.
     # Empty when they were local or a bare path. Provenance, never identity.
     base_origin: str = ""
 

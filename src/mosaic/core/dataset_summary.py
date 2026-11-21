@@ -19,7 +19,7 @@ from pydantic import Field
 
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
+from mosaic.core.manifest import DatasetLink, DatasetTag, SplitRole
 from mosaic.core.media.facts_columns import read_link_cell
 from mosaic.core.media.store_division import DivisionRule, RecordingIdentity
 from mosaic.core.media.store_rate import positive_rate, store_rate_mismatch
@@ -286,7 +286,7 @@ class DatasetSummary(StrictModel):
         created_at: When the manifest was first written, ISO-8601 UTC.
         notes: The manifest's free text.
         tags: The typed dataset tags, in display order.
-        libraries: The linked library datasets, in lookup order.
+        links: The linked datasets, in lookup order.
         continuous_groups: The groups whose sequences divide one recording.
         splits: The role of each named group in a held-out protocol, ``train``,
             ``test`` or ``sealed``. Empty when the manifest declares none.
@@ -322,7 +322,7 @@ class DatasetSummary(StrictModel):
     created_at: str | None
     notes: str
     tags: tuple[DatasetTag, ...]
-    libraries: tuple[LibraryLink, ...]
+    links: tuple[DatasetLink, ...]
     continuous_groups: tuple[str, ...]
     recordings: tuple[RecordingSummary, ...] = ()
     arena_layouts: tuple[ArenaLayoutSummary, ...] = ()
@@ -391,7 +391,7 @@ def dataset_summary(
         created_at=manifest.created_at,
         notes=manifest.notes,
         tags=manifest.ordered_tags(),
-        libraries=manifest.libraries,
+        links=manifest.links,
         continuous_groups=ds.continuous_groups,
         recordings=tuple(
             _recording_summary(recording, divisions, rules)

@@ -22,7 +22,7 @@ from mosaic.cli.describe import describe_command
 from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
 from mosaic.cli.inventory import inventory_app
-from mosaic.cli.libraries import libraries_app
+from mosaic.cli.links import links_app
 from mosaic.cli.media import media_app
 from mosaic.cli.models import models_app
 from mosaic.cli.scan import scan_command
@@ -120,7 +120,7 @@ app.add_typer(tags_app, name="tags")
 app.add_typer(sequence_tags_app, name="sequence-tags")
 app.add_typer(splits_app, name="splits")
 app.add_typer(arenas_app, name="arenas")
-app.add_typer(libraries_app, name="libraries")
+app.add_typer(links_app, name="links")
 _ = app.command(name="reindex")(reindex_command)
 _ = app.command(name="reconcile")(reconcile_command)
 _ = app.command(name="reprobe-media")(reprobe_media_command)

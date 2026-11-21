@@ -803,7 +803,7 @@ def tracks_made_with(ds: Dataset, model_run_id: str, *, digest: str) -> TracksMa
     when it was handed in by path. The model is found when *model_run_id* or
     *digest* is among them. That covers each member of a SLEAP model set, whose
     payload names the set by one digest over all its members, and a model served
-    by a linked library, because the record names the run and not where it was
+    by a linked dataset, because the record names the run and not where it was
     stored.
 
     A record with no ``models`` entry is judged by its identity payload. Such a

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.manifest import LibraryLink
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.index_csv import IndexCSV, index_records
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.markers import InflightMarker, read_inflight, write_inflight
@@ -406,8 +406,10 @@ def test_a_model_in_a_linked_library_is_deleted_through_the_library(
     library = make_dataset(tmp_path / "libraries" / "7", name="library")
     project = make_dataset(tmp_path / "52", name="project")
     _register(library)
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
-    assert resolve_op_model(project, "infer-pose", RUN_ID).library_id == "group"
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
+    assert resolve_op_model(project, "infer-pose", RUN_ID).link_id == "group"
 
     deleted = delete_trained_model(library, KIND, RUN_ID)
 

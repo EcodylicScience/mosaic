@@ -52,6 +52,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.media.store_division import RecordingIdentity, recording_name_problem
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.user_paths import user_path
@@ -66,6 +67,8 @@ from mosaic.core.typed_attribute import (
 
 __all__ = [
     "DIVISION_MANIFEST_VERSION",
+    "GROUP_PATH_MANIFEST_VERSION",
+    "LINKS_MANIFEST_VERSION",
     "MANAGED_BY_KEY",
     "MANIFEST_FILENAMES",
     "MANIFEST_MARKER_KEYS",
@@ -77,9 +80,9 @@ __all__ = [
     "TAG_NAME_MAX_LENGTH",
     "UNDIVIDED_MANIFEST_VERSION",
     "AnyScanSource",
+    "DatasetLink",
     "DatasetManifest",
     "DatasetTag",
-    "LibraryLink",
     "GroupFrom",
     "LabelsScanSource",
     "ManifestVersionError",
@@ -116,7 +119,7 @@ __all__ = [
 ]
 
 
-MANIFEST_VERSION: Final = 5
+MANIFEST_VERSION: Final = 6
 """The newest manifest format this code reads and writes.
 
 Bumped only for a change that older code would misread. Reading tolerates any
@@ -139,7 +142,19 @@ dataset writes :data:`UNDIVIDED_MANIFEST_VERSION`, which older code still opens.
 unknown keys, so older code would meet one as a schema error naming a field.
 Only a dataset with a source that declares it writes 5
 (:func:`written_manifest_version`).
+
+6 renamed ``libraries`` to ``links`` and gave each link the kinds it provides.
+Code older than ``links`` would preserve the key, resolve nothing through it,
+and compute into its own tree what a link holds. Only a dataset that declares a
+link writes 6. A manifest below 6 reads its ``libraries`` as links that provide
+models (:func:`migrate_to_current`).
 """
+
+LINKS_MANIFEST_VERSION: Final = 6
+"""The version that a dataset declaring a link writes."""
+
+GROUP_PATH_MANIFEST_VERSION: Final = 5
+"""The version that a dataset with a source grouping by path writes."""
 
 DIVISION_MANIFEST_VERSION: Final = 4
 """The version that a dataset dividing a media store writes."""
@@ -1022,44 +1037,49 @@ class DatasetTag(StrictModel):
         return self
 
 
-# ---------------------------------------------------------------- library links
+# ---------------------------------------------------------------- links
 
 
-class LibraryLink(StrictModel):
-    """Another dataset this one may resolve trained models from.
+class DatasetLink(StrictModel):
+    """Another dataset whose derived data this one may read.
 
-    A model is named by its run identifier, which is content and carries no
-    location. A link is what lets that name resolve when the model was trained
-    somewhere else: a lookup that misses this dataset's own ``models/`` index
-    falls through to each linked library in declaration order. The identifier an
-    inference run mints is therefore the same from every dataset that links the
-    library, and the same again after the model is copied in beside it.
+    Any dataset may be linked: a group's shared library of trained models, or
+    the source of a project copy. A lookup that misses this dataset's own data
+    for a kind the link provides falls through to each link in declaration
+    order. A model is named by its run identifier, which is content and carries
+    no location, so the identifier an inference run mints is the same from every
+    dataset that links the one holding the model, and the same again after the
+    model is copied in beside it.
 
     **A link, like a source, may point outside the dataset.** It names storage
     this dataset reads and does not own, and nothing is ever written through it.
 
     Attributes:
         id: What the link is called. Unique within a manifest.
-        path: Where the library is. Absolute, or relative to this dataset, which
-            is the spelling that survives the tree being mounted elsewhere.
-        uuid: The library manifest's own ``uuid``, recorded when the link was
-            made. It is what tells a library that moved from a different dataset
+        path: Where the linked dataset is. Absolute, or relative to this
+            dataset, which is the spelling that survives the tree being mounted
+            elsewhere.
+        uuid: The linked manifest's own ``uuid``, recorded when the link was
+            made. It is what tells a dataset that moved from a different dataset
             now sitting at the old path; empty means it was never recorded and
             is not checked.
         added_at: When the link was declared, ISO-8601 UTC.
+        provides: The kinds of derived data read through the link, each named
+            once. Every kind unless declared.
     """
 
     id: str
     path: str
     uuid: str = ""
     added_at: str = ""
+    provides: tuple[LinkedKind, ...] = LINKED_KINDS
 
     @field_validator("id")
     @classmethod
     def _id_is_a_safe_token(cls, value: str) -> str:
         if not _SOURCE_ID_RE.match(value):
             msg = (
-                f"library id {value!r} must start with a letter or digit and hold "
+                f"link id {value!r} must start with a letter or digit and hold "
                 f"only letters, digits, '.', '_' and '-', up to "
                 f"{SOURCE_ID_MAX_LENGTH} characters"
             )
@@ -1070,7 +1090,21 @@ class LibraryLink(StrictModel):
     @classmethod
     def _path_is_not_empty(cls, value: str) -> str:
         if not value.strip():
-            msg = "library path must not be empty"
+            msg = "link path must not be empty"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("provides")
+    @classmethod
+    def _provides_names_each_kind_once(
+        cls, value: tuple[LinkedKind, ...]
+    ) -> tuple[LinkedKind, ...]:
+        if not value:
+            msg = "a link provides at least one kind"
+            raise ValueError(msg)
+        repeated = sorted({kind for kind in value if value.count(kind) > 1})
+        if repeated:
+            msg = f"a link names {', '.join(repeated)} more than once in provides"
             raise ValueError(msg)
         return value
 
@@ -1100,8 +1134,8 @@ class DatasetManifest(BaseModel):
             ``test`` or ``sealed``. A group absent here has no role. The roles
             are an operator's declaration; mosaic reads them and does not
             enforce them against older code. See :mod:`mosaic.core.splits`.
-        libraries: Other datasets a model reference may resolve through. See
-            :class:`LibraryLink`.
+        links: Other datasets whose derived data this one may read. See
+            :class:`DatasetLink`.
         meta: Structured per-subsystem metadata, written by converters.
         preserved: Top-level keys this version does not model, kept verbatim.
         migrated_from: The version read from disk, when it was older than
@@ -1126,7 +1160,7 @@ class DatasetManifest(BaseModel):
     tags: tuple[DatasetTag, ...] = ()
     continuous_groups: tuple[str, ...] = ()
     splits: dict[str, SplitRole] = Field(default_factory=dict)
-    libraries: tuple[LibraryLink, ...] = ()
+    links: tuple[DatasetLink, ...] = ()
     meta: dict[str, JsonValue] = Field(default_factory=dict)
 
     # Not written as themselves: `preserved` is re-emitted by name after the
@@ -1232,16 +1266,16 @@ class DatasetManifest(BaseModel):
             raise ValueError(msg)
         return value
 
-    @field_validator("libraries")
+    @field_validator("links")
     @classmethod
-    def _library_ids_are_unique(
-        cls, value: tuple[LibraryLink, ...]
-    ) -> tuple[LibraryLink, ...]:
+    def _link_ids_are_unique(
+        cls, value: tuple[DatasetLink, ...]
+    ) -> tuple[DatasetLink, ...]:
         """Two links may not share an id: removal and provenance both name one."""
         seen: set[str] = set()
         for link in value:
             if link.id in seen:
-                msg = f"two library links share the id {link.id!r}"
+                msg = f"two links share the id {link.id!r}"
                 raise ValueError(msg)
             seen.add(link.id)
         return value
@@ -1356,6 +1390,10 @@ def is_mosaic_manifest(data: Mapping[str, JsonValue]) -> bool:
     return not MANIFEST_MARKER_KEYS.isdisjoint(data)
 
 
+_LIBRARIES_KEY: Final = "libraries"
+"""The key that held links below :data:`LINKS_MANIFEST_VERSION`."""
+
+
 def migrate_to_current(
     data: dict[str, JsonValue], *, source: str = ""
 ) -> DatasetManifest:
@@ -1364,7 +1402,9 @@ def migrate_to_current(
     Migration is in memory and additive. A retired key is not modeled, so it
     lands in ``preserved`` and is written back out; an absent root is backfilled;
     a version absent entirely reads as 1, because that is what every manifest
-    written before versioning existed is.
+    written before versioning existed is. Below version 6, ``libraries`` is read
+    as ``links`` that each provide models, the one kind a library link served;
+    at 6 and above it is an unmodeled key like any other.
 
     Args:
         data: The parsed manifest mapping.
@@ -1388,12 +1428,28 @@ def migrate_to_current(
         )
         raise ManifestVersionError(msg)
 
+    if declared < LINKS_MANIFEST_VERSION and _LIBRARIES_KEY in data:
+        data = _libraries_as_links(data)
     manifest = DatasetManifest.model_validate({**data, "manifest_version": declared})
     manifest.roots = backfill_roots(manifest.roots)
     manifest.manifest_version = max(declared, UNDIVIDED_MANIFEST_VERSION)
     current = manifest.manifest_version
     manifest.migrated_from = declared if declared != current else None
     return manifest
+
+
+def _libraries_as_links(data: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """*data* with its ``libraries`` renamed to ``links`` that provide models."""
+    renamed = {key: value for key, value in data.items() if key != _LIBRARIES_KEY}
+    libraries = data[_LIBRARIES_KEY]
+    if isinstance(libraries, list):
+        renamed["links"] = [
+            {**entry, "provides": ["models"]} if isinstance(entry, dict) else entry
+            for entry in libraries
+        ]
+    else:
+        renamed["links"] = libraries
+    return renamed
 
 
 def read_manifest(path: Path) -> DatasetManifest:
@@ -1454,10 +1510,10 @@ def manifest_header(version: int = UNDIVIDED_MANIFEST_VERSION) -> str:
 # splits   The role of each named group in a held-out protocol: `train`,
 #          `test` or `sealed`. Written by an operator (`mosaic splits set`);
 #          the agent tools never write it. A group not listed has no role.
-# libraries
-#          Other datasets a trained model may be resolved from, by run id. A
-#          link may point OUTSIDE the dataset, like a source; nothing is ever
-#          written through it. `uuid` is the library's own, so a library that
+# links    Other datasets whose derived data this one may read: trained
+#          models by run id, and the kinds named in `provides`. A link may
+#          point OUTSIDE the dataset, like a source; nothing is ever written
+#          through it. `uuid` is the linked dataset's own, so a dataset that
 #          moved is told apart from a different dataset at the old path.
 # meta     Structured per-subsystem metadata, written by converters.
 #
@@ -1547,19 +1603,22 @@ def _tag_payload(tag: DatasetTag) -> dict[str, JsonValue]:
     return payload
 
 
-def _library_payload(link: LibraryLink) -> dict[str, JsonValue]:
+def _link_payload(link: DatasetLink) -> dict[str, JsonValue]:
+    """One link as written, its ``provides`` in :data:`LINKED_KINDS` order."""
     payload: dict[str, JsonValue] = {"id": link.id, "path": link.path}
     if link.uuid:
         payload["uuid"] = link.uuid
     if link.added_at:
         payload["added_at"] = link.added_at
+    payload["provides"] = [kind for kind in LINKED_KINDS if kind in link.provides]
     return payload
 
 
 def written_manifest_version(manifest: DatasetManifest) -> int:
     """Return the version that *manifest* is written at.
 
-    It is :data:`MANIFEST_VERSION` when a tracks or labels source declares a
+    It is :data:`LINKS_MANIFEST_VERSION` when the manifest declares a link,
+    :data:`GROUP_PATH_MANIFEST_VERSION` when a tracks or labels source declares a
     ``group_path_pattern``, :data:`DIVISION_MANIFEST_VERSION` when a media source
     declares a division, and otherwise the manifest's own version:
     :data:`UNDIVIDED_MANIFEST_VERSION`, or the newer version it was read at or
@@ -1575,7 +1634,9 @@ def written_manifest_version(manifest: DatasetManifest) -> int:
         for source in manifest.sources.of_kind(kind)
     )
     needed = (
-        MANIFEST_VERSION
+        LINKS_MANIFEST_VERSION
+        if manifest.links
+        else GROUP_PATH_MANIFEST_VERSION
         if path_grouped
         else DIVISION_MANIFEST_VERSION
         if divides
@@ -1618,8 +1679,8 @@ def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
         payload["continuous_groups"] = list(manifest.continuous_groups)
     if manifest.splits:
         payload["splits"] = dict(sorted(manifest.splits.items()))
-    if manifest.libraries:
-        payload["libraries"] = [_library_payload(link) for link in manifest.libraries]
+    if manifest.links:
+        payload["links"] = [_link_payload(link) for link in manifest.links]
     if manifest.meta:
         payload["meta"] = dict(manifest.meta)
 

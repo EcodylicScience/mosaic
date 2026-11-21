@@ -12,10 +12,10 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
 - **A tool is handed only a file it decodes.** `refuse_undecodable_codec`
   (`tracking/common/tool_input.py`) applies the tool's `ToolDecoder`
   (`core/pipeline/tracking_roots.py`, `tests/tracking/common/test_decoder_probe.py`).
-- **Name a model by its run id.** Across datasets, link the library with `libraries:`
-  instead of a path into another dataset's `models/`. The reference string enters the
-  inference identity (`resolve_model` in `tracking/model_refs.py`,
-  `tests/core/test_library_links.py`).
+- **Name a model by its run id.** Across datasets, link the dataset that holds it with
+  `links:` instead of a path into another dataset's `models/`. The reference string
+  enters the inference identity (`resolve_model` in `tracking/model_refs.py`,
+  `tests/core/test_dataset_links.py`).
 - **A revision's content is hashed, and its number is not**
   (`tests/tracking/ops/test_prepare_training_data.py`).
 
@@ -70,16 +70,16 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   `labels/{train,val}/shard-NNNNN.slp` from frames decoded once per entry and published
   with one `os.replace`, and `train-sleap` reads that directory (`sleap_label_files`).
 
-## Model references and libraries
+## Model references and links
 
 - Every tracker, `infer-*` and `base_model` call site resolves through `resolve_model`
   or `resolve_model_set` (`model_refs.py`). The conformance test refuses a private
   resolver.
 - A reference is a path or a registered training run id. `_registered_artifact` asks
-  this dataset's index first, then each library from `Dataset.linked_libraries()` in
-  declaration order, and resolves the cell against the dataset that wrote it.
-- Links are one level deep. An unreachable library is skipped with a warning. A
-  reachable one with a different manifest `uuid` raises `LibraryMismatchError`.
+  this dataset's index first, then each linked dataset from `Dataset.linked_datasets()`
+  in declaration order, and resolves the cell against the dataset that wrote it.
+- Links are one level deep. An unreachable linked dataset is skipped with a warning. A
+  reachable one with a different manifest `uuid` raises `LinkMismatchError`.
 
 ## Training data and provenance
 

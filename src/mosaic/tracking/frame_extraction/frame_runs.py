@@ -340,7 +340,7 @@ def video_frames_of(
     """The recorded frame behind each annotation frame, one per frame in input order.
 
     Reads the frames indexes of the dataset whose base directory is
-    *image_root*, which is *ds* or one of its linked libraries. A frames row
+    *image_root*, which is *ds* or one of its linked datasets. A frames row
     matches an image when the row's entry directory is the image's directory.
     The image then takes the row's group, sequence and camera, and the dataset's
     manifest uuid as its origin. Its frame index is the one that the
@@ -396,16 +396,16 @@ def video_frames_of(
 
 
 def _dataset_at(ds: Dataset, image_root: Path) -> Dataset | None:
-    """*ds*, or the linked library, whose base directory is *image_root*.
+    """*ds*, or the linked dataset, whose base directory is *image_root*.
 
     Returns ``None`` when neither is.
     """
     target = image_root.resolve()
     if ds.base_dir.resolve() == target:
         return ds
-    for library in ds.linked_libraries():
-        if library.dataset.base_dir.resolve() == target:
-            return library.dataset
+    for linked in ds.linked_datasets():
+        if linked.dataset.base_dir.resolve() == target:
+            return linked.dataset
     return None
 
 

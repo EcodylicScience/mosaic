@@ -12,7 +12,7 @@ from mosaic.cli._io import emit_json, fail
 
 models_app = typer.Typer(
     name="models",
-    help="Ask about trained models: this dataset's, and its linked libraries'.",
+    help="Ask about trained models: this dataset's, and its linked datasets'.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -55,7 +55,7 @@ def provenance(
     if as_json:
         emit_json(found.as_json())
         return
-    where = f" (served by library {found.served_by!r})" if found.served_by else ""
+    where = f" (served by link {found.served_by!r})" if found.served_by else ""
     typer.echo(f"{found.run_id}{where}")
     typer.echo(f"  trained on   {found.data_path or '(not recorded)'}")
     if found.data_fingerprint:

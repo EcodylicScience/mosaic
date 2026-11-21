@@ -406,7 +406,7 @@ def test_a_summary_without_splits_still_validates() -> None:
         "created_at": None,
         "notes": "",
         "tags": [],
-        "libraries": [],
+        "links": [],
         "continuous_groups": [],
         "managed_by": None,
         "api_managed": False,

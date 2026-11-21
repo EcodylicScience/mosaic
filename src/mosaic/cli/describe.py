@@ -71,7 +71,7 @@ def describe_command(
 def _render(summary: DatasetSummary) -> None:
     """Print the manifest's fields and counts, then each table the summary holds.
 
-    The tables are the schemas, rates, arena layouts, selections, tags and libraries.
+    The tables are the schemas, rates, arena layouts, selections, tags and links.
     """
     counts = summary.counts
     render_kv(
@@ -127,10 +127,10 @@ def _render(summary: DatasetSummary) -> None:
         render_table(
             [tag.model_dump() for tag in summary.tags], ["name", "type", "value"]
         )
-    if summary.libraries:
+    if summary.links:
         typer.echo()
         render_table(
-            [link.model_dump() for link in summary.libraries], ["id", "path", "uuid"]
+            [link.model_dump() for link in summary.links], ["id", "path", "uuid"]
         )
     if summary.raw_report is not None:
         typer.echo()

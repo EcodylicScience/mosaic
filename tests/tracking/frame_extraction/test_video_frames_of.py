@@ -19,7 +19,7 @@ import pytest
 from mosaic.core.annotations.model import AnnotationFrame
 from mosaic.core.annotations.split import VideoFrame, frame_key
 from mosaic.core.dataset import Dataset, open_dataset
-from mosaic.core.manifest import LibraryLink
+from mosaic.core.manifest import DatasetLink
 from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from tests.helpers import (
     assert_tree_unchanged,
@@ -241,13 +241,15 @@ def test_frames_come_back_one_per_input_in_input_order(dataset: Dataset) -> None
     ]
 
 
-def test_an_image_under_a_linked_library_takes_the_library_uuid(
+def test_an_image_under_a_linked_dataset_takes_its_uuid(
     tmp_path: Path,
 ) -> None:
     project = make_dataset(tmp_path / "project")
     library = make_dataset(tmp_path / "library")
     images = _extract(library)
-    _ = project.add_library(LibraryLink(id="shared", path="../library"))
+    _ = project.add_link(
+        DatasetLink(id="shared", path="../library", provides=("models",))
+    )
 
     (located,) = video_frames_of(
         project,
@@ -266,7 +268,7 @@ def test_an_image_under_a_linked_library_takes_the_library_uuid(
 
 
 def test_an_image_of_a_dataset_that_is_not_linked_falls_back(tmp_path: Path) -> None:
-    """Only this dataset's frames index and its linked libraries' are read."""
+    """Only this dataset's frames index and its linked datasets' are read."""
     project = make_dataset(tmp_path / "project")
     elsewhere = make_dataset(tmp_path / "elsewhere")
     images = _extract(elsewhere)

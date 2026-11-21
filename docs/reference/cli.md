@@ -56,7 +56,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `sequence-tags`: Sequence tags: import a CSV, list them.
 * `splits`: Give groups a role in a held-out protocol:...
 * `arenas`: Declare and show the arena layout of each...
-* `libraries`: Link the datasets a trained model may be...
+* `links`: Link the datasets whose derived data this...
 
 ## `mosaic run`
 
@@ -1096,7 +1096,7 @@ $ mosaic inventory show [OPTIONS] {ref}
 
 ## `mosaic models`
 
-Ask about trained models: this dataset's, and its linked libraries'.
+Ask about trained models: this dataset's, and its linked datasets'.
 
 **Usage**:
 
@@ -2412,14 +2412,14 @@ $ mosaic arenas show [OPTIONS]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
-## `mosaic libraries`
+## `mosaic links`
 
-Link the datasets a trained model may be resolved from, by run id.
+Link the datasets whose derived data this one may read, such as models.
 
 **Usage**:
 
 ```console
-$ mosaic libraries [OPTIONS] COMMAND [ARGS]...
+$ mosaic links [OPTIONS] COMMAND [ARGS]...
 ```
 
 **Options**:
@@ -2428,18 +2428,18 @@ $ mosaic libraries [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `list`: Show every linked library, in the order a...
-* `add`: Link a library, recording its uuid so a...
+* `list`: Show every link, in the order a lookup...
+* `add`: Link a dataset, recording its uuid so a...
 * `remove`: Drop a link.
 
-### `mosaic libraries list`
+### `mosaic links list`
 
-Show every linked library, in the order a model lookup tries them.
+Show every link, in the order a lookup tries them.
 
 **Usage**:
 
 ```console
-$ mosaic libraries list [OPTIONS]
+$ mosaic links list [OPTIONS]
 ```
 
 **Options**:
@@ -2448,32 +2448,33 @@ $ mosaic libraries list [OPTIONS]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
-### `mosaic libraries add`
+### `mosaic links add`
 
-Link a library, recording its uuid so a moved one is told from a wrong one.
+Link a dataset, recording its uuid so a moved one is told from a wrong one.
 
 **Usage**:
 
 ```console
-$ mosaic libraries add [OPTIONS]
+$ mosaic links add [OPTIONS]
 ```
 
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--id <str>`: What to call the link.  [required]
-* `--path <str>`: The library dataset: its directory or its manifest. Relative to this dataset, which is the spelling that survives the tree being mounted somewhere else.  [required]
-* `--uuid <str>`: The library's own uuid, to insist on. Left out, the uuid found at the path is recorded.
+* `--path <str>`: The linked dataset: its directory or its manifest. Relative to this dataset, which is the spelling that survives the tree being mounted somewhere else.  [required]
+* `--uuid <str>`: The linked dataset's own uuid, to insist on. Left out, the uuid found at the path is recorded.
+* `--provides <str>`: A kind of derived data to read through the link: models, features, tracks, label-series, frames. Repeatable. Default: every kind.
 * `--help`: Show this message and exit.
 
-### `mosaic libraries remove`
+### `mosaic links remove`
 
-Drop a link. Nothing on disk changes; its models stop resolving from here.
+Drop a link. Nothing on disk changes; what it served stops resolving here.
 
 **Usage**:
 
 ```console
-$ mosaic libraries remove [OPTIONS]
+$ mosaic links remove [OPTIONS]
 ```
 
 **Options**:

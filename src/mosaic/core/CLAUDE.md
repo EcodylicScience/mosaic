@@ -80,12 +80,13 @@ importing `mosaic.tracking` registers neither.
 
 - `manifest.py` defines the format as pydantic models. A read migrates an older version
   in memory and writes nothing, and a newer version raises `ManifestVersionError`. The
-  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 5 only
-  when a tracks or labels source declares a `group_path_pattern`, and at 4 only when a
-  media source declares a `division` or a write raised it for division rows
-  (`written_manifest_version`), and every other at `UNDIVIDED_MANIFEST_VERSION`.
-  `DatasetManifest` keeps unknown top-level keys in `preserved`, while sources and tags
-  refuse unknown keys (`tests/core/test_dataset_manifest.py`).
+  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 6 only
+  when it declares a link (`links`), at 5 only when a tracks or labels source declares a
+  `group_path_pattern`, and at 4 only when a media source declares a `division` or a
+  write raised it for division rows (`written_manifest_version`), and every other at
+  `UNDIVIDED_MANIFEST_VERSION`. `DatasetManifest` keeps unknown top-level keys in
+  `preserved`, while sources and tags refuse unknown keys
+  (`tests/core/test_dataset_manifest.py`).
 - A `Dataset` setter checks the manifest it would make before holding it
   (`Dataset._adopt_manifest`). A refused value does not reach `save`
   (`TestARefusedSetterLeavesTheManifest`).

@@ -38,7 +38,7 @@ from mosaic.core.annotations.projection import (
 from mosaic.core.annotations.writers.coco import coco_keypoints_payload
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import make_entry_key
-from mosaic.core.manifest import LabelsScanSource, LibraryLink
+from mosaic.core.manifest import LabelsScanSource, DatasetLink
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import (
@@ -2105,7 +2105,7 @@ def test_a_library_draws_the_recordings_of_a_project_that_it_does_not_link(
         model_run_root(library, KIND, run_op(library, KIND, _hourly()))
     )
 
-    assert library.manifest.libraries == ()
+    assert library.manifest.links == ()
     assert _units(record) == HOURLY_UNITS
     assert record.groupby("unit_key")["split"].nunique().eq(1).all()
 
@@ -2129,7 +2129,7 @@ def test_a_preparation_follows_the_declaration_that_its_revision_records(
     """A library that links the project claims it, then ``night`` is withdrawn."""
     project = _divided_library(tmp_path, ("day", "night"))
     library = _claiming_library(tmp_path, project)
-    _ = library.add_library(LibraryLink(id="project", path="../8"))
+    _ = library.add_link(DatasetLink(id="project", path="../8", provides=("models",)))
     claimed = _plan(library, _hourly())
 
     project.set_continuous_groups(("day",))
@@ -2159,7 +2159,9 @@ def test_a_frame_is_drawn_by_the_declaration_of_the_dataset_it_came_from(
     project = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
     add_track_sequences(project, ("dawn", "h01"), ("dawn", "h02"))
     project.set_continuous_groups(("dawn",))
-    _ = project.add_library(LibraryLink(id="group", path="../libraries/8"))
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/8", provides=("models",))
+    )
     _claim(project, library, "hourly", 1)
 
     run_id = run_op(project, KIND, _hourly())
@@ -2176,7 +2178,9 @@ def test_a_link_that_is_not_reachable_leaves_the_preparation_unchanged(
     library = _claiming_library(tmp_path, project)
     mounted = tmp_path / "mounted"
     mounted.symlink_to(project.base_dir, target_is_directory=True)
-    _ = library.add_library(LibraryLink(id="project", path=str(mounted)))
+    _ = library.add_link(
+        DatasetLink(id="project", path=str(mounted), provides=("models",))
+    )
     linked = _plan(library, _hourly())
 
     mounted.unlink()
@@ -2377,7 +2381,9 @@ def test_the_same_answer_from_a_project_that_links_the_library(
 ) -> None:
     mice, _rats, library = world
     model = _train(library, _prepare(library))
-    _ = mice.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = mice.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     found = training_provenance(mice, "train-pose", model)
 
@@ -2455,7 +2461,9 @@ def test_the_provenance_command_prints_the_chain(
 
     mice, _rats, library = world
     model = _train(library, _prepare(library))
-    _ = mice.add_library(LibraryLink(id="group", path="../libraries/7"))
+    _ = mice.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
 
     shown = CliRunner().invoke(
         app, ["models", "provenance", "-m", str(mice.manifest_path), model, "--json"]
