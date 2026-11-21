@@ -70,6 +70,7 @@ __all__ = [
     "InputCandidates",
     "InsertReport",
     "NeedStatus",
+    "NotRetiredRecipeWire",
     "ParallelWire",
     "ParamRow",
     "PlanWire",
@@ -78,6 +79,7 @@ __all__ = [
     "ProvidedColumns",
     "ReasonWire",
     "ReferenceKind",
+    "RetirementPlanWire",
     "StalledWire",
     "SupersededRunWire",
     "StepTypeDetail",
@@ -729,6 +731,53 @@ class CleanupPlanWire(GraphModel):
     retired: tuple[str, ...] = ()
     retired_runs: tuple[SupersededRunWire, ...] = ()
     retired_omitted: int = 0
+
+
+class NotRetiredRecipeWire(GraphModel):
+    """A digest a retirement was given and did not retire.
+
+    Attributes:
+        digest: The digest as given.
+        reason: ``recipe_unreadable`` for a digest that is malformed, names no
+            saved recipe or names one that does not read; ``keeper_recipe`` for
+            the recipe a pipeline that stays runs.
+        message: Why, in a sentence.
+    """
+
+    digest: str
+    reason: str
+    message: str
+
+
+class RetirementPlanWire(GraphModel):
+    """What retiring recipes without a submission would remove and keep.
+
+    Attributes:
+        fingerprint: Names the plan, for a confirm to compare against.
+        planned_at: The instant the plan judged at.
+        policy: The age and recency rules the runs were judged under.
+        retired: The digests retired, in the current canonical form.
+        not_retired: The digests given and not retired, each with its reason.
+        keepers: The digests of the recipes of the pipelines that stay.
+        removable_runs: How many runs the retirement may remove.
+        removable_bytes: The bytes they hold.
+        kept_runs: How many of the runs the retired recipes' requests wrote are
+            kept.
+        kept_bytes: The bytes they hold.
+        runs: Every run judged, removable or kept with its reason.
+    """
+
+    fingerprint: str
+    planned_at: str
+    policy: CleanupPolicy
+    retired: tuple[str, ...] = ()
+    not_retired: tuple[NotRetiredRecipeWire, ...] = ()
+    keepers: tuple[str, ...] = ()
+    removable_runs: int
+    removable_bytes: int
+    kept_runs: int
+    kept_bytes: int
+    runs: tuple[SupersededRunWire, ...] = ()
 
 
 class PlannedStepWire(GraphModel):

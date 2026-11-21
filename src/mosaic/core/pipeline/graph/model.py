@@ -59,6 +59,8 @@ __all__ = [
     "OpStepSpec",
     "Recipe",
     "Request",
+    "RetirementKeeper",
+    "RetirementSpec",
     "SCHEMA_VERSION",
     "Step",
     "StepRef",
@@ -500,6 +502,47 @@ class CleanupSpec(GraphModel):
     approved: list[CleanupTarget] = Field(default_factory=list)
     fingerprint: str = ""
     retired: list[str] = Field(default_factory=list)
+
+
+class RetirementKeeper(GraphModel):
+    """A pipeline that stays when recipes are retired: its recipe and its scope.
+
+    The runs its plan expects are never removed, and the runs of the storages it
+    names are judged against what it expects there. The recipe travels as a
+    document, because the pipeline's current version may be one no request has
+    saved yet.
+
+    Attributes:
+        recipe: The recipe of the pipeline's current version.
+        scope: The entries to plan it over. An unset one is all.
+    """
+
+    recipe: Recipe
+    scope: Scope = Field(default_factory=Scope)
+
+
+class RetirementSpec(GraphModel):
+    """A retirement as it was approved, which its removal judges again.
+
+    Attributes:
+        retire: The digests of the retired recipes, in the current canonical
+            form, without the digests the plan did not retire.
+        keepers: The pipelines that stay.
+        policy: The policy the plan was computed under.
+        approved: The runs the reviewed plan found removable. The removal
+            removes no other run, and keeps any of these that is no longer
+            removable when it runs.
+        planned_at: The instant the plan judged at. A request of a retired
+            recipe created at or after it is not retired.
+        fingerprint: The fingerprint of the reviewed plan.
+    """
+
+    retire: list[str] = Field(default_factory=list)
+    keepers: list[RetirementKeeper] = Field(default_factory=list)
+    policy: CleanupPolicy = Field(default_factory=lambda: CleanupPolicy())
+    approved: list[CleanupTarget] = Field(default_factory=list)
+    planned_at: str
+    fingerprint: str = ""
 
 
 class ComputedRun(GraphModel):

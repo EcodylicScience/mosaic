@@ -1592,7 +1592,7 @@ def _keep_what_is_read(
     opened: Mapping[tuple[str, str], str],
     unnamed: Mapping[str, str],
     fits: Mapping[tuple[str, str], FitScope | None],
-    plans: Iterable[Plan],
+    plans: Sequence[Plan],
 ) -> None:
     """Keep every removable run that a kept run reads, until nothing changes.
 
@@ -1602,13 +1602,19 @@ def _keep_what_is_read(
     named its run yet, read by the storage it writes as a run of unknown params
     is, and every feature step of *plans*, which reads what its resolved inputs
     and params name. Two plans may each have a step of one id, so the steps are
-    readers apart from the runs.
+    readers apart from the runs, and with several plans a step is named with
+    the digest of its plan's recipe.
     """
     from ..fit_scope import read_fit_scope
 
+    def plan_of(plan: Plan) -> str:
+        if len(plans) == 1:
+            return "the plan"
+        return f"the plan of recipe {plan.recipe_digest}"
+
     steps: list[tuple[tuple[str, str], _Reads]] = [
         (
-            (f"step {planned.step_id!r} of the plan", ""),
+            (f"step {planned.step_id!r} of {plan_of(plan)}", ""),
             _literal_reads(
                 {
                     **{

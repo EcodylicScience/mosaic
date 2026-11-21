@@ -158,6 +158,8 @@ if TYPE_CHECKING:
         CleanupPolicy as CleanupPolicy,
         CleanupSpec as CleanupSpec,
         CleanupTarget as CleanupTarget,
+        RetirementKeeper as RetirementKeeper,
+        RetirementSpec as RetirementSpec,
         ComputedRun as ComputedRun,
     )
     from .param_table import (
@@ -281,14 +283,23 @@ if TYPE_CHECKING:
     )
     from .serialize import (
         LARGE_SCOPE_ENTRIES as LARGE_SCOPE_ENTRIES,
+        cleanup_fingerprint_parts as cleanup_fingerprint_parts,
         plan_fingerprint as plan_fingerprint,
         plan_wire as plan_wire,
+        retirement_wire as retirement_wire,
     )
     from .request_wait import (
         RequestWaitWire as RequestWaitWire,
         WaitOutcome as WaitOutcome,
         WaitUntil as WaitUntil,
         wait_for_requests as wait_for_requests,
+    )
+    from .retire import (
+        NotRetiredReason as NotRetiredReason,
+        NotRetiredRecipe as NotRetiredRecipe,
+        RetirementPlan as RetirementPlan,
+        plan_retirement as plan_retirement,
+        retirement_fingerprint as retirement_fingerprint,
     )
     from .retirement import (
         RetireNeedsCleanup as RetireNeedsCleanup,
@@ -451,6 +462,8 @@ if TYPE_CHECKING:
         SUPERSEDED_SAMPLE as SUPERSEDED_SAMPLE,
         CleanupPlanWire as CleanupPlanWire,
         SupersededRunWire as SupersededRunWire,
+        NotRetiredRecipeWire as NotRetiredRecipeWire,
+        RetirementPlanWire as RetirementPlanWire,
     )
 
 _MODULE_OF: Final[dict[str, str]] = {
@@ -628,6 +641,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "intended_scope": ".scope",
     "media_universe": ".scope",
     "LARGE_SCOPE_ENTRIES": ".serialize",
+    "cleanup_fingerprint_parts": ".serialize",
     "plan_fingerprint": ".serialize",
     "plan_wire": ".serialize",
     "FAILED_ENTRY_SAMPLE": ".status",
@@ -795,6 +809,16 @@ _MODULE_OF: Final[dict[str, str]] = {
     "retirable_recipes": ".retirement",
     "retired_recipe_names": ".retirement",
     "saved_digest": ".retirement",
+    "NotRetiredReason": ".retire",
+    "NotRetiredRecipe": ".retire",
+    "RetirementPlan": ".retire",
+    "plan_retirement": ".retire",
+    "retirement_fingerprint": ".retire",
+    "retirement_wire": ".serialize",
+    "RetirementKeeper": ".model",
+    "RetirementSpec": ".model",
+    "NotRetiredRecipeWire": ".wire",
+    "RetirementPlanWire": ".wire",
 }
 """The submodule that defines each public name."""
 
@@ -824,6 +848,9 @@ __all__ = [
     "MAX_WAIT_SECONDS",
     "MISSING_SAMPLE",
     "MOSAIC_COMMAND",
+    "NotRetiredReason",
+    "NotRetiredRecipe",
+    "NotRetiredRecipeWire",
     "OVERWRITE_PARAM",
     "PARENT_FAILED_TYPE",
     "POLL_AFTER_MAX_SECONDS",
@@ -834,6 +861,10 @@ __all__ = [
     "REQUEST_HOLD_FLOOR_HOURS",
     "RETIRABLE_REQUEST_IDS",
     "RETIRED_SAMPLE",
+    "RetirementKeeper",
+    "RetirementPlan",
+    "RetirementPlanWire",
+    "RetirementSpec",
     "SCHEMA_VERSION",
     "STALE_STEP_SECONDS",
     "STEP_CANCEL_GRACE_SECONDS",
@@ -1019,6 +1050,7 @@ __all__ = [
     "check_recipe",
     "children_of",
     "claims_root",
+    "cleanup_fingerprint_parts",
     "cleanup_status_wire",
     "compact_params_schema",
     "compatible_consumers",
@@ -1081,6 +1113,7 @@ __all__ = [
     "plan_cleanup",
     "plan_fingerprint",
     "plan_pipeline",
+    "plan_retirement",
     "plan_wire",
     "plan_with_cleanup",
     "planning_request",
@@ -1119,6 +1152,8 @@ __all__ = [
     "resource_class_of",
     "retirable_recipes",
     "retired_recipe_names",
+    "retirement_fingerprint",
+    "retirement_wire",
     "rollup_verdict",
     "run_cleanup",
     "run_pipeline",

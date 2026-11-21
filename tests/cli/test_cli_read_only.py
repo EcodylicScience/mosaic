@@ -54,6 +54,7 @@ from mosaic.core.pipeline.graph import (
     list_requests,
     load_request,
     plan_pipeline,
+    plan_retirement,
     plan_with_cleanup,
     request_rollup,
     request_status_wire,
@@ -823,6 +824,13 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(f.reopened(), speed_recipe()),
     "plan_prerequisites": _plan_prerequisites,
+    "plan_retirement": lambda f: plan_retirement(
+        f.reopened(),
+        [load_request(f.root, f.request_id).recipe_digest],
+        [],
+        CleanupPolicy(min_age_hours=0),
+        "",
+    ),
     "plan_with_cleanup": lambda f: plan_with_cleanup(
         f.reopened(), speed_recipe(), cleanup=CleanupPolicy(min_age_hours=0)
     ),

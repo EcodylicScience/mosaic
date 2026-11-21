@@ -9,7 +9,7 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 from .cpu_fit_advice import card_device_cautions, cpu_fit_cautions
-from .digest import document_digest
+from .digest import document_digest, recipe_digest
 from .heldout import deferred_fit_cautions, listed
 from .plan import (
     ConversionAdds,
@@ -41,24 +41,36 @@ from .wire import (
     DepsIncompleteWire,
     HeldOnParentsWire,
     IdentityUnresolvedWire,
+    NotRetiredRecipeWire,
     ParallelWire,
     PlannedStepWire,
     PlanWire,
     Problem,
     ReasonWire,
+    RetirementPlanWire,
     StalledWire,
     SupersededRunWire,
     WaitingOnResourceWire,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from mosaic.core.json_value import JsonValue
     from mosaic.core.scope import Scope
 
     from .cleanup import CleanupPlan, SupersededRun
+    from .model import CleanupPolicy
+    from .retire import RetirementPlan
     from .status import RequestSummaryWire, RetirableRecipeWire
 
-__all__ = ["LARGE_SCOPE_ENTRIES", "plan_fingerprint", "plan_wire"]
+__all__ = [
+    "LARGE_SCOPE_ENTRIES",
+    "cleanup_fingerprint_parts",
+    "plan_fingerprint",
+    "plan_wire",
+    "retirement_wire",
+]
 
 LARGE_SCOPE_ENTRIES: Final = 100
 """The most entries a step may be asked for before its plan cautions it."""
@@ -191,6 +203,36 @@ def _cleanup_wire(
         retired=cleanup.retired,
         retired_runs=tuple(_superseded_wire(run) for run in unplaced[:retired_sample]),
         retired_omitted=max(len(unplaced) - retired_sample, 0),
+    )
+
+
+def retirement_wire(plan: RetirementPlan) -> RetirementPlanWire:
+    """Serialize a retirement's plan, every run it judged included.
+
+    Args:
+        plan: The plan.
+
+    Returns:
+        The plan as its wire.
+    """
+    cleanup = plan.cleanup
+    return RetirementPlanWire(
+        fingerprint=plan.fingerprint,
+        planned_at=plan.planned_at,
+        policy=plan.policy,
+        retired=plan.retired,
+        not_retired=tuple(
+            NotRetiredRecipeWire(
+                digest=each.digest, reason=each.reason, message=each.message
+            )
+            for each in plan.not_retired
+        ),
+        keepers=tuple(recipe_digest(keeper.recipe) for keeper in plan.keepers),
+        removable_runs=len(cleanup.removable),
+        removable_bytes=cleanup.removable_bytes,
+        kept_runs=len(cleanup.kept),
+        kept_bytes=cleanup.kept_bytes,
+        runs=tuple(_superseded_wire(run) for run in cleanup.runs),
     )
 
 
@@ -444,20 +486,39 @@ def plan_fingerprint(plan: Plan) -> str:
             for step_id in sorted(plan.pinned)
         ]
     if plan.cleanup is not None:
-        policy = plan.cleanup.policy
-        removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)
-        remove: list[JsonValue] = [[storage, run_id] for storage, run_id in removable]
-        cleanup_document: dict[str, JsonValue] = {
-            "policy": {
-                "keep_newest": policy.keep_newest,
-                "min_age_hours": policy.min_age_hours,
-            },
-            "remove": remove,
-        }
+        cleanup_document = cleanup_fingerprint_parts(
+            plan.cleanup.policy, plan.cleanup.removable
+        )
         if plan.cleanup.retired:
             cleanup_document["retire"] = list(plan.cleanup.retired)
         document["cleanup"] = cleanup_document
     return document_digest(document)
+
+
+def cleanup_fingerprint_parts(
+    policy: CleanupPolicy, removable: Iterable[SupersededRun]
+) -> dict[str, JsonValue]:
+    """The policy and the removable runs, as a fingerprint of a cleanup holds them.
+
+    The runs are ``[storage, run_id]`` pairs, sorted. A submission's plan and a
+    retirement's plan fingerprint their cleanup through this one form.
+
+    Args:
+        policy: The age and recency rules the runs were judged under.
+        removable: The runs judged removable.
+
+    Returns:
+        The ``policy`` and ``remove`` parts of the fingerprinted document.
+    """
+    pairs = sorted((run.storage, run.run_id) for run in removable)
+    remove: list[JsonValue] = [[storage, run_id] for storage, run_id in pairs]
+    return {
+        "policy": {
+            "keep_newest": policy.keep_newest,
+            "min_age_hours": policy.min_age_hours,
+        },
+        "remove": remove,
+    }
 
 
 def _scope_document(scope: Scope) -> JsonValue:
