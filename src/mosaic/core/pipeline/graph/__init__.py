@@ -300,6 +300,7 @@ if TYPE_CHECKING:
         RetirementPlan as RetirementPlan,
         plan_retirement as plan_retirement,
         retirement_fingerprint as retirement_fingerprint,
+        run_retirement as run_retirement,
     )
     from .retirement import (
         RetireNeedsCleanup as RetireNeedsCleanup,
@@ -814,6 +815,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "RetirementPlan": ".retire",
     "plan_retirement": ".retire",
     "retirement_fingerprint": ".retire",
+    "run_retirement": ".retire",
     "retirement_wire": ".serialize",
     "RetirementKeeper": ".model",
     "RetirementSpec": ".model",
@@ -1158,6 +1160,7 @@ __all__ = [
     "run_cleanup",
     "run_pipeline",
     "run_request",
+    "run_retirement",
     "run_status_wire",
     "save_computes",
     "save_recipe",

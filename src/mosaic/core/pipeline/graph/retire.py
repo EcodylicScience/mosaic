@@ -21,6 +21,10 @@ Planning is a read. It takes no lock, writes nothing and loads no feature
 definition, and its fingerprint (:func:`retirement_fingerprint`) names what a
 removal may remove, so a confirm can tell that the dataset moved since the plan
 was reviewed.
+
+:func:`run_retirement` runs the approved form (:class:`~.model.RetirementSpec`) as
+a job attempt. It judges the runs again and removes only the approved runs still
+removable, recording each run in the attempt's run-log.
 """
 
 from __future__ import annotations
@@ -37,7 +41,8 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
     from ..inventory.cache import InventoryCache
-    from .cleanup import CleanupPlan, SupersededRun
+    from ..job import JobContext
+    from .cleanup import CleanupOutcome, CleanupPlan, SupersededRun
     from .compatibility import DeclarationCatalog
     from .plan import Plan
 
@@ -47,6 +52,7 @@ __all__ = [
     "RetirementPlan",
     "plan_retirement",
     "retirement_fingerprint",
+    "run_retirement",
 ]
 
 type NotRetiredReason = Literal["recipe_unreadable", "keeper_recipe"]
@@ -239,6 +245,142 @@ def plan_retirement(
             cleanup=judged,
         ),
     )
+
+
+def run_retirement(
+    ds: Dataset,
+    plan: RetirementSpec,
+    manager: str,
+    *,
+    ctx: JobContext,
+    inventory: InventoryCache | None = None,
+    catalog: DeclarationCatalog | None = None,
+    now: datetime.datetime | None = None,
+) -> CleanupOutcome:
+    """Remove each run *plan* approved that is still removable, in the attempt *ctx*.
+
+    Every keeper is planned again and the retired runs are judged again, with
+    ``plan.planned_at`` as the cutoff of a retired request, under
+    :func:`~.store.submission_lock` so no request is written between the two. The
+    lock is released before the removals, and the attempts and requests that
+    appear after the judging are read again before each removal
+    (:class:`~.cleanup.RemovalWatch`). Only an approved run the judging finds
+    removable is removed, with reason ``retired``; every other approved run is
+    recorded kept with its reason (:func:`~.cleanup.remove_approved_runs`). It
+    judges in the definition scope of *ds* and loads no definition.
+
+    The run-log of *ctx* records each run, a removal that raised as a lost entry,
+    and a heartbeat per run. The removals of an earlier attempt with the same
+    execution id are read back, so a run is not removed twice and a removal it
+    began is finished.
+
+    Args:
+        ds: The dataset.
+        plan: The approved retirement.
+        manager: The manager the retirement acts for. It lifts the
+            ``managed_dataset`` hold when it equals the manifest's
+            ``managed_by``; ``""`` lifts nothing.
+        ctx: The job attempt, whose run-log records the removals.
+        inventory: A held inventory, shared by the keepers' plans and the
+            judging.
+        catalog: The declarations.
+        now: The instant ages are judged at. ``None`` reads the clock.
+
+    Returns:
+        What it removed, kept and failed to remove.
+
+    Raises:
+        ValueError: *ctx* has no run-log, because no removal is made without its
+            record.
+        Cancelled: The cancel token of *ctx* fired between runs.
+        AllEntriesFailed: Every approved run whose removal was attempted raised,
+            and no earlier attempt with the same execution id removed an
+            approved run.
+        RuntimeError: A run a keeper expects, whose directory existed before, is
+            gone after.
+    """
+    from mosaic.runlog import read_removal_records, run_log_dir
+
+    from ..definitions.scope import definition_scope
+    from ..inventory.cache import InventoryCache
+    from ..job import Cancelled
+    from ..run import AllEntriesFailed
+    from .cleanup import RemovalWatch, judge_runs, remove_approved_runs
+    from .plan import plan_pipeline
+    from .resolve import declaration_catalog
+    from .store import submission_lock
+
+    log = ctx.run_log
+    if log is None:
+        raise ValueError(
+            f"retirement {ctx.execution_id} has no run-log, and a run is never "
+            f"removed without its record"
+        )
+    base = ds.base_dir
+    ctx.set_total(len(plan.approved))
+    prior = {
+        (record["feature"], record["run_id"]): record["state"]
+        for record in read_removal_records(run_log_dir(base), ctx.execution_id)
+    }
+    held = InventoryCache(ds) if inventory is None else inventory
+    with definition_scope(ds, load=False):
+        declarations = declaration_catalog() if catalog is None else catalog
+        # Before the runs are judged, so an attempt or a request that appears
+        # between the judging and a removal is read again before that removal.
+        watch = RemovalWatch(base, exclude="")
+        with submission_lock(base):
+            plans = tuple(
+                plan_pipeline(
+                    ds,
+                    keeper.recipe,
+                    scope=keeper.scope,
+                    inventory=held,
+                    catalog=declarations,
+                    refuse=False,
+                )
+                for keeper in plan.keepers
+            )
+            judged = judge_runs(
+                ds,
+                plans,
+                policy=plan.policy,
+                inventory=held,
+                catalog=declarations,
+                candidates="retired",
+                planned_digest="",
+                planned_name="",
+                now=now,
+                retire=plan.retire,
+                retired_before=plan.planned_at,
+                manager=manager,
+            )
+        outcome = remove_approved_runs(
+            ds,
+            plan.approved,
+            execution_id=ctx.execution_id,
+            judged=judged,
+            replacements=plans,
+            watch=watch,
+            inventory=held,
+            log=log,
+            token=ctx.cancel_token,
+            prior=prior,
+            progress=lambda done, _total: ctx.heartbeat(done),
+            label=f"retirement {ctx.execution_id}",
+        )
+    if outcome.status == "cancelled":
+        raise Cancelled(f"retirement {ctx.execution_id} was cancelled between runs")
+    removed_before = sum(
+        prior.get((target.storage, target.run_id)) == "removed"
+        for target in plan.approved
+    )
+    if outcome.failed and not outcome.removed and not removed_before:
+        raise AllEntriesFailed(
+            f"retirement {ctx.execution_id} failed to remove each of the "
+            f"{len(outcome.failed)} approved runs it tried: "
+            f"{', '.join(outcome.failed)}"
+        )
+    return outcome
 
 
 def retirement_fingerprint(
