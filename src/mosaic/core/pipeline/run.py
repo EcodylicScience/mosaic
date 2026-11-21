@@ -163,7 +163,7 @@ from .types import (
 )
 from .types.inputs import InputsLike
 from .label_series import LabelRevisionRef
-from .job import CancelToken, Cancelled, JobContext, job_context
+from .job import CancelToken, JobContext, job_context
 from .entry_pool import EntryPool
 from .memory_watch import (
     MemorySample,
@@ -176,9 +176,7 @@ from .memory_watch import (
 from .pacing import PacedCollector, Pacer
 from .parallelism import (
     EntryOverMemoryLimit,
-    MemoryFloorReached,
     ParallelMode,
-    WorkerProcessDied,
     process_capable,
     valid_admission_margin,
 )
@@ -3703,18 +3701,20 @@ def _run_feature_impl(
                 _lower_unhanded()
 
                 active.finish()
-            except (
-                Cancelled,
-                WorkerProcessDied,
-                MemoryFloorReached,
-                EntryOverMemoryLimit,
-                ToolUnavailable,
-            ):
-                _flush_idx()
-                # A run that stops after writing 40 of 100 entries has 40 durable on disk,
-                # and "how far did it get" is the question an operator resubmits on.
-                # Recorded here because the flush above is the last moment the count is
-                # true.
+            except BaseException as stopped:
+                # Every exit flushes the rows of the outputs already written. A run that
+                # stops after writing 40 of 100 entries has 40 durable on disk, and "how
+                # far did it get" is the question an operator resubmits on. A failure of
+                # the flush is attached to the exception that ended the run, which is
+                # the one raised.
+                try:
+                    _flush_idx()
+                except Exception as flush_error:
+                    stopped.add_note(
+                        f"The index rows of the outputs written were not recorded: "
+                        f"{type(flush_error).__name__}: {flush_error}"
+                    )
+                # Recorded after the flush, the last moment the count is true.
                 ctx.entries_written(_total_written)
                 raise
             finally:

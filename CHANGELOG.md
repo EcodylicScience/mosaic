@@ -197,6 +197,17 @@ for itself and refused an entry that has two tracks variants. The run's
 step's graph run already planned it, and the run prints that processes were
 asked and threads were used. No run id or output moves.
 
+## Unreleased: `run_feature` records the outputs it wrote on every exit
+
+An exception that `run_feature` did not list, such as an `OSError` from a full
+disk, a failure while loading an entry, `IndexLockTimeout` or `KeyboardInterrupt`,
+ended the run without writing the index rows pending for the outputs already on
+disk. Up to two seconds of rows were missing from the index, and the run-log
+recorded no `entries_written`. Every exit from the entry loop now writes those rows
+and records `entries_written`, then raises the same exception. A failure of that
+write is attached to the exception as a note and does not replace it. Which
+exceptions end a run, the run-log events and the terminal statuses are unchanged.
+
 ## Unreleased: a cancelled process-mode run ends `cancelled`, not `failed`
 
 A cancel that signals the process group of a run in process mode, as

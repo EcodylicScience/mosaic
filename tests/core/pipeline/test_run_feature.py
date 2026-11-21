@@ -12,11 +12,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline import run as run_module
+from mosaic.core.pipeline.index import (
+    FeatureIndexRow,
+    feature_index,
+    feature_index_path,
+)
+from mosaic.core.pipeline.index_csv import IndexCSV
+from mosaic.core.pipeline.index_lock import IndexLockTimeout
 from mosaic.core.pipeline.manifest import build_manifest
+from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
+from mosaic.core.pipeline.writers import FeatureOutput
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     InputRequire,
@@ -1433,3 +1442,72 @@ def test_a_tool_unavailable_in_a_process_worker_refuses_the_run(
     # at most one per worker. Entries beyond those are never started.
     assert len(list(marks.iterdir())) <= workers
     assert list(ds.get_root("features").glob("*/*/*.parquet")) == []
+
+
+_EXIT_VARIANT = "convert-trex.0.2-1111111111"
+_EXIT_SEQUENCES = ("seq_a", "seq_b", "seq_c", "seq_d")
+
+
+def _fail_the_third_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the third output a run writes raise ``OSError``, as a full disk does."""
+    written: list[str] = []
+    real_write_output = run_module.write_output
+
+    def write_output(meta: FeatureMeta, df_feat: FeatureOutput) -> int:
+        if len(written) == 2:
+            message = "no space left on device"
+            raise OSError(message)
+        written.append(meta.sequence)
+        return real_write_output(meta, df_feat)
+
+    monkeypatch.setattr(run_module, "write_output", write_output)
+
+
+def _indexed_sequences(ds: Dataset, storage: str, run_id: str) -> list[str]:
+    index = feature_index(feature_index_path(ds, storage)).read(run_id=run_id)
+    return sorted(index["sequence"])
+
+
+def test_an_error_while_writing_an_output_keeps_the_rows_of_the_outputs_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, _EXIT_VARIANT, *_EXIT_SEQUENCES, std_format="mosaic_v1")
+    _fail_the_third_write(monkeypatch)
+
+    with pytest.raises(OSError, match="no space left"):
+        _ = run_feature(ds, ParallelFeature(), execution_id="TESTEXITROWS")
+
+    snapshot = read_run(run_log_dir(ds.base_dir), "TESTEXITROWS")
+    assert snapshot is not None
+    assert snapshot["status"] == "failed"
+    assert snapshot["entries_written"] == 2
+    assert snapshot["run_id"] is not None
+    assert _indexed_sequences(
+        ds, "prov-parallel__from__tracks", snapshot["run_id"]
+    ) == ["seq_a", "seq_b"]
+
+
+def test_a_failed_flush_on_the_way_out_leaves_the_original_error_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, _EXIT_VARIANT, *_EXIT_SEQUENCES, std_format="mosaic_v1")
+    _fail_the_third_write(monkeypatch)
+
+    def refuse_append(
+        self: IndexCSV[FeatureIndexRow], rows: list[FeatureIndexRow]
+    ) -> None:
+        message = "index.csv is locked"
+        raise IndexLockTimeout(message)
+
+    monkeypatch.setattr(IndexCSV, "append", refuse_append)
+
+    with pytest.raises(OSError, match="no space left") as raised:
+        _ = run_feature(ds, ParallelFeature(), execution_id="TESTEXITFLUSH")
+
+    assert any("index.csv is locked" in note for note in raised.value.__notes__)
+    snapshot = read_run(run_log_dir(ds.base_dir), "TESTEXITFLUSH")
+    assert snapshot is not None
+    assert snapshot["status"] == "failed"
+    assert json.loads(snapshot["error_json"])["type"] == "OSError"
