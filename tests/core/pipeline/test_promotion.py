@@ -21,6 +21,7 @@ from mosaic.core.pipeline.promotion import (
     next_revision,
     promote_correction,
 )
+from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import (
     read_sequence_index,
     sequence_label_path,
@@ -29,7 +30,10 @@ from mosaic.core.pipeline.sequence_index import (
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
 from tests.helpers import (
+    CONVERTED_ENTRIES,
     MediaClip,
+    converted_source,
+    copy_of,
     latest_snapshot,
     make_dataset,
     write_media_index,
@@ -551,3 +555,20 @@ def test_an_applied_promotion_refuses_a_key_another_entry_names(
         )
 
     assert not (ds.get_root("tracks_raw") / "R__0900").exists()
+
+
+def test_a_promotion_is_not_blocked_by_derivatives_a_link_holds(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    entry = CONVERTED_ENTRIES[0]
+    assert not reached_by(copy, [entry], "tracks_raw").empty, "no linked row reached"
+
+    report = promote_correction(
+        copy, *entry, _corrected(tmp_path), src_format="trex_npz", apply=True
+    )
+
+    assert not report.blocked
+    assert report.applied
+    assert report.revision == 1

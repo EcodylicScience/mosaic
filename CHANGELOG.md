@@ -111,6 +111,12 @@ is offline. `prepare-training-data` and `convert-points` run ids as a training o
 argument resolve through the same links, and the stored path is resolved against the
 dataset that wrote it.
 
+`promote_correction` blocks only on the dataset's own derived artifacts, so artifacts a
+link holds do not block a promotion. `Dataset.reconcile` reads only the indexes that
+have a reconcilable opener when it looks for paths from another machine, so a copy whose
+absolute link is offline no longer skips the pruning or prints the rewrite advice
+because of the raw rows it adopted. It names each unreachable link on stderr.
+
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named

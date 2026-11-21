@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import NamedTuple
 
-__all__ = ["PathState", "assert_tree_unchanged", "tree_snapshot"]
+__all__ = ["PathState", "assert_tree_unchanged", "file_digests", "tree_snapshot"]
 
 
 class PathState(NamedTuple):
@@ -49,3 +50,16 @@ def assert_tree_unchanged(root: Path, before: dict[str, PathState]) -> None:
     assert not (added or removed or changed), (
         f"{root} changed. added={added} removed={removed} changed={changed}"
     )
+
+
+def file_digests(root: Path) -> dict[str, str]:
+    """The SHA-256 digest of every file under *root*, keyed by its POSIX path.
+
+    A snapshot misses a file rewritten to the same size within the clock's
+    granularity. A digest does not.
+    """
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }

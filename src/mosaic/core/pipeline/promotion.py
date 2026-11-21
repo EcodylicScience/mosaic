@@ -208,12 +208,16 @@ def promote_correction(
     revision = next_revision(destination) if destination.exists() else 1
 
     # Run *before* the change, where every row reads `current` and the answer is
-    # membership: what this promotion would make stale.
+    # membership: what this promotion would make stale. Only the dataset's own
+    # artifacts block. A row a link holds belongs to the linked dataset, which
+    # this promotion does not change, and the next run computes that entry into
+    # this dataset.
     reached = reached_by(ds, [(group, sequence)], "tracks_raw")
+    own = int((reached["link_id"] == "").sum())
     blocked: tuple[str, ...] = () if collision is None else (collision,)
-    if not reached.empty and not force:
+    if own and not force:
         blocked += (
-            f"{len(reached)} derived artifact(s) were built from this sequence's "
+            f"{own} derived artifact(s) were built from this sequence's "
             "tracks_raw and would become stale. Re-run them, or pass force=True "
             "to promote anyway and use delete_set to remove what became wrong.",
         )

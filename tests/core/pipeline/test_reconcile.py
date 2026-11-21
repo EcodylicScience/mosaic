@@ -56,7 +56,14 @@ from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
-from tests.helpers import add_labels, add_tracks_variant
+from tests.helpers import (
+    CONVERTED_ENTRIES,
+    add_feature_run,
+    add_labels,
+    add_tracks_variant,
+    converted_source,
+    copy_of,
+)
 
 
 class _TracksFeature:
@@ -901,3 +908,76 @@ def test_a_run_recording_a_label_revision_reconciles_as_ok(
     _only_finding(report, "ok")
     assert report.findings[0].new_address == termed_id
     assert termed_root.exists()
+
+
+# --- A copy whose linked dataset is away ------------------------------------
+
+_RAW_INDEXES = ("tracks_raw", "media_raw", "labels_raw", "media")
+"""The roots whose index files hold the rows a copy adopts."""
+
+
+def _copy_with_source_away(tmp_path: Path) -> tuple[Dataset, str]:
+    """A copy linking its source by an absolute path, and the source moved away."""
+    source = converted_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy", relative=False)
+    link_id = f"source-{source.uuid}"
+    _ = source.base_dir.rename(tmp_path / "away")
+    return Dataset(manifest_path=copy.manifest_path).load(), link_id
+
+
+def _adopted_index_bytes(ds: Dataset) -> dict[str, bytes]:
+    return {
+        key: (ds.get_root(key) / "index.csv").read_bytes()
+        for key in _RAW_INDEXES
+        if (ds.get_root(key) / "index.csv").is_file()
+    }
+
+
+def test_a_copy_whose_source_is_away_keeps_its_adopted_rows_and_names_the_link(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    copy, link_id = _copy_with_source_away(tmp_path)
+    before = _adopted_index_bytes(copy)
+    assert before, "the copy adopted no rows"
+
+    _ = copy.reconcile(apply=True)
+
+    assert _adopted_index_bytes(copy) == before
+    stderr = capsys.readouterr().err
+    assert link_id in stderr
+    assert "rewrite_index_paths" not in stderr
+
+
+def test_reconcile_names_a_link_again_after_it_comes_back_and_goes_away(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    copy, link_id = _copy_with_source_away(tmp_path)
+    _ = copy.reconcile()
+    assert link_id in capsys.readouterr().err
+    _ = copy.reconcile()
+    assert link_id not in capsys.readouterr().err
+
+    _ = (tmp_path / "away").rename(tmp_path / "source")
+    _ = copy.reconcile()
+    assert link_id not in capsys.readouterr().err
+
+    _ = (tmp_path / "source").rename(tmp_path / "away")
+    _ = copy.reconcile()
+    assert link_id in capsys.readouterr().err
+
+
+def test_a_foreign_path_in_a_reconcilable_index_still_skips_the_pruning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    copy, _link_id = _copy_with_source_away(tmp_path)
+    _ = add_feature_run(copy, "demo", "0.1-0123456789", entries=CONVERTED_ENTRIES)
+    index = feature_index(feature_index_path(copy, "demo"))
+    rows = index.read(validate_paths=False)
+    rows["abs_path"] = "/another-machine/demo/run.parquet"
+    rows.to_csv(index.path, index=False)
+
+    _ = copy.reconcile(apply=True)
+
+    stderr = capsys.readouterr().err
+    assert "rewrite_index_paths" in stderr
+    assert "1 index hold" in stderr

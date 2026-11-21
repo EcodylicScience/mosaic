@@ -372,3 +372,43 @@ def test_a_partial_delete_of_a_run_fitted_in_the_source_is_declined(
         if item.kind == "features" and "scope-dependent" in item.reason
     ]
     assert run_output.exists()
+
+
+def _record_consumption(ds: Dataset, storage: str) -> None:
+    """Record that the rows of feature *storage* read ``tracks_raw``."""
+    index = feature_index(feature_index_path(ds, storage))
+    rows = index.read(validate_paths=False)
+    rows["consumed_roots"] = "tracks_raw"
+    rows["consumed_composition"] = "recorded"
+    rows.to_csv(index.path, index=False)
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "applied"])
+def test_a_linked_feature_row_is_declined_with_its_link_and_the_source_is_left(
+    tmp_path: Path, apply: bool
+) -> None:
+    source = converted_source(tmp_path / "source")
+    _ = add_feature_run(source, "demo", "0.1-0123456789", entries=CONVERTED_ENTRIES)
+    _record_consumption(source, "demo")
+    copy = copy_of(source, tmp_path / "copy")
+    convert_tracks_from_raw(copy, "conv.0.1-aaaaaaaaaa", "own")
+    _ = add_feature_run(copy, "demo", "0.1-0123456789", entries=[("", "own")])
+    _record_consumption(copy, "demo")
+    _drift_tracks_raw(copy)
+    link_id = f"source-{source.uuid}"
+    own_output = feature_run_root(copy, "demo", "0.1-0123456789") / "own.parquet"
+    before = tree_snapshot(source.base_dir)
+    scope = Scope(entries=[*CONVERTED_ENTRIES, ("", "own")])
+
+    report = delete_set(copy, "tracks_raw", scope=scope, apply=apply)
+
+    assert [
+        candidate.sequence
+        for candidate in report.candidates
+        if candidate.kind == "features"
+    ] == ["own"]
+    declined = [item for item in report.declined if item.kind == "features"]
+    assert len(declined) == len(CONVERTED_ENTRIES)
+    assert all(link_id in item.reason for item in declined)
+    assert own_output.exists() is not apply
+    assert_tree_unchanged(source.base_dir, before)

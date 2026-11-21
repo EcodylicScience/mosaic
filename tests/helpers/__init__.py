@@ -119,8 +119,8 @@ What lives where:
   and whether ``load_state`` finds a state after each publish fails.
 - ``feature_definitions``: the sources of feature definitions, and a dataset with
   tracks that defines them.
-- ``trees``: snapshots of a directory tree, and the assertion that a call left
-  one unchanged.
+- ``trees``: snapshots and file digests of a directory tree, and the assertion
+  that a call left one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
   passes for it, a run of it, a run beside entries added after it, and a rewrite of
   a run's feature index.
@@ -479,7 +479,12 @@ from tests.helpers.state_writes import (
     record_published_files,
 )
 from tests.helpers.tag_tables import index_a_second_origin, tag_table, write_tags
-from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
+from tests.helpers.trees import (
+    PathState,
+    assert_tree_unchanged,
+    file_digests,
+    tree_snapshot,
+)
 from tests.helpers.tracks import (
     add_raw_track_files,
     add_track_sequences,
@@ -942,6 +947,7 @@ __all__ = [
     "converted_source",
     "copy_of",
     "feature_edge",
+    "file_digests",
     "link_forms",
     "raw_source",
     "take_link_offline",

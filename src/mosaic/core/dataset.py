@@ -3386,17 +3386,38 @@ class Dataset:
             it, in declaration order. Empty for a dataset with
             :attr:`opened_as_link` set, which opens no link.
         """
+        return self._probe_links()[1]
+
+    def _probe_links(
+        self,
+    ) -> tuple[
+        tuple[DatasetLink, ...], tuple[tuple[DatasetLink, LinkMismatchError], ...]
+    ]:
+        """Open every link and sort out the ones that do not open as recorded.
+
+        A link that opens clears its id from the record of links named
+        unreachable, so a later outage is named again.
+
+        Returns:
+            The links that raise ``OSError``, then each link that opens as
+            another dataset with its error, both in declaration order. Both are
+            empty for a dataset with :attr:`opened_as_link` set, which opens no
+            link.
+        """
         if self.opened_as_link:
-            return ()
+            return (), ()
+        unreachable: list[DatasetLink] = []
         mismatches: list[tuple[DatasetLink, LinkMismatchError]] = []
         for link in self.manifest.links:
             try:
                 _ = self._open_link(link)
             except OSError:
-                continue
+                unreachable.append(link)
             except LinkMismatchError as exc:
                 mismatches.append((link, exc))
-        return tuple(mismatches)
+            else:
+                self._warned_unreachable.discard(link.id)
+        return tuple(unreachable), tuple(mismatches)
 
     def without_links(self, link_ids: Collection[str]) -> Dataset:
         """A reader of this dataset whose lookups skip the links in *link_ids*.
@@ -5300,6 +5321,8 @@ class Dataset:
         # semantics.
         if only:
             return report
+        for link in self._probe_links()[0]:
+            self._warn_unreachable(link)
         # ``reindex`` deletes a row whose file it cannot resolve, and a dataset
         # copied from another machine holds rows naming that machine's absolute
         # paths -- present files, unresolvable cells. Pruning those would destroy
@@ -5334,10 +5357,18 @@ class Dataset:
         The signature of a dataset copied or synced from another machine. Such a
         cell is not a dangling row -- the file is usually present, under this
         dataset, at a path the cell does not name -- so it must not be pruned.
+
+        Only an index that :func:`reconcilable_index` has an opener for is read,
+        because only those are pruned. The raw indexes of a dataset that adopted
+        a linked dataset's rows hold absolute cells that name that dataset's
+        files, which do not exist here while it is offline or after it removed
+        them, and no rewrite repairs them.
         """
+        from .pipeline.dataset_indexes import reconcilable_index
+
         stale: set[str] = set()
         for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
-            if not index.path.exists():
+            if reconcilable_index(index.root_key) is None or not index.path.exists():
                 continue
             frame = self._read_index_frame_or_none(index.path)
             if frame is None:
