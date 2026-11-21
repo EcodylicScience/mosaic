@@ -401,9 +401,7 @@ def _dataset_at(ds: Dataset, image_root: Path) -> Dataset | None:
     Returns ``None`` when neither is.
     """
     target = image_root.resolve()
-    if ds.base_dir.resolve() == target:
-        return ds
-    for linked in ds.linked_datasets():
+    for linked in ds.lookup_order():
         if linked.dataset.base_dir.resolve() == target:
             return linked.dataset
     return None

@@ -28,6 +28,7 @@ from mosaic.core.annotations.pose_annotations import PoseDefinition, PoseFrame
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -103,6 +104,26 @@ def test_a_finished_run_records_what_it_was_trained_on(tmp_path: Path) -> None:
         "fingerprint": "f1ngerpr1nt",
     }
     assert document["params"]["dataset_dir"] == str(data_dir)
+
+
+def test_a_model_held_by_a_linked_dataset_names_the_link(tmp_path: Path) -> None:
+    """The holder's rows answer, and the provenance names the link that served it."""
+    library = make_dataset(tmp_path / "library", name="library")
+    data_dir = library.get_root("models") / "prepare-training-data" / "p-1"
+    data_dir.mkdir(parents=True)
+    _ = _finalize(library, data_dir)
+    project = make_dataset(tmp_path / "project", name="project")
+    _ = project.add_link(
+        DatasetLink(id="group", path="../library", provides=("models",))
+    )
+
+    served = training_provenance(project, KIND, RUN_ID)
+    local = training_provenance(library, KIND, RUN_ID)
+
+    assert served.served_by == "group"
+    assert local.served_by == ""
+    assert served.data_fingerprint == local.data_fingerprint == "f1ngerpr1nt"
+    assert served.data_path == local.data_path
 
 
 def test_a_run_that_names_no_tool_version_records_none(tmp_path: Path) -> None:

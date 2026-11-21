@@ -191,7 +191,7 @@ from .scan_findings import (
     merged as merged_findings,
     missing_path_finding,
 )
-from .pipeline.artifact_kinds import ArtifactKind
+from .pipeline.artifact_kinds import ArtifactKind, LinkedKind
 from .pipeline.index_stamp import IndexStamp
 from .pipeline.entry_pool import (
     EntryFailure,
@@ -1978,10 +1978,21 @@ class LinkMismatchError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class LinkedDataset:
-    """A link and the dataset it opened."""
+    """One dataset of a lookup order: the reading dataset, or one a link opened.
 
-    link: DatasetLink
+    Attributes:
+        link: The link that opened :attr:`dataset`, or ``None`` for the reading
+            dataset itself.
+        dataset: The dataset whose own data the lookup reads.
+    """
+
+    link: DatasetLink | None
     dataset: Dataset
+
+    @property
+    def link_id(self) -> str:
+        """The link's id, or ``""`` for the reading dataset itself."""
+        return "" if self.link is None else self.link.id
 
 
 def _series_of(source: ScanSource) -> str | None:
@@ -2278,6 +2289,12 @@ class Dataset:
     onto this object, so there is one representation of what the file says.
     ``roots`` and ``meta`` hand back the live mappings, because callers across
     the toolkit mutate them in place and a copy would silently discard the edit.
+
+    Attributes:
+        opened_as_link: Whether another dataset's :meth:`lookup_order` opened
+            this one through a link. Such a dataset answers its own
+            :meth:`lookup_order` with itself alone, so a lookup reads a linked
+            dataset's own data and never follows that dataset's links.
     """
 
     def __init__(
@@ -2313,9 +2330,13 @@ class Dataset:
                 meta=dict(meta) if meta is not None else {},
             )
         self._path_map: list[tuple[Path, Path]] = []
-        self._linked: (
-            tuple[tuple[DatasetLink, ...], tuple[LinkedDataset, ...]] | None
-        ) = None
+        self.opened_as_link: bool = False
+        self._linked: dict[
+            LinkedKind | None,
+            tuple[tuple[DatasetLink, ...], tuple[LinkedDataset, ...]],
+        ] = {}
+        self._unreachable: dict[LinkedKind | None, tuple[DatasetLink, ...]] = {}
+        self._warned_unreachable: set[str] = set()
         self._media_rows: dict[str, tuple[_MediaRowsKey, MediaRows]] = {}
         self._rate_media: tuple[_RateMediaKey, _RateMedia] | None = None
 
@@ -3173,52 +3194,113 @@ class Dataset:
             self.save()
         return True
 
-    def linked_datasets(self) -> tuple[LinkedDataset, ...]:
-        """Every linked dataset that is reachable now, opened, in lookup order.
+    def lookup_order(self, kind: LinkedKind | None = None) -> tuple[LinkedDataset, ...]:
+        """This dataset, then each reachable linked dataset in declaration order.
 
-        One level deep: a linked dataset's own links are never followed, so a
-        lookup terminates and data is served by a dataset this manifest names.
+        One level deep: a dataset opened here through a link answers its own
+        :meth:`lookup_order` with itself alone, so a lookup reads only datasets
+        this manifest names and ends after one pass over them. Two datasets that
+        link each other each read the other's own data.
 
-        An unreachable link is skipped with a warning, the tolerance a source on
-        an unmounted share gets, because a dataset must stay usable while a
-        linked dataset is offline. A reachable target carrying the wrong
-        ``uuid`` is not tolerated: that is a different dataset, not an absent
-        one.
+        With *kind*, a link that does not provide it is dropped before it is
+        opened. Without one, every link is opened.
+
+        A link that raises any ``OSError`` on opening is skipped, the tolerance a
+        source on an unmounted share gets, because a dataset must stay usable
+        while a linked dataset is offline. A warning names it on stderr once
+        while it stays away; once it opens again, a later outage warns again.
+        :meth:`unreachable_links` returns the links the last call skipped. A
+        reachable target carrying the wrong ``uuid`` is not tolerated: that is a
+        different dataset, not an absent one.
+
+        The opened set is kept for the next call only when every link opened, so
+        a linked dataset that was offline is looked for again and found once it
+        is back.
+
+        Args:
+            kind: The kind of derived data looked up, or ``None`` for every
+                link.
+
+        Returns:
+            The reading dataset first, with ``link`` ``None``, then one entry per
+            reachable link.
 
         Raises:
             LinkMismatchError: If a link's recorded ``uuid`` disagrees with the
                 dataset found at its path.
         """
-        links = self.manifest.links
-        if self._linked is not None and self._linked[0] == links:
-            return self._linked[1]
-        opened: list[LinkedDataset] = []
+        itself = LinkedDataset(link=None, dataset=self)
+        if self.opened_as_link:
+            return (itself,)
+        links = tuple(
+            link
+            for link in self.manifest.links
+            if kind is None or kind in link.provides
+        )
+        cached = self._linked.get(kind)
+        if cached is not None and cached[0] == links:
+            return cached[1]
+        opened: list[LinkedDataset] = [itself]
+        skipped: list[DatasetLink] = []
         for link in links:
             try:
                 target = self._open_link(link)
-            except FileNotFoundError:
-                where = self.resolve_link_path(link)
-                print(
-                    f"[links] {link.id!r} is not reachable at {where}; "
-                    "what it holds will not resolve until it is.",
-                    file=sys.stderr,
-                )
+            except OSError:
+                skipped.append(link)
+                self._warn_unreachable(link)
                 continue
+            self._warned_unreachable.discard(link.id)
             opened.append(LinkedDataset(link=link, dataset=target))
         found = tuple(opened)
-        # Cached only when every link opened. A linked dataset that was offline
-        # must be looked for again, or a long-lived process would go on reporting
-        # its data missing after the share came back.
-        if len(found) == len(links):
-            self._linked = (links, found)
+        self._unreachable[kind] = tuple(skipped)
+        if not skipped:
+            self._linked[kind] = (links, found)
         return found
 
+    def unreachable_links(
+        self, kind: LinkedKind | None = None
+    ) -> tuple[DatasetLink, ...]:
+        """The links that the last :meth:`lookup_order` of *kind* skipped.
+
+        Args:
+            kind: The kind the lookup was made for, or ``None`` for the lookup
+                over every link.
+
+        Returns:
+            The links skipped as unreachable, in declaration order. Empty before
+            a lookup of *kind* runs, and for a dataset with ``opened_as_link``
+            set, which opens no link.
+        """
+        return self._unreachable.get(kind, ())
+
+    def _warn_unreachable(self, link: DatasetLink) -> None:
+        """Name *link* on stderr as unreachable, once while it stays away."""
+        if link.id in self._warned_unreachable:
+            return
+        self._warned_unreachable.add(link.id)
+        print(
+            f"[links] {link.id!r} is not reachable at "
+            f"{self.resolve_link_path(link)}; its {', '.join(link.provides)} are "
+            "read from this dataset alone until it is.",
+            file=sys.stderr,
+        )
+
     def _open_link(self, link: DatasetLink) -> Dataset:
-        """Open the dataset *link* names, checking it is the one the link recorded."""
+        """Open the dataset *link* names, checking it is the one the link recorded.
+
+        The opened dataset is marked :attr:`opened_as_link`, so its own lookups
+        stay within it.
+
+        Raises:
+            OSError: If the linked dataset cannot be read, such as a missing
+                manifest or a dead mount.
+            LinkMismatchError: If it is not the dataset the link recorded.
+        """
         where = self.resolve_link_path(link)
         target = Dataset(manifest_path=resolve_manifest_path(where)).load(
             ensure_roots=False
         )
+        target.opened_as_link = True
         if link.uuid and target.uuid and link.uuid != target.uuid:
             msg = (
                 f"link {link.id!r} was linked to dataset {link.uuid}, but "

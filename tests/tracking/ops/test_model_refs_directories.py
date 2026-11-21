@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.tracking.model_refs import (
@@ -181,14 +182,19 @@ def test_a_prefix_naming_nothing_still_raises(tmp_path: Path) -> None:
 IDENTITY_RUN = "train-identity.0.1-abcdef0123"
 
 
-def _registered_identity_model(tmp_path: Path) -> tuple[Dataset, Path]:
-    """A dataset registering one ``train-identity`` run, and that run's weights."""
-    ds = make_dataset(tmp_path / "ds", roots=("models",))
+def _register_identity_model(ds: Dataset) -> Path:
+    """Register one ``train-identity`` run in *ds*. Returns the run's weights."""
     weights = model_run_root(ds, "train-identity", IDENTITY_RUN) / "identity_model.pth"
     weights.parent.mkdir(parents=True)
     _ = weights.write_bytes(b"identity weights")
     register_trained_model(ds, "train-identity", IDENTITY_RUN, weights)
-    return ds, weights
+    return weights
+
+
+def _registered_identity_model(tmp_path: Path) -> tuple[Dataset, Path]:
+    """A dataset registering one ``train-identity`` run, and that run's weights."""
+    ds = make_dataset(tmp_path / "ds", roots=("models",))
+    return ds, _register_identity_model(ds)
 
 
 def test_a_registered_prefix_run_resolves_through_the_index(tmp_path: Path) -> None:
@@ -206,6 +212,24 @@ def test_a_registered_prefix_run_resolves_through_the_index(tmp_path: Path) -> N
     assert by_run.digest == by_path.digest == file_digest(weights)
     assert by_run.path == weights.with_suffix(""), "the stem, as TREx wants it"
     assert model_id_for_ref(ds, IDENTITY_RUN, "train-identity") == IDENTITY_RUN
+
+
+def test_a_registered_prefix_run_resolves_through_a_link(tmp_path: Path) -> None:
+    """A dataset that links the holder resolves the run to the holder's weights."""
+    library = make_dataset(tmp_path / "library", name="library")
+    weights = _register_identity_model(library)
+    project = make_dataset(tmp_path / "project", name="project")
+    _ = project.add_link(
+        DatasetLink(id="group", path="../library", provides=("models",))
+    )
+
+    resolved = resolve_model(project, IDENTITY_RUN, "train-identity")
+
+    assert resolved.path == weights.with_suffix("")
+    assert resolved.digest == file_digest(weights)
+    assert resolved.link_id == "group"
+    assert library.uuid
+    assert resolved.link_uuid == library.uuid
 
 
 def test_a_registered_prefix_run_resolves_in_a_set(tmp_path: Path) -> None:

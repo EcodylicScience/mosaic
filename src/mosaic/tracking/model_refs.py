@@ -757,24 +757,24 @@ def _registered_artifact(ds: Dataset, ref: str, kind: str) -> _RegisteredArtifac
         FileNotFoundError: No index for *kind* exists here or in any linked
             dataset.
         KeyError: An index exists and none of them registers *ref*.
+        LinkMismatchError: A link that provides models names another dataset.
     """
-    own = _artifact_path_in(ds, ref, kind)
-    if own is not None:
-        return _RegisteredArtifact(path=own)
-
-    searched = [str(model_index_path(ds, kind))]
-    any_index = model_index_path(ds, kind).exists()
-    for linked in ds.linked_datasets():
+    searched: list[str] = []
+    any_index = False
+    for linked in ds.lookup_order("models"):
         idx_path = model_index_path(linked.dataset, kind)
         searched.append(str(idx_path))
         any_index = any_index or idx_path.exists()
         found = _artifact_path_in(linked.dataset, ref, kind)
-        if found is not None:
-            return _RegisteredArtifact(
-                path=found,
-                link_id=linked.link.id,
-                link_uuid=linked.dataset.uuid or "",
-            )
+        if found is None:
+            continue
+        if linked.link is None:
+            return _RegisteredArtifact(path=found)
+        return _RegisteredArtifact(
+            path=found,
+            link_id=linked.link_id,
+            link_uuid=linked.dataset.uuid or "",
+        )
 
     own_index = searched[0]
     searched_links = (

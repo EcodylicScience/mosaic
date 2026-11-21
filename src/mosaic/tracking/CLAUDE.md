@@ -76,8 +76,8 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   or `resolve_model_set` (`model_refs.py`). The conformance test refuses a private
   resolver.
 - A reference is a path or a registered training run id. `_registered_artifact` asks
-  this dataset's index first, then each linked dataset from `Dataset.linked_datasets()`
-  in declaration order, and resolves the cell against the dataset that wrote it.
+  each dataset of `Dataset.lookup_order("models")`, this dataset first, then each linked
+  dataset in declaration order, and resolves the cell against the dataset that wrote it.
 - Links are one level deep. An unreachable linked dataset is skipped with a warning. A
   reachable one with a different manifest `uuid` raises `LinkMismatchError`.
 

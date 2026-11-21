@@ -267,6 +267,32 @@ def test_an_image_under_a_linked_dataset_takes_its_uuid(
     )
 
 
+def test_an_image_under_a_library_of_an_older_manifest_takes_its_uuid(
+    tmp_path: Path,
+) -> None:
+    """A version 5 manifest's ``libraries`` still name the owner of an image root."""
+    project = make_dataset(tmp_path / "project")
+    library = make_dataset(tmp_path / "library")
+    images = _extract(library)
+    text = project.manifest_path.read_text()
+    _ = project.manifest_path.write_text(
+        text.replace("manifest_version: 3", "manifest_version: 5")
+        + "libraries:\n- id: group\n  path: ../library\n"
+    )
+    older = open_dataset(project.manifest_path)
+    assert [link.provides for link in older.links] == [("models",)]
+
+    (located,) = video_frames_of(
+        older,
+        library.base_dir,
+        [_frame(images[100])],
+        revision_origin=project.uuid or "",
+    )
+
+    assert located.origin_uuid == library.uuid
+    assert (located.group, located.sequence, located.frame_index) == ("G", "S", 100)
+
+
 def test_an_image_of_a_dataset_that_is_not_linked_falls_back(tmp_path: Path) -> None:
     """Only this dataset's frames index and its linked datasets' are read."""
     project = make_dataset(tmp_path / "project")

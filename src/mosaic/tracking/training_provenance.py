@@ -232,13 +232,10 @@ def _holder(
 
     Returns ``None`` when no index registers it.
     """
-    own = _row(model_index_path(ds, kind), run_id)
-    if own is not None:
-        return ds, "", own
-    for linked in ds.linked_datasets():
+    for linked in ds.lookup_order("models"):
         found = _row(model_index_path(linked.dataset, kind), run_id)
         if found is not None:
-            return linked.dataset, linked.link.id, found
+            return linked.dataset, linked.link_id, found
     return None
 
 

@@ -12,6 +12,7 @@ library serve many projects under one identity.
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from mosaic.core.manifest import (
     MediaScanSource,
     read_manifest,
 )
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.error_envelope import error_envelope
 from mosaic.core.pipeline.ops import ModelReference, registered_op
 from mosaic.tracking import register_ops
@@ -344,38 +346,230 @@ def test_a_row_naming_the_wrong_shape_of_artifact_is_not_found(
     assert caught.value.model_kind == "train-sleap"
 
 
-def test_a_different_dataset_at_the_linked_path_is_refused(tmp_path: Path) -> None:
-    """A library that moved is one repair; another dataset in its place is a fault."""
+# --- the lookup order ---------------------------------------------------------
+
+
+def _reopened(ds: Dataset) -> Dataset:
+    """*ds* loaded again, with nothing opened or cached yet."""
+    return Dataset(manifest_path=ds.manifest_path).load()
+
+
+def _take_offline(ds: Dataset) -> Path:
+    """Move *ds*'s manifest aside, as an unmounted share hides it. Returns where."""
+    away = ds.manifest_path.with_name(ds.manifest_path.name + ".away")
+    _ = ds.manifest_path.rename(away)
+    return away
+
+
+def _bring_back(ds: Dataset, away: Path) -> None:
+    _ = away.rename(ds.manifest_path)
+
+
+def _replace_with_impostor(ds: Dataset) -> None:
+    """Put a different dataset, with its own ``uuid``, where *ds* was."""
+    for child in ds.base_dir.iterdir():
+        if child.is_file():
+            child.unlink()
+    _ = make_dataset(ds.base_dir, name="impostor")
+
+
+def test_the_lookup_order_is_this_dataset_then_each_link_in_order(
+    tmp_path: Path,
+) -> None:
+    project = make_dataset(tmp_path / "project", name="project")
+    first = make_dataset(tmp_path / "first", name="first")
+    second = make_dataset(tmp_path / "second", name="second")
+    _ = project.add_link(DatasetLink(id="b-first", path="../first"))
+    _ = project.add_link(DatasetLink(id="a-second", path="../second"))
+
+    order = _reopened(project).lookup_order()
+
+    assert [linked.link_id for linked in order] == ["", "b-first", "a-second"]
+    assert order[0].link is None
+    assert order[0].dataset.uuid == project.uuid
+    assert [linked.dataset.uuid for linked in order[1:]] == [first.uuid, second.uuid]
+    assert [linked.link.id for linked in order[1:] if linked.link] == [
+        "b-first",
+        "a-second",
+    ]
+
+
+def test_a_kind_drops_a_link_that_does_not_provide_it_before_opening_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    library, project = _library_and_project(tmp_path)
+    _ = make_dataset(tmp_path / "source", name="source")
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models",))
+    )
+    _ = project.add_link(DatasetLink(id="source", path="../source"))
+    _ = _take_offline(library)
+    fresh = _reopened(project)
+
+    order = fresh.lookup_order("features")
+
+    assert [linked.link_id for linked in order] == ["", "source"]
+    assert capsys.readouterr().err == "", "a link not asked for is not opened"
+    assert fresh.unreachable_links("features") == ()
+
+
+def test_an_unreachable_link_warns_once_while_it_stays_away(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    library, project = _library_and_project(tmp_path)
+    _ = project.add_link(
+        DatasetLink(id="group", path="../libraries/7", provides=("models", "features"))
+    )
+    away = _take_offline(library)
+    fresh = _reopened(project)
+    (link,) = fresh.links
+    warning = (
+        f"[links] 'group' is not reachable at {fresh.resolve_link_path(link)}; "
+        "its models, features are read from this dataset alone until it is.\n"
+    )
+
+    assert [linked.link_id for linked in fresh.lookup_order()] == [""]
+    assert capsys.readouterr().err == warning
+    assert fresh.unreachable_links() == (link,)
+    assert fresh.unreachable_links("models") == (), "models not opened yet"
+
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [""]
+    assert capsys.readouterr().err == "", "one warning while the link stays away"
+    assert fresh.unreachable_links("models") == (link,)
+
+    _bring_back(library, away)
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [
+        "",
+        "group",
+    ]
+    assert fresh.unreachable_links("models") == ()
+
+    _ = _take_offline(library)
+    assert [linked.link_id for linked in fresh.lookup_order()] == [""]
+    assert capsys.readouterr().err == warning, "a later outage warns again"
+
+
+@pytest.mark.parametrize("failing", ["resolve_manifest_path", "load"])
+def test_any_os_error_on_opening_a_link_reads_as_unreachable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing: str,
+) -> None:
+    """A dead soft mount raises ``EIO`` and the like, not ``FileNotFoundError``."""
     _library, project = _library_and_project(tmp_path)
     _ = project.add_link(
         DatasetLink(id="group", path="../libraries/7", provides=("models",))
     )
+    fresh = _reopened(project)
 
-    impostor_root = tmp_path / "libraries" / "7"
-    for child in impostor_root.iterdir():
-        if child.is_file():
-            child.unlink()
-    _ = make_dataset(impostor_root, name="impostor")
+    def dead_mount(*_args: object, **_kwargs: object) -> Dataset:
+        raise OSError(errno.EIO, "Input/output error")
 
-    fresh = Dataset(manifest_path=project.manifest_path).load()
-    with pytest.raises(LinkMismatchError, match="was linked to dataset"):
-        _ = fresh.linked_datasets()
+    if failing == "load":
+        monkeypatch.setattr(Dataset, "load", dead_mount)
+    else:
+        monkeypatch.setattr("mosaic.core.dataset.resolve_manifest_path", dead_mount)
+
+    assert [linked.link_id for linked in fresh.lookup_order("models")] == [""]
+    assert [link.id for link in fresh.unreachable_links("models")] == ["group"]
+    assert "'group' is not reachable" in capsys.readouterr().err
 
 
-def test_an_unreachable_library_is_skipped_not_fatal(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("kind", [*LINKED_KINDS, None])
+def test_a_different_dataset_at_the_linked_path_is_refused(
+    tmp_path: Path, kind: LinkedKind | None
 ) -> None:
-    """A dataset stays usable while a library is offline, as it does for a source."""
+    """A library that moved is one repair; another dataset in its place is a fault."""
+    library, project = _library_and_project(tmp_path)
+    _ = project.add_link(DatasetLink(id="group", path="../libraries/7"))
+    _replace_with_impostor(library)
+    fresh = _reopened(project)
+
+    with pytest.raises(LinkMismatchError, match="was linked to dataset"):
+        _ = fresh.lookup_order(kind)
+
+
+def test_a_models_link_to_another_dataset_leaves_other_kinds_working(
+    tmp_path: Path,
+) -> None:
     library, project = _library_and_project(tmp_path)
     _ = project.add_link(
         DatasetLink(id="group", path="../libraries/7", provides=("models",))
     )
-    library.manifest_path.unlink()
+    _replace_with_impostor(library)
+    fresh = _reopened(project)
 
-    fresh = Dataset(manifest_path=project.manifest_path).load()
+    others: tuple[LinkedKind, ...] = ("features", "tracks", "label-series", "frames")
+    for kind in others:
+        assert [linked.link_id for linked in fresh.lookup_order(kind)] == [""]
+    with pytest.raises(LinkMismatchError):
+        _ = fresh.lookup_order("models")
 
-    assert fresh.linked_datasets() == ()
-    assert "is not reachable" in capsys.readouterr().err
+
+def test_the_opened_set_is_kept_only_once_every_link_opened(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    _ = project.add_link(DatasetLink(id="group", path="../libraries/7"))
+    away = _take_offline(library)
+    fresh = _reopened(project)
+    assert len(fresh.lookup_order()) == 1
+
+    _bring_back(library, away)
+    found = fresh.lookup_order()
+
+    assert [linked.link_id for linked in found] == ["", "group"], "found again"
+    assert fresh.lookup_order() is found, "and kept once every link opened"
+
+
+def test_two_datasets_that_link_each_other_read_each_others_own_data(
+    tmp_path: Path,
+) -> None:
+    left = make_dataset(tmp_path / "left", name="left")
+    right = make_dataset(tmp_path / "right", name="right")
+    _ = left.add_link(DatasetLink(id="right", path="../right"))
+    _ = right.add_link(DatasetLink(id="left", path="../left"))
+
+    for ds, other in ((left, right), (right, left)):
+        order = _reopened(ds).lookup_order()
+        assert [linked.dataset.uuid for linked in order] == [ds.uuid, other.uuid]
+        opened = order[1].dataset
+        assert opened.opened_as_link
+        assert [linked.dataset for linked in opened.lookup_order()] == [opened]
+
+
+def test_a_linked_dataset_does_not_follow_its_own_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One level: A links B and B links C, and A's lookups never open C."""
+    a = make_dataset(tmp_path / "a", name="a")
+    b = make_dataset(tmp_path / "b", name="b")
+    _ = make_dataset(tmp_path / "c", name="c")
+    _ = b.add_link(DatasetLink(id="c", path="../c"))
+    _ = a.add_link(DatasetLink(id="b", path="../b"))
+    loaded: list[Path] = []
+    load = Dataset.load
+
+    def recording_load(self: Dataset, ensure_roots: bool = True) -> Dataset:
+        loaded.append(self.manifest_path)
+        return load(self, ensure_roots=ensure_roots)
+
+    monkeypatch.setattr(Dataset, "load", recording_load)
+
+    fresh = _reopened(a)
+    assert not fresh.opened_as_link
+    order = fresh.lookup_order()
+    opened = order[1].dataset
+
+    assert [linked.dataset.uuid for linked in order] == [a.uuid, b.uuid]
+    assert opened.opened_as_link
+    (alone,) = opened.lookup_order("features")
+    assert alone.dataset is opened
+    assert alone.link_id == ""
+    assert opened.unreachable_links() == ()
+    assert [path.resolve() for path in loaded] == [
+        a.manifest_path.resolve(),
+        b.manifest_path.resolve(),
+    ], "C is never opened"
 
 
 def test_a_link_to_nothing_fails_when_it_is_made(tmp_path: Path) -> None:

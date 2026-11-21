@@ -22,8 +22,8 @@ key and resolves nothing.
 
 The Python names and the CLI group follow: `LibraryLink` is `DatasetLink`,
 `LibraryMismatchError` is `LinkMismatchError`, `LinkedLibrary` is `LinkedDataset`,
-`Dataset.libraries`, `add_library`, `remove_library` and `linked_libraries` are
-`Dataset.links`, `add_link`, `remove_link` and `linked_datasets`, and
+`Dataset.libraries`, `add_library` and `remove_library` are `Dataset.links`, `add_link`
+and `remove_link`, `Dataset.linked_libraries` is `Dataset.lookup_order`, and
 `ResolvedModel.library_id` and `library_uuid` are `link_id` and `link_uuid`.
 `mosaic libraries list|add|remove` is `mosaic links list|add|remove`, and
 `mosaic links list --json` emits `{"links": [...]}`. The `model_source` key that a
@@ -31,11 +31,21 @@ tracks variant sidecar records keeps its name and its `<id>@<uuid>` value.
 
 `mosaic links add` takes a repeatable `--provides <kind>`, every kind by default, and
 refuses a kind that is not one of the five. `mosaic links list` prints a `provides`
-column, and its JSON entries carry `provides`. `Dataset.add_link` also refuses a link
-to a dataset that records this dataset's `uuid`, and a second link to a `uuid` that a
-link already records. `Dataset.resolve_link_path(link)` returns a link's path as an
-absolute one, for a caller such as mosaic-api that declares a source's links on a new
-dataset.
+column, and its JSON entries carry `provides`. `Dataset.add_link` also refuses a link to
+a dataset that records this dataset's `uuid`, and a second link to a `uuid` that a link
+already records. `Dataset.resolve_link_path(link)` returns a link's path as an absolute
+one, for a caller such as mosaic-api that declares a source's links on a new dataset.
+
+`Dataset.lookup_order(kind=None)` returns the dataset itself, then each reachable linked
+dataset in declaration order, as `LinkedDataset` entries whose `link` is `None` for the
+dataset itself and whose `link_id` is `""` for it. With a kind, a link that does not
+provide that kind is left out before it is opened. A dataset opened through a link
+answers its own `lookup_order` with itself alone (`Dataset.opened_as_link`), so links
+are followed one level deep. Any `OSError` on opening a link, such as `EIO` from a dead
+mount, now reads as unreachable, where only `FileNotFoundError` did before.
+`Dataset.unreachable_links(kind=None)` returns the links the last `lookup_order` of that
+kind skipped. The warning for an unreachable link names the kinds it provides, and is
+printed once while the link stays unreachable.
 
 `DatasetSummary.libraries`, the `libraries` key of `mosaic describe --json` and of the
 `describe_dataset` tool's output, is `links`.
