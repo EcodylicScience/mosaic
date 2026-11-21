@@ -564,7 +564,7 @@ def test_a_models_link_to_another_dataset_leaves_other_kinds_working(
     _replace_with_impostor(library)
     fresh = _reopened(project)
 
-    others: tuple[LinkedKind, ...] = ("features", "tracks", "label-series", "frames")
+    others: list[LinkedKind] = [kind for kind in LINKED_KINDS if kind != "models"]
     for kind in others:
         assert [linked.link_id for linked in fresh.lookup_order(kind)] == [""]
     with pytest.raises(LinkMismatchError):

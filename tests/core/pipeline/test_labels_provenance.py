@@ -7,11 +7,24 @@ from pathlib import Path
 import numpy as np
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
+from mosaic.core.pipeline.composition import (
+    SequenceComposition,
+    SourceMember,
+    labels_raw_composition,
+)
+from mosaic.core.pipeline.delete_set import delete_set
 from mosaic.core.pipeline.labels_index import write_labels_row
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
-from tests.helpers import make_dataset
+from mosaic.core.scope import Scope
+from tests.helpers import (
+    SOURCE_ENTRIES,
+    assert_tree_unchanged,
+    copy_of,
+    labelled_source,
+    make_dataset,
+    tree_snapshot,
+)
 
 
 def _scored_label_row(ds: Dataset, digest: str) -> None:
@@ -79,3 +92,29 @@ def test_labels_raw_change_does_not_reach_tracks_only_entries(tmp_path: Path) ->
     _scored_label_row(ds, "deadbeef")
     reached = reached_by(ds, [("", "other")], "labels_raw")
     assert reached.empty
+
+
+def test_a_linked_labels_row_names_its_link_and_is_declined_by_a_delete(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    link_id = f"source-{source.uuid}"
+    entry = SOURCE_ENTRIES[0]
+    _ = write_sequence_compositions(
+        copy,
+        "labels_raw",
+        compositions={entry: SequenceComposition(digest="moved", member_count=1)},
+    )
+    before = tree_snapshot(source.base_dir)
+
+    reached = reached_by(copy, [entry], "labels_raw")
+    report = delete_set(copy, "labels_raw", scope=Scope(entries=[entry]), apply=True)
+
+    labels = reached[reached["kind"] == "labels"]
+    assert list(labels["link_id"]) == [link_id]
+    assert list(labels["verdict"]) == ["drifted"]
+    assert report.candidates == ()
+    [declined] = [item for item in report.declined if item.kind == "labels"]
+    assert link_id in declined.reason
+    assert_tree_unchanged(source.base_dir, before)

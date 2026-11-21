@@ -7,7 +7,6 @@ This module contains functions for loading tracks and labels:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -20,6 +19,7 @@ from mosaic.core.pipeline.index import (
     latest_feature_run_root,
 )
 from mosaic.core.pipeline.iteration import yield_sequences
+from mosaic.core.pipeline.labels_index import labels_rows, select_label_variant_rows
 from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.scope import Scope
 
@@ -209,7 +209,7 @@ def load_tracks_and_labels(
 
 
 def load_ground_truth_labels(
-    ds,
+    ds: Dataset,
     label_kind: str,
     group: str,
     sequence: str,
@@ -217,30 +217,34 @@ def load_ground_truth_labels(
     """
     Load per-frame ground-truth labels for a given kind/group/sequence.
 
+    The entry's row is the one :func:`select_label_variant_rows` resolves over
+    :func:`labels_rows`, so a dataset plays back the labels of a dataset it links
+    and an entry with two variants raises as every other label reader does.
+
     Returns a DataFrame with columns:
         frame, label_id, label_name (if mapping provided in the npz).
         For individual_pair_v1 format, also includes id1, id2 columns.
+
+    Raises:
+        FileNotFoundError: No labels of *label_kind* exist, or none of the entry.
+        ValueError: The entry has two variants in one dataset.
     """
-    labels_root = Path(ds.get_root("labels")) / label_kind
-    idx_path = labels_root / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError(
-            f"Label index not found for kind='{label_kind}': {idx_path}"
-        )
-    df_idx = pd.read_csv(idx_path)
-    if df_idx.empty:
+    rows = labels_rows(ds, label_kind)
+    if rows.empty:
         raise FileNotFoundError(f"No labels indexed for kind='{label_kind}'.")
 
-    hits = df_idx[
-        (df_idx["group"].astype(str) == str(group))
-        & (df_idx["sequence"].astype(str) == str(sequence))
-    ]
+    hits = select_label_variant_rows(
+        rows[
+            (rows["group"].astype(str) == str(group))
+            & (rows["sequence"].astype(str) == str(sequence))
+        ]
+    )
     if hits.empty:
         raise FileNotFoundError(
             f"No GT labels for kind='{label_kind}' group='{group}' sequence='{sequence}'."
         )
 
-    path = ds.resolve_path(hits.iloc[0]["abs_path"])
+    path = ds.resolve_path(str(hits.iloc[0]["abs_path"]))
     payload = np.load(path, allow_pickle=True)
     label_ids = payload["labels"]
     if "frames" in payload.files:

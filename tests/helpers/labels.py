@@ -86,8 +86,12 @@ def add_labels(
     events: Sequence[Event],
     *,
     background_id: int | None = -1,
+    run_id: str = LABELS_VARIANT,
+    label_kind: str = "behavior",
+    source: Path | str = "",
+    consumed_source_roots: Sequence[str] = (),
 ) -> Path:
-    """Write the ``behavior`` labels of one entry and their index row.
+    """Write the labels of one entry and their index row.
 
     Args:
         ds: The dataset.
@@ -95,28 +99,37 @@ def add_labels(
         sequence: The entry's sequence.
         events: The entry's events.
         background_id: As :func:`write_sparse_labels` takes it.
+        run_id: The labels variant the table is filed under.
+        label_kind: The kind the table is filed under.
+        source: The raw file the row records the labels as converted from.
+        consumed_source_roots: The roots the row records the labels as read
+            from.
 
     Returns:
         The written file.
     """
     path = write_sparse_labels(
         ds.get_root("labels")
-        / "behavior"
-        / LABELS_VARIANT
+        / label_kind
+        / run_id
         / f"{make_entry_key(group, sequence)}.npz",
         events,
         background_id=background_id,
     )
     write_labels_row(
         ds,
-        run_id=LABELS_VARIANT,
+        run_id=run_id,
         group=group,
         sequence=sequence,
         out_path=path,
         producer="convert-labels-calms21_npy",
-        label_kind="behavior",
+        label_kind=label_kind,
         label_format="individual_pair_v1",
         n_frames=len(events),
+        label_ids=",".join(str(index) for index in range(len(CALMS21_NAMES))),
+        label_names=",".join(CALMS21_NAMES),
+        source=source,
+        consumed_source_roots=consumed_source_roots,
     )
     return path
 

@@ -41,12 +41,16 @@ import pandas as pd
 from mosaic.core.entry import validate_entry_name
 from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
-from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
+from mosaic.core.pipeline.dataset_indexes import (
+    label_kinds,
+    register_reconcilable_index,
+)
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
     project_to_schema,
 )
+from mosaic.core.pipeline.linked_rows import LINK_ID_COLUMN, merge_linked_rows
 from mosaic.core.pipeline.tracks_index import (
     consumed_composition_for,
     encode_source_roots,
@@ -59,13 +63,16 @@ __all__ = [
     "DROPPED_LEGACY_COLUMNS",
     "LABELS_INDEX_COLUMNS",
     "LABELS_INDEX_PATH_COLUMNS",
+    "LABELS_ROWS_PATH_COLUMNS",
     "LabelsIndexRow",
     "adopt_legacy_label_columns",
     "empty_labels_frame",
     "labels_index",
     "labels_index_path",
+    "labels_rows",
     "legacy_labels_view",
     "read_labels_index",
+    "readable_label_kinds",
     "select_label_variant_rows",
     "write_labels_row",
 ]
@@ -124,6 +131,19 @@ row class to ask. A new path column belongs in this tuple or it silently stops
 being portable. ``consumed_source_roots`` is deliberately absent: it holds root
 *keys*, machine-independent already.
 """
+
+LABELS_ROWS_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "abs_path",
+    *LABELS_INDEX_PATH_COLUMNS,
+)
+"""The path columns of a linked row that :func:`labels_rows` anchors at its dataset.
+
+``abs_path`` and :data:`LABELS_INDEX_PATH_COLUMNS`, the columns the portability
+passes rewrite, so the two cannot name different columns.
+"""
+
+_LABELS_ROW_KEYS: Final = ("run_id", "group", "sequence")
+"""The columns that identify a labels row across the datasets of a lookup."""
 
 DROPPED_LEGACY_COLUMNS: Final[tuple[str, ...]] = (
     "group_safe",
@@ -205,6 +225,53 @@ def read_labels_index(ds: Dataset, kind: str) -> pd.DataFrame:
     return adopt_legacy_label_columns(raw)
 
 
+def labels_rows(ds: Dataset, label_kind: str) -> pd.DataFrame:
+    """The labels index of *label_kind* in *ds* merged with those of its links.
+
+    Reads each dataset of ``ds.lookup_order("labels")`` with
+    :func:`read_labels_index` and merges the frames with
+    :func:`~mosaic.core.pipeline.linked_rows.merge_linked_rows`, keyed on
+    ``(run_id, group, sequence)``: an own row shadows a linked row of the same
+    variant and entry, and an own row and a linked row of one entry under two
+    variants both stay, for :func:`select_label_variant_rows` to choose between.
+    The cells of :data:`LABELS_ROWS_PATH_COLUMNS` in a linked row are made
+    absolute against its own dataset, so they name its files from *ds*.
+
+    Writes nothing.
+
+    Returns:
+        The merged rows in lookup order, with a ``link_id`` column that names
+        the link of each row and is ``""`` for an own row. For a dataset that
+        links nothing, the frame :func:`read_labels_index` returns plus that
+        column.
+    """
+    return merge_linked_rows(
+        [
+            (
+                linked.link_id,
+                linked.dataset.base_dir,
+                read_labels_index(linked.dataset, label_kind),
+            )
+            for linked in ds.lookup_order("labels")
+        ],
+        _LABELS_ROW_KEYS,
+        LABELS_ROWS_PATH_COLUMNS,
+    )
+
+
+def readable_label_kinds(ds: Dataset) -> list[str]:
+    """The converted label kinds of *ds* and of the datasets it links, each once.
+
+    Returns:
+        The kinds of each dataset of ``ds.lookup_order("labels")`` in that
+        order, sorted within a dataset, the first occurrence of a kind kept.
+    """
+    seen: dict[str, None] = {}
+    for linked in ds.lookup_order("labels"):
+        seen.update(dict.fromkeys(label_kinds(linked.dataset)))
+    return list(seen)
+
+
 def select_label_variant_rows(
     df: pd.DataFrame, run_id: str | None = None
 ) -> pd.DataFrame:
@@ -217,11 +284,17 @@ def select_label_variant_rows(
     rows -- a flat ``labels/<kind>/`` written before variants existed -- which is
     how a pre-9.3 layout stays addressable.
 
-    ``run_id`` of ``None`` means "whichever variant this entry has", applying the
-    same rule as tracks: an empty ``run_id`` is unknown, never a peer variant, so
-    a labelled row supersedes an unlabelled one and the first re-conversion of a
-    migrated dataset does not fire the ambiguity below on every entry. Two
-    genuinely different recipes for one entry has no defensible default and raises.
+    ``run_id`` of ``None`` means "whichever variant this entry has". On rows that
+    :func:`labels_rows` merged, which carry a ``link_id`` and come in lookup
+    order, an entry first keeps the rows of the nearest dataset that holds a row
+    of it, so an entry converted in the reading dataset takes that variant over a
+    linked one. The nearest dataset wins even when its row is unlabelled and a
+    linked row is labelled. Within that dataset the rule is the one tracks
+    follow: an empty ``run_id`` is unknown, never a peer variant, so a labelled
+    row supersedes an unlabelled one and the first re-conversion of a migrated
+    dataset does not fire the ambiguity below on every entry. Two genuinely
+    different recipes for one entry in one dataset have no defensible default and
+    raise.
     """
     if df.empty:
         return df.reset_index(drop=True)
@@ -229,6 +302,11 @@ def select_label_variant_rows(
     run_ids = [str(value) for value in df["run_id"]]
     groups = [str(value) for value in df["group"]]
     sequences = [str(value) for value in df["sequence"]]
+    link_ids = (
+        [str(value) for value in df[LINK_ID_COLUMN]]
+        if LINK_ID_COLUMN in df.columns
+        else [""] * len(df)
+    )
 
     if run_id is not None:
         named = [i for i, value in enumerate(run_ids) if value == run_id]
@@ -240,11 +318,13 @@ def select_label_variant_rows(
 
     keep: list[int] = []
     for entry, positions in positions_by_entry.items():
-        labelled = [p for p in positions if run_ids[p]]
+        nearest = link_ids[positions[0]]
+        held = [p for p in positions if link_ids[p] == nearest]
+        labelled = [p for p in held if run_ids[p]]
         variants = sorted({run_ids[p] for p in labelled})
         if len(variants) > 1:
             raise ValueError(_ambiguous_label_variant_message(entry, variants))
-        keep.append((labelled or positions)[-1])
+        keep.append((labelled or held)[-1])
     return df.iloc[sorted(keep)].reset_index(drop=True)
 
 

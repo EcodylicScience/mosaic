@@ -20,6 +20,7 @@ from mosaic.core.dataset_summary import (
     SelectionSummary,
     TrackSchemaCount,
     UndividedRecordingSummary,
+    dataset_next_steps,
     dataset_summary,
 )
 from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag, MediaDivision
@@ -44,6 +45,7 @@ from tests.helpers import (
     UPDATE_GOLDEN_ENV,
     add_tracks_table,
     add_tracks_variant,
+    calms21_dataset,
     converted_source,
     copy_of,
     make_dataset,
@@ -621,3 +623,17 @@ def test_a_copy_counts_the_entries_of_its_source(tmp_path: Path) -> None:
     assert sum(schema.tables for schema in summary.track_schemas) == len(
         CONVERTED_ENTRIES
     )
+
+
+def test_a_copy_reports_the_labels_its_source_converted(tmp_path: Path) -> None:
+    source = calms21_dataset(tmp_path / "source", {"train": {"a": {"s1": 4}}})
+    _ = source.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    copy = copy_of(source, tmp_path / "copy")
+    copy.add_scan_source(source.manifest.sources.labels[0])
+
+    unlinked = copy.without_links({f"source-{source.uuid}"})
+
+    assert not any(
+        "convert-labels" in step for step in dataset_summary(copy).next_steps
+    )
+    assert any("convert-labels" in step for step in dataset_next_steps(unlinked))

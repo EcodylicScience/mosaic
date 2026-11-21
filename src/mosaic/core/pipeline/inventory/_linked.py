@@ -20,7 +20,13 @@ if TYPE_CHECKING:
     from .model import ArtifactRef
     from .params import RunParamsRead
 
-__all__ = ["LinkedPart", "Remeasure", "grouped_by_ref", "merged_record"]
+__all__ = [
+    "LinkedPart",
+    "Remeasure",
+    "grouped_by_ref",
+    "merged_record",
+    "nearest_rows_present",
+]
 
 
 type LinkedPart[RecordT: AnyRecord] = tuple[str, RecordT]
@@ -67,6 +73,35 @@ def grouped_by_ref[RecordT: AnyRecord](
         for record in records:
             groups.setdefault(record.ref, []).append((link_id, record))
     return list(groups.values())
+
+
+def nearest_rows_present(
+    parts: Sequence[LinkedPart[AnyRecord]],
+) -> list[LinkedPart[AnyRecord]]:
+    """Each part with the present keys that a nearer part holds a row of removed.
+
+    A key then counts as present when the nearest dataset with a row of it has
+    its file, the dataset whose row a read of the key selects.
+
+    Args:
+        parts: Each dataset's record of the artifact in lookup order.
+
+    Returns:
+        The parts in the same order, each with its coverage's present keys
+        narrowed.
+    """
+    nearer: set[object] = set()
+    narrowed: list[LinkedPart[AnyRecord]] = []
+    for link_id, record in parts:
+        present = frozenset(key for key in record.coverage.present if key not in nearer)
+        narrowed.append(
+            (
+                link_id,
+                replace(record, coverage=replace(record.coverage, present=present)),
+            )
+        )
+        nearer.update(record.rows)
+    return narrowed
 
 
 def merged_record(

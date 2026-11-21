@@ -1133,3 +1133,7 @@ class TestLinks:
 
     def test_the_linked_kinds_value_matches_the_literal(self) -> None:
         assert LINKED_KINDS == get_args(LinkedKind)
+
+    def test_converted_labels_are_the_last_linked_kind(self) -> None:
+        """A kind added later is appended, so the stored order of the others holds."""
+        assert LINKED_KINDS[-1] == "labels"

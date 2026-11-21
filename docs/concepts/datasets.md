@@ -73,7 +73,7 @@ ordinary folder.
 A model trained on annotations from several datasets belongs to none of them. It lives
 in a **library**, which is an ordinary dataset used for that purpose, and other datasets
 **link** it. A link serves the kinds of derived data that it provides: `models`,
-`features`, `tracks`, `label-series` and `frames`.
+`features`, `tracks`, `label-series`, `frames` and `labels`, the converted labels.
 
 ```yaml
 links:

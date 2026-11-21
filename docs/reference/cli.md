@@ -2464,7 +2464,7 @@ $ mosaic links add [OPTIONS]
 * `--id <str>`: What to call the link.  [required]
 * `--path <str>`: The linked dataset: its directory or its manifest. Relative to this dataset, which is the spelling that survives the tree being mounted somewhere else.  [required]
 * `--uuid <str>`: The linked dataset's own uuid, to insist on. Left out, the uuid found at the path is recorded.
-* `--provides <str>`: A kind of derived data to read through the link: models, features, tracks, label-series, frames. Repeatable. Default: every kind.
+* `--provides <str>`: A kind of derived data to read through the link: models, features, tracks, label-series, frames, labels. Repeatable. Default: every kind.
 * `--help`: Show this message and exit.
 
 ### `mosaic links remove`

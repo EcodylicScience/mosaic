@@ -64,6 +64,7 @@ LINKED_ROOT_KEY: Final[Mapping[LinkedKind, str]] = {
     "tracks": "tracks",
     "label-series": "labels_raw",
     "frames": "frames",
+    "labels": "labels",
 }
 """The root whose indexes a link that provides each kind is stamped for."""
 

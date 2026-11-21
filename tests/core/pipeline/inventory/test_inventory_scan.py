@@ -25,6 +25,7 @@ from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import (
     Coverage,
     FeatureRunRef,
+    LabelsVariantRef,
     TracksVariantRef,
     inventory,
     inventory_wire,
@@ -46,8 +47,12 @@ from mosaic.core.pipeline.inventory.scan import (
 from mosaic.core.scope import Scope
 from tests.helpers import (
     CONVERTED_ENTRIES,
+    LABELS_VARIANT,
+    SOURCE_ENTRIES,
+    add_labels,
     converted_source,
     copy_of,
+    labelled_source,
     LossyFeature,
     ScopedFeature,
     add_feature_run,
@@ -1143,3 +1148,59 @@ def test_a_linked_run_root_comes_with_the_linked_index_path(tmp_path: Path) -> N
     assert feature.link_id == f"source-{source.uuid}"
     assert feature.run_root == held.run_root
     assert feature.index_path == held.index_path
+
+
+LINKED_LABELS = LabelsVariantRef(label_kind="behavior", run_id=LABELS_VARIANT)
+"""The converted labels variant of :func:`labelled_source`."""
+
+
+def test_a_copy_lists_its_sources_labels_variant_over_the_variants_rows(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    first = SOURCE_ENTRIES[0]
+
+    whole = inventory(copy, kinds=["labels-variant"]).record(LINKED_LABELS)
+    scoped = inventory(
+        copy, kinds=["labels-variant"], scope=Scope(entries=[first])
+    ).record(LINKED_LABELS)
+
+    assert whole is not None and scoped is not None
+    assert whole.link_id == f"source-{source.uuid}"
+    assert whole.status == "complete"
+    assert whole.coverage.target == frozenset(SOURCE_ENTRIES)
+    assert (scoped.coverage.target, scoped.status) == (frozenset({first}), "complete")
+
+
+def test_an_own_labels_row_of_one_entry_keeps_the_own_record(tmp_path: Path) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    first = SOURCE_ENTRIES[0]
+    _ = add_labels(copy, *first, [(0, 0, 1, 1)])
+    [own] = inventory(copy.without_links({f"source-{source.uuid}"})).of_kind(
+        "labels-variant"
+    )
+
+    record = inventory(copy, kinds=["labels-variant"]).record(LINKED_LABELS)
+
+    assert record is not None
+    assert (record.link_id, record.run_root) == ("", own.run_root)
+    assert record.coverage.covered == frozenset(SOURCE_ENTRIES)
+    assert record.status == "complete"
+
+
+def test_an_own_labels_row_whose_file_is_missing_counts_its_entry_absent(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    first, second = SOURCE_ENTRIES
+    add_labels(copy, *first, [(0, 0, 1, 1)]).unlink()
+
+    record = inventory(copy, kinds=["labels-variant"]).record(LINKED_LABELS)
+
+    assert record is not None
+    assert record.coverage.target == frozenset(SOURCE_ENTRIES)
+    assert record.coverage.covered == frozenset({second})
+    assert record.status != "complete"

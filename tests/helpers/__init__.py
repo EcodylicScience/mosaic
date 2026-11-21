@@ -43,14 +43,16 @@ What lives where:
 - ``frame_selections`` writes an entry's ``selection.parquet`` of a select-frames
   run and its index row.
 - ``linked``: a source dataset holding raw rows of every kind, one whose raw
-  tracks are converted, a copy of either that links it and adopts its raw
-  rows, a copy whose link is offline, and a feature run recorded in a dataset.
+  tracks are converted, one whose labels are converted, a copy of any of them
+  that links it and adopts its raw rows, a copy whose link is offline, and a
+  feature run recorded in a dataset.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
   roots they consume, for the tests of what a source change reaches, one that
-  fits, for the tests of the claim a fit holds, and one that fits a mean, for
-  the tests of a fit that a linked dataset holds.
+  fits, for the tests of the claim a fit holds, one that fits a mean, for the
+  tests of a fit that a linked dataset holds, and a classifier that records the
+  labels it reads.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP, DeepLabCut, Tracktor and zebrafish 3D workflow exports, a
   synthetic track file and a dataset indexing several of them, a window file, a
@@ -442,6 +444,7 @@ from tests.helpers.linked import (
     converted_source,
     copy_of,
     feature_edge,
+    labelled_source,
     link_forms,
     raw_source,
     take_link_offline,
@@ -467,11 +470,14 @@ from tests.helpers.stand_in_features import (
     CropLike,
     FitControl,
     FittingFeature,
+    LABELS_CLASSIFIER_STEP,
+    LabelsClassifier,
     LossyFeature,
     PairClusterFeature,
     ParallelFeature,
     PlainFeature,
     ScopedFeature,
+    labels_classifier_registered,
 )
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.state_writes import (
@@ -670,6 +676,9 @@ __all__ = [
     "FakeResult",
     "FitControl",
     "FittingFeature",
+    "LABELS_CLASSIFIER_STEP",
+    "LabelsClassifier",
+    "labels_classifier_registered",
     "GOLDEN_DIR",
     "ImportedName",
     "KEYPOINTS_PAYLOAD",
@@ -948,6 +957,7 @@ __all__ = [
     "copy_of",
     "feature_edge",
     "file_digests",
+    "labelled_source",
     "link_forms",
     "raw_source",
     "take_link_offline",

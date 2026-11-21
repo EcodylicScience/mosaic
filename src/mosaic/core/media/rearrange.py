@@ -43,7 +43,6 @@ able to ask for by accident.
 
 from __future__ import annotations
 
-import csv
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +51,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.media.uniformity import UniformityVerdict
+from mosaic.core.pipeline.labels_index import labels_rows, readable_label_kinds
 from mosaic.core.pipeline.media_index import MediaIndexScope
 
 if TYPE_CHECKING:
@@ -292,33 +292,17 @@ def _blocks(
 
 
 def _label_kinds(ds: Dataset, entry: tuple[str, str]) -> tuple[str, ...]:
-    """Converted label kinds for *entry*, sorted. Empty when the root has none."""
-    try:
-        labels_root = ds.get_root("labels")
-    except KeyError:
-        return ()
-    if not labels_root.exists():
-        return ()
+    """Converted label kinds for *entry*, sorted, in *ds* or a dataset it links.
+
+    The rows are read as text, so a numeric sequence name matches the string
+    entry it is compared against.
+    """
     found: set[str] = set()
-    # Only the per-kind indexes match, one directory down; the variant
-    # directories item 9.3 adds a further level down hold no index.csv, so the
-    # glob does not descend into them.
-    for index_path in sorted(labels_root.glob("*/index.csv")):
-        # Read as plain records rather than a frame: a numeric sequence name read
-        # through pandas would infer back into a number and miss the string entry
-        # this compares against. The labels index is typed now (``LabelsIndexRow``),
-        # but this membership check wants string cells, so it reads them directly.
-        try:
-            with index_path.open(newline="") as handle:
-                records = list(csv.DictReader(handle))
-        except OSError:
-            continue
-        for record in records:
-            found_entry = (
-                str(record.get("group", "")),
-                str(record.get("sequence", "")),
-            )
-            if found_entry == entry:
-                found.add(index_path.parent.name)
-                break
+    for kind in readable_label_kinds(ds):
+        rows = labels_rows(ds, kind)
+        entries = zip(
+            rows["group"].astype(str), rows["sequence"].astype(str), strict=True
+        )
+        if entry in set(entries):
+            found.add(kind)
     return tuple(sorted(found))

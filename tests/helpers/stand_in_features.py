@@ -11,7 +11,9 @@ of the claim a fit holds. :class:`CenteringFeature` fits a mean and applies it,
 in worker processes too, for the tests of a fit that a linked dataset holds.
 :class:`ParallelFeature` declares ``parallelizable``, and a subclass that sets
 ``kill_on`` ends the process computing those sequences, for the tests of a run
-that computes several entries at once.
+that computes several entries at once. :class:`LabelsClassifier` reads
+ground-truth labels and records the file of each entry it is handed, for the
+tests of labels that a linked dataset holds.
 """
 
 from __future__ import annotations
@@ -20,15 +22,26 @@ import json
 import os
 import signal
 import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
+from mosaic.core.json_value import JsonValue
 from mosaic.core.params import Params
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    GroundTruthLabelsSource,
+    Inputs,
+    InputStream,
+    TrackInput,
+)
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 
 
@@ -289,3 +302,86 @@ class CenteringFeature(PlainFeature):
         if self.mean is None:
             raise RuntimeError("no fitted mean is loaded")
         return df.assign(X=df["X"] - self.mean)
+
+
+class LabelsClassifier:
+    """A scope-free classifier stand-in over tracks that reads ground-truth labels.
+
+    Each run records the labels file of every entry it is handed in
+    :attr:`read`, and passes its tracks through. :func:`labels_classifier_registered`
+    registers it by its slug, so a recipe can wire its ``labels`` field to a
+    conversion step.
+    """
+
+    name = "prov-labels-classifier"
+    version = "0.1"
+    parallelizable = False
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+    read: ClassVar[dict[tuple[str, str], Path]] = {}
+    """The labels file of each entry that the runs read."""
+
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
+        labels: GroundTruthLabelsSource = Field(default_factory=GroundTruthLabelsSource)
+
+    def __init__(
+        self,
+        inputs: LabelsClassifier.Inputs | None = None,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs: LabelsClassifier.Inputs = inputs or self.Inputs(("tracks",))
+        self.params: LabelsClassifier.Params = self.Params.from_overrides(params)
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        LabelsClassifier.read.update(dependency_lookups["labels"])
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        pass
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+
+LABELS_CLASSIFIER_STEP: dict[str, JsonValue] = {
+    "id": "classifier",
+    "type": "feature",
+    "feature": LabelsClassifier.name,
+    "inputs": ["tracks"],
+    "tracks": {"step": "tracks"},
+    "params": {"labels": {"step": "labels"}},
+}
+"""A :class:`LabelsClassifier` step over the ``tracks`` and ``labels`` steps."""
+
+
+@contextmanager
+def labels_classifier_registered() -> Generator[type[LabelsClassifier]]:
+    """Register :class:`LabelsClassifier` for the block, with nothing read yet.
+
+    The declaration catalog is memoized, so it is cleared on the way in and out.
+    """
+    from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
+
+    FEATURES[LabelsClassifier.__name__] = LabelsClassifier
+    builtin_declaration_catalog.cache_clear()
+    LabelsClassifier.read.clear()
+    try:
+        yield LabelsClassifier
+    finally:
+        del FEATURES[LabelsClassifier.__name__]
+        builtin_declaration_catalog.cache_clear()
+        LabelsClassifier.read.clear()

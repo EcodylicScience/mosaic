@@ -24,6 +24,7 @@ from mosaic.core.pipeline.media_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
 from tests.helpers.datasets import make_dataset
+from tests.helpers.labels import add_labels
 from tests.helpers.media import MediaClip, add_transcode_derivative, write_media_index
 from tests.helpers.tag_tables import tag_table, write_tags
 from tests.helpers.tracks import write_trex_npz
@@ -36,6 +37,7 @@ __all__ = [
     "converted_source",
     "copy_of",
     "feature_edge",
+    "labelled_source",
     "link_forms",
     "raw_source",
     "take_link_offline",
@@ -108,6 +110,26 @@ def raw_source(base: Path) -> Dataset:
         source,
         tag_table({SOURCE_ENTRIES[0]: {"site": "a"}}, {"site": "text"}),
     )
+    return source
+
+
+def labelled_source(base: Path) -> Dataset:
+    """:func:`raw_source` with the ``behavior`` labels of each entry converted.
+
+    Each entry of :data:`SOURCE_ENTRIES` has one event in the variant
+    ``LABELS_VARIANT``, recorded as converted from its raw labels file under
+    ``labels_raw``.
+    """
+    source = raw_source(base)
+    for group, sequence in SOURCE_ENTRIES:
+        _ = add_labels(
+            source,
+            group,
+            sequence,
+            [(0, 0, 1, 0)],
+            source=source.get_root("labels_raw") / group / f"{sequence}.csv",
+            consumed_source_roots=("labels_raw",),
+        )
     return source
 
 

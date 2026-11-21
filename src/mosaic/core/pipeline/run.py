@@ -137,7 +137,7 @@ from .manifest import (
 )
 from .op_identity import parse_op_run_id
 from .fit_scope import derive_fit_scope, write_fit_scope
-from .labels_index import read_labels_index, select_label_variant_rows
+from .labels_index import labels_rows, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import SourceRoot, encode_entry_composition
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
@@ -3845,10 +3845,12 @@ def _build_labels_lookup(
 
     Resolves through the typed index and :func:`select_label_variant_rows`, so a
     consumer reads the same variant its identity was built from -- pass the same
-    ``labels_run_id`` here as to :func:`resolve_labels_variants`. A labelled
-    variant supersedes an unlabelled row; two genuine recipes raise.
+    ``labels_run_id`` here as to :func:`resolve_labels_variants`. Each entry
+    takes the variant of the nearest dataset that holds a row of it. Within that
+    dataset a labelled variant supersedes an unlabelled row, and two genuine
+    recipes raise.
     """
-    df = select_label_variant_rows(read_labels_index(ds, kind), labels_run_id)
+    df = select_label_variant_rows(labels_rows(ds, kind), labels_run_id)
     lookup: dict[tuple[str, str], Path] = {}
     for _, row in df.iterrows():
         group = str(row.get("group", ""))
@@ -3892,7 +3894,7 @@ def resolve_labels_variants(
                 variants.add(labels_run_id)
                 continue
             resolved = select_label_variant_rows(
-                read_labels_index(ds, value.kind), labels_run_id
+                labels_rows(ds, value.kind), labels_run_id
             )
             variants.update(str(r) for r in resolved["run_id"] if str(r))
     return tuple(sorted(variants))

@@ -15,7 +15,13 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.rearrange import Arrangement, rearrange_media
 
-from tests.helpers import CropLike
+from tests.helpers import (
+    CropLike,
+    add_labels,
+    add_media_sequence,
+    copy_of,
+    make_dataset,
+)
 
 
 def _reverse(ds: Dataset, sequence: str = "seq_a") -> Arrangement:
@@ -140,6 +146,23 @@ class TestBlocks:
         assert report.would_proceed, (
             "another sequence's labels blocked this one's reorder"
         )
+
+
+@pytest.mark.usefixtures("requires_ffmpeg")
+@pytest.mark.parametrize("sequence", ["seq_a", "7"])
+def test_a_reorder_on_a_copy_is_blocked_by_its_sources_labels(
+    tmp_path: Path, sequence: str
+) -> None:
+    """The copy holds no labels of its own, and the linked ones name the frames."""
+    source = make_dataset(tmp_path / "source", name="source")
+    add_media_sequence(source, sequence)
+    _ = add_labels(source, "", sequence, [(0, 0, 1, 0)])
+    copy = copy_of(source, tmp_path / "copy")
+
+    report = rearrange_media(copy, [_reverse(copy, sequence)])
+
+    assert not report.would_proceed
+    assert any("converted labels (behavior)" in reason for reason in report.blocked)
 
 
 @pytest.mark.usefixtures("requires_ffmpeg")

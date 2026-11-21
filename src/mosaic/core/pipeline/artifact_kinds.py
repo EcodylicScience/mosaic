@@ -73,7 +73,7 @@ def is_artifact_kind(name: str) -> TypeGuard[ArtifactKind]:
     return name in ARTIFACT_KINDS
 
 
-LinkedKind = Literal["models", "features", "tracks", "label-series", "frames"]
+LinkedKind = Literal["models", "features", "tracks", "label-series", "frames", "labels"]
 """A kind of derived data that a dataset may read through a link to another one.
 
 See :attr:`~mosaic.core.manifest.DatasetLink.provides`.
@@ -85,6 +85,7 @@ LINKED_KINDS: Final[tuple[LinkedKind, ...]] = (
     "tracks",
     "label-series",
     "frames",
+    "labels",
 )
 """Every :data:`LinkedKind`, in the order a manifest writes them.
 
@@ -95,6 +96,7 @@ LINKED_KIND: Final[Mapping[ArtifactKind, LinkedKind]] = MappingProxyType(
     {
         "feature": "features",
         "tracks-variant": "tracks",
+        "labels-variant": "labels",
         "label-series": "label-series",
         "frame-run": "frames",
         "trained-model": "models",

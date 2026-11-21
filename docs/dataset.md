@@ -849,21 +849,23 @@ links:
 ```
 
 `provides` names the kinds of derived data that the link serves: `models`, `features`,
-`tracks`, `label-series` and `frames`. Repeat `--provides` to name several. A link
-declared without it serves every kind. A read of a kind that the link does not provide
-skips the link, without opening it.
+`tracks`, `label-series`, `frames` and `labels`, the converted labels. Repeat
+`--provides` to name several. A link declared without it serves every kind. A read of a
+kind that the link does not provide skips the link, without opening it.
 
 A read looks in the dataset first and then in each link that provides the kind, in the
 order the links are declared. The dataset's data wins: a run, a tracks table or a label
 revision in the dataset shadows the same one in a link, and an earlier link shadows a
 later one. A model that the dataset lacks is looked up in each link that provides
 `models`. `infer-pose --params '{"model": "<run_id>"}'` and a tracker's
-`detect_model=<run_id>` work as they do for a local model. A feature run, a tracks
-variant or a frame run in a link is read in place, and a pipeline reports it done
-instead of running it again. A step that produces each entry independently, such as a
-tracker or a feature run, computes only the entries that no link covers into the
-dataset. A step that reads its whole scope, such as `assign-identities`, computes all
-of it into the dataset.
+`detect_model=<run_id>` work as they do for a local model. An entry's converted labels
+come from the nearest dataset that holds a variant of the entry, so labels the dataset
+converts for an entry win over a link's labels of that entry. A feature run, a tracks
+variant, a converted labels variant or a frame run in a link is read in place, and a
+pipeline reports it done instead of running it again. A step that produces each entry
+independently, such as a tracker or a feature run, computes only the entries that no
+link covers into the dataset. A step that reads its whole scope, such as
+`assign-identities`, computes all of it into the dataset.
 
 A link is read and not written. The dataset writes its outputs under its own roots, and
 no path under a linked dataset is created, renamed, locked or removed. Links are

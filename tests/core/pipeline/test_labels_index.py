@@ -23,8 +23,12 @@ from mosaic.core.label_converter import (
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
+    LABELS_INDEX_PATH_COLUMNS,
+    LABELS_ROWS_PATH_COLUMNS,
     empty_labels_frame,
+    labels_rows,
     read_labels_index,
+    readable_label_kinds,
     select_label_variant_rows,
     write_labels_row,
 )
@@ -36,11 +40,16 @@ from mosaic.core.pipeline.types import (
     ResultColumn,
 )
 from tests.helpers import (
+    LABELS_VARIANT,
+    SOURCE_ENTRIES,
     ListedEntries,
     SharedKeyRefusingEntries,
+    add_labels,
     add_track_sequences,
     add_tracks_table,
     calms21_dataset,
+    copy_of,
+    labelled_source,
     make_dataset,
     run_child,
     track_table,
@@ -52,6 +61,22 @@ from tests.helpers import (
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=pd.Index(["group", "sequence", "run_id"]))
+
+
+def _merged(*rows: tuple[str, str, str]) -> pd.DataFrame:
+    """Merged rows of ``(sequence, run_id, link_id)`` in group ``g``, nearest first."""
+    return pd.DataFrame(
+        [
+            {"group": "g", "sequence": sequence, "run_id": run_id, "link_id": link}
+            for sequence, run_id, link in rows
+        ],
+        columns=pd.Index(["group", "sequence", "run_id", "link_id"]),
+    )
+
+
+def _resolved(frame: pd.DataFrame) -> list[tuple[str, str]]:
+    """Each resolved row's ``(sequence, run_id)``."""
+    return list(zip(frame["sequence"], frame["run_id"], strict=True))
 
 
 # --- select_label_variant_rows -------------------------------------------------
@@ -120,6 +145,156 @@ def test_empty_run_id_selects_unlabelled(tmp_path: Path) -> None:
 def test_empty_frame_stays_empty() -> None:
     out = select_label_variant_rows(empty_labels_frame())
     assert out.empty
+
+
+def test_an_own_variant_of_an_entry_wins_and_the_linked_one_serves_the_rest() -> None:
+    rows = _merged(("a", "own", ""), ("a", "linked", "L"), ("b", "linked", "L"))
+
+    assert _resolved(select_label_variant_rows(rows)) == [
+        ("a", "own"),
+        ("b", "linked"),
+    ]
+
+
+def test_two_variants_of_an_entry_within_one_dataset_still_raise() -> None:
+    own = _merged(("a", "v1", ""), ("a", "v2", ""), ("a", "linked", "L"))
+    linked = _merged(("a", "v1", "L"), ("a", "v2", "L"))
+
+    for rows in (own, linked):
+        with pytest.raises(ValueError, match="labels_run_id"):
+            _ = select_label_variant_rows(rows)
+
+
+def test_an_own_unlabelled_row_wins_over_a_linked_labelled_row() -> None:
+    rows = _merged(("a", "", ""), ("a", "linked", "L"))
+
+    assert _resolved(select_label_variant_rows(rows)) == [("a", "")]
+
+
+def test_a_frame_without_a_link_column_resolves_within_one_dataset() -> None:
+    rows = _merged(("a", "", ""), ("a", "v1", ""), ("b", "v1", "")).drop(
+        columns="link_id"
+    )
+
+    assert _resolved(select_label_variant_rows(rows)) == [("a", "v1"), ("b", "v1")]
+
+
+def test_a_named_variant_is_selected_from_either_dataset() -> None:
+    rows = _merged(("a", "own", ""), ("a", "linked", "L"), ("b", "linked", "L"))
+
+    assert _resolved(select_label_variant_rows(rows, "linked")) == [
+        ("a", "linked"),
+        ("b", "linked"),
+    ]
+    assert _resolved(select_label_variant_rows(rows, "own")) == [("a", "own")]
+
+
+# --- labels_rows: converted labels through a link ------------------------------
+
+OWN_VARIANT = "convert-labels-calms21_npy.0.3-bbbbbbbbbb"
+"""A variant the copy converts for itself."""
+
+
+def test_a_copy_reads_its_sources_labels_rows_named_by_the_link(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    held = read_labels_index(source, "behavior")
+
+    rows = labels_rows(copy, "behavior")
+
+    assert _resolved(rows) == _resolved(held)
+    assert set(rows["link_id"]) == {f"source-{source.uuid}"}
+    for column in ("abs_path", "source_abs_path"):
+        paths = [Path(str(cell)) for cell in rows[column]]
+        assert all(path.is_absolute() for path in paths), column
+        assert [path.resolve() for path in paths] == [
+            source.resolve_path(str(cell)).resolve() for cell in held[column]
+        ], column
+
+
+def test_labels_rows_of_a_dataset_without_links_are_its_own_index(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+
+    rows = labels_rows(source, "behavior")
+
+    pd.testing.assert_frame_equal(
+        rows, read_labels_index(source, "behavior").assign(link_id="")
+    )
+
+
+def test_a_models_only_link_adds_no_labels_row(tmp_path: Path) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy", provides=("models",))
+
+    assert labels_rows(copy, "behavior").empty
+
+
+def test_the_linked_labels_path_columns_are_the_portability_passes_columns() -> None:
+    assert LABELS_ROWS_PATH_COLUMNS == ("abs_path", *LABELS_INDEX_PATH_COLUMNS)
+
+
+def test_the_readable_label_kinds_list_the_own_kinds_first_each_once(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    group, sequence = SOURCE_ENTRIES[0]
+    _ = add_labels(source, group, sequence, [(0, 0, 1, 0)], label_kind="alpha")
+    copy = copy_of(source, tmp_path / "copy")
+    _ = add_labels(copy, group, sequence, [(0, 0, 1, 1)], run_id=OWN_VARIANT)
+
+    assert readable_label_kinds(copy) == ["behavior", "alpha"]
+
+
+def test_an_own_conversion_of_an_entry_wins_over_its_linked_variant(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    (group, first), (_, second) = SOURCE_ENTRIES
+    _ = add_labels(copy, group, first, [(0, 0, 1, 1)], run_id=OWN_VARIANT)
+
+    resolved = select_label_variant_rows(labels_rows(copy, "behavior"))
+
+    assert _resolved(resolved) == [(first, OWN_VARIANT), (second, LABELS_VARIANT)]
+    assert list(resolved["link_id"]) == ["", f"source-{source.uuid}"]
+
+
+def test_the_dataset_label_readers_of_a_copy_read_its_sources_labels(
+    tmp_path: Path,
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    group, sequence = SOURCE_ENTRIES[0]
+    ids_path = source.get_root("labels") / "id_tags" / "v" / "g__s1.npz"
+    ids_path.parent.mkdir(parents=True)
+    np.savez(ids_path, ids=np.array([0, 1]), name=np.array(["left", "right"]))
+    write_labels_row(
+        source,
+        run_id="v",
+        group=group,
+        sequence=sequence,
+        out_path=ids_path,
+        producer="author-id-tags",
+        label_kind="id_tags",
+        n_frames=0,
+    )
+    copy = copy_of(source, tmp_path / "copy")
+
+    labels = copy.load_labels(group, sequence, "behavior")
+    id_labels = copy.load_id_labels("id_tags")
+
+    assert (
+        labels["labels"].tolist()
+        == source.load_labels(group, sequence)["labels"].tolist()
+    )
+    assert copy.get_label_map("behavior") == source.get_label_map("behavior")
+    assert id_labels[(group, sequence)]["labels"] == {
+        0: {"name": "left"},
+        1: {"name": "right"},
+    }
 
 
 # --- write_labels_row: consumed_composition wiring ----------------------------

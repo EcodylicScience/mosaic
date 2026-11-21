@@ -24,8 +24,11 @@ from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
 from mosaic.core.pipeline.inventory.model import ArtifactKind
 from mosaic.core.pipeline.label_series import TAGS_SERIES
 from mosaic.core.pipeline.label_series_index import series_index_path
+from mosaic.core.pipeline.labels_index import labels_index_path
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    copy_of,
+    labelled_source,
     add_feature_run,
     add_tracks_variant,
     assert_tree_unchanged,
@@ -360,6 +363,38 @@ def test_a_linked_index_of_each_remaining_kind_moves_the_view(
     _touch(index)
 
     assert holder.revalidate().changed == (index,)
+
+
+def test_a_moved_linked_labels_index_rereads_every_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    holder = InventoryCache(copy_of(source, tmp_path / "copy"))
+    _ = holder.get()
+    scans = _scanned_kinds(monkeypatch)
+    index = labels_index_path(source, "behavior")
+
+    _touch(index)
+    report = holder.revalidate()
+
+    assert report.changed == (index,)
+    [scanned] = scans
+    assert {"feature", "labels-variant"} <= scanned
+
+
+def test_a_models_only_links_labels_index_moving_leaves_the_view_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = labelled_source(tmp_path / "source")
+    holder = InventoryCache(copy_of(source, tmp_path / "copy", provides=("models",)))
+    held = holder.get()
+    scans = _scanned_kinds(monkeypatch)
+
+    _touch(labels_index_path(source, "behavior"))
+
+    assert not holder.revalidate().stale
+    assert scans == []
+    assert holder.get() is held
 
 
 def test_every_linked_kind_names_the_root_its_indexes_sit_in() -> None:

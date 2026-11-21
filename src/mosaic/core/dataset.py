@@ -326,6 +326,7 @@ from .pipeline.tracks_index import (
 from .pipeline.labels_index import (
     LABELS_INDEX_PATH_COLUMNS,
     labels_index_path,
+    labels_rows,
     read_labels_index,
     select_label_variant_rows,
     write_labels_row,
@@ -349,6 +350,8 @@ from mosaic.core.pipeline._utils import atomic_savez
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
     from .pipeline.inventory import ArtifactRef
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
@@ -12398,7 +12401,7 @@ class Dataset:
         *,
         scope: Scope | None = None,
         labels_run_id: Optional[str] = None,
-    ) -> dict[tuple[str, str], dict]:
+    ) -> dict[tuple[str, str], dict[str, object]]:
         """Load per-id labels of *kind*, for the entries *scope* names.
 
         Args:
@@ -12419,7 +12422,7 @@ class Dataset:
             FileNotFoundError: No labels of *kind* exist.
         """
         selector = scope if scope is not None else Scope()
-        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        df = select_label_variant_rows(labels_rows(self, kind), labels_run_id)
         if df.empty:
             raise FileNotFoundError(
                 f"No labels of kind='{kind}' found; author or convert them first."
@@ -12484,7 +12487,7 @@ class Dataset:
         sequence: str,
         kind: str = "behavior",
         labels_run_id: Optional[str] = None,
-    ) -> dict:
+    ) -> dict[str, NDArray[np.generic]]:
         """
         Load behavior labels for a specific (group, sequence).
 
@@ -12498,11 +12501,13 @@ class Dataset:
         - group, sequence, sequence_key: metadata
 
         Which variant is read follows :func:`select_label_variant_rows`: pass
-        ``labels_run_id`` to name one, otherwise a labelled variant supersedes an
-        unlabelled row and two genuine recipes raise rather than silently taking
+        ``labels_run_id`` to name one. Otherwise each entry takes the variant of
+        the nearest dataset that holds a row of it, even an unlabelled row over a
+        linked labelled one. Within that dataset a labelled variant supersedes an
+        unlabelled row, and two genuine recipes raise rather than silently taking
         the first.
         """
-        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        df = select_label_variant_rows(labels_rows(self, kind), labels_run_id)
         df = df[
             (df["group"].astype(str) == group)
             & (df["sequence"].astype(str) == sequence)
@@ -12535,7 +12540,7 @@ class Dataset:
 
         Reads the vocabulary off the resolved variant's first row.
         """
-        df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
+        df = select_label_variant_rows(labels_rows(self, kind), labels_run_id)
         if df.empty:
             raise FileNotFoundError(
                 f"No labels of kind='{kind}' found; convert or author them first."

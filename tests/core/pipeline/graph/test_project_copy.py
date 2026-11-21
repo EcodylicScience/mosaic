@@ -1,11 +1,10 @@
 """A project copy reads what its source computed and writes only into its own tree.
 
-The copy is a dataset with a fresh ``uuid``, a link to the source and raw index
-rows that name the source's raw files. It plans the source's recipe with every
-step complete, reads the source's feature outputs, tracks tables, label series
-and frame runs through their lookups, computes a run of its own that wins over
-the source's at the same address, and removes, prunes and reconciles without
-changing the source.
+The copy is a dataset with a fresh ``uuid``, a link to the source and raw index rows
+that name the source's raw files. It plans the source's recipe with every step complete,
+reads the source's feature outputs, tracks tables, label series, converted labels and
+frame runs through their lookups, computes a run of its own that wins over the source's
+at the same address, and removes, prunes and reconciles without changing the source.
 """
 
 from __future__ import annotations
@@ -25,11 +24,13 @@ from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.inventory.scan import run_coverage
 from mosaic.core.pipeline.label_series import TAGS_SERIES
 from mosaic.core.pipeline.label_series_index import label_series_rows
+from mosaic.core.pipeline.labels_index import labels_rows, read_labels_index
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_rows
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
 from mosaic.tracking.frame_extraction.frame_runs import frame_rows
 from tests.helpers import (
+    add_labels,
     add_raw_track_files,
     add_tracks_table,
     assert_tree_unchanged,
@@ -101,6 +102,8 @@ def project(tmp_path: Path) -> Project:
     recipe = _recipe()
     _ = run_pipeline(source, recipe)
     _ = write_tags(source, tag_table({("", "s1"): {"site": "a"}}, {"site": "text"}))
+    for sequence in SEQUENCES:
+        _ = add_labels(source, "", sequence, [(0, 0, 1, 0)])
     _ = extract_entry_camera(
         source,
         run_id=FRAMES_RUN,
@@ -179,6 +182,7 @@ def test_the_copy_reads_the_sources_data_through_each_lookup(project: Project) -
     tracks = tracks_rows(copy)
     series = label_series_rows(copy, TAGS_SERIES)
     frames = frame_rows(copy, "uniform")
+    labels = labels_rows(copy, "behavior")
 
     assert (set(features["sequence"]), set(features["link_id"])) == (
         set(SEQUENCES),
@@ -188,6 +192,8 @@ def test_the_copy_reads_the_sources_data_through_each_lookup(project: Project) -
     assert list(series["link_id"]) == [link]
     assert list(frames["run_id"]) == [FRAMES_RUN]
     assert set(frames["link_id"]) == {link}
+    assert (set(labels["sequence"]), set(labels["link_id"])) == (set(SEQUENCES), {link})
+    assert read_labels_index(copy, "behavior").empty
     assert run_coverage(
         copy, speed.storage_name, str(speed.run_id), TARGET
     ).is_satisfied

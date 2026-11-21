@@ -41,11 +41,10 @@ from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
-from .dataset_indexes import label_kinds
 from .index_csv import index_records
 from .index import feature_rows, readable_feature_storages
 from .inventory.params import read_linked_run_params
-from .labels_index import read_labels_index
+from .labels_index import labels_rows, readable_label_kinds
 from .sequence_index import decode_consumed_roots, encode_entry_composition
 from .tracks_index import consumed_composition_for, tracks_rows
 
@@ -178,10 +177,12 @@ def _labels_rows(
     The label sibling of :func:`_tracks_rows`: a change under ``labels_raw``
     reaches every scored label kind converted from it. Authored kinds record no
     consumed root and are not reached; derived kinds record their upstream root.
+    The rows are those of :func:`~.labels_index.labels_rows`, and a linked row
+    names its link.
     """
     rows: list[dict[str, object]] = []
-    for kind in label_kinds(ds):
-        frame = read_labels_index(ds, kind)
+    for kind in readable_label_kinds(ds):
+        frame = labels_rows(ds, kind)
         for record in index_records(frame):
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))
             if entry not in wanted:
@@ -203,6 +204,7 @@ def _labels_rows(
                     recorded=str(record.get("consumed_composition", "")),
                     current=consumed_composition_for(ds, entry[0], entry[1], declared),
                     via="direct",
+                    link_id=str(record.get("link_id", "")),
                 )
             )
     return rows

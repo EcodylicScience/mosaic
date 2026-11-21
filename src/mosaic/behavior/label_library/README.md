@@ -700,10 +700,14 @@ dataset.convert_all_labels(
 
 ### 4. Verify Output
 
-The labels index is a typed index (`labels/<kind>/index.csv`) with a `run_id`
-column, and the `.npz` files live in variant subdirectories
-`labels/<kind>/<run_id>/`. Read it with `read_labels_index`, and resolve the
-root-relative `abs_path` with `dataset.resolve_path`:
+The labels index is a typed index (`labels/<kind>/index.csv`) with a `run_id` column,
+and the `.npz` files live in variant subdirectories `labels/<kind>/<run_id>/`. Read it
+with `read_labels_index`, and resolve the root-relative `abs_path` with
+`dataset.resolve_path`. `read_labels_index` reads the dataset's own index.
+`labels_rows(dataset, kind)` is the reader of converted labels: it adds the rows of each
+dataset the dataset links for `labels`, with a `link_id` column, and
+`select_label_variant_rows` then takes each entry's variant from the nearest dataset
+that holds one:
 
 ```python
 import numpy as np

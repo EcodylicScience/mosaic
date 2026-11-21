@@ -43,7 +43,7 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.core.scope import Scope
 
 from ..artifact_kinds import LINKED_KIND, LinkedKind
-from ._linked import Remeasure, grouped_by_ref, merged_record
+from ._linked import Remeasure, grouped_by_ref, merged_record, nearest_rows_present
 from ._read import IndexReader, ParquetFooterMemo
 from ._runs import finish_state, run_records
 from .contributors import inventory_contributor, registered_inventory_kinds
@@ -696,7 +696,13 @@ def inventory(
             kind, build, (("", reading), *links.of(kind)), asked, reader, errors
         )
         if held is not None:
-            records.extend(_merged(held, fills_linked_only=kind in _LINKED_ONLY_KINDS))
+            records.extend(
+                _merged(
+                    held,
+                    fills_linked_only=kind in _LINKED_ONLY_KINDS,
+                    nearest_rows=kind in _NEAREST_ROW_KINDS,
+                )
+            )
 
     return DatasetInventory(
         dataset_root=Path(ds.base_dir),
@@ -728,6 +734,13 @@ _LINKED_ONLY_KINDS: frozenset[ArtifactKind] = frozenset(
     {"feature", "tracks-variant", "frame-run"}
 )
 """The kinds whose records name the keys only a linked dataset holds."""
+
+_NEAREST_ROW_KINDS: frozenset[ArtifactKind] = frozenset({"labels-variant"})
+"""The kinds whose key is present by the nearest dataset that holds a row of it.
+
+A read of a converted labels entry takes the nearest dataset's row, so a file of
+that key in a farther dataset does not count.
+"""
 
 
 def _builder(kind: ArtifactKind) -> _Builder | None:
@@ -844,15 +857,25 @@ def _held_records(
 
 
 def _merged(
-    held: Sequence[tuple[str, Sequence[AnyRecord]]], *, fills_linked_only: bool
+    held: Sequence[tuple[str, Sequence[AnyRecord]]],
+    *,
+    fills_linked_only: bool,
+    nearest_rows: bool,
 ) -> list[AnyRecord]:
-    """Join each artifact's records across *held*, an own record alone kept as read."""
+    """Join each artifact's records across *held*, an own record alone kept as read.
+
+    With *nearest_rows*, a key counts as present by the nearest dataset that
+    holds a row of it, as :func:`~._linked.nearest_rows_present` narrows it.
+    """
     if len(held) == 1:
         return list(held[0][1])
     return [
         group[0][1]
         if len(group) == 1 and not group[0][0]
-        else merged_record(group, fills_linked_only=fills_linked_only)
+        else merged_record(
+            nearest_rows_present(group) if nearest_rows else group,
+            fills_linked_only=fills_linked_only,
+        )
         for group in grouped_by_ref(held)
     ]
 

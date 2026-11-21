@@ -23,17 +23,19 @@ are in `graph/CLAUDE.md`.
 - **A read site uses a per-kind lookup, and a write site an own-address function.** A
   dataset reads linked data through `tracks_rows`, `feature_rows`, `feature_run_roots`,
   `feature_run_file`, `readable_feature_storages`, `frame_rows`, `frame_run_file`,
-  `label_series_rows` and `run_coverage`, which walk `Dataset.lookup_order(kind)`. A
-  site that writes, removes or reconciles stays on `feature_run_root`,
-  `feature_index_path`, `read_tracks_index`, `tracks_table_path`, `frames_run_root`,
-  `list_frame_runs`, `model_index_path` and `read_label_series`. A linked dataset is
-  then never written (`tests/meta/test_link_reads.py` names both sets).
+  `label_series_rows`, `labels_rows`, `readable_label_kinds` and `run_coverage`, which
+  walk `Dataset.lookup_order(kind)`. A site that writes, removes or reconciles stays on
+  `feature_run_root`, `feature_index_path`, `read_tracks_index`, `tracks_table_path`,
+  `frames_run_root`, `list_frame_runs`, `model_index_path`, `read_label_series` and
+  `read_labels_index`. A linked dataset is then never written
+  (`tests/meta/test_link_reads.py` names both sets).
 - **A lookup passes `merge_linked_rows` the path columns it makes absolute.** A linked
   row's cell names a file of its own dataset, and an own cell stays as stored. The
   tracks lookup passes `TRACKS_ROWS_PATH_COLUMNS` (`abs_path` and the columns the
-  portability passes rewrite), the feature and label series lookups `abs_path`, and the
-  frames lookup `abs_path` and `video_abs_path`. A new indexed path column joins its
-  lookup's tuple (`tests/core/pipeline/test_linked_rows.py`).
+  portability passes rewrite), the converted labels lookup `LABELS_ROWS_PATH_COLUMNS`
+  (`abs_path` and `source_abs_path`), the feature and label series lookups `abs_path`,
+  and the frames lookup `abs_path` and `video_abs_path`. A new indexed path column joins
+  its lookup's tuple (`tests/core/pipeline/test_linked_rows.py`).
 - **`link_unreachable` is a refusal reason** (`LinkUnreachableError`). A plan problem at
   that `where` refuses a submission, and a step planned again at its start refuses
   itself alone (`graph/CLAUDE.md`, "Planning"). It is raised where an offline link

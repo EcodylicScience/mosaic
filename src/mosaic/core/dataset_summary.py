@@ -32,9 +32,8 @@ from mosaic.core.pipeline.inventory import (
 )
 from mosaic.core.entry import Entry, entry_token
 from mosaic.core.pipeline.arena_index import ArenaIndexError
-from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.label_series_index import series_index_path
-from mosaic.core.pipeline.labels_index import read_labels_index
+from mosaic.core.pipeline.labels_index import labels_rows, readable_label_kinds
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.pipeline.tracks_index import (
     FrameExtents,
@@ -664,8 +663,5 @@ def _raw_rows(ds: Dataset, root: str) -> int:
 
 
 def _has_converted_labels(ds: Dataset) -> bool:
-    """Whether any labels kind has a converted table in its index."""
-    return any(
-        len(read_labels_index(ds, kind)) > 0
-        for kind in root_subdirectories(ds, "labels", require_index=True)
-    )
+    """Whether any labels kind has a converted table in its index or a link's."""
+    return any(len(labels_rows(ds, kind)) > 0 for kind in readable_label_kinds(ds))

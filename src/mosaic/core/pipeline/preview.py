@@ -597,14 +597,12 @@ def _preview_labels(
 
     from mosaic.core.helpers import detect_label_format, load_labels_auto
     from mosaic.core.pipeline.labels_index import (
-        read_labels_index,
+        labels_rows,
         select_label_variant_rows,
     )
 
     group, sequence = entry
-    indexed = select_label_variant_rows(
-        read_labels_index(ds, ref.label_kind), ref.run_id
-    )
+    indexed = select_label_variant_rows(labels_rows(ds, ref.label_kind), ref.run_id)
     mask = (indexed["group"] == group) & (indexed["sequence"] == sequence)
     matched = indexed.loc[mask]
     path = _indexed_file(

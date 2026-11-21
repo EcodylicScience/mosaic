@@ -12,8 +12,8 @@ message of their branch, and for both the answer was **nothing**.
 
 No run id or output byte moves. The manifest key `libraries` becomes `links`, and each
 link names the kinds of derived data it provides in `provides`: `models`, `features`,
-`tracks`, `label-series` and `frames`, every kind by default. A manifest that declares a
-link is written at manifest version 6, which an older mosaic refuses with
+`tracks`, `label-series`, `frames` and `labels`, every kind by default. A manifest that
+declares a link is written at manifest version 6, which an older mosaic refuses with
 `ManifestVersionError` instead of computing again what the link holds. A manifest
 without a link is written at the version it was written at before. A manifest below
 version 6 reads its `libraries` as links that provide `models`, and its next save writes
@@ -171,6 +171,21 @@ that reads its whole scope to write any entry, such as `assign-identities`, does
 kind an offline link provides. A submission with that problem is refused. A step that a
 running request plans again at its start refuses itself alone, recording
 `recipe_refused`, and the other steps run.
+
+A dataset reads converted labels through the links that provide `labels`.
+`labels_rows(ds, label_kind)` (`mosaic.core.pipeline.labels_index`) returns the labels
+index of a kind merged with those of the linked datasets, keyed on
+`(run_id, group, sequence)` with a `link_id` column, and the cells of
+`LABELS_ROWS_PATH_COLUMNS` (`abs_path` and `source_abs_path`) of a linked row are
+absolute. `readable_label_kinds(ds)` lists the label kinds of the dataset and its links.
+`select_label_variant_rows` takes each entry's variant from the nearest dataset that
+holds a row of the entry, so labels a dataset converts for an entry win over a link's,
+and two variants of an entry within one dataset still raise. Ground-truth playback, a
+clip reorder's labels check, the summary, previews, provenance, `Dataset.load_labels`,
+`load_id_labels` and `get_label_map`, and a classifier's labels read a link's converted
+labels, and a conversion step whose variant a link holds plans complete. No run id or
+output byte of a dataset without links moves. Playback of an entry with two converted
+variants now raises, as the other label readers do.
 
 ## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
 
