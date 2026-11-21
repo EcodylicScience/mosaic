@@ -45,12 +45,17 @@ from mosaic.core.scope import Scope
 from mosaic.core.pipeline.preprocess_layout import media_variant_path
 from tests.helpers import (
     ScopedFeature,
+    add_feature_run,
     add_media_variant,
     add_track_sequences,
     add_tracks_variant,
+    copy_of,
+    feature_edge,
     finish_media_variant,
     make_dataset,
     stub_media_dataset,
+    tracks_edge,
+    write_run_params,
 )
 
 STORAGE = "speed-angvel__from__tracks"
@@ -702,3 +707,25 @@ def test_an_address_is_the_kind_and_the_key_parts(
     ref: ArtifactRef, address: str
 ) -> None:
     assert ref_address(ref) == address
+
+
+def test_the_variants_an_own_run_read_through_the_source_are_known(
+    tmp_path: Path,
+) -> None:
+    source = make_dataset(tmp_path / "source", name="source")
+    up_root = add_feature_run(source, "up", "0.1-1111111111")
+    write_run_params(up_root, {"_inputs": ["tracks"], "_resolved": [tracks_edge("v1")]})
+    copy = copy_of(source, tmp_path / "copy")
+    down_root = add_feature_run(copy, "down", "0.1-2222222222")
+    write_run_params(
+        down_root,
+        {
+            "_inputs": [{"feature": "up", "run_id": "0.1-1111111111"}],
+            "_resolved": [feature_edge(0, "up", "0.1-1111111111")],
+        },
+    )
+
+    wire = inventory_wire(copy, inventory(copy), kinds=["feature"])
+
+    [own] = [artifact for artifact in wire.artifacts if artifact.name == "down"]
+    assert own.tracks_variants == ("v1",)

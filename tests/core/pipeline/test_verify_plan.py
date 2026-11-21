@@ -33,35 +33,23 @@ from mosaic.core.pipeline.verify import _Found, _walk  # pyright: ignore[reportP
 from tests.helpers import (
     assert_tree_unchanged,
     calms21_dataset,
-    classifier_recipe,
+    scored_classifier_recipe,
     tree_snapshot,
 )
 
 ENTRIES = {"train": {"a": {"s1": 90, "s2": 90, "s3": 90}}}
 
 
-def _recipe() -> Recipe:
-    base = classifier_recipe("clf").model_dump(mode="json")
-    evaluation = {
-        "id": "score",
-        "type": "feature",
-        "feature": "evaluate-labels",
-        "inputs": [{"step": "clf"}],
-        "params": {"labels": {"step": "labels"}, "perspective": 0},
-    }
-    return Recipe.model_validate({**base, "steps": [*base["steps"], evaluation]})
-
-
 @pytest.fixture
 def study(tmp_path: Path) -> Dataset:
     """A dataset the recipe has run over, as a reader opens it."""
     ds = calms21_dataset(tmp_path / "study", ENTRIES, seed=11, n_classes=2)
-    _ = run_pipeline(ds, _recipe())
+    _ = run_pipeline(ds, scored_classifier_recipe())
     return open_dataset(ds.manifest_path, ensure_roots=False)
 
 
 def _plan(ds: Dataset) -> Plan:
-    return plan_pipeline(ds, _recipe())
+    return plan_pipeline(ds, scored_classifier_recipe())
 
 
 def _verdict(report: VerifyReport, step: str) -> StepVerdict:
@@ -445,7 +433,7 @@ def test_a_report_that_compared_nothing_is_not_ok_and_a_step_with_no_run_is_skip
 
     report = verify_plan(
         open_dataset(ds.manifest_path, ensure_roots=False),
-        plan_pipeline(ds, _recipe(), refuse=False),
+        plan_pipeline(ds, scored_classifier_recipe(), refuse=False),
     )
 
     assert not report.ok

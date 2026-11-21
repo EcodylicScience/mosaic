@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 from zipfile import BadZipFile, is_zipfile
 
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
-from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline.index import feature_run_rows
 from mosaic.core.pipeline.inventory.model import (
     FeatureRunRef,
     LabelsVariantRef,
@@ -457,10 +457,11 @@ def _table_path(
     stored: list[str]
     match ref:
         case FeatureRunRef():
-            index = feature_index(feature_index_path(ds, ref.name))
             try:
-                rows = index.read(
-                    run_id=ref.run_id,
+                rows = feature_run_rows(
+                    ds,
+                    ref.name,
+                    ref.run_id,
                     filter_ext=".parquet",
                     scope=Scope(entries=[entry]),
                 )

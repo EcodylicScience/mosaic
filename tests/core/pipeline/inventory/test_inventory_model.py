@@ -28,6 +28,7 @@ from mosaic.core.pipeline.inventory.model import (
     MediaVariantRef,
     PredictionScoreRef,
     classify,
+    merged_coverage,
 )
 
 A: Entry = ("", "seq_a")
@@ -70,6 +71,34 @@ def test_covers_all_answers_for_every_key() -> None:
     coverage = _coverage({A, B}, set(), covers_all=True)
 
     assert coverage.is_satisfied
+
+
+def test_merged_coverage_keeps_the_reading_target_and_unions_what_is_present() -> None:
+    C: Entry = ("", "seq_c")
+    merged = merged_coverage(
+        [_coverage({A}, {A}), _coverage({B, C}, {B, C})], frozenset({A, B})
+    )
+
+    assert merged.target == frozenset({A, B})
+    assert merged.present == frozenset({A, B, C})
+    assert merged.covered == frozenset({A, B})
+    assert not merged.covers_all
+
+
+def test_merged_coverage_covers_all_when_any_measure_does() -> None:
+    merged = merged_coverage(
+        [_coverage({A, B}, set()), _coverage({A, B}, set(), covers_all=True)],
+        frozenset({A, B}),
+    )
+
+    assert merged.covers_all
+    assert merged.is_satisfied
+
+
+def test_merged_coverage_of_no_measure_holds_nothing() -> None:
+    merged = merged_coverage([], frozenset({A}))
+
+    assert merged == _coverage({A}, set())
 
 
 # --- the status rule ----------------------------------------------------------

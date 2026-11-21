@@ -39,8 +39,8 @@ nothing to add or compare, and the planner's held-out guard
 (:func:`~.heldout.held_out_fit_problem`) is what stops a fit from covering it.
 
 The module imports nothing from ``behavior`` or ``tracking``. An evaluation's
-report is read through :func:`~mosaic.core.pipeline.inventory.read_run_report`
-and :class:`~mosaic.core.evaluation.EvaluationReport`.
+report is read through :func:`~.inventory.params.read_linked_run_report` and
+:class:`~mosaic.core.evaluation.EvaluationReport`.
 """
 
 from __future__ import annotations
@@ -96,6 +96,7 @@ __all__ = [
     "ScoreResult",
     "md5_of_file",
     "pooled_group_scores",
+    "run_group_scores",
     "score_heldout",
 ]
 
@@ -737,15 +738,14 @@ def _finite(value: float) -> float | None:
 def _read_report(ds: Dataset, storage: str, run_id: str) -> EvaluationReport | None:
     from mosaic.core.evaluation import EvaluationReport
 
-    from ..index import feature_run_root
-    from ..inventory import read_run_report
+    from ..inventory.params import read_linked_run_report
     from .resolve import feature_class_for_slug
 
     named: object = getattr(
         feature_class_for_slug(_EVALUATE), "report_file", _DEFAULT_REPORT_FILE
     )
     name = named if isinstance(named, str) else _DEFAULT_REPORT_FILE
-    raw = read_run_report(feature_run_root(ds, storage, run_id), name)
+    raw = read_linked_run_report(ds, storage, run_id, name)
     return None if raw is None else EvaluationReport.model_validate(raw)
 
 
@@ -789,18 +789,16 @@ def pooled_group_scores(
     return scores
 
 
-def _group_scores(
+def run_group_scores(
     ds: Dataset, storage: str, run_id: str, report: EvaluationReport
 ) -> dict[str, GroupScore]:
     """The scores of each group of a finished evaluation run."""
     import pandas as pd
 
-    from ..index import feature_index, feature_index_path
+    from ..index import feature_run_rows
 
     try:
-        indexed = feature_index(feature_index_path(ds, storage)).read(
-            run_id=run_id, filter_ext=".parquet"
-        )
+        indexed = feature_run_rows(ds, storage, run_id, filter_ext=".parquet")
     except FileNotFoundError:
         return {}
     tables: dict[str, list[pd.DataFrame]] = {}
@@ -1219,7 +1217,7 @@ def score_heldout(
             identifier,
             planned.run_id or "",
             report,
-            _group_scores(ds, planned.storage_name, planned.run_id or "", report),
+            run_group_scores(ds, planned.storage_name, planned.run_id or "", report),
         )
     models = [
         _model(name, [by_answer[step] for step in steps if step in by_answer])

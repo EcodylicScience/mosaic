@@ -88,7 +88,7 @@ from ..inventory.model import (
     TrainedModelRef,
     reclassify,
 )
-from ..index import feature_run_root
+from ..index import feature_run_roots
 from ..inventory.scan import (
     inventory as scan_inventory,
     reportable_universe,
@@ -1499,7 +1499,7 @@ def _bind_problems(
             )
             found.append(Problem(step_id, where, message))
             continue
-        if not feature_run_root(ds, bound.feature, bound.run_id).is_dir():
+        if not feature_run_roots(ds, bound.feature, bound.run_id):
             message = (
                 f"binds this step to run {bound.run_id!r} of {bound.feature!r}, "
                 f"which this dataset does not hold"

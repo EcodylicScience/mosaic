@@ -88,6 +88,7 @@ __all__ = [
     "pool_entry_counts",
     "pool_reports",
     "select_scored_rows",
+    "tracks_variant_read",
 ]
 
 type Perspective = int | Literal["pooled", "mean_probabilities"] | None
@@ -1400,7 +1401,7 @@ def align_predictions_to_labels(
         else LabelsSource(kind=label_kind)
     )
     if tracks_run_id is None:
-        tracks_run_id = _tracks_variant_read(ds, prediction)
+        tracks_run_id = tracks_variant_read(ds, prediction)
     values = load_values(
         ds,
         [prediction, labels],
@@ -1432,7 +1433,7 @@ def align_predictions_to_labels(
     )
 
 
-def _tracks_variant_read(ds: Dataset, prediction: ResultColumn) -> str | None:
+def tracks_variant_read(ds: Dataset, prediction: ResultColumn) -> str | None:
     """The one tracks variant *prediction*'s run read, or ``None``.
 
     Reading a run's rows builds a manifest, which resolves each entry to one
@@ -1441,11 +1442,16 @@ def _tracks_variant_read(ds: Dataset, prediction: ResultColumn) -> str | None:
     when it ran. ``None`` when the run is unpinned, its lineage is unknown, or it
     names no variant or several.
     """
-    from .pipeline.inventory.params import run_tracks_variants
+    from .pipeline.inventory.params import linked_run_params, run_tracks_variants
 
     if prediction.run_id is None:
         return None
-    variants = run_tracks_variants(ds, prediction.feature, prediction.run_id)
+    variants = run_tracks_variants(
+        ds,
+        prediction.feature,
+        prediction.run_id,
+        read_params=linked_run_params(ds),
+    )
     if variants is None or len(variants) != 1:
         return None
     return next(iter(variants))

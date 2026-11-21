@@ -63,6 +63,7 @@ __all__ = [
     "derive_fit_scope",
     "fit_and_apply_scopes",
     "read_fit_scope",
+    "read_run_fit_scope",
     "write_fit_scope",
 ]
 
@@ -211,8 +212,6 @@ def _pinned_artifacts(
     The record is ``None`` for a run that has none. The artifact is ``known``
     only when its record holds entries and both variant sets.
     """
-    from .index import feature_run_root
-
     pinned: list[tuple[FitSourceRef, FitScope | None]] = []
     for resolution in resolutions:
         field = resolution.where.removeprefix("params.")
@@ -222,9 +221,7 @@ def _pinned_artifacts(
             continue
         if not isinstance(getattr(feature.params, field, None), ArtifactSpec):
             continue
-        upstream = read_fit_scope(
-            feature_run_root(ds, resolution.feature, resolution.run_id)
-        )
+        upstream = read_run_fit_scope(ds, resolution.feature, resolution.run_id)
         known = (
             upstream is not None
             and upstream.entries is not None
@@ -332,6 +329,24 @@ def _entry(value: object) -> tuple[str, str] | None:
     return (str(pair[0]), str(pair[1]))
 
 
+def read_run_fit_scope(ds: Dataset, storage: str, run_id: str) -> FitScope | None:
+    """The fit record of a run in the first dataset of the lookup that holds one.
+
+    Args:
+        ds: The dataset reading, whose ``features`` lookup order decides.
+        storage: The run's feature storage directory.
+        run_id: The run.
+
+    Returns:
+        What :func:`read_fit_scope` returns for that run root, and ``None`` when
+        no dataset holds a fit record of the run.
+    """
+    from .index import feature_run_file
+
+    path = feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME)
+    return None if path is None else read_fit_scope(path.parent)
+
+
 def read_fit_scope(run_root: Path) -> FitScope | None:
     """The fit record in *run_root*, or ``None`` when there is none.
 
@@ -416,16 +431,15 @@ def fit_and_apply_scopes(
     the record that a sequence was applied. A row is fit-and-apply exactly when
     its entry appears in both.
     """
-    from .index import feature_index, feature_index_path, feature_run_root
+    from .index import feature_run_rows, has_feature_index
 
-    fitted = read_fit_scope(feature_run_root(ds, feature_name, run_id))
+    fitted = read_run_fit_scope(ds, feature_name, run_id)
     fit = (
         None if fitted is None or fitted.entries is None else frozenset(fitted.entries)
     )
-    index = feature_index(feature_index_path(ds, feature_name))
-    if not index.path.exists():
+    if not has_feature_index(ds, feature_name):
         return fit, frozenset()
-    rows = index.read(run_id=run_id)
+    rows = feature_run_rows(ds, feature_name, run_id)
     applied = frozenset(
         (str(row["group"]), str(row["sequence"])) for _, row in rows.iterrows()
     )

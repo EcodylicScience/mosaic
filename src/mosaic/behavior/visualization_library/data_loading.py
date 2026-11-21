@@ -8,15 +8,23 @@ This module contains functions for loading tracks and labels:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
+from mosaic.core.pipeline.index import (
+    feature_index_path,
+    feature_rows,
+    has_feature_index,
+    latest_feature_run_root,
+)
 from mosaic.core.pipeline.iteration import yield_sequences
 from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.scope import Scope
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 
 def _pick_label_column(df: pd.DataFrame) -> Optional[str]:
@@ -60,7 +68,7 @@ def _normalize_identity_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_tracks_and_labels(
-    ds,
+    ds: Dataset,
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],
@@ -126,19 +134,12 @@ def load_tracks_and_labels(
         if not resolved_run_id:
             resolved_run_id, _ = latest_feature_run_root(ds, feature_name)
 
-        idx_path = feature_index_path(ds, feature_name)
-        if not idx_path.exists():
+        if not has_feature_index(ds, feature_name):
             raise FileNotFoundError(
-                f"Missing feature index for '{feature_name}': {idx_path}"
+                f"Missing feature index for '{feature_name}': "
+                f"{feature_index_path(ds, feature_name)}"
             )
-        df_idx = pd.read_csv(idx_path)
-
-        # Normalize NaNs/None to empty strings so blank/absent groups still match
-        for col in ("sequence", "group"):
-            if col in df_idx.columns:
-                df_idx[col] = df_idx[col].fillna("").astype(str)
-
-        df_idx = df_idx[df_idx["run_id"].astype(str) == str(resolved_run_id)]
+        df_idx = feature_rows(ds, feature_name, run_id=str(resolved_run_id))
         df_idx = df_idx[df_idx["sequence"].astype(str) == str(sequence)]
         if "group" in df_idx.columns:
             df_idx = df_idx[df_idx["group"].astype(str) == str(group)]

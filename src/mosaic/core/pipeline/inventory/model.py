@@ -25,6 +25,7 @@ which is the failure mode that makes people mark tasks succeeded by hand.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal, Protocol, overload
@@ -79,6 +80,7 @@ __all__ = [
     "classify",
     "is_artifact_kind",
     "is_artifact_status",
+    "merged_coverage",
     "reclassify",
 ]
 
@@ -130,6 +132,30 @@ class Coverage[KeyT]:
         if not self.target:
             return bool(self.present)
         return not self.missing
+
+
+def merged_coverage[KeyT](
+    coverages: Iterable[Coverage[KeyT]], target: frozenset[KeyT]
+) -> Coverage[KeyT]:
+    """Join measures of one artifact taken in several datasets against *target*.
+
+    A run may be held in part by a dataset and in part by the datasets it links,
+    each measured over its own files.
+
+    Args:
+        coverages: The measure of each dataset's part.
+        target: The reading dataset's target, which the result keeps.
+
+    Returns:
+        A coverage of *target* whose present keys are the union of every
+        measure's, and which covers all when any measure does.
+    """
+    present: set[KeyT] = set()
+    covers_all = False
+    for coverage in coverages:
+        present |= coverage.present
+        covers_all = covers_all or coverage.covers_all
+    return Coverage(target=target, present=frozenset(present), covers_all=covers_all)
 
 
 # --- refs: the per-kind key an artifact is looked up by ----------------------

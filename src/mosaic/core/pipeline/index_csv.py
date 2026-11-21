@@ -124,6 +124,38 @@ def _infer_schema(row_cls: type) -> dict[str, str]:
     return schema
 
 
+def filter_index_rows(
+    df: pd.DataFrame, *, filter_ext: str | None = None, scope: Scope | None = None
+) -> pd.DataFrame:
+    """The rows of an index frame that end in an extension and fall in a scope.
+
+    The one row filter of :meth:`IndexCSV.read` and of the merged feature rows, so
+    a read through a dataset's links selects exactly what a read of one index does.
+
+    Args:
+        df: The rows, with an ``abs_path`` column when *filter_ext* is set and
+            ``group`` and ``sequence`` columns when *scope* selects by them.
+        filter_ext: Keep only rows whose ``abs_path`` ends with this suffix.
+        scope: Which rows to keep, as :meth:`IndexCSV.read` takes it. ``None`` and
+            an unset selector keep every row.
+
+    Returns:
+        The kept rows with a fresh index.
+    """
+    if filter_ext is not None:
+        df = df[df["abs_path"].str.endswith(filter_ext)].reset_index(drop=True)
+    selector = scope if scope is not None else Scope()
+    if selector.groups is not None:
+        df = df[df["group"].isin(set(selector.groups))].reset_index(drop=True)
+    if selector.sequences is not None:
+        df = df[df["sequence"].isin(set(selector.sequences))].reset_index(drop=True)
+    pairs = selector.entry_pairs
+    if pairs is not None:
+        mask = [(row["group"], row["sequence"]) in pairs for _, row in df.iterrows()]
+        df = df[mask].reset_index(drop=True)
+    return df
+
+
 class IndexCSV(Generic[RowT]):
     """Generic CSV index: ensure, append-with-dedup, read.
 
@@ -305,18 +337,7 @@ class IndexCSV(Generic[RowT]):
                 raise FileNotFoundError(msg)
         if filter_ext is not None:
             self._assert_path_index()
-            df = df[df["abs_path"].str.endswith(filter_ext)].reset_index(drop=True)
-        selector = scope if scope is not None else Scope()
-        if selector.groups is not None:
-            df = df[df["group"].isin(set(selector.groups))].reset_index(drop=True)
-        if selector.sequences is not None:
-            df = df[df["sequence"].isin(set(selector.sequences))].reset_index(drop=True)
-        pairs = selector.entry_pairs
-        if pairs is not None:
-            mask = [
-                (row["group"], row["sequence"]) in pairs for _, row in df.iterrows()
-            ]
-            df = df[mask].reset_index(drop=True)
+        df = filter_index_rows(df, filter_ext=filter_ext, scope=scope)
         if not validate_paths:
             return df
         self._assert_path_index()

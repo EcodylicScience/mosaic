@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
 from pathlib import Path
 
@@ -9,6 +10,12 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import DatasetLink
+from mosaic.core.pipeline.index import (
+    FeatureIndexRow,
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+)
 from mosaic.core.pipeline.media_index import (
     frame_from_rows,
     read_media_index,
@@ -24,10 +31,14 @@ __all__ = [
     "CONVERTED_ENTRIES",
     "SOURCE_ENTRIES",
     "SUPERSEDED_RECIPE",
+    "add_feature_run",
     "converted_source",
     "copy_of",
+    "feature_edge",
     "link_forms",
     "raw_source",
+    "tracks_edge",
+    "write_run_params",
 ]
 
 SOURCE_ENTRIES: tuple[tuple[str, str], ...] = (("g", "s1"), ("g", "s2"))
@@ -116,6 +127,67 @@ def converted_source(base: Path) -> Dataset:
     )
     _ = source.convert_all_tracks()
     return source
+
+
+def add_feature_run(
+    dataset: Dataset,
+    storage: str,
+    run_id: str,
+    entries: Collection[tuple[str, str]] = SOURCE_ENTRIES,
+) -> Path:
+    """Record a finished scope-free feature run over *entries* in *dataset*.
+
+    Each entry gets an output file and an index row whose path is relative to
+    the dataset, and the run root holds a ``params.json``. The outputs are not
+    parquet tables.
+
+    Args:
+        dataset: The dataset that holds the run.
+        storage: The feature's storage directory name.
+        run_id: The run's identifier.
+        entries: The ``(group, sequence)`` keys the run covers.
+
+    Returns:
+        The run root.
+    """
+    run_root = feature_run_root(dataset, storage, run_id)
+    run_root.mkdir(parents=True)
+    _ = (run_root / "params.json").write_text("{}", encoding="utf-8")
+    rows: list[FeatureIndexRow] = []
+    for group, sequence in entries:
+        output = run_root / f"{sequence}.parquet"
+        _ = output.write_bytes(sequence.encode())
+        rows.append(
+            FeatureIndexRow(
+                run_id=run_id,
+                feature=storage,
+                version="0.1",
+                group=group,
+                sequence=sequence,
+                abs_path=Path(dataset.relative_to_root(output)),
+                params_hash="hash",
+                n_rows=1,
+            )
+        )
+    index = feature_index(feature_index_path(dataset, storage))
+    index.append(rows)
+    index.mark_finished(run_id)
+    return run_root
+
+
+def write_run_params(run_root: Path, document: dict[str, object]) -> None:
+    """Replace the ``params.json`` of the run at *run_root* with *document*."""
+    _ = (run_root / "params.json").write_text(json.dumps(document), encoding="utf-8")
+
+
+def tracks_edge(variant: str) -> dict[str, object]:
+    """The ``_resolved`` entry of a run that read the tracks *variant*."""
+    return {"where": "inputs[tracks]", "feature": "tracks", "run_id": variant}
+
+
+def feature_edge(position: int, storage: str, run_id: str) -> dict[str, object]:
+    """The ``_resolved`` entry of a run whose input *position* is a feature run."""
+    return {"where": f"inputs[{position}]", "feature": storage, "run_id": run_id}
 
 
 def _add_superseded_derivative(source: Dataset, entry: tuple[str, str]) -> None:

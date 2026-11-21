@@ -26,15 +26,17 @@ from mosaic.core.scope import Scope
 
 from .definitions.scope import definition_scope
 from .storage_names import derive_storage_name
-from .inventory.scan import entry_universe, narrow_target, run_covers
+from .inventory._read import ParquetFooterMemo
+from .inventory.scan import entry_universe, narrow_target, run_coverage
 from .index import (
     drifted_entries,
     feature_index,
     feature_index_path,
     feature_run_root,
+    feature_run_roots,
     list_feature_runs,
 )
-from .inventory.params import read_run_params
+from .inventory.params import read_linked_run_params
 from .resolve import resolve_references
 from .run import resolve_feature_identity
 from .types import Feature, Inputs, Result, TrackLike
@@ -188,7 +190,7 @@ def _drifted(
     dataset: Dataset, storage: str, run_id: str
 ) -> tuple[tuple[str, str], ...]:
     """The entries of a run whose sources moved, over every channel it recorded."""
-    params = read_run_params(feature_run_root(dataset, storage, run_id)).params
+    params = read_linked_run_params(dataset, storage, run_id).params
     return drifted_entries(dataset, storage, run_id, params)
 
 
@@ -236,6 +238,7 @@ class Pipeline:
         self.steps: list[FeatureStep | CallbackStep] = []
         self.results: dict[str, Result] = {}
         self.default_run_kwargs: dict = default_run_kwargs or {}
+        self._footers: ParquetFooterMemo = ParquetFooterMemo()
 
     # -- step registration --------------------------------------------------
 
@@ -434,11 +437,17 @@ class Pipeline:
 
                 # Check the cache on disk. A step is cached only when the run is
                 # complete for its target scope, and a non-empty run is not enough.
-                run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
                 # One measurement serves both the gate and the display. Separate
                 # measurements disagree on a torn file: the display counts a parquet
-                # that the gate rejects as unreadable.
-                coverage = run_covers(run_root, target)
+                # that the gate rejects as unreadable. The run's roots in *dataset*
+                # and in the datasets it links are measured together.
+                coverage = run_coverage(
+                    dataset,
+                    feat_storage_name,
+                    expected_run_id,
+                    target,
+                    footers=self._footers,
+                )
                 cached = coverage.is_satisfied
                 n_present = len(coverage.present if not target else coverage.covered)
                 n_target = len(target)
@@ -520,20 +529,25 @@ class Pipeline:
             # (upstream invalidated) / False (nothing on disk).
             cached_display = info["cached"]
             if not info["cached"] and info["expected_run_id"]:
-                run_root = feature_run_root(
+                run_roots = feature_run_roots(
                     dataset, info["storage_name"], info["expected_run_id"]
                 )
-                if run_root.exists() and any(run_root.glob("*.parquet")):
+                if any(any(root.glob("*.parquet")) for root in run_roots):
                     cached_display = "stale" if info["stale"] else "partial"
 
             # Modification timestamp (show even for stale runs if files exist)
             modified = None
             if info["expected_run_id"]:
-                rr = feature_run_root(
-                    dataset, info["storage_name"], info["expected_run_id"]
+                modified = max(
+                    (
+                        newest
+                        for root in feature_run_roots(
+                            dataset, info["storage_name"], info["expected_run_id"]
+                        )
+                        if (newest := _newest_mtime(root)) is not None
+                    ),
+                    default=None,
                 )
-                if rr.exists():
-                    modified = _newest_mtime(rr)
 
             # Drift is a column beside `cached`. `cached` says whether the
             # output is on disk and complete, and drift says how many of its

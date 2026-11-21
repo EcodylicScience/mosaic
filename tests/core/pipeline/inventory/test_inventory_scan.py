@@ -16,6 +16,7 @@ import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.graph import Recipe, run_pipeline
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import (
@@ -32,6 +33,7 @@ from mosaic.core.pipeline.inventory.scan import (
     entry_universe,
     narrow_target,
     reportable_universe,
+    run_coverage,
     run_covers,
 )
 from mosaic.core.scope import Scope
@@ -858,3 +860,64 @@ def test_a_report_over_a_copy_with_two_recipes_for_an_entry_names_the_linked_ent
     with pytest.raises(ValueError):
         _ = entry_universe(copy)
     assert reportable_universe(copy) == frozenset(CONVERTED_ENTRIES)
+
+
+LINKED_RUN = "0.1-aaaaaaaaaa"
+
+
+def _write_outputs(ds: Dataset, entries: tuple[tuple[str, str], ...]) -> list[Path]:
+    """Write a readable output of each of *entries* into *ds*'s run of the storage."""
+    run_root = feature_run_root(ds, STORAGE, LINKED_RUN)
+    run_root.mkdir(parents=True, exist_ok=True)
+    outputs = [run_root / f"{make_entry_key(*entry)}.parquet" for entry in entries]
+    for output in outputs:
+        pd.DataFrame({"a": [1]}).to_parquet(output, index=False)
+    return outputs
+
+
+def test_a_copy_covers_its_target_from_the_sources_run_root(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    _ = _write_outputs(source, CONVERTED_ENTRIES)
+    copy = copy_of(source, tmp_path / "copy")
+    target = entry_universe(copy)
+
+    coverage = run_coverage(copy, STORAGE, LINKED_RUN, target)
+
+    assert coverage.target == target
+    assert coverage.covered == frozenset(CONVERTED_ENTRIES)
+
+
+def test_a_copy_covers_its_target_from_its_own_root_and_the_sources(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    _ = _write_outputs(source, CONVERTED_ENTRIES[1:])
+    copy = copy_of(source, tmp_path / "copy")
+    _ = _write_outputs(copy, CONVERTED_ENTRIES[:1])
+    target = entry_universe(copy)
+
+    assert not run_covers(
+        feature_run_root(copy, STORAGE, LINKED_RUN), target
+    ).is_satisfied
+    coverage = run_coverage(copy, STORAGE, LINKED_RUN, target)
+
+    assert coverage.is_satisfied
+    assert coverage.covered == frozenset(CONVERTED_ENTRIES)
+
+
+def test_a_footer_memo_reads_each_linked_footer_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = converted_source(tmp_path / "source")
+    linked = _write_outputs(source, CONVERTED_ENTRIES[1:])
+    copy = copy_of(source, tmp_path / "copy")
+    own = _write_outputs(copy, CONVERTED_ENTRIES[:1])
+    target = entry_universe(copy)
+    read = _count_footer_reads(monkeypatch)
+    footers = ParquetFooterMemo()
+
+    first = run_coverage(copy, STORAGE, LINKED_RUN, target, footers=footers)
+    again = run_coverage(copy, STORAGE, LINKED_RUN, target, footers=footers)
+
+    assert first == again
+    assert sorted(read) == sorted([*own, *linked])

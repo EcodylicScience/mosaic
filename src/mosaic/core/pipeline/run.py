@@ -83,7 +83,13 @@ from .index import (
     RecordedTracksReads,
     feature_index,
     feature_index_path,
+    feature_rows,
+    feature_run_file,
     feature_run_root,
+    feature_run_roots,
+    feature_run_rows,
+    has_feature_index,
+    latest_feature_run_root,
     missing_outputs_error,
     recorded_consumption,
     recorded_tracks_reads,
@@ -99,7 +105,13 @@ from .input_size import (
     step_tracks_variants,
     tracks_covariates,
 )
-from .inventory.params import RunParams, TracksVariantWalk, read_run_params
+from .inventory.params import (
+    RunParams,
+    TracksVariantWalk,
+    linked_run_params,
+    read_linked_run_params,
+    read_run_params,
+)
 from .loading import (
     CROSS_JOIN_FEATURES,
     PairRowsMissing,
@@ -222,15 +234,11 @@ def _build_result_lookup(
     ``optional_results``. Any other reference is pinned before the identifier is
     computed, so the fallback never reads a run the identifier does not name.
     """
-    index_path = feature_index_path(ds, feature_name)
-    if not index_path.exists():
+    if not has_feature_index(ds, feature_name):
         raise unrun_feature_input(ds, feature_name)
-    dep_index = feature_index(index_path)
     if run_id is None:
-        run_id = dep_index.latest_run_id()
-    index_df = dep_index.read(
-        run_id=run_id, filter_ext=".parquet", validate_paths=False
-    )
+        run_id, _ = latest_feature_run_root(ds, feature_name)
+    index_df = feature_run_rows(ds, feature_name, run_id, filter_ext=".parquet")
     lookup: DependencyLookup = {}
     missing: list[Path] = []
     for _, row in index_df.iterrows():
@@ -320,13 +328,16 @@ def _resolve_dependencies(
                     # computed, so this fires only for a caller that skipped
                     # that pass. See _build_result_lookup for why it survives.
                     _run_id, dep_root = _latest_feature_run_root(ds, feature_name)
+                    dep_roots = (dep_root,)
                 else:
-                    dep_root = feature_run_root(ds, feature_name, _run_id)
-                resolved_file = resolve_artifact_file(
-                    field_name, feature_name, dep_root, pattern
-                )
-                if resolved_file is not None:
-                    artifact_paths[field_name] = resolved_file
+                    dep_roots = feature_run_roots(ds, feature_name, _run_id)
+                for dep_root in dep_roots:
+                    resolved_file = resolve_artifact_file(
+                        field_name, feature_name, dep_root, pattern
+                    )
+                    if resolved_file is not None:
+                        artifact_paths[field_name] = resolved_file
+                        break
 
             case Result(feature=str(feature_name), run_id=_run_id):
                 if not feature_name:
@@ -848,13 +859,13 @@ def _refuse_inputs_without_columns(ds: Dataset, feature: Feature) -> None:
 
     for result in feature.inputs.feature_inputs:
         producer = feature_slug_of(result.feature)
-        cls = feature_class_for_slug(_producer_version(ds, result, producer))
+        cls = feature_class_for_slug(producer_version(ds, result, producer))
         provides = None if cls is None else declared_provides(cls)
         if provides is not None and provides.is_empty:
             raise InputWritesNoColumns(feature.name, result.feature, producer)
 
 
-def _producer_version(ds: Dataset, result: Result[str], producer: str) -> str:
+def producer_version(ds: Dataset, result: Result[str], producer: str) -> str:
     """The slug of the version of *producer* that wrote the run *result* pins.
 
     A definition's run records its version, and every other run is named by
@@ -862,7 +873,7 @@ def _producer_version(ds: Dataset, result: Result[str], producer: str) -> str:
     """
     if result.run_id is None or not is_definition_slug(producer):
         return producer
-    params = read_run_params(feature_run_root(ds, result.feature, result.run_id))
+    params = read_linked_run_params(ds, result.feature, result.run_id)
     recorded = None if params.params is None else params.params.definition
     return producer if recorded is None else recorded.slug
 
@@ -1081,7 +1092,7 @@ def _upstreams_over_variants(
         ds: The dataset holding the upstream runs.
         feature_inputs: The ``(storage, run_id)`` of each feature input.
     """
-    walk = TracksVariantWalk(ds)
+    walk = TracksVariantWalk(ds, read_params=linked_run_params(ds))
     return tuple(
         (storage, run_id)
         for storage, run_id in dict.fromkeys(feature_inputs)
@@ -1610,6 +1621,85 @@ def build_run_params_payload(
     return payload
 
 
+def _prior_run_params(ds: Dataset, storage: str, run_id: str) -> RunParams | None:
+    """The recorded ``params.json`` of a run, read from the first root that holds one.
+
+    A copy's first invocation of a run that a linked dataset holds reads the
+    linked document, so the asked scope it records keeps the linked run's.
+
+    Returns:
+        The document, or ``None`` when no root holds a readable one.
+    """
+    path = feature_run_file(ds, storage, run_id, "params.json")
+    return None if path is None else read_run_params(path.parent).params
+
+
+def _load_run_state(
+    feature: Feature,
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    artifact_paths: dict[str, Path],
+    dependency_lookups: dict[str, DependencyLookup],
+) -> Path | None:
+    """Load a run's fit state from the first of its roots that holds one.
+
+    Each root of :func:`~mosaic.core.pipeline.index.feature_run_roots` is offered
+    to ``feature.load_state`` in lookup order, the dataset's own first.
+
+    Returns:
+        The root whose load returned ``True``, or ``None`` when none did.
+    """
+    for root in feature_run_roots(ds, storage, run_id):
+        if feature.load_state(root, artifact_paths, dependency_lookups):
+            return root
+    return None
+
+
+def _serve_linked_entries(
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    missing: Mapping[str, Entry],
+    serves: Callable[[FeatureMeta, Path], bool],
+) -> set[str]:
+    """The entries of *missing* that a linked dataset's row of the same run serves.
+
+    A linked row serves its entry when its file exists and *serves* accepts it,
+    the checks an own cached output passes. Nothing is written.
+
+    Args:
+        ds: The reading dataset.
+        storage: The feature's storage directory name.
+        run_id: The run whose linked rows are read.
+        missing: The entries the own run root lacks an output of, by entry key.
+        serves: Whether a cached output, given as its feature meta and the run
+            root that holds it, may be served.
+
+    Returns:
+        The entry keys served.
+    """
+    if len(ds.lookup_order("features")) < 2:
+        return set()
+    rows = feature_rows(ds, storage, run_id=run_id)
+    linked = rows[rows["link_id"] != ""]
+    outputs = {
+        (str(group), str(sequence)): ds.resolve_path(str(cell))
+        for group, sequence, cell in zip(
+            linked["group"], linked["sequence"], linked["abs_path"], strict=True
+        )
+    }
+    served: set[str] = set()
+    for entry_key, entry in missing.items():
+        output = outputs.get(entry)
+        if output is None or not output.is_file():
+            continue
+        meta = FeatureMeta(group=entry[0], sequence=entry[1], out_path=output)
+        if serves(meta, output.parent):
+            served.add(entry_key)
+    return served
+
+
 def _asked_by_now(
     previous: RunParams | None,
     feature: Feature,
@@ -1901,6 +1991,25 @@ class _PhaseOutcome:
     computed: int
 
 
+@dataclass(frozen=True, slots=True)
+class _CachedOutput:
+    """The cells a cached output carries forward when the run serves it.
+
+    Attributes:
+        n_rows: The output's row count, read from its footer.
+        composition: The declared-root composition its row recorded.
+        tracks_composition: The tracks composition its row recorded.
+        input_composition: The upstream roots' composition its row recorded.
+        neighbors: The neighbors its row recorded.
+    """
+
+    n_rows: int
+    composition: str
+    tracks_composition: str
+    input_composition: str
+    neighbors: str
+
+
 @dataclass
 class _RunCost:
     """What a feature run has measured of its fit and its entries, beside the watch.
@@ -1966,7 +2075,7 @@ def _report_worker_base(
     cost: _RunCost,
     feature: Feature,
     *,
-    run_root: Path,
+    state_root: Path,
     artifact_paths: Mapping[str, Path],
     dependency_lookups: dict[str, DependencyLookup],
     manifest_path: Path,
@@ -1975,10 +2084,11 @@ def _report_worker_base(
     """Measure one process worker's own memory, and report it beside the frozen figures.
 
     One worker is spawned as process mode spawns them, and runs
-    :func:`process_worker_base`. Its CPU, time and memory enter no other figure,
-    because the report repeats the last one written. Nothing is spawned when the
-    limit has less available than the run's own base, which a worker at least
-    matches, and a worker that fails to start reports nothing.
+    :func:`process_worker_base`, which loads the feature's state from *state_root*, the
+    run root the run loaded it from. Its CPU, time and memory enter no other figure,
+    because the report repeats the last one written. Nothing is spawned when the limit
+    has less available than the run's own base, which a worker at least matches, and a
+    worker that fails to start reports nothing.
     """
     frozen = cost.last_report
     limit = watch.limit
@@ -1994,7 +2104,7 @@ def _report_worker_base(
                 type(feature).__name__,
                 feature.inputs.model_dump(),
                 feature.params.model_dump(),
-                str(run_root),
+                str(state_root),
                 {k: str(v) for k, v in artifact_paths.items()},
                 dependency_lookups,
                 str(manifest_path),
@@ -2457,7 +2567,7 @@ def _run_feature_impl(
         # is created below in any case.
         with index_lock(feature_index_path(ds, storage_feature_name)):
             asked, asked_all = _asked_by_now(
-                read_run_params(run_root).params,
+                _prior_run_params(ds, storage_feature_name, run_id),
                 feature,
                 resolved,
                 asks_every_entry=(
@@ -2544,8 +2654,12 @@ def _run_feature_impl(
     # Resolve pair filter
     pair_filter_spec = _resolve_pair_filter(feature.params)
 
-    # Load state
-    state_ready = feature.load_state(run_root, artifact_paths, dependency_lookups)
+    # Load state, from the own run root or a linked one. The root that loaded is
+    # the one each process worker loads again.
+    state_root = _load_run_state(
+        feature, ds, storage_feature_name, run_id, artifact_paths, dependency_lookups
+    )
+    state_ready = state_root is not None
 
     # Build filter factory (shared by fit and apply phases)
     filter_factory = _make_filter_factory(
@@ -2736,9 +2850,15 @@ def _run_feature_impl(
             with held_run_root(
                 ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
             ) as marker:
-                state_ready = feature.load_state(
-                    run_root, artifact_paths, dependency_lookups
+                state_root = _load_run_state(
+                    feature,
+                    ds,
+                    storage_feature_name,
+                    run_id,
+                    artifact_paths,
+                    dependency_lookups,
                 )
+                state_ready = state_root is not None
                 if not state_ready:
                     ctx.phase("fit", f"{len(manifest)} entries")
                     # The stream the fit is offered. A fitter that fits from pinned
@@ -2765,6 +2885,7 @@ def _run_feature_impl(
                         cost.end_fit(watch, time.monotonic() - fit_started)
                     _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
                     feature.save_state(run_root)
+                    state_root = run_root
                     # Written here rather than beside params.json because only this
                     # branch means a fit actually ran: params.json is written on every
                     # invocation, before load_state, so its `_scope` is the scope of
@@ -2781,6 +2902,8 @@ def _run_feature_impl(
                     fitted = True
             if fitted:
                 ctx.phase("apply")
+        # The run root a process worker loads the feature's state from.
+        worker_state_root = run_root if state_root is None else state_root
 
         # The run's own memory before the first entry loads: the interpreter, the
         # imports and the feature's state.
@@ -2795,6 +2918,8 @@ def _run_feature_impl(
 
         # Apply phase — index rows are flushed periodically for interrupt recovery
         _pending_idx_rows: list[FeatureIndexRow] = []
+        # Entries served from a linked dataset's output, which no own file holds.
+        served_linked: set[Entry] = set()
         _total_written = 0
         index_pacer = Pacer(
             interval=IDX_FLUSH_SECONDS, cost_factor=IDX_FLUSH_COST_FACTOR
@@ -2824,13 +2949,23 @@ def _run_feature_impl(
             # every worker.
             worker_growth: dict[str, int | None] = {}
 
+            def _report_done(key: str, measure: EntryMeasure | None) -> None:
+                """Report *key* done and refresh the liveness heartbeat."""
+                done = _total_written + len(_pending_idx_rows)
+                ctx.entry_ended(done, ctx.total, key, measure)
+                ctx.heartbeat(done)
+
+            def _record_served(entry: Entry) -> None:
+                """Count *entry* done, served by a linked output that writes no row."""
+                nonlocal _total_written
+                _total_written += 1
+                _report_done(make_entry_key(*entry), None)
+
             def _record_row(row: FeatureIndexRow) -> None:
                 _pending_idx_rows.append(row)
-                # Single per-entry choke point (fires on cache-hit, inline, and
-                # parallel-drain paths): report progress + refresh the liveness heartbeat.
-                # A computed entry leaves the in-flight record here with its cost. A cache
-                # hit was never in it and carries no cost.
-                done = _total_written + len(_pending_idx_rows)
+                # Per-entry choke point of the own rows (fires on cache-hit, inline, and
+                # parallel-drain paths). A computed entry leaves the in-flight record
+                # here with its cost. A cache hit was never in it and carries no cost.
                 key = make_entry_key(row.group, row.sequence)
                 span = state.in_flight.leave(key, written=True)
                 measure: EntryMeasure | None = None
@@ -2862,8 +2997,7 @@ def _run_feature_impl(
                         keypoints=covariates.keypoints,
                         fps=covariates.fps,
                     )
-                ctx.entry_ended(done, ctx.total, key, measure)
-                ctx.heartbeat(done)
+                _report_done(key, measure)
                 if index_pacer.due():
                     _flush_idx()
 
@@ -2966,97 +3100,117 @@ def _run_feature_impl(
             blind_arena_rows = (
                 indexed_arena_rows(ds) if relates == "arena-blind" else None
             )
+
+            def _servable(meta: FeatureMeta, root: Path) -> _CachedOutput | None:
+                """The cells a cached output under *root* carries, if it may be served.
+
+                ``None`` when the output fails ``check_output``, its footer cannot be
+                read, or a channel's disposition is to recompute. A served entry's
+                blind channels are noted.
+                """
+                group, sequence = meta.group, meta.sequence
+                if check_output:
+                    # A buggy/edge-case validator must not abort the whole run; treat
+                    # any failure as "invalid output" so the entry is recomputed.
+                    try:
+                        ok = (
+                            custom_check(meta, root)
+                            if custom_check is not None
+                            else default_check_output(meta, root)
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[feature:{feature.name}] check_output raised for "
+                            f"({group},{sequence}): {exc}; recomputing.",
+                            file=sys.stderr,
+                        )
+                        ok = False
+                    if not ok:
+                        return None  # corrupt/incomplete -> fall through to recompute
+                # Reading the footer can fail on a truncated/half-written parquet
+                # (e.g. an OOM-killed prior run). Recompute rather than crash.
+                try:
+                    n_rows = output_n_rows(meta.out_path)
+                except Exception as exc:
+                    print(
+                        f"[feature:{feature.name}] unreadable cached output for "
+                        f"({group},{sequence}): {exc}; recomputing.",
+                        file=sys.stderr,
+                    )
+                    return None
+                entry = (group, sequence)
+                recorded = prior_compositions.get(entry)
+                was_made_from = recorded if recorded is not None else ""
+                now_made_of = entry_composition(feature, resolved, entry)
+                recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
+                tracks_was = recorded_reads.composition
+                tracks_now = tracks_now_by_entry.get(entry, "")
+                neighbors_was = recorded_reads.neighbors
+                neighbors_now = neighbors_now_by_entry.get(entry, "")
+                inputs_was = recorded_reads.inputs
+                inputs_now = inputs_now_by_entry.get(entry, "")
+                disposition = cached_entry_disposition(was_made_from, now_made_of)
+                tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
+                refusal: str | None = None
+                if disposition == "recompute":
+                    refusal = _disposition_reason(was_made_from, now_made_of)
+                elif tracks_disposition == "recompute":
+                    refusal = _disposition_reason(tracks_was, tracks_now)
+                elif cached_entry_disposition(inputs_was, inputs_now) == "recompute":
+                    refusal = _disposition_reason(
+                        inputs_was, inputs_now, moved="its upstream's source moved"
+                    )
+                elif (
+                    cached_entry_disposition(neighbors_was, neighbors_now)
+                    == "recompute"
+                ):
+                    refusal = _neighbors_reason(neighbors_was)
+                if refusal is None and blind_arena_rows is not None:
+                    arena_count = entry_arena_count(
+                        ds, group, sequence, blind_arena_rows
+                    )
+                    if arena_count >= 2:
+                        refusal = (
+                            f"its recording has a layout of {arena_count} arenas, "
+                            "and only its input shows whether it spans them"
+                        )
+                if refusal is not None:
+                    # Serving this would be the wrong answer this milestone exists to
+                    # prevent, and recording it would restamp the only cell that says
+                    # so. Costly, loud, and never destructive.
+                    print(
+                        f"[feature:{feature.name}] cannot serve cached output for "
+                        f"({group},{sequence}): {refusal}; recomputing.",
+                        file=sys.stderr,
+                    )
+                    return None
+                if blind_capable and disposition == "undetectable":
+                    roots_blind.add(entry)
+                if tracks_disposition == "undetectable" and (
+                    resolved.tracks_variants or upstreams_over_variants
+                ):
+                    tracks_blind.add(entry)
+                return _CachedOutput(
+                    n_rows=n_rows,
+                    composition=was_made_from,
+                    tracks_composition=tracks_was,
+                    input_composition=inputs_was,
+                    neighbors=neighbors_was,
+                )
+
             if state_ready and not overwrite:
+                # Entries the own run root holds no output of, which a linked
+                # dataset's row of the same run may serve.
+                missing: dict[str, Entry] = {}
                 for entry_key in entries:
                     group, sequence = resolve_sequence_identity(entry_key, entry_map)
                     meta = build_feature_meta(group, sequence, run_root)
                     if not meta.out_path.exists():
+                        missing[entry_key] = (group, sequence)
                         continue
-                    if check_output:
-                        # A buggy/edge-case validator must not abort the whole run; treat
-                        # any failure as "invalid output" so the entry is recomputed.
-                        try:
-                            ok = (
-                                custom_check(meta, run_root)
-                                if custom_check is not None
-                                else default_check_output(meta, run_root)
-                            )
-                        except Exception as exc:
-                            print(
-                                f"[feature:{feature.name}] check_output raised for "
-                                f"({group},{sequence}): {exc}; recomputing.",
-                                file=sys.stderr,
-                            )
-                            ok = False
-                        if not ok:
-                            continue  # corrupt/incomplete -> fall through to recompute
-                    # Reading the footer can fail on a truncated/half-written parquet
-                    # (e.g. an OOM-killed prior run). Recompute rather than crash.
-                    try:
-                        n_rows = output_n_rows(meta.out_path)
-                    except Exception as exc:
-                        print(
-                            f"[feature:{feature.name}] unreadable cached output for "
-                            f"({group},{sequence}): {exc}; recomputing.",
-                            file=sys.stderr,
-                        )
+                    cached = _servable(meta, run_root)
+                    if cached is None:
                         continue
-                    entry = (meta.group, meta.sequence)
-                    recorded = prior_compositions.get(entry)
-                    was_made_from = recorded if recorded is not None else ""
-                    now_made_of = entry_composition(feature, resolved, entry)
-                    recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
-                    tracks_was = recorded_reads.composition
-                    tracks_now = tracks_now_by_entry.get(entry, "")
-                    neighbors_was = recorded_reads.neighbors
-                    neighbors_now = neighbors_now_by_entry.get(entry, "")
-                    inputs_was = recorded_reads.inputs
-                    inputs_now = inputs_now_by_entry.get(entry, "")
-                    disposition = cached_entry_disposition(was_made_from, now_made_of)
-                    tracks_disposition = cached_entry_disposition(
-                        tracks_was, tracks_now
-                    )
-                    refusal: str | None = None
-                    if disposition == "recompute":
-                        refusal = _disposition_reason(was_made_from, now_made_of)
-                    elif tracks_disposition == "recompute":
-                        refusal = _disposition_reason(tracks_was, tracks_now)
-                    elif (
-                        cached_entry_disposition(inputs_was, inputs_now) == "recompute"
-                    ):
-                        refusal = _disposition_reason(
-                            inputs_was, inputs_now, moved="its upstream's source moved"
-                        )
-                    elif (
-                        cached_entry_disposition(neighbors_was, neighbors_now)
-                        == "recompute"
-                    ):
-                        refusal = _neighbors_reason(neighbors_was)
-                    if refusal is None and blind_arena_rows is not None:
-                        arena_count = entry_arena_count(
-                            ds, group, sequence, blind_arena_rows
-                        )
-                        if arena_count >= 2:
-                            refusal = (
-                                f"its recording has a layout of {arena_count} arenas, "
-                                "and only its input shows whether it spans them"
-                            )
-                    if refusal is not None:
-                        # Serving this would be the wrong answer this milestone exists to
-                        # prevent, and recording it would restamp the only cell that says
-                        # so. Costly, loud, and never destructive.
-                        print(
-                            f"[feature:{feature.name}] cannot serve cached output for "
-                            f"({group},{sequence}): {refusal}; recomputing.",
-                            file=sys.stderr,
-                        )
-                        continue
-                    if blind_capable and disposition == "undetectable":
-                        roots_blind.add(entry)
-                    if tracks_disposition == "undetectable" and (
-                        resolved.tracks_variants or upstreams_over_variants
-                    ):
-                        tracks_blind.add(entry)
                     _record_row(
                         FeatureIndexRow(
                             run_id=run_id,
@@ -3071,16 +3225,30 @@ def _run_feature_impl(
                             # Carried, never re-derived. An entry with no prior row is an
                             # output nothing describes, so its provenance is unknown and
                             # says so, rather than claiming the present.
-                            consumed_composition=was_made_from,
-                            consumed_tracks_composition=tracks_was,
-                            consumed_input_composition=inputs_was,
-                            consumed_neighbors=neighbors_was,
-                            n_rows=n_rows,
+                            consumed_composition=cached.composition,
+                            consumed_tracks_composition=cached.tracks_composition,
+                            consumed_input_composition=cached.input_composition,
+                            consumed_neighbors=cached.neighbors,
+                            n_rows=cached.n_rows,
                             params_hash=params_hash,
                             identity_scheme=FEATURE_IDENTITY_SCHEME,
                         )
                     )
                     skip_keys.add(entry_key)
+                if missing:
+                    # A linked output is served where it is and writes no own row.
+                    linked = _serve_linked_entries(
+                        ds,
+                        storage_feature_name,
+                        run_id,
+                        missing,
+                        lambda meta, root: _servable(meta, root) is not None,
+                    )
+                    skip_keys |= linked
+                    for key, entry in missing.items():
+                        if key in linked:
+                            served_linked.add(entry)
+                            _record_served(entry)
 
             # No guard beyond emptiness: each set is populated only where its channel
             # exists, so a non-empty one is already the whole condition.
@@ -3467,7 +3635,7 @@ def _run_feature_impl(
                         type(feature).__name__,
                         feature.inputs.model_dump(),
                         feature.params.model_dump(),
-                        str(run_root),
+                        str(worker_state_root),
                         artifact_paths_str,
                         dependency_lookups,
                         df,
@@ -3601,7 +3769,7 @@ def _run_feature_impl(
             watch,
             cost,
             feature,
-            run_root=run_root,
+            state_root=worker_state_root,
             artifact_paths=artifact_paths,
             dependency_lookups=dependency_lookups,
             manifest_path=ds.manifest_path,
@@ -3620,7 +3788,8 @@ def _run_feature_impl(
         resolve_sequence_identity(entry_key, entry_map) for entry_key in manifest
     }
     complete = all(
-        build_output_path(group, sequence, run_root).exists()
+        (group, sequence) in served_linked
+        or build_output_path(group, sequence, run_root).exists()
         for group, sequence in all_entries
     )
     if complete:

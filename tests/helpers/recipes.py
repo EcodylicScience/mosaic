@@ -213,6 +213,23 @@ def classifier_recipe(*classifiers: str) -> Recipe:
     )
 
 
+def scored_classifier_recipe() -> Recipe:
+    """The classifier recipe with an ``evaluate-labels`` step after its classifier.
+
+    The ``score`` step scores the predictions of the ``clf`` classifier of
+    :func:`classifier_recipe` against the labels the recipe converts.
+    """
+    base = classifier_recipe("clf").model_dump(mode="json")
+    evaluation = {
+        "id": "score",
+        "type": "feature",
+        "feature": "evaluate-labels",
+        "inputs": [{"step": "clf"}],
+        "params": {"labels": {"step": "labels"}, "perspective": 0},
+    }
+    return Recipe.model_validate({**base, "steps": [*base["steps"], evaluation]})
+
+
 def run_speed(dataset: Dataset, step_size: int) -> str:
     """Run ``speed-angvel`` at *step_size* outside any request, and return its run id.
 

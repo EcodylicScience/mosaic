@@ -43,13 +43,14 @@ What lives where:
 - ``frame_selections`` writes an entry's ``selection.parquet`` of a select-frames
   run and its index row.
 - ``linked``: a source dataset holding raw rows of every kind, one whose raw
-  tracks are converted, and a copy of either that links it and adopts its raw
-  rows.
+  tracks are converted, a copy of either that links it and adopts its raw
+  rows, and a feature run recorded in a dataset.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
-  roots they consume, for the tests of what a source change reaches, and one
-  that fits, for the tests of the claim a fit holds.
+  roots they consume, for the tests of what a source change reaches, one that
+  fits, for the tests of the claim a fit holds, and one that fits a mean, for
+  the tests of a fit that a linked dataset holds.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP, DeepLabCut, Tracktor and zebrafish 3D workflow exports, a
   synthetic track file and a dataset indexing several of them, a window file, a
@@ -325,6 +326,7 @@ from tests.helpers.recipes import (
     recipe_saved_by_0_17,
     run_id_of,
     run_speed,
+    scored_classifier_recipe,
     speed_heading_recipe,
     speed_recipe,
     speed_recipe_stepping,
@@ -436,10 +438,14 @@ from tests.helpers.linked import (
     CONVERTED_ENTRIES,
     SOURCE_ENTRIES,
     SUPERSEDED_RECIPE,
+    add_feature_run,
     converted_source,
     copy_of,
+    feature_edge,
     link_forms,
     raw_source,
+    tracks_edge,
+    write_run_params,
 )
 from tests.helpers.lightning_action import (
     LA_CLASS_NAMES,
@@ -456,6 +462,7 @@ from tests.helpers.lightning_action import (
     write_templates_study,
 )
 from tests.helpers.stand_in_features import (
+    CenteringFeature,
     CropLike,
     FitControl,
     FittingFeature,
@@ -638,6 +645,7 @@ __all__ = [
     "CI_IDENTITY_MODULES",
     "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
+    "CenteringFeature",
     "CropLike",
     "DIVISION_CREATED_UTC",
     "EVEN_STORE_TIMING",
@@ -737,6 +745,7 @@ __all__ = [
     "MockDataset",
     "PathState",
     "UPDATE_GOLDEN_ENV",
+    "add_feature_run",
     "add_labels",
     "add_predictions",
     "scan_predictions_tables",
@@ -896,6 +905,7 @@ __all__ = [
     "runs_in_an_external_environment",
     "sandbox_home",
     "scope_over",
+    "scored_classifier_recipe",
     "self_referenced_extras",
     "set_tracks_cell",
     "sleap_instance",
@@ -930,8 +940,11 @@ __all__ = [
     "SUPERSEDED_RECIPE",
     "converted_source",
     "copy_of",
+    "feature_edge",
     "link_forms",
     "raw_source",
+    "tracks_edge",
+    "write_run_params",
     "tree_snapshot",
     "ultralytics_probe_response",
     "unpickling_member",

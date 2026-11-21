@@ -38,6 +38,8 @@ LINK_LOOKUPS: Final = frozenset(
         "located_tracks_table",
         "tracks_variant_location",
         "feature_rows",
+        "feature_run_rows",
+        "has_feature_index",
         "feature_run_roots",
         "feature_run_file",
         "readable_feature_storages",

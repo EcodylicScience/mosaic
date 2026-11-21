@@ -24,6 +24,14 @@ from .evaluation import (
     perspective_consistency,
 )
 from .helpers import UNLABELED, make_entry_key, to_safe_name
+from .pipeline.index import (
+    feature_index_path,
+    feature_rows,
+    feature_run_file,
+    feature_run_root,
+    feature_run_roots,
+    has_feature_index,
+)
 from .scope import Scope
 
 
@@ -133,7 +141,7 @@ def compute_cluster_label_agreement(
             DeprecationWarning,
             stacklevel=2,
         )
-    _, resolved_run_id, _ = _load_feature_sequence_index(
+    _, resolved_run_id, _ = load_feature_sequence_index(
         ds, cluster_feature, cluster_run_id
     )
     aligned = align_predictions_to_labels(
@@ -241,17 +249,26 @@ def _entry_fields(group: str, sequence: str) -> dict[str, str]:
     }
 
 
+def _feature_index_rows(ds: Dataset, feature_name: str) -> pd.DataFrame:
+    """The merged rows of *feature_name*'s index.
+
+    Raises:
+        FileNotFoundError: No dataset of the lookup has an index for the feature.
+    """
+    if not has_feature_index(ds, feature_name):
+        raise FileNotFoundError(
+            f"Feature index missing: {feature_index_path(ds, feature_name)}"
+        )
+    return feature_rows(ds, feature_name)
+
+
 def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
     """
-    Inspect features/<feature_name>/index.csv and summarize cached runs (run_id,
-    timestamps, model params). Useful to discover available run_ids before looping
-    over compute_cluster_label_agreement.
+    Inspect the feature's index, in this dataset and in the datasets it links, and
+    summarize cached runs (run_id, timestamps, model params). Useful to discover
+    available run_ids before looping over compute_cluster_label_agreement.
     """
-    root = ds.get_root("features") / feature_name
-    idx_path = root / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError(f"Feature index missing: {idx_path}")
-    df = pd.read_csv(idx_path)
+    df = _feature_index_rows(ds, feature_name)
     if df.empty:
         return pd.DataFrame(
             columns=[
@@ -270,11 +287,12 @@ def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
 
     runs = []
     for run_id, group in df.groupby("run_id"):
-        run_root = root / str(run_id)
         started = _first_value(group.get("started_at"))
         finished = _first_value(group.get("finished_at"))
         params_hash = _first_value(group.get("params_hash"))
-        model_info = _load_model_summary(run_root)
+        model_info = _load_model_summary(
+            feature_run_file(ds, feature_name, str(run_id), "model.joblib")
+        )
         runs.append(
             {
                 "feature": feature_name,
@@ -293,17 +311,33 @@ def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
     return runs_df.reset_index(drop=True)
 
 
-def _load_feature_sequence_index(
+def load_feature_sequence_index(
     ds: Dataset, feature: str, run_id: Optional[str]
 ) -> tuple[Dict[str, SequenceBundle], str, Path]:
-    root = ds.get_root("features") / feature
-    idx_path = root / "index.csv"
-    if not idx_path.exists():
-        raise FileNotFoundError(f"Feature index missing: {idx_path}")
-    df = pd.read_csv(idx_path)
+    """The output file of each sequence of a feature run.
+
+    Reads the feature's index in this dataset and in the datasets it links, so a
+    run that a linked dataset computed resolves to its files.
+
+    Args:
+        ds: The reading dataset.
+        feature: The feature's storage directory name.
+        run_id: The run to read, or ``None`` for the latest.
+
+    Returns:
+        The bundles keyed by safe sequence name, the run's identifier and the
+        first existing run root, or this dataset's own when none exists.
+
+    Raises:
+        FileNotFoundError: No dataset holds the feature.
+    """
+    df = _feature_index_rows(ds, feature)
     resolved_run = _resolve_run_id(df, run_id)
     df = df[df["run_id"].astype(str) == resolved_run]
-    run_root = root / resolved_run
+    run_roots = feature_run_roots(ds, feature, resolved_run)
+    run_root = (
+        run_roots[0] if run_roots else feature_run_root(ds, feature, resolved_run)
+    )
     mapping: Dict[str, SequenceBundle] = {}
     for _, row in df.iterrows():
         abs_raw = str(row.get("abs_path", "")).strip()
@@ -363,15 +397,14 @@ def _strip_confusion(metrics: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _load_model_summary(run_root: Path) -> dict:
-    model_path = run_root / "model.joblib"
+def _load_model_summary(model_path: Path | None) -> dict:
     summary = {
-        "model_path": str(model_path) if model_path.exists() else "",
+        "model_path": "" if model_path is None else str(model_path),
         "k": None,
         "n_clusters": None,
         "params": None,
     }
-    if not model_path.exists():
+    if model_path is None:
         return summary
     try:
         bundle = joblib.load(model_path)
@@ -379,7 +412,6 @@ def _load_model_summary(run_root: Path) -> dict:
         return summary
     params_info = _summarize_model_params(bundle)
     summary.update(params_info)
-    summary["model_path"] = str(model_path)
     return summary
 
 
@@ -401,6 +433,6 @@ def _first_value(series: Optional[pd.Series]) -> Optional[str]:
     if series is None or series.empty:
         return None
     for val in series:
-        if pd.notna(val):
+        if pd.notna(val) and val != "":
             return val
     return None

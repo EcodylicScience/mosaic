@@ -25,7 +25,13 @@ from mosaic.core.pipeline.index import (
 )
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.scope import Scope
-from tests.helpers import add_track_sequences, convert_tracks_from_raw, make_dataset
+from tests.helpers import (
+    add_track_sequences,
+    convert_tracks_from_raw,
+    converted_source,
+    copy_of,
+    make_dataset,
+)
 
 
 def _dataset_with_tracks(tmp_path: Path) -> Dataset:
@@ -57,7 +63,7 @@ def test_pipeline_records_every_step(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _resolve(pipe: Pipeline, ds: Dataset, name: str) -> dict:
+def _resolve(pipe: Pipeline, ds: Dataset, name: str) -> dict[str, object]:
     return next(r for r in pipe._resolve_step_cache(ds) if r["step"].name == name)
 
 
@@ -148,6 +154,42 @@ def test_complete_run_stays_cached_without_run_logs(tmp_path: Path) -> None:
     if run_dir.exists():
         shutil.rmtree(run_dir)
     assert _resolve(pipe, ds, "speed")["cached"] is True
+
+
+def test_a_copy_reads_the_sources_complete_run_as_cached(tmp_path: Path) -> None:
+    source = converted_source(tmp_path / "source")
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {"step_size": 1}))
+    pipe.run(source)
+    copy = copy_of(source, tmp_path / "copy")
+
+    linked = _resolve(pipe, source, "speed")
+    resolved = _resolve(pipe, copy, "speed")
+
+    assert resolved["cached"] is True
+    assert resolved["expected_run_id"] == linked["expected_run_id"]
+
+
+def test_a_copy_holding_one_entry_of_the_run_reads_cached_with_the_sources_rest(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {"step_size": 1}))
+    pipe.run(source)
+    copy = copy_of(source, tmp_path / "copy")
+    info = _resolve(pipe, source, "speed")
+    storage, run_id = str(info["storage_name"]), str(info["expected_run_id"])
+    linked = feature_run_root(source, storage, run_id)
+    own = feature_run_root(copy, storage, run_id)
+    own.mkdir(parents=True)
+    first = sorted(linked.glob("*.parquet"))[0]
+    _ = (own / first.name).write_bytes(first.read_bytes())
+
+    resolved = _resolve(pipe, copy, "speed")
+
+    assert resolved["cached"] is True
+    assert resolved["n_present"] == resolved["n_target"] == 2
 
 
 class _ScopedSpeed(SpeedAngvel):

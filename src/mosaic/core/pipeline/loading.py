@@ -31,9 +31,8 @@ from .column_contract import (
 )
 from .parquet_reader import read_parquet_column_names
 from .index import (
-    feature_index,
-    feature_index_path,
-    feature_run_root,
+    feature_run_roots,
+    feature_run_rows,
     latest_feature_run_root,
     resolve_artifact_file,
 )
@@ -728,14 +727,14 @@ def build_nn_lookup(
     """
 
     feature_name = pair_filter_spec.feature
-    idx = feature_index(feature_index_path(ds, feature_name))
-
     run_id = pair_filter_spec.run_id
     if run_id is None:
-        run_id = idx.latest_run_id()
+        run_id, _ = latest_feature_run_root(ds, feature_name)
 
-    idx_df = idx.read(
-        run_id=run_id,
+    idx_df = feature_run_rows(
+        ds,
+        feature_name,
+        run_id,
         filter_ext=".parquet",
         scope=Scope(entries=[(group, sequence)]),
     )
@@ -926,7 +925,9 @@ def get_feature_run_root(
     if run_id is None:
         run_id, run_root = latest_feature_run_root(ds, feature_name)
     else:
-        run_root = feature_run_root(ds, feature_name, run_id)
+        from .inventory.params import linked_run_root
+
+        run_root = linked_run_root(ds, feature_name, run_id)
     return str(run_id), run_root
 
 
@@ -951,10 +952,18 @@ def load_joblib_artifact(ds: Dataset, artifact: ArtifactSpec) -> object:
             f"load_joblib_artifact requires JoblibLoadSpec, "
             f"got {type(artifact.load).__name__}"
         )
-    _, run_root = get_feature_run_root(ds, artifact.feature, artifact.run_id)
-    resolved = resolve_artifact_file(
-        "artifact", artifact.feature, run_root, artifact.pattern
-    )
-    if resolved is None:
-        raise FileNotFoundError(f"No files matching '{artifact.pattern}' in {run_root}")
+    run_id = artifact.run_id
+    if run_id is None:
+        run_id, _ = latest_feature_run_root(ds, artifact.feature)
+    for root in feature_run_roots(ds, artifact.feature, run_id):
+        resolved = resolve_artifact_file(
+            "artifact", artifact.feature, root, artifact.pattern
+        )
+        if resolved is not None:
+            break
+    else:
+        raise FileNotFoundError(
+            f"No files matching '{artifact.pattern}' in the run roots of "
+            f"{artifact.feature!r} run {run_id!r}"
+        )
     return artifact.from_path(resolved)

@@ -26,14 +26,15 @@ from ...core.scope import Scope
 from ...core.entry import Entry
 from .arena_index import entry_compositions
 from .composition import input_root_part, join_input_cells
-from .dataset_indexes import feature_storages
 from .storage_names import feature_slug_of
 from ._utils import ResolvedScope
 from .index import (
-    feature_index,
-    feature_index_path,
+    feature_run_rows,
+    has_feature_index,
     missing_outputs_error,
+    readable_feature_storages,
 )
+from .index_csv import filter_index_rows
 from .loading import ColumnProjection, PairRowsMissing, load_entry_data
 from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
@@ -171,7 +172,9 @@ def unrun_feature_input(ds: Dataset, name: str) -> UnrunFeatureInput:
             "'<slug>__from__<inputs>' for a feature that reads inputs."
         )
     matches = [
-        storage for storage in feature_storages(ds) if feature_slug_of(storage) == name
+        storage
+        for storage in readable_feature_storages(ds)
+        if feature_slug_of(storage) == name
     ]
     if matches:
         found = f" Stored runs of {name!r}: {', '.join(matches)}."
@@ -566,14 +569,14 @@ def tracks_variants_read(
     """
     read = set(tracks_variants)
     for storage, run_id in upstream_runs:
-        upstream = _upstream_tracks_variants(ds, storage, run_id)
+        upstream = upstream_tracks_variants(ds, storage, run_id)
         if upstream is None:
             return None
         read |= upstream
     return read
 
 
-def _upstream_tracks_variants(
+def upstream_tracks_variants(
     ds: Dataset, storage: str, run_id: str | None
 ) -> frozenset[str] | None:
     """Return the tracks variants a run of *storage* read, ``None`` if unknown.
@@ -581,13 +584,13 @@ def _upstream_tracks_variants(
     An unpinned *run_id* is the run :func:`_resolve_feature` reads. An empty set
     names the unlabeled tables, which a run records no variant for.
     """
-    from .inventory.params import run_tracks_variants
+    from .inventory.params import linked_run_params, run_tracks_variants
 
     if run_id is None:
-        if not feature_index_path(ds, storage).exists():
+        if not has_feature_index(ds, storage):
             return frozenset()
         run_id = _leaf_run_of(ds, storage)
-    return run_tracks_variants(ds, storage, run_id)
+    return run_tracks_variants(ds, storage, run_id, read_params=linked_run_params(ds))
 
 
 def _neighbors(
@@ -1120,8 +1123,7 @@ def _resolve_feature(
     an ordinary state rather than a failure.
     """
     selector = scope if scope is not None else Scope()
-    idx_path = feature_index_path(ds, feature_name) if feature_name else None
-    if idx_path is None or not idx_path.exists():
+    if not feature_name or not has_feature_index(ds, feature_name):
         if on_missing_run == "raise":
             raise unrun_feature_input(ds, feature_name)
         return ResolvedInput(set(), {}, [], {})
@@ -1142,15 +1144,13 @@ def _resolve_feature(
         # which is every dataset that has only ever run one recipe.
         run_id = _leaf_run_of(ds, feature_name)
 
-    idx = feature_index(idx_path)
-
     # Read full (unscoped) index for all entries. Resolve each stored path
     # through the dataset (relative -> root; remap for relocated absolutes) and
     # check existence there -- mirroring _resolve_tracks -- rather than trusting
     # the raw string via IndexCSV's naive validate_paths (which false-fails on a
     # moved/synced dataset whose index carries another machine's paths).
     try:
-        df_all = idx.read(run_id=run_id, filter_ext=".parquet", validate_paths=False)
+        df_all = feature_run_rows(ds, feature_name, run_id, filter_ext=".parquet")
     except FileNotFoundError:
         if on_missing_run == "raise":
             raise
@@ -1193,12 +1193,7 @@ def _resolve_feature(
     full_order = sorted(set(all_entries))
 
     # Read scoped subset (same resolve-then-skip policy).
-    df = idx.read(
-        run_id=run_id,
-        filter_ext=".parquet",
-        scope=selector,
-        validate_paths=False,
-    )
+    df = filter_index_rows(df_all, scope=selector)
 
     scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}

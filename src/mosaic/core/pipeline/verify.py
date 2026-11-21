@@ -69,7 +69,7 @@ from mosaic.user_paths import user_path
 from ._utils import FeatureMeta, ResolvedScope
 from .definitions.scope import definition_scope
 from .definitions.store import is_definition_slug
-from .index import feature_index, feature_index_path, feature_run_root
+from .index import feature_run_file, feature_run_rows, has_feature_index
 from .loading import (
     CROSS_JOIN_FEATURES,
     expands_individuals,
@@ -716,12 +716,9 @@ def _stored_outputs(
         The outputs whose file is on disk, and the entries the index records whose
         file is not.
     """
-    index = feature_index_path(ds, storage)
-    if not index.exists():
+    if not has_feature_index(ds, storage):
         return {}, set()
-    rows = feature_index(index).read(
-        run_id=run_id, filter_ext=".parquet", validate_paths=False
-    )
+    rows = feature_run_rows(ds, storage, run_id, filter_ext=".parquet")
     found: dict[tuple[str, str], Path] = {}
     missing: set[tuple[str, str]] = set()
     for _, row in rows.iterrows():
@@ -789,15 +786,24 @@ _VALUE_LOADERS: Final[dict[str, Callable[[Path], object]]] = {
 
 
 def _compare_state(
-    state_dir: Path, stored_root: Path, tolerance: float, *, exact_models: bool
+    state_dir: Path,
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    tolerance: float,
+    *,
+    exact_models: bool,
 ) -> list[StateDiff]:
-    """Compare each file the new fit saved with the stored run's file of that name."""
+    """Compare each file the new fit saved with the stored run's file of that name.
+
+    The stored file is the one of the first dataset of the lookup that holds it.
+    """
     found: list[StateDiff] = []
     for path in sorted(state_dir.iterdir()):
         if not path.is_file() or path.name == SCRATCH_MARKER:
             continue
-        other = stored_root / path.name
-        if not other.exists():
+        other = feature_run_file(ds, storage, run_id, path.name)
+        if other is None:
             found.append(
                 StateDiff(
                     file=path.name,
@@ -886,9 +892,8 @@ def _verify_fit(
         )
     feature.fit(rebuilt.stream)
     feature.save_state(state_dir)
-    stored_root = feature_run_root(ds, storage, run_id)
     verdict.state = _compare_state(
-        state_dir, stored_root, tolerance, exact_models=not tolerant
+        state_dir, ds, storage, run_id, tolerance, exact_models=not tolerant
     )
 
     outputs = _fresh_directory(work / "outputs")
@@ -1081,9 +1086,13 @@ def _verify_scores(
         )
     feature.fit(stream)
     feature.save_state(state_dir)
-    stored_root = feature_run_root(ds, planned.storage_name, planned.run_id or "")
-    new, old = state_dir / report_file, stored_root / report_file
-    if not report_file or not new.exists() or not old.exists():
+    new = state_dir / report_file
+    old = (
+        feature_run_file(ds, planned.storage_name, planned.run_id or "", report_file)
+        if report_file
+        else None
+    )
+    if not report_file or not new.exists() or old is None:
         return verdict.model_copy(
             update={
                 "status": "error",

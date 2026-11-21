@@ -13,7 +13,15 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.delete_set import delete_set
+from mosaic.core.pipeline.delete_set import (
+    delete_set,
+)
+from mosaic.core.pipeline.fit_scope import FitScope, write_fit_scope
+from mosaic.core.pipeline.index import (
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+)
 from mosaic.core.pipeline.media_index import MediaIndexScope
 from mosaic.core.pipeline.composition import SequenceComposition
 from mosaic.core.pipeline.sequence_index import (
@@ -21,10 +29,12 @@ from mosaic.core.pipeline.sequence_index import (
     write_sequence_compositions,
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.types.results import Result
 from mosaic.core.scope import Scope
 
 from tests.helpers import (
     CONVERTED_ENTRIES,
+    add_feature_run,
     CropLike,
     assert_tree_unchanged,
     convert_tracks_from_raw,
@@ -148,10 +158,25 @@ class TestTheCarveOuts:
         assert not any("labels" in c.abs_path for c in report.candidates)
 
 
+def _record_fit_over_both_entries(ds: Dataset, result: Result[str]) -> None:
+    """Record that the run was fitted over both entries of the scenario."""
+    write_fit_scope(
+        feature_run_root(ds, result.feature, str(result.run_id)),
+        FitScope(
+            scope_dependent=True,
+            entries=(("", "seq_a"), ("", "seq_b")),
+            tracks_variants=(),
+            labels_variants=(),
+            fitted_at="",
+            identity_scheme="",
+        ),
+    )
+
+
 @pytest.mark.usefixtures("requires_ffmpeg")
 class TestDeclines:
     def test_a_partly_reached_scope_dependent_run_is_declined(
-        self, scenario_dataset_with_media: Dataset, monkeypatch: pytest.MonkeyPatch
+        self, scenario_dataset_with_media: Dataset
     ) -> None:
         """Whole or not at all.
 
@@ -159,25 +184,13 @@ class TestDeclines:
         included it, with nothing on disk saying so.
         """
 
-        from mosaic.core.pipeline import delete_set as delete_set_mod
-        from mosaic.core.pipeline.fit_scope import FitScope
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, CropLike())
+        result = run_feature(ds, CropLike())
         _reorder(ds)
+        _record_fit_over_both_entries(ds, result)
 
-        def wider(_run_root: object) -> FitScope:
-            return FitScope(
-                scope_dependent=True,
-                entries=(("", "seq_a"), ("", "seq_b")),
-                tracks_variants=(),
-                labels_variants=(),
-                fitted_at="",
-                identity_scheme="",
-            )
-
-        monkeypatch.setattr(delete_set_mod, "read_fit_scope", wider)
         report = delete_set(
             ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
         )
@@ -186,29 +199,16 @@ class TestDeclines:
         assert any("scope-dependent" in d.reason for d in report.declined)
 
     def test_declines_are_reported_rather_than_omitted(
-        self, scenario_dataset_with_media: Dataset, monkeypatch: pytest.MonkeyPatch
+        self, scenario_dataset_with_media: Dataset
     ) -> None:
         """ "Would delete 0" must not read as "nothing was affected"."""
 
-        from mosaic.core.pipeline import delete_set as delete_set_mod
-        from mosaic.core.pipeline.fit_scope import FitScope
         from mosaic.core.pipeline.run import run_feature
 
         ds = scenario_dataset_with_media
-        _ = run_feature(ds, CropLike())
+        result = run_feature(ds, CropLike())
         _reorder(ds)
-        monkeypatch.setattr(
-            delete_set_mod,
-            "read_fit_scope",
-            lambda _root: FitScope(
-                scope_dependent=True,
-                entries=(("", "seq_a"), ("", "seq_b")),
-                tracks_variants=(),
-                labels_variants=(),
-                fitted_at="",
-                identity_scheme="",
-            ),
-        )
+        _record_fit_over_both_entries(ds, result)
 
         report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
@@ -332,3 +332,43 @@ def test_a_linked_tracks_row_is_declined_with_its_link_and_the_source_is_left(
     own_rows = read_tracks_index(copy)
     assert list(own_rows["sequence"]) == ([] if apply else ["own"])
     assert_tree_unchanged(source.base_dir, before)
+
+
+def test_a_partial_delete_of_a_run_fitted_in_the_source_is_declined(
+    tmp_path: Path,
+) -> None:
+    source = converted_source(tmp_path / "source")
+    source_root = add_feature_run(source, "demo", "0.1-0123456789")
+    write_fit_scope(
+        source_root,
+        FitScope(
+            scope_dependent=True,
+            entries=(*CONVERTED_ENTRIES, ("", "own")),
+            tracks_variants=(),
+            labels_variants=(),
+            fitted_at="",
+            identity_scheme="",
+        ),
+    )
+    copy = copy_of(source, tmp_path / "copy")
+    convert_tracks_from_raw(copy, "conv.0.1-aaaaaaaaaa", "own")
+    _ = add_feature_run(copy, "demo", "0.1-0123456789", entries=[("", "own")])
+    index = feature_index(feature_index_path(copy, "demo"))
+    rows = index.read(validate_paths=False)
+    rows["consumed_roots"] = "tracks_raw"
+    rows["consumed_composition"] = "recorded"
+    rows.to_csv(index.path, index=False)
+    _drift_tracks_raw(copy)
+    run_output = feature_run_root(copy, "demo", "0.1-0123456789") / "own.parquet"
+
+    report = delete_set(
+        copy, "tracks_raw", scope=Scope(entries=[("", "own")]), apply=True
+    )
+
+    assert not any(candidate.kind == "features" for candidate in report.candidates)
+    assert [
+        item.reason
+        for item in report.declined
+        if item.kind == "features" and "scope-dependent" in item.reason
+    ]
+    assert run_output.exists()

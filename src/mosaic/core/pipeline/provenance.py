@@ -41,10 +41,10 @@ from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
-from .dataset_indexes import feature_storages, label_kinds
+from .dataset_indexes import label_kinds
 from .index_csv import index_records
-from .index import feature_index, feature_index_path, feature_run_root
-from .inventory.params import read_run_params
+from .index import feature_rows, readable_feature_storages
+from .inventory.params import read_linked_run_params
 from .labels_index import read_labels_index
 from .sequence_index import decode_consumed_roots, encode_entry_composition
 from .tracks_index import consumed_composition_for, tracks_rows
@@ -213,11 +213,8 @@ def _feature_rows(
 ) -> list[dict[str, object]]:
     """Feature entries that declared *root* and recorded a composition under it."""
     rows: list[dict[str, object]] = []
-    for storage in feature_storages(ds):
-        index = feature_index(feature_index_path(ds, storage))
-        if not index.path.exists():
-            continue
-        frame = index.read(validate_paths=False)
+    for storage in readable_feature_storages(ds):
+        frame = feature_rows(ds, storage)
         for record in index_records(frame):
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))
             if entry not in wanted:
@@ -240,6 +237,7 @@ def _feature_rows(
                     recorded=str(record.get("consumed_composition", "")),
                     current=current,
                     via="direct",
+                    link_id=str(record.get("link_id", "")),
                 )
             )
     return rows
@@ -275,7 +273,7 @@ def _consumed_variants(
     on both methods: this walk answers a blast-radius question, and an unnamed
     variant is not a member of one.
     """
-    read = read_run_params(feature_run_root(ds, storage, run_id))
+    read = read_linked_run_params(ds, storage, run_id)
     if read.params is None:
         return set()
     return set(read.params.consumed_variants(where))
@@ -303,12 +301,8 @@ def _transitive_rows(
     if not moved_variants:
         return []
     rows: list[dict[str, object]] = []
-    for storage in feature_storages(ds):
-        index = feature_index(feature_index_path(ds, storage))
-        if not index.path.exists():
-            continue
-        frame = index.read(validate_paths=False)
-        records = index_records(frame)
+    for storage in readable_feature_storages(ds):
+        records = index_records(feature_rows(ds, storage))
         variants_by_run: dict[str, set[str]] = {}
         for record in records:
             entry = (str(record.get("group", "")), str(record.get("sequence", "")))
@@ -339,6 +333,7 @@ def _transitive_rows(
                     recorded=edge,
                     current="moved",
                     via=edge,
+                    link_id=str(record.get("link_id", "")),
                 )
             )
     return rows

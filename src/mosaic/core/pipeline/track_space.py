@@ -25,8 +25,7 @@ from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Final, TypeIs
 
 from mosaic.core.pipeline.definitions.store import is_definition_slug
-from mosaic.core.pipeline.index import feature_run_root
-from mosaic.core.pipeline.inventory.params import read_run_params
+from mosaic.core.pipeline.inventory.params import read_linked_run_params
 from mosaic.core.pipeline.manifest import tracks_table_schemas
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.track_universe import run_is_track_shaped
@@ -243,7 +242,7 @@ def upstream_track_spaces(
         seen.add(run)
         if not run_is_track_shaped(ds, *run):
             continue
-        params = read_run_params(feature_run_root(ds, *run)).params
+        params = read_linked_run_params(ds, *run).params
         if params is None:
             continue
         sources = params.input_sources()

@@ -47,15 +47,15 @@ import pandas as pd
 from mosaic.core.entry import Entry
 from mosaic.core.scope import Scope
 
-from .dataset_indexes import feature_storages
 from .error_kind import ClassifiedError, ErrorKind
 from .index import (
-    feature_index,
     feature_index_path,
-    feature_run_root,
+    feature_run_rows,
+    has_feature_index,
     missing_outputs_error,
+    readable_feature_storages,
 )
-from .inventory.params import read_run_params
+from .inventory.params import read_linked_run_params
 from .inventory.scan import reportable_universe, run_covered_entries
 from .memory_limit import usable_memory_bytes
 from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
@@ -503,15 +503,15 @@ def _floating_dtype(
 
 def _resolve_run_id(ds: Dataset, result: Result[str]) -> str:
     """The run to read: the pinned one, or the one the unpinned rule names."""
-    path = feature_index_path(ds, result.feature)
-    if not path.exists():
+    if not has_feature_index(ds, result.feature):
         with_runs = [
             name
-            for name in feature_storages(ds)
-            if feature_index_path(ds, name).exists()
+            for name in readable_feature_storages(ds)
+            if has_feature_index(ds, name)
         ]
         msg = (
-            f"{result.feature!r} has no runs in this dataset: {path} does not "
+            f"{result.feature!r} has no runs in this dataset: "
+            f"{feature_index_path(ds, result.feature)} does not "
             f"exist. A feature is stored under the name its run was given, such "
             f"as 'speed-angvel__from__tracks'. The features that have runs are: "
             f"{list_names(with_runs)}."
@@ -537,8 +537,8 @@ def _run_outputs(ds: Dataset, feature: str, run_id: str, selector: Scope) -> _Ou
     ask for.
     """
     try:
-        rows = feature_index(feature_index_path(ds, feature)).read(
-            run_id=run_id, filter_ext=".parquet", scope=selector
+        rows = feature_run_rows(
+            ds, feature, run_id, filter_ext=".parquet", scope=selector
         )
     except FileNotFoundError as error:
         raise RunNotFound(str(error), feature=feature, run_id=run_id) from error
@@ -597,7 +597,7 @@ def _growth_cautions(
     """
     if not selector.is_unset:
         return ()
-    params = read_run_params(feature_run_root(ds, feature, run_id)).params
+    params = read_linked_run_params(ds, feature, run_id).params
     if params is None or not params.scope.asked_all:
         return ()
     variants = params.consumed_tracks_variants()

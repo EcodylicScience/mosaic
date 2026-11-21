@@ -28,6 +28,7 @@ from mosaic.core.pipeline.index import (
     feature_index,
     feature_index_path,
     feature_run_root,
+    feature_run_roots,
 )
 from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_index
 from mosaic.core.pipeline.index_csv import index_records
@@ -58,6 +59,7 @@ from .model import (
     LabelsVariantRef,
     TracksVariantRef,
     classify,
+    merged_coverage,
 )
 from .params import RunParams, read_run_params
 
@@ -81,6 +83,7 @@ __all__ = [
     "narrow_target",
     "reportable_universe",
     "run_covered_entries",
+    "run_coverage",
     "run_covers",
 ]
 
@@ -247,6 +250,45 @@ def run_covers(
             covers_all=True,
         )
     return Coverage(target=target, present=frozenset(held))
+
+
+def run_coverage(
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    target: frozenset[Entry],
+    *,
+    known: frozenset[Entry] = frozenset(),
+    footers: ParquetFooterMemo | None = None,
+) -> Coverage[Entry]:
+    """Which of *target* a feature run holds across *ds* and the datasets it links.
+
+    Each run root of :func:`~mosaic.core.pipeline.index.feature_run_roots` is
+    measured by :func:`run_covers`, and the measures are joined against *target*
+    by :func:`~.model.merged_coverage`. An entry is held when any root holds its
+    output.
+
+    Args:
+        ds: The reading dataset.
+        storage: The feature's storage directory name.
+        run_id: The run's identifier.
+        target: The entries *ds* wants, which the result keeps.
+        known: Entries to recognize beyond *target*, as :func:`run_covers`
+            takes them.
+        footers: The memo of parsed footers that a holder keeps across calls.
+            Without one, every footer is read.
+
+    Returns:
+        The joined coverage. It holds nothing when no root exists.
+    """
+    memo = ParquetFooterMemo() if footers is None else footers
+    return merged_coverage(
+        (
+            run_covers(root, target, known, memo)
+            for root in feature_run_roots(ds, storage, run_id)
+        ),
+        target,
+    )
 
 
 def _orphan_rows(

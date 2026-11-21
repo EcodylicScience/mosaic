@@ -63,6 +63,7 @@ from .params import (
     RunKey,
     RunParams,
     TracksVariantWalk,
+    linked_run_params,
     read_run_params,
 )
 from .scan import feature_run_target, narrow_target, reportable_universe
@@ -522,7 +523,9 @@ def inventory_wire(
     # *universe*, which also says whether a tracks variant narrows the other
     # records. A feature record then cannot change how they read.
     asked_universe = universe
-    walk = TracksVariantWalk(ds, _held_params(inventory))
+    walk = TracksVariantWalk(
+        ds, _held_params(inventory), read_params=linked_run_params(ds)
+    )
 
     matched: list[_Matched] = []
     for record in inventory.records:

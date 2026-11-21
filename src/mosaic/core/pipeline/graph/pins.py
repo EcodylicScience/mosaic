@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..index import feature_index, feature_index_path
+from ..index import feature_run_rows
 from ..inventory.model import FeatureRunRef
 from .model import COMPLETE_STATUSES, FeatureStepSpec
 from .step_preflight import StepRefused
@@ -91,7 +91,7 @@ def refuse_unusable_pins(
             )
         storage = planned.storage_name
         try:
-            _ = feature_index(feature_index_path(ds, storage)).read(run_id=run_id)
+            _ = feature_run_rows(ds, storage, run_id)
         except FileNotFoundError:
             raise StepRefused(
                 "pin_run_missing",

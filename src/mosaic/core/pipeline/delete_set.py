@@ -42,9 +42,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from ..scope import Scope
-from .fit_scope import read_fit_scope
+from .fit_scope import read_run_fit_scope
 from .index import feature_index, feature_index_path
-from .index import feature_run_root
 from .index_csv import index_records
 from .provenance import reached_by
 from .tracks_index import tracks_index, tracks_index_path
@@ -221,7 +220,7 @@ def _decline_partial_fits(
         by_run.setdefault((candidate.name, candidate.run_id), []).append(candidate)
 
     for (name, run_id), group in by_run.items():
-        scope = read_fit_scope(feature_run_root(ds, name, run_id))
+        scope = read_run_fit_scope(ds, name, run_id)
         if scope is None or not scope.scope_dependent or scope.entries is None:
             kept.extend(group)
             continue

@@ -13,8 +13,17 @@ from mosaic.core.pipeline.composition import (
     input_root_part,
     join_input_cells,
 )
-from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
+from mosaic.core.pipeline.dataset_indexes import (
+    feature_storages,
+    register_reconcilable_index,
+)
+from mosaic.core.pipeline.index_csv import (
+    IndexCSV,
+    RunIndexRowBase,
+    filter_index_rows,
+)
+from mosaic.core.pipeline.linked_rows import merge_linked_rows
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -234,9 +243,194 @@ def list_feature_runs(ds: Dataset, feature_name: str) -> pd.DataFrame:
     return feature_index(feature_index_path(ds, feature_name)).list_runs()
 
 
+def _read_feature_frame(path: Path) -> pd.DataFrame:
+    """The whole index at *path*, which exists."""
+    return feature_index(path).read()
+
+
+_FEATURE_ROW_KEYS: Final = ("run_id", "group", "sequence")
+"""The columns that identify a feature index row."""
+
+_FEATURE_ROWS_PATH_COLUMNS: Final = ("abs_path",)
+"""The feature index columns that name one file each."""
+
+
+def _read_index_if_present(
+    path: Path, read_frame: Callable[[Path], pd.DataFrame]
+) -> pd.DataFrame:
+    """The index at *path*, or the schema's empty frame when there is none."""
+    if not path.exists():
+        return pd.DataFrame(columns=FEATURE_INDEX_COLUMNS)
+    return read_frame(path)
+
+
+def has_feature_index(ds: Dataset, storage: str) -> bool:
+    """Whether *ds* or a dataset it links has an index for the feature *storage*."""
+    return any(
+        feature_index_path(linked.dataset, storage).exists()
+        for linked in ds.lookup_order("features")
+    )
+
+
+def feature_rows(
+    ds: Dataset,
+    storage: str,
+    *,
+    run_id: str | None = None,
+    read_frame: Callable[[Path], pd.DataFrame] = _read_feature_frame,
+) -> pd.DataFrame:
+    """The feature index of *storage* merged with those of the datasets *ds* links.
+
+    Reads the index of each dataset of ``ds.lookup_order("features")`` and
+    merges the frames with :func:`~mosaic.core.pipeline.linked_rows.merge_linked_rows`,
+    keyed on ``(run_id, group, sequence)``: an own row shadows a linked row of the same
+    run and entry, and an earlier link shadows a later one. The ``abs_path`` of a linked
+    row is made absolute against its own dataset, and own cells stay as stored. Writes
+    nothing.
+
+    Args:
+        ds: The reading dataset.
+        storage: The feature's storage directory name.
+        run_id: When set, only the rows of this run.
+        read_frame: Reads the whole index at a path that exists. A caller that
+            reads many indexes passes one that remembers what it read.
+
+    Returns:
+        The merged rows with a ``link_id`` column that names the link of each
+        row and is ``""`` for an own row. Empty, with the schema's columns, when
+        no dataset of the lookup holds a row.
+    """
+    merged = merge_linked_rows(
+        [
+            (
+                linked.link_id,
+                linked.dataset.base_dir,
+                _read_index_if_present(
+                    feature_index_path(linked.dataset, storage), read_frame
+                ),
+            )
+            for linked in ds.lookup_order("features")
+        ],
+        _FEATURE_ROW_KEYS,
+        _FEATURE_ROWS_PATH_COLUMNS,
+    )
+    if run_id is None:
+        return merged
+    return merged[merged["run_id"] == run_id].reset_index(drop=True)
+
+
+def feature_run_rows(
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    *,
+    filter_ext: str | None = None,
+    scope: Scope | None = None,
+) -> pd.DataFrame:
+    """The merged rows of one run, as :meth:`IndexCSV.read` returns one index's.
+
+    Args:
+        ds: The reading dataset.
+        storage: The feature's storage directory name.
+        run_id: The run whose rows to read.
+        filter_ext: Keep only rows whose ``abs_path`` ends with this suffix.
+        scope: Which rows to keep. ``None`` keeps every row.
+
+    Returns:
+        The rows of :func:`feature_rows` for the run, filtered.
+
+    Raises:
+        FileNotFoundError: No dataset of the lookup has an index for *storage*,
+            or none holds a row of *run_id*.
+    """
+    path = feature_index_path(ds, storage)
+    if not has_feature_index(ds, storage):
+        raise FileNotFoundError(f"Index not found: {path}")
+    rows = feature_rows(ds, storage, run_id=run_id)
+    if rows.empty:
+        raise FileNotFoundError(f"No entries for run_id '{run_id}' in {path}")
+    return filter_index_rows(rows, filter_ext=filter_ext, scope=scope)
+
+
+def feature_run_roots(ds: Dataset, storage: str, run_id: str) -> tuple[Path, ...]:
+    """Each existing root of a run, in lookup order, for a site that globs a pattern.
+
+    A run directory that *ds* created and a linked one that holds the rest of
+    the same run are both listed, *ds* first once it exists.
+
+    Returns:
+        The run root of each dataset of ``ds.lookup_order("features")`` whose
+        directory exists. Empty when none does.
+    """
+    roots = (
+        feature_run_root(linked.dataset, storage, run_id)
+        for linked in ds.lookup_order("features")
+    )
+    return tuple(root for root in roots if root.is_dir())
+
+
+def feature_run_file(ds: Dataset, storage: str, run_id: str, name: str) -> Path | None:
+    """The run-level file *name* in the first run root that holds it.
+
+    A run-level file such as ``params.json``, a fit or a report has no entry
+    key, so a read goes to the first root of :func:`feature_run_roots` that
+    contains it.
+
+    Returns:
+        The file's path, or ``None`` when no root holds it.
+    """
+    for root in feature_run_roots(ds, storage, run_id):
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def readable_feature_storages(ds: Dataset) -> list[str]:
+    """The feature storages of *ds* and of the datasets it links, each once.
+
+    Returns:
+        The storage directories of each dataset of ``ds.lookup_order("features")``
+        in that order, sorted within a dataset, the first occurrence of a name
+        kept.
+    """
+    seen: dict[str, None] = {}
+    for linked in ds.lookup_order("features"):
+        seen.update(dict.fromkeys(feature_storages(linked.dataset)))
+    return list(seen)
+
+
+def _latest_recorded_run_id(path: Path) -> str | None:
+    """The most recent run of the index at *path*, or ``None`` when it records none."""
+    index = feature_index(path)
+    if not index.path.exists():
+        return None
+    runs = index.list_runs()
+    return None if runs.empty else str(runs.iloc[0]["run_id"])
+
+
 def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
-    idx = feature_index(feature_index_path(ds, feature_name))
-    run_id = idx.latest_run_id()
+    """The latest run of *feature_name* and its run root.
+
+    The latest run of *ds* itself when its index records one, and otherwise the latest
+    run of the first linked dataset whose index does. A later run in a link does not
+    displace *ds*'s own work. A finished run comes before an unfinished one, as in
+    :meth:`~mosaic.core.pipeline.index_csv.IndexCSV.latest_run_id`.
+
+    Returns:
+        The run's identifier and the root of the dataset that records it.
+
+    Raises:
+        FileNotFoundError: No dataset records a run and *ds* has no index.
+        ValueError: No dataset records a run and *ds*'s index is empty.
+    """
+    for linked in ds.lookup_order("features"):
+        run_id = _latest_recorded_run_id(
+            feature_index_path(linked.dataset, feature_name)
+        )
+        if run_id is not None:
+            return run_id, feature_run_root(linked.dataset, feature_name, run_id)
+    run_id = feature_index(feature_index_path(ds, feature_name)).latest_run_id()
     return run_id, feature_run_root(ds, feature_name, run_id)
 
 
@@ -269,14 +463,8 @@ def recorded_tracks_reads(
 
 
 def _run_rows(ds: Dataset, feature_name: str, run_id: str) -> pd.DataFrame:
-    """One run's rows of its feature index, empty when there are none."""
-    index = feature_index(feature_index_path(ds, feature_name))
-    if not index.path.exists():
-        return pd.DataFrame()
-    try:
-        return index.read(run_id=run_id)
-    except FileNotFoundError:
-        return pd.DataFrame()
+    """One run's rows of its feature index and its links', empty when there are none."""
+    return feature_rows(ds, feature_name, run_id=run_id)
 
 
 def _tracks_reads_of(rows: pd.DataFrame) -> dict[Entry, RecordedTracksReads]:
@@ -326,12 +514,6 @@ def _consumption_of(rows: pd.DataFrame) -> dict[Entry, tuple[tuple[str, ...], st
     return recorded
 
 
-def _read_feature_frame(path: Path) -> pd.DataFrame:
-    """A feature storage's whole index, empty when it has none."""
-    index = feature_index(path)
-    return index.read() if index.path.exists() else pd.DataFrame()
-
-
 class DriftReads:
     """The index reads that several :func:`drifted_entries` calls share.
 
@@ -342,9 +524,10 @@ class DriftReads:
 
     Args:
         ds: The dataset whose indexes are read.
-        feature_frame: Reads a feature storage's whole index from its path. The
-            default reads it through :func:`feature_index`. A scan passes the
-            reader it reads the indexes with, and the file is read once.
+        feature_frame: Reads a feature storage's whole index from a path that
+            exists, in this dataset and in the datasets it links. The default
+            reads it through :func:`feature_index`. A scan passes the reader it
+            reads the indexes with, and the file is read once.
     """
 
     def __init__(
@@ -363,7 +546,7 @@ class DriftReads:
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
         runs = self._runs.get(storage)
         if runs is None:
-            frame = self._feature_frame(feature_index_path(self._ds, storage))
+            frame = feature_rows(self._ds, storage, read_frame=self._feature_frame)
             runs = (
                 {}
                 if frame.empty or "run_id" not in frame.columns

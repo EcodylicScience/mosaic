@@ -7,7 +7,8 @@ to and :class:`ScopedFeature` also declares ``scope_dependent``, for the tests o
 how a run is measured against the entries it was asked for.
 :class:`PairClusterFeature` writes pair rows for the tests of scoring them.
 :class:`FittingFeature` fits once per run root and saves its state, for the tests
-of the claim a fit holds.
+of the claim a fit holds. :class:`CenteringFeature` fits a mean and applies it,
+in worker processes too, for the tests of a fit that a linked dataset holds.
 :class:`ParallelFeature` declares ``parallelizable``, and a subclass that sets
 ``kill_on`` ends the process computing those sequences, for the tests of a run
 that computes several entries at once.
@@ -15,6 +16,7 @@ that computes several entries at once.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import threading
@@ -238,3 +240,52 @@ class FittingFeature(PlainFeature):
         self.control.applying.set()
         _wait(self.control.finish_apply)
         return df
+
+
+class CenteringFeature(PlainFeature):
+    """A scope-free feature that fits the mean of ``X`` and subtracts it from ``X``.
+
+    Its state is one ``centering.json`` in the run root. Its apply raises while
+    no state is loaded, so a worker process that fails to load the state fails
+    the entry rather than writing a table. It is ``parallelizable`` and rebuilds
+    from its class and parameters, as a process worker rebuilds a feature.
+    """
+
+    name = "prov-centering"
+    parallelizable = True
+    accepts_overlap = False
+    emits: EmitsLevel = "as-input"
+    state_file = "centering.json"
+
+    def __init__(
+        self,
+        inputs: Inputs | None = None,
+        params: dict[str, object] | _P | None = None,
+    ) -> None:
+        super().__init__(inputs, params)
+        self.mean: float | None = None
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        state = run_root / self.state_file
+        if not state.is_file():
+            return False
+        self.mean = float(json.loads(state.read_text(encoding="utf-8"))["mean"])
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        tables = [df["X"] for _key, df in inputs()]
+        self.mean = float(pd.concat(tables).mean())
+
+    def save_state(self, run_root: Path) -> None:
+        document = json.dumps({"mean": self.mean})
+        atomic_write(run_root / self.state_file, lambda temp: temp.write_text(document))
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.mean is None:
+            raise RuntimeError("no fitted mean is loaded")
+        return df.assign(X=df["X"] - self.mean)

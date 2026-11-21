@@ -34,10 +34,10 @@ drifts from the fields silently.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -53,7 +53,14 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline._utils import LabelRevisionTerm
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
-from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
+from mosaic.core.pipeline.index import (
+    DatasetRoots,
+    feature_run_file,
+    feature_run_root,
+)
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 __all__ = [
     "InputSource",
@@ -62,12 +69,17 @@ __all__ = [
     "RunKey",
     "RunParams",
     "RunParamsRead",
+    "RunParamsReader",
     "ScopeBlock",
     "REPORT_MAX_CHARS",
     "ReportTooLarge",
     "TracksVariantWalk",
     "features_roots",
+    "linked_run_params",
+    "linked_run_root",
     "named_references",
+    "read_linked_run_params",
+    "read_linked_run_report",
     "read_run_params",
     "read_run_report",
     "run_key_of",
@@ -89,6 +101,9 @@ type RunKey = tuple[str, str]
 
 type InputSource = Literal["tracks"] | RunKey
 """One input of a feature run: the tracks tables, or the feature run it read."""
+
+type RunParamsReader = Callable[[RunKey], RunParams | None]
+"""Reads one run's params, ``None`` for a run whose ``params.json`` is absent."""
 
 
 class ResolvedRef(BaseModel):
@@ -528,6 +543,12 @@ class ReportTooLarge(ValueError):
         )
 
 
+def _check_report_name(file_name: str) -> None:
+    """Raise unless *file_name* is one path component."""
+    if not file_name or Path(file_name).name != file_name:
+        raise ValueError(f"a report file is one path component, not {file_name!r}")
+
+
 def read_run_report(run_root: Path, file_name: str) -> JsonValue | None:
     """Read the JSON report a feature run saved as *file_name*, or ``None``.
 
@@ -546,8 +567,7 @@ def read_run_report(run_root: Path, file_name: str) -> JsonValue | None:
             JSON.
         ReportTooLarge: The file is longer than :data:`REPORT_MAX_CHARS`.
     """
-    if not file_name or Path(file_name).name != file_name:
-        raise ValueError(f"a report file is one path component, not {file_name!r}")
+    _check_report_name(file_name)
     path = run_root / file_name
     try:
         size = path.stat().st_size
@@ -599,6 +619,78 @@ def read_run_params(run_root: Path) -> RunParamsRead:
                 return RunParamsRead("unreadable", None, str(exc))
 
 
+def linked_run_root(ds: Dataset, storage: str, run_id: str) -> Path:
+    """The run root that holds a run's ``params.json``, found through the lookup order.
+
+    Args:
+        ds: The dataset reading, whose ``features`` lookup order decides.
+        storage: The run's feature storage directory.
+        run_id: The run.
+
+    Returns:
+        That run root, and the run root of *ds* itself when no dataset holds
+        the file.
+    """
+    path = feature_run_file(ds, storage, run_id, "params.json")
+    return feature_run_root(ds, storage, run_id) if path is None else path.parent
+
+
+def read_linked_run_params(ds: Dataset, storage: str, run_id: str) -> RunParamsRead:
+    """Read a run's ``params.json`` from the first dataset of the lookup that has it.
+
+    Args:
+        ds: The dataset reading, whose ``features`` lookup order decides.
+        storage: The run's feature storage directory.
+        run_id: The run.
+
+    Returns:
+        What :func:`read_run_params` returns for that run root, and an absent
+        read when no dataset holds the file.
+    """
+    return read_run_params(linked_run_root(ds, storage, run_id))
+
+
+def linked_run_params(ds: Dataset) -> RunParamsReader:
+    """The reader of a run walk over *ds*, which finds a run in a linked dataset.
+
+    Args:
+        ds: The dataset reading.
+
+    Returns:
+        A function giving each run's params as :func:`read_linked_run_params`
+        reads them, and ``None`` for a run that no dataset of the lookup holds.
+    """
+
+    def read(run: RunKey) -> RunParams | None:
+        return read_linked_run_params(ds, *run).params
+
+    return read
+
+
+def read_linked_run_report(
+    ds: Dataset, storage: str, run_id: str, file_name: str
+) -> JsonValue | None:
+    """Read the report *file_name* of a run from the first dataset that holds it.
+
+    Args:
+        ds: The dataset reading, whose ``features`` lookup order decides.
+        storage: The run's feature storage directory.
+        run_id: The run.
+        file_name: The report's file name, one path component.
+
+    Returns:
+        The report, or ``None`` when no run root holds it.
+
+    Raises:
+        ValueError: *file_name* is not one path component, or the file is not
+            JSON.
+        ReportTooLarge: The file is longer than :data:`REPORT_MAX_CHARS`.
+    """
+    _check_report_name(file_name)
+    path = feature_run_file(ds, storage, run_id, file_name)
+    return None if path is None else read_run_report(path.parent, file_name)
+
+
 class TracksVariantWalk:
     """The tracks variants that feature runs read, reading each ``params.json`` once.
 
@@ -615,13 +707,21 @@ class TracksVariantWalk:
         known: Params already read, keyed by run. A run listed here is not read
             from disk, so a held inventory's records answer for the runs that
             it holds.
+        read_params: Reads the params of a run not in *known*, as
+            :func:`upstream_runs` takes it. Without one, each is read from the
+            ``features`` root of *ds*.
     """
 
     def __init__(
-        self, ds: DatasetRoots, known: Mapping[RunKey, RunParams | None] | None = None
+        self,
+        ds: DatasetRoots,
+        known: Mapping[RunKey, RunParams | None] | None = None,
+        *,
+        read_params: RunParamsReader | None = None,
     ) -> None:
         self._ds: DatasetRoots = ds
         self._params: dict[RunKey, RunParams | None] = dict(known or {})
+        self._read_params: RunParamsReader | None = read_params
 
     def __call__(self, storage_name: str, run_id: str) -> frozenset[str] | None:
         """Return the tracks variants that one run read, directly or through its upstreams.
@@ -637,7 +737,9 @@ class TracksVariantWalk:
         """
         variants: set[str] = set()
         start = (storage_name, run_id)
-        for _, params in upstream_runs(self._ds, [start], self._params):
+        for _, params in upstream_runs(
+            self._ds, [start], self._params, read_params=self._read_params
+        ):
             if params is None or not params.records_resolutions:
                 return None
             variants.update(params.consumed_tracks_variants())
@@ -648,6 +750,8 @@ def upstream_runs(
     ds: DatasetRoots,
     starts: Iterable[RunKey],
     cache: dict[RunKey, RunParams | None] | None = None,
+    *,
+    read_params: RunParamsReader | None = None,
 ) -> Iterator[tuple[RunKey, RunParams | None]]:
     """Yield each run of *starts* and every feature run upstream of them, once.
 
@@ -664,6 +768,10 @@ def upstream_runs(
         cache: Params already read, read and filled in place, so a caller that
             walks many times reads each ``params.json`` once. Without one the
             call keeps its own.
+        read_params: Reads the params of each run not in *cache*, the starts
+            included, where a caller holding a dataset passes
+            :func:`linked_run_params`. Without one each is read from the
+            ``features`` root of *ds*.
 
     Yields:
         ``(run, params)`` for each run reached.
@@ -677,7 +785,11 @@ def upstream_runs(
             continue
         seen.add(node)
         if node not in params_of:
-            params_of[node] = read_run_params(feature_run_root(ds, *node)).params
+            params_of[node] = (
+                read_run_params(feature_run_root(ds, *node)).params
+                if read_params is None
+                else read_params(node)
+            )
         params = params_of[node]
         yield node, params
         if params is not None:
@@ -717,7 +829,11 @@ def run_key_of(run_root: Path) -> RunKey:
 
 
 def run_tracks_variants(
-    ds: DatasetRoots, storage_name: str, run_id: str
+    ds: DatasetRoots,
+    storage_name: str,
+    run_id: str,
+    *,
+    read_params: RunParamsReader | None = None,
 ) -> frozenset[str] | None:
     """Return the tracks variants that one feature run read, as :class:`TracksVariantWalk` walks them."""
-    return TracksVariantWalk(ds)(storage_name, run_id)
+    return TracksVariantWalk(ds, read_params=read_params)(storage_name, run_id)

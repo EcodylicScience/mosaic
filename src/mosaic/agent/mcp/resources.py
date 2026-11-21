@@ -303,8 +303,7 @@ def _tail(variables: UriVariables) -> int:
 
 
 def _read_params(backend: LocalBackend, variables: UriVariables) -> ResourceText:
-    from mosaic.core.pipeline.index import feature_run_root
-    from mosaic.core.pipeline.inventory import read_run_params
+    from mosaic.core.pipeline.inventory.params import read_linked_run_params
 
     dataset = backend.dataset(_variable(variables, "id"))
     kind = _variable(variables, "kind")
@@ -323,7 +322,7 @@ def _read_params(backend: LocalBackend, variables: UriVariables) -> ResourceText
         )
     name = _variable(variables, "name")
     run_id = _variable(variables, "run_id")
-    read = read_run_params(feature_run_root(dataset, name, run_id))
+    read = read_linked_run_params(dataset, name, run_id)
     params = (
         None
         if read.params is None
@@ -344,8 +343,10 @@ def _read_params(backend: LocalBackend, variables: UriVariables) -> ResourceText
 def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText:
     from mosaic.core.pipeline.storage_names import feature_slug_of
     from mosaic.core.pipeline.graph.resolve import feature_class_for_slug
-    from mosaic.core.pipeline.index import feature_run_root
-    from mosaic.core.pipeline.inventory import ReportTooLarge, read_run_report
+    from mosaic.core.pipeline.inventory.params import (
+        ReportTooLarge,
+        read_linked_run_report,
+    )
 
     dataset = backend.dataset(_variable(variables, "id"))
     name = _variable(variables, "name")
@@ -361,7 +362,7 @@ def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText
             f"a report of feature {slug!r}", {"name": name, "feature": slug}
         )
     try:
-        report = read_run_report(feature_run_root(dataset, name, run_id), report_file)
+        report = read_linked_run_report(dataset, name, run_id, report_file)
     except ReportTooLarge as error:
         raise ToolFailure(
             ErrorEnvelope(

@@ -36,12 +36,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.index import (
-    feature_index,
     feature_index_path,
-    feature_run_root,
+    feature_rows,
+    feature_run_roots,
+    has_feature_index,
+    latest_feature_run_root,
+    readable_feature_storages,
 )
-from mosaic.core.pipeline.dataset_indexes import feature_storages
-from mosaic.core.pipeline.inventory.params import read_run_params
+from mosaic.core.pipeline.inventory.params import read_linked_run_params
 from mosaic.core.pipeline.tracks_index import tracks_rows
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
@@ -53,6 +55,7 @@ __all__ = [
     "AmbiguousTrackLeaf",
     "TrackSource",
     "carries_z",
+    "consumed_track_runs",
     "is_track_shaped",
     "run_carries_z",
     "run_is_track_shaped",
@@ -117,11 +120,9 @@ def carries_z(path: Path) -> bool:
 
 def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:
     """One parquet from this run, or ``None`` when it wrote none."""
-    root = feature_run_root(ds, storage, run_id)
-    if not root.exists():
-        return None
-    for candidate in sorted(root.glob("*.parquet")):
-        return candidate
+    for root in feature_run_roots(ds, storage, run_id):
+        for candidate in sorted(root.glob("*.parquet")):
+            return candidate
     return None
 
 
@@ -155,7 +156,7 @@ def run_carries_z(ds: Dataset, storage: str, run_id: str) -> bool:
     return sample is not None and carries_z(sample)
 
 
-def _consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[str]:
+def consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[str]:
     """The track-shaped run identifiers this run read, from its ``params.json``.
 
     Both edges live in the same record and both matter: ``inputs[tracks]`` names a
@@ -176,7 +177,7 @@ def _consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[st
     which is what distinguishes "consumed the unlabelled variant" from "recorded
     no upstream at all".
     """
-    read = read_run_params(feature_run_root(ds, storage, run_id))
+    read = read_linked_run_params(ds, storage, run_id)
     if read.params is None:
         return frozenset()
     return read.params.consumed_run_ids()
@@ -195,12 +196,9 @@ def track_universe(ds: Dataset) -> list[TrackSource]:
         for run_id in sorted({str(value) for value in variants["run_id"]}):
             found.append(TrackSource(storage="tracks", run_id=run_id))
 
-    for storage in feature_storages(ds):
-        index_path = feature_index_path(ds, storage)
-        if not index_path.exists():
-            continue
-        runs = feature_index(index_path).list_runs()
-        if runs.empty or "run_id" not in runs.columns:
+    for storage in readable_feature_storages(ds):
+        runs = feature_rows(ds, storage)
+        if runs.empty:
             continue
         for run_id in sorted({str(value) for value in runs["run_id"]}):
             if not run_is_track_shaped(ds, storage, run_id):
@@ -209,7 +207,7 @@ def track_universe(ds: Dataset) -> list[TrackSource]:
                 TrackSource(
                     storage=storage,
                     run_id=run_id,
-                    consumed=_consumed_track_runs(ds, storage, run_id),
+                    consumed=consumed_track_runs(ds, storage, run_id),
                 )
             )
     return sorted(found, key=lambda source: (source.storage, source.run_id))
@@ -275,23 +273,22 @@ def current_run_id(ds: Dataset, feature_name: str) -> str:
     materialised: the edges come from ``params.json``, which every run writes.
     """
     index_path = feature_index_path(ds, feature_name)
-    if not index_path.exists():
+    if not has_feature_index(ds, feature_name):
         raise FileNotFoundError(index_path)
-    index = feature_index(index_path)
-    runs = {str(value) for value in index.list_runs().get("run_id", [])}
+    runs = {str(value) for value in feature_rows(ds, feature_name)["run_id"]}
     if not runs:
         raise ValueError(f"No runs found in {index_path}")
     consumed: set[str] = set()
     for run_id in runs:
-        consumed |= _consumed_track_runs(ds, feature_name, run_id)
+        consumed |= consumed_track_runs(ds, feature_name, run_id)
     if not consumed & runs:
         # Siblings, or a dataset whose runs predate the ``_resolved`` record.
-        return index.latest_run_id()
+        return latest_feature_run_root(ds, feature_name)[0]
     leaves = sorted(runs - consumed)
     if len(leaves) == 1:
         return leaves[0]
     if not leaves:
-        return index.latest_run_id()
+        return latest_feature_run_root(ds, feature_name)[0]
     raise AmbiguousTrackLeaf(
         f"{len(leaves)} runs of {feature_name!r} are leaves of the chain, so there "
         f"is no default: {', '.join(leaves)}. Name one by passing its run_id in the "
