@@ -93,6 +93,7 @@ from .lanes import lane_for
 from .reach import class_reach, class_reach_by_option
 from .model import (
     TRACKS_INPUT,
+    FeatureStepSpec,
     OpStepSpec,
     Recipe,
     params_step_refs,
@@ -135,6 +136,7 @@ __all__ = [
     "feature_class_for_slug",
     "fill_builtin_registries",
     "first_docstring_line",
+    "fitting_steps",
     "fields_need_ground_truth",
     "op_class_for_kind",
     "op_writes_tracks",
@@ -217,6 +219,33 @@ def declared_fit(
         declared.fits and applies
     )
     return fits, scope_dependent
+
+
+def fitting_steps(recipe: Recipe, catalog: DeclarationCatalog) -> dict[str, bool]:
+    """The feature steps of *recipe* that fit, and whether each fits over its scope.
+
+    Applies :func:`declared_fit` to every feature step whose feature *catalog*
+    declares. An op step, a step whose feature the catalog lacks and a step given
+    a ``model`` to apply are left out.
+
+    Args:
+        recipe: The recipe to read.
+        catalog: The declarations that say which features fit.
+
+    Returns:
+        Each fitting step's id, in recipe order, mapped to its ``scope_dependent``.
+    """
+    fitted: dict[str, bool] = {}
+    for step in recipe.steps:
+        if not isinstance(step, FeatureStepSpec):
+            continue
+        declared = catalog.get(step.feature)
+        if declared is None:
+            continue
+        fits, scope_dependent = declared_fit(step.feature, step.params, declared)
+        if fits:
+            fitted[step.id] = scope_dependent
+    return fitted
 
 
 def feature_parallelizable(slug: str) -> bool:

@@ -15,9 +15,8 @@ from typing import TYPE_CHECKING
 
 from mosaic.runlog import read_run, run_log_dir
 
-from .model import FeatureStepSpec
 from .request import load_recipe_for_request
-from .resolve import declared_fit
+from .resolve import fitting_steps
 from .rollup import request_rollup, request_verdict
 from .step_preflight import StepRefused
 from .store import RequestUnreadable, load_request
@@ -95,7 +94,7 @@ def derive_applied_fit(
             f"or name one that has finished.",
             {"applies_request_id": applies_request_id, "status": verdict},
         )
-    fitted = _fitting_steps(recipe, catalog)
+    fitted = fitting_steps(recipe, catalog)
     locked_ids = frozenset[str]().union(
         *(ancestors_of(recipe, step_id) for step_id in fitted)
     )
@@ -139,21 +138,6 @@ def _named_request(ds: Dataset, request_id: str) -> Request:
             f"finished request of this dataset.",
             {"applies_request_id": request_id},
         ) from exc
-
-
-def _fitting_steps(recipe: Recipe, catalog: DeclarationCatalog) -> dict[str, bool]:
-    """Whether each feature step that fits does so over its scope, by step id."""
-    fitted: dict[str, bool] = {}
-    for step in recipe.steps:
-        if not isinstance(step, FeatureStepSpec):
-            continue
-        declared = catalog.get(step.feature)
-        if declared is None:
-            continue
-        fits, scope_dependent = declared_fit(step.feature, step.params, declared)
-        if fits:
-            fitted[step.id] = scope_dependent
-    return fitted
 
 
 def _compared(step: Step) -> dict[str, JsonValue]:
