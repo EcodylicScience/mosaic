@@ -253,7 +253,8 @@ class TestInference:
             (["3.5", "4"], "float"),
             (["1e3", "2"], "float"),
             (["03", "5"], "categorical"),
-            (["True", "false"], "categorical"),
+            (["True", "False", "TRUE"], "bool"),
+            (["True", "yes"], "categorical"),
             (["red", "blue", "red"], "categorical"),
             (["nan", "1"], "categorical"),
         ],
@@ -403,6 +404,20 @@ class TestDeclaredAndKeptTypes:
                 "entry,flag\ng1:s1,true\ng1:s2,yes\n",
                 types={"flag": "bool"},
             )
+
+    def test_a_bool_is_read_in_any_case(self, ds: Dataset, tmp_path: Path) -> None:
+        csv = _read(ds, tmp_path, "entry,blind\ng1:s1,False\ng1:s2,TRUE\n")
+
+        assert csv.values[("g1", "s1")]["blind"] is False
+        assert csv.values[("g1", "s2")]["blind"] is True
+
+    def test_a_declared_bool_refusal_names_the_spellings_it_accepts(
+        self, ds: Dataset, tmp_path: Path
+    ) -> None:
+        with pytest.raises(
+            SequenceTagCsvInvalid, match=r"'yes' is not true or false, in any case"
+        ):
+            _ = _read(ds, tmp_path, "entry,flag\ng1:s1,yes\n", types={"flag": "bool"})
 
     def test_a_declared_int_refuses_a_fraction(
         self, ds: Dataset, tmp_path: Path

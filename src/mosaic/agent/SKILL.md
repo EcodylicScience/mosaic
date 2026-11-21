@@ -938,10 +938,11 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   per frame. Individuals of one recording are not independent replicates of a
   recording-level key such as a strain, so read `n_entries` beside `n_rows`. A `where`
   string, on the command line or in the MCP call, also matches an integer, float or
-  boolean key where its text reads as one (`"1"`, `"true"`). A JSON number matches an
-  integer or float key, and a JSON boolean a boolean key. A design of hundreds of groups
-  exceeds an MCP result, so read it through the CLI or Python. Mixed models and
-  factorial designs are not in mosaic: do them in your own code over `load_run_matrix`
+  boolean key where its text reads as one (`"1"`, `"true"`, `"True"`). A JSON number
+  matches an integer or float key, and a JSON boolean a boolean key. A design of
+  hundreds of groups exceeds an MCP result, so read it through the CLI or Python. Mixed
+  models and factorial designs are not in mosaic: do them in your own code over
+  `load_run_matrix`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#summaries-across-entries).
 
 ## Mosaic's MCP tools

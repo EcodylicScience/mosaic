@@ -277,9 +277,9 @@ that have no row in `entries_without_rows`.
 A `where` value from the command line, or a string in a `where` of the MCP tool, is read
 as text and as a number or a boolean where the key holds one. `--where n_inds=1` keeps
 the integer 1, `--where code=1` keeps the text `"1"` of a text key, and `true` and
-`false` match a boolean key. A JSON number in an MCP call, or a Python number, matches an
-integer or float key alike, and a boolean matches a boolean key. `where` in Python does
-not read a string as a number or a boolean.
+`false`, in any case, match a boolean key. A JSON number in an MCP call, or a Python
+number, matches an integer or float key alike, and a boolean matches a boolean key.
+`where` in Python does not read a string as a number or a boolean.
 
 **By sequence tag.** A `by` or `where` key that names a sequence tag and is not a column
 of the run groups or filters the entries by the tag's value. The strain or sex then

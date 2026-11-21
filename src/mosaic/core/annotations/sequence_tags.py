@@ -65,7 +65,7 @@ from mosaic.core.pipeline.label_series_index import (
     series_index_path,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred
-from mosaic.core.pipeline.summary_arguments import readings
+from mosaic.core.pipeline.summary_arguments import read_bool, readings
 from mosaic.core.pipeline.tag_reads import ResolvedTagTable
 from mosaic.core.scan_findings import FindingLog
 from mosaic.core.typed_attribute import (
@@ -110,7 +110,7 @@ _RESERVED_COLUMNS: Final[frozenset[str]] = frozenset(
 
 _KEY_FORMS: Final[tuple[KeyForm, ...]] = ("entry", "sequence", "recording")
 _EXPECTED: Final[Mapping[str, str]] = {
-    "bool": "true or false",
+    "bool": "true or false, in any case",
     "int": "a whole number",
     "float": "a number",
 }
@@ -463,7 +463,7 @@ def _is_code(text: str) -> bool:
 
 def _infer(texts: Sequence[str]) -> TypedAttributeType:
     """The first type that every one of *texts* reads as."""
-    if all(text in ("true", "false") for text in texts):
+    if all(read_bool(text) is not None for text in texts):
         return "bool"
     if not any(_is_code(text) for text in texts):
         if all(
@@ -497,7 +497,8 @@ def read_tag_text(type_: TypedAttributeType, text: str) -> TypedAttributeValue:
     """The value that *text* holds as a tag of *type_*.
 
     A ``categorical`` or ``text`` tag keeps the text as written, so ``03`` stays
-    ``03``. A ``bool``, ``int`` or ``float`` tag reads the first matching reading of
+    ``03``. A ``bool`` tag reads ``true`` or ``false`` in any case, so pandas'
+    ``True`` is accepted. An ``int`` or ``float`` tag reads the first matching number of
     the text, so ``03`` is the number 3 for an ``int`` tag. A ``label`` has no value.
 
     Raises:
@@ -508,9 +509,9 @@ def read_tag_text(type_: TypedAttributeType, text: str) -> TypedAttributeValue:
     if type_ in ("categorical", "text"):
         return text
     if type_ == "bool":
-        for reading in readings(text):
-            if isinstance(reading, bool):
-                return reading
+        spelled = read_bool(text)
+        if spelled is not None:
+            return spelled
     else:
         numbers = _numeric(text)
         if type_ == "int":

@@ -702,15 +702,15 @@ that name one entry are refused, with their line numbers.
 
 **Types.** Every other column is a tag. A tag already in the table keeps its type. A new
 tag's type is inferred from its non-empty cells: `bool` when every cell is `true` or
-`false` in lower case, `int` when every cell is a whole number without a leading zero
-(so `03` stays text), `float` when every cell is a finite number, `categorical` when the
-column has at most 1024 distinct values of at most 64 characters, and otherwise `text`.
-An empty cell assigns nothing, and a column of empty cells needs a declared type.
-`--type NAME=TYPE`, repeatable, declares a type, and is the one way to change the type
-of a tag that exists. A value that its type refuses stops the import before anything is
-written, and the message names the line and the column. A column named `group`,
-`sequence`, `id`, `frame`, `time`, `individual` or `uid` is refused, because a feature
-writes those.
+`false` in any case (pandas writes `True` and `False`), `int` when every cell is a whole
+number without a leading zero (so `03` stays text), `float` when every cell is a finite
+number, `categorical` when the column has at most 1024 distinct values of at most 64
+characters, and otherwise `text`. An empty cell assigns nothing, and a column of empty
+cells needs a declared type. `--type NAME=TYPE`, repeatable, declares a type, and is the
+one way to change the type of a tag that exists. A value that its type refuses stops the
+import before anything is written, and the message names the line and the column. A
+column named `group`, `sequence`, `id`, `frame`, `time`, `individual` or `uid` is
+refused, because a feature writes those.
 
 **What an import changes.** A tag the CSV names takes the CSV's values on every entry,
 so an entry with an empty cell loses the value it had. A tag the CSV does not name keeps

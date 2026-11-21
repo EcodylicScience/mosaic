@@ -13,7 +13,14 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Final, Literal
 
-__all__ = ["SUMMARY_TESTS", "KeyValue", "SummaryTest", "read_where", "readings"]
+__all__ = [
+    "SUMMARY_TESTS",
+    "KeyValue",
+    "SummaryTest",
+    "read_bool",
+    "read_where",
+    "readings",
+]
 
 type KeyValue = str | int | float | bool
 """One value of a group key."""
@@ -28,13 +35,26 @@ _INTEGER: Final = re.compile(r"[+-]?\d+")
 """The text of a whole number."""
 
 
+def read_bool(text: str) -> bool | None:
+    """Return the boolean that *text* spells as ``true`` or ``false`` in any case.
+
+    ``True`` from a pandas CSV reads as ``True``. Any other text returns ``None``.
+    """
+    spelled = text.lower()
+    if spelled in ("true", "false"):
+        return spelled == "true"
+    return None
+
+
 def readings(text: str) -> list[KeyValue]:
     """Return *text* and each number or boolean that it reads as.
 
     The readings are the text itself, an integer for a whole number, a float for
-    any other finite number, and a boolean for ``true`` or ``false``. A key holds
-    one family of value (text, number or boolean), so a summary matches the
-    readings of that family and no other, and ``1`` matches ``1.0``.
+    any other finite number, and a boolean for ``true`` or ``false`` in any case
+    (:func:`read_bool`). A key holds one family of value (text, number or
+    boolean), so a summary matches the readings of that family and no other, and
+    ``1`` matches ``1.0``. A text column that holds ``True`` still matches the
+    text.
     """
     found: list[KeyValue] = [text]
     if _INTEGER.fullmatch(text):
@@ -47,8 +67,9 @@ def readings(text: str) -> list[KeyValue]:
         else:
             if math.isfinite(number):
                 found.append(number)
-    if text in ("true", "false"):
-        found.append(text == "true")
+    spelled = read_bool(text)
+    if spelled is not None:
+        found.append(spelled)
     return found
 
 

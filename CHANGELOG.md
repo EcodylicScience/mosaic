@@ -29,6 +29,17 @@ missing inside such a hole when its dtype can hold a missing value, such as
 value. The `prefilter` no longer rejects the first sample after a hole as a fast
 step. No other op or feature run id moves.
 
+## Unreleased: a sequence-tag bool is read in any case
+
+`mosaic sequence-tags import` and a `--tag NAME=VALUE` selection read a `bool` tag as
+`true` or `false` in any case, so the `True` and `False` that pandas writes are
+accepted, and a column of them is inferred as `bool`. Before, a column of `True` and
+`False` was inferred as `categorical`, and a declared `bool` refused the cell. The
+refusal now reads "is not true or false, in any case". A `where` value of a summary
+(`--where blind=True`, or a string in the MCP tool's `where`) reads `true` and `false`
+in any case too, and still matches a text column that holds `True`. No run id or stored
+value moves.
+
 ## 0.25.0: the synthetic and window track converters, and retiring recipes without a submission
 
 No run id or output byte of an existing format moves. Six track formats are new, each a

@@ -15,6 +15,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
+from mosaic.core.annotations.sequence_tags import read_tag_text
 from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 
@@ -255,10 +256,10 @@ def set_tag(
         except ValueError:
             fail(f"tag {name!r} is a float; {value!r} is not a number.")
     elif tag.type == "bool":
-        lowered = value.strip().lower()
-        if lowered not in ("true", "false"):
+        try:
+            typed = read_tag_text("bool", value.strip())
+        except ValueError:
             fail(f"tag {name!r} is a bool; pass 'true' or 'false', not {value!r}.")
-        typed = lowered == "true"
     else:
         typed = value
 

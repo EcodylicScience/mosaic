@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
+from mosaic.core.annotations.sequence_tags import import_sequence_tags
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline import run_summary
@@ -460,6 +461,20 @@ def tagged_strain_run(tmp_path: Path) -> tuple[Dataset, Result[str]]:
     ds, result = strain_run(tmp_path)
     _ = write_tags(ds, tag_table(sites("x", "y"), {"site": "categorical"}))
     return ds, result
+
+
+def test_where_keeps_a_pandas_boolean_tag_from_its_text(tmp_path: Path) -> None:
+    ds, result = strain_run(tmp_path)
+    csv = tmp_path / "blind.csv"
+    csv.write_text("entry,blind\ng:a,True\ng:b,False\nh:c,True\nh:d,False\n")
+    _ = import_sequence_tags(ds, csv)
+
+    printed = invoke_ok(
+        summarize(ds, result, "--by", "blind", "--where", "blind=True", "--json")
+    )
+
+    wire = summary_of(printed.stdout)
+    assert [group.key for group in wire.groups] == [{"blind": True}]
 
 
 def write_swapped_sites(ds: Dataset) -> None:
