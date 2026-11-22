@@ -450,10 +450,11 @@ are in `graph/CLAUDE.md`.
   every kind. It also stamps the indexes of each linked dataset for the kinds the link
   provides, so a linked index that moves, and a link that becomes reachable or goes
   away, moves the view the same way. `InventoryCache.generation` advances with each
-  reread, and `ParquetFooterMemo` keeps the parquet footers that parsed, by path, size
-  and modification time, so a scan reads only the outputs that moved. A scan reads each
-  index once, so a per-entry lookup is one set or dict built per index, never a pass
-  over its rows per entry (`tests/core/pipeline/inventory/test_inventory_scan.py`,
+  reread, and `ParquetFooterMemo` (`parquet_reader.py`) keeps the parquet files that
+  parsed and the footers a run reads, by path, inode, size and modification time, so a
+  scan reads only the outputs that moved. A scan reads each index once, so a per-entry
+  lookup is one set or dict built per index, never a pass over its rows per entry
+  (`tests/core/pipeline/inventory/test_inventory_scan.py`,
   `tests/core/pipeline/graph/test_pipeline_plan_scale.py`).
 - `classify` (`inventory/model.py`) is the one place a status is decided. Files ahead
   of index rows are damage only on a finished run

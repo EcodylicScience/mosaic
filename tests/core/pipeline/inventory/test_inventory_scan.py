@@ -8,7 +8,6 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -31,8 +30,7 @@ from mosaic.core.pipeline.inventory import (
     inventory_wire,
     reclassify,
 )
-from mosaic.core.pipeline.inventory import _read as read_module
-from mosaic.core.pipeline.inventory._read import IndexReader, ParquetFooterMemo
+from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.label_series import label_series_records
 from mosaic.core.pipeline.inventory.model import InventoryScope
 from mosaic.core.pipeline.inventory.params import read_linked_run_params
@@ -44,6 +42,8 @@ from mosaic.core.pipeline.inventory.scan import (
     run_coverage,
     run_covers,
 )
+from mosaic.core.pipeline import parquet_reader
+from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
 from mosaic.core.scope import Scope
 from tests.helpers import (
     CONVERTED_ENTRIES,
@@ -183,16 +183,14 @@ def test_the_stems_a_run_holds_account_for_entries_by_key_or_key_and_double_unde
 
 def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """Record each parquet footer that a scan reads."""
-    import mosaic.core.pipeline.inventory._read as reading
-
     read: list[Path] = []
-    real = reading.parquet_is_readable
+    real = parquet_reader.parquet_is_readable
 
     def counted(path: Path) -> bool:
         read.append(path)
         return real(path)
 
-    monkeypatch.setattr(reading, "parquet_is_readable", counted)
+    monkeypatch.setattr(parquet_reader, "parquet_is_readable", counted)
     return read
 
 
@@ -229,23 +227,87 @@ def test_a_deleted_output_is_forgotten_by_the_next_scan_of_its_directory(
         pd.DataFrame({"a": [1]}).to_parquet(run_root / f"{name}.parquet", index=False)
     footers = ParquetFooterMemo()
     assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
-    deleted = run_root / "seq_b.parquet"
-    stamp = deleted.stat()
-    deleted.unlink()
+    output = run_root / "seq_b.parquet"
+    aside = tmp_path / "seq_b.aside"
+    _ = output.replace(aside)
 
     assert footers.whole_stems(run_root) == {"seq_a"}
 
     parsed: list[Path] = []
     monkeypatch.setattr(
-        read_module,
+        parquet_reader,
         "parquet_is_readable",
-        observed(read_module.parquet_is_readable, parsed.append),
+        observed(parquet_reader.parquet_is_readable, parsed.append),
     )
-    pd.DataFrame({"a": [1]}).to_parquet(deleted, index=False)
-    os.utime(deleted, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    _ = aside.replace(output)
 
     assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
-    assert parsed == [deleted]
+    assert parsed == [output]
+
+
+def test_a_scan_keeps_the_stored_footer_of_an_unmoved_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.parquet"
+    pd.DataFrame({"x": [1]}).to_parquet(path, index=False)
+    footers = ParquetFooterMemo()
+    stored = footers.footer(path)
+    parsed: list[Path] = []
+    monkeypatch.setattr(
+        parquet_reader,
+        "parse_footer",
+        observed(parquet_reader.parse_footer, parsed.append),
+    )
+
+    assert footers.whole_stems(tmp_path) == {"a"}
+
+    assert footers.footer(path) is stored
+    assert parsed == []
+
+
+def test_a_scan_records_a_footer_for_a_later_footer_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.parquet"
+    pd.DataFrame({"x": [1, 2]}).to_parquet(path, index=False)
+    footers = ParquetFooterMemo()
+    assert footers.whole_stems(tmp_path) == {"a"}
+    parsed: list[Path] = []
+    monkeypatch.setattr(
+        parquet_reader,
+        "parse_footer",
+        observed(parquet_reader.parse_footer, parsed.append),
+    )
+
+    assert footers.footer(path).n_rows == 2
+    assert footers.footer(path).n_rows == 2
+
+    assert parsed == [path]
+
+
+def test_a_scan_forgets_the_footer_of_a_deleted_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    path = run_root / "a.parquet"
+    pd.DataFrame({"x": [1]}).to_parquet(path, index=False)
+    footers = ParquetFooterMemo()
+    _ = footers.footer(path)
+    aside = tmp_path / "a.aside"
+    _ = path.replace(aside)
+    assert footers.whole_stems(run_root) == set()
+    _ = aside.replace(path)
+    parsed: list[Path] = []
+    monkeypatch.setattr(
+        parquet_reader,
+        "parse_footer",
+        observed(parquet_reader.parse_footer, parsed.append),
+    )
+
+    _ = footers.footer(path)
+
+    assert parsed == [path]
 
 
 def test_a_rebuild_after_an_index_moved_reads_no_footer_of_a_file_that_did_not(

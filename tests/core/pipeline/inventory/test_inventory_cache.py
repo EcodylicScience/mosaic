@@ -20,7 +20,7 @@ from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.pipeline.inventory import cache as cache_module
-from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
+from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
 from mosaic.core.pipeline.inventory.model import ArtifactKind
 from mosaic.core.pipeline.label_series import TAGS_SERIES
 from mosaic.core.pipeline.label_series_index import series_index_path

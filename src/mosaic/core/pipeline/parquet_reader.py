@@ -16,8 +16,10 @@ builds a pandas frame. A file that pyarrow cannot read raises
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
@@ -26,7 +28,6 @@ import pyarrow.parquet as pq
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
-    from pathlib import Path
     from typing import Any
 
     import numpy.typing as npt
@@ -36,9 +37,12 @@ __all__ = [
     "FooterColumn",
     "NumericSummary",
     "ParquetFooter",
+    "ParquetFooterMemo",
     "ParquetUnreadable",
     "iter_column_batches",
     "output_n_rows",
+    "parquet_is_readable",
+    "parse_footer",
     "read_footer",
     "read_head",
     "read_parquet_column_names",
@@ -114,8 +118,13 @@ def _reading(path: Path) -> Generator[None]:
         raise ParquetUnreadable(path, error) from error
 
 
-def read_footer(path: Path) -> ParquetFooter:
-    """Return the schema and the row count that *path*'s footer records."""
+def parse_footer(path: Path) -> ParquetFooter:
+    """Read the schema and the row count from the footer of the file at *path*.
+
+    The read always opens the file, whatever memo is entered. :func:`read_footer`
+    calls it, and so does :class:`ParquetFooterMemo`, which is the caller to
+    use where a file may be read more than once.
+    """
     with _reading(path):
         parquet = pq.ParquetFile(path)
         schema = parquet.schema_arrow
@@ -129,6 +138,136 @@ def read_footer(path: Path) -> ParquetFooter:
         for field in schema
     )
     return ParquetFooter(columns=columns, n_rows=n_rows)
+
+
+def read_footer(path: Path) -> ParquetFooter:
+    """Return the schema and the row count that *path*'s footer records."""
+    return parse_footer(path)
+
+
+def parquet_is_readable(path: Path) -> bool:
+    """Is this parquet whole? Footer-only, so it costs one seek rather than a read.
+
+    A parquet's footer is written last, so a file torn by an interrupted write
+    has no readable metadata. That is cheap enough to run per file on a gate
+    while still catching the failure presence alone cannot.
+    """
+    try:
+        # Opening the file parses its footer, which is all that is asked.
+        pq.ParquetFile(path).close()
+    except Exception:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _Known:
+    """What the memo knows of one file: its stamp, and its footer once read.
+
+    Attributes:
+        inode: The file's inode.
+        size: The file's size in bytes.
+        mtime_ns: The file's modification time in nanoseconds.
+        parsed: Whether the footer parsed.
+        footer: The parsed footer, or ``None`` where only a scan has seen the
+            file or the footer did not parse.
+    """
+
+    inode: int
+    size: int
+    mtime_ns: int
+    parsed: bool
+    footer: ParquetFooter | None
+
+    def stamped(self, inode: int, size: int, mtime_ns: int) -> bool:
+        """Does a file with this inode, size and modification time match the entry?"""
+        return (self.inode, self.size, self.mtime_ns) == (inode, size, mtime_ns)
+
+
+class ParquetFooterMemo:
+    """The parquet files of a directory that parsed, and their footers, by stamp.
+
+    A feature run holds one output per entry, and reading every footer again on
+    each scan of a dataset of thousands of entries costs seconds. A file is known
+    by its inode, size and modification time. A file that was rewritten or
+    replaced has another stamp and is read again, so a torn output is still seen.
+    Each directory keeps what its latest scan found, so a deleted output is
+    forgotten. A holder keeps one memo for as long as it wants the footers
+    remembered and drops it to forget them.
+
+    A file rewritten in place with the same inode and size within one tick of a
+    coarse filesystem clock, whole seconds on some network shares, is not seen as
+    moved.
+    """
+
+    def __init__(self) -> None:
+        self._known: dict[Path, dict[str, _Known]] = {}
+        self._columns: dict[tuple[FooterColumn, ...], tuple[FooterColumn, ...]] = {}
+
+    def whole_stems(self, root: Path) -> set[str]:
+        """The stems of the parquet files of *root* whose footer parses.
+
+        Each file's footer is read only when its stamp is not the one the
+        previous scan of *root* saw. A file whose stamp did not move keeps its
+        entry, parsed footer included.
+        """
+        before = self._known.get(root, {})
+        after: dict[str, _Known] = {}
+        stems: set[str] = set()
+        with os.scandir(root) as listing:
+            for item in listing:
+                if not item.name.endswith(".parquet"):
+                    continue
+                try:
+                    state = item.stat()
+                    inode = item.inode()
+                except OSError:
+                    continue
+                seen = before.get(item.name)
+                if seen is not None and seen.stamped(
+                    inode, state.st_size, state.st_mtime_ns
+                ):
+                    known = seen
+                else:
+                    known = _Known(
+                        inode=inode,
+                        size=state.st_size,
+                        mtime_ns=state.st_mtime_ns,
+                        parsed=parquet_is_readable(Path(item.path)),
+                        footer=None,
+                    )
+                after[item.name] = known
+                if known.parsed:
+                    stems.add(Path(item.name).stem)
+        self._known[root] = after
+        return stems
+
+    def footer(self, path: Path) -> ParquetFooter:
+        """The footer of *path*, parsed only when the file moved since the last read.
+
+        Raises:
+            OSError: If *path* cannot be examined.
+            ParquetUnreadable: If the footer does not parse. A failed read stores
+                nothing, so the next call reads the file again.
+        """
+        state = path.stat()
+        inode, size, mtime_ns = state.st_ino, state.st_size, state.st_mtime_ns
+        seen = self._known.get(path.parent, {}).get(path.name)
+        if (
+            seen is not None
+            and seen.footer is not None
+            and seen.stamped(inode, size, mtime_ns)
+        ):
+            return seen.footer
+        parsed = parse_footer(path)
+        footer = ParquetFooter(
+            columns=self._columns.setdefault(parsed.columns, parsed.columns),
+            n_rows=parsed.n_rows,
+        )
+        self._known.setdefault(path.parent, {})[path.name] = _Known(
+            inode=inode, size=size, mtime_ns=mtime_ns, parsed=True, footer=footer
+        )
+        return footer
 
 
 def read_parquet_column_names(path: Path) -> tuple[str, ...] | None:

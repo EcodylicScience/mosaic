@@ -26,7 +26,7 @@ from mosaic.core.scope import Scope
 
 from .definitions.scope import definition_scope
 from .storage_names import derive_storage_name
-from .inventory._read import ParquetFooterMemo
+from .parquet_reader import ParquetFooterMemo
 from .inventory.scan import entry_universe, narrow_target, run_coverage
 from .index import (
     drifted_entries,

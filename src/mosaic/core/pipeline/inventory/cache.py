@@ -37,12 +37,12 @@ from mosaic.core.pipeline.dataset_indexes import DatasetIndex, iter_dataset_inde
 from mosaic.core.pipeline.identity_scheme import FEATURE_IDENTITY_SCHEME
 from mosaic.core.pipeline.index_stamp import IndexStamp
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
+from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
 from mosaic.core.pipeline.tracks_identity import TRACKS_IDENTITY_SCHEME
 from mosaic.core.scope import Scope
 
 from .contributors import registered_inventory_kinds
 from .model import ArtifactKind, DatasetInventory
-from ._read import ParquetFooterMemo
 from .scan import inventory, without_mismatched_links
 
 if TYPE_CHECKING:

@@ -32,6 +32,7 @@ from mosaic.core.pipeline.index import (
 )
 from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_index
 from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
 from mosaic.core.pipeline.tracks_index import (
     frame_axis_findings,
     media_drift,
@@ -44,7 +45,7 @@ from mosaic.core.scope import Scope
 
 from ..artifact_kinds import LINKED_KIND, LinkedKind
 from ._linked import Remeasure, grouped_by_ref, merged_record, nearest_rows_present
-from ._read import IndexReader, ParquetFooterMemo
+from ._read import IndexReader
 from ._runs import finish_state, run_records
 from .contributors import inventory_contributor, registered_inventory_kinds
 from .label_series import label_series_records

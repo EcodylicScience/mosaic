@@ -15,76 +15,16 @@ by-product of reading rather than by a second walk over the same files.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
 
 from mosaic.core.pipeline.index_stamp import IndexStamp
+from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
 
 
-__all__ = ["IndexReader", "ParquetFooterMemo", "parquet_is_readable"]
-
-
-def parquet_is_readable(path: Path) -> bool:
-    """Is this parquet whole? Footer-only, so it costs one seek rather than a read.
-
-    A parquet's footer is written last, so a file torn by an interrupted write
-    has no readable metadata. That is cheap enough to run per file on a gate
-    while still catching the failure presence alone cannot.
-    """
-    import pyarrow.parquet as pq
-
-    try:
-        # Opening the file parses its footer, which is all that is asked.
-        pq.ParquetFile(path).close()
-    except Exception:
-        return False
-    return True
-
-
-class ParquetFooterMemo:
-    """Which parquet files of a directory parsed, by path, size and modification time.
-
-    A feature run holds one output per entry, and reading every footer again on
-    each scan of a dataset of thousands of entries costs seconds. A file that was
-    rewritten has another modification time or size and is read again, so a torn
-    output is still seen. Each directory keeps what its latest scan found, so a
-    deleted output is forgotten. Held by one :class:`~.cache.InventoryCache` and
-    dropped with it.
-    """
-
-    def __init__(self) -> None:
-        self._known: dict[Path, dict[str, tuple[int, int, bool]]] = {}
-
-    def whole_stems(self, root: Path) -> set[str]:
-        """The stems of the parquet files of *root* whose footer parses.
-
-        Each file's footer is read only when its size or modification time is not
-        the one the previous scan of *root* saw.
-        """
-        before = self._known.get(root, {})
-        after: dict[str, tuple[int, int, bool]] = {}
-        stems: set[str] = set()
-        with os.scandir(root) as listing:
-            for item in listing:
-                if not item.name.endswith(".parquet"):
-                    continue
-                try:
-                    state = item.stat()
-                except OSError:
-                    continue
-                seen = before.get(item.name)
-                if seen is not None and seen[:2] == (state.st_size, state.st_mtime_ns):
-                    parsed = seen[2]
-                else:
-                    parsed = parquet_is_readable(Path(item.path))
-                after[item.name] = (state.st_size, state.st_mtime_ns, parsed)
-                if parsed:
-                    stems.add(Path(item.name).stem)
-        self._known[root] = after
-        return stems
+__all__ = ["IndexReader"]
 
 
 class IndexReader:
