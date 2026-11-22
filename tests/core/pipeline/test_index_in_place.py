@@ -171,7 +171,7 @@ def test_the_variant_of_a_conversion_is_refused_and_the_tree_is_left_alone(
     rows = read_tracks_index(source)
     before = tree_snapshot(source.base_dir)
 
-    with pytest.raises(ValueError, match="source"):
+    with pytest.raises(ValueError, match="record the inputs"):
         _ = index_tracks_variant(
             source,
             str(rows["run_id"].iloc[0]),
@@ -410,7 +410,7 @@ def test_the_variant_of_a_labels_conversion_is_refused_and_the_tree_is_left_alon
     labels = _calms21_labels(tmp_path)
     before = tree_snapshot(labels.source.base_dir)
 
-    with pytest.raises(ValueError, match="source"):
+    with pytest.raises(ValueError, match="record the inputs"):
         _ = index_labels_variant(labels.source, LABEL_KIND, labels.variant)
 
     assert_tree_unchanged(labels.source.base_dir, before)

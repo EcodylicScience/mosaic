@@ -21,7 +21,8 @@ file the dataset does not contain. A rerun replaces the rows by key. It raises
 directory without a `params.json`, a sidecar whose op is not the run id's, a table whose
 `group` and `sequence` columns are not the one entry that its file name gives, a table
 that fails the strict schema check for `std_format`, and a variant whose rows in the
-index record a source, md5 or consumed composition.
+index record a source, md5, consumed roots, consumed composition or consumed media
+composition, as a conversion or a tracker writes them.
 
 `index_labels_variant(ds, label_kind, run_id)` does the same for the `<entry key>.npz`
 files under `labels/<label_kind>/<run_id>/` and returns their number. A row has the
@@ -32,11 +33,11 @@ It raises `ValueError` before it writes anything for a run id that is not an op 
 a variant directory without a `params.json`, a sidecar whose op is not the run id's or
 whose kind is not `label_kind`, a file that lacks one of those arrays or its `group` or
 `sequence`, a file whose `group` and `sequence` are not the entry that its name gives,
-and a variant whose rows in the kind's index record a source, md5 or consumed
-composition. A file whose entry key collides with another entry raises
-`EntryKeyCollisionError` and no row is written. `write_labels_rows` is the batch writer
-of the labels index: it appends the rows of one kind in one write, and
-`write_labels_row` calls it with one row.
+and a variant whose rows in the kind's index record a source, md5, consumed roots or
+consumed composition, as a conversion writes them. A file whose entry key collides with
+another entry raises `EntryKeyCollisionError` and no row is written.
+`write_labels_rows` is the batch writer of the labels index: it appends the rows of one
+kind in one write, and `write_labels_row` calls it with one row.
 
 `copy_run_root(src, dst, *, root_key="models", kind, run_id, dry_run=True)`
 (`mosaic.tracking.ops.copy_run_root`) copies a finished trained model's run root from

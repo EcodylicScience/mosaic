@@ -229,6 +229,61 @@ Each writes one row per file into that root's `index.csv` — for media, where t
 is and what `ffprobe` measured from it. Nothing is recorded in the manifest, so
 picking up new files means calling it again.
 
+### Index tables already in the dataset
+
+Tables that you copied into `tracks/` or `labels/` have no row in the dataset's index,
+and `mosaic reindex` only drops rows of files that are gone. Two calls record them
+without converting or moving a file. Each reads one variant directory, the directory
+under `tracks/` or under `labels/<kind>/` whose name is a run id and whose `params.json`
+came with the copy:
+
+```python
+from mosaic.core.dataset import open_dataset
+from mosaic.core.pipeline.labels_index import index_labels_variant
+from mosaic.core.pipeline.tracks_index import index_tracks_variant
+
+ds = open_dataset("dataset.yaml")
+index_tracks_variant(
+    ds, "convert-calms21_npy.1-a3f2b1c8e9", std_format="mosaic_v1", carries_tracklets=True
+)
+index_labels_variant(ds, "behavior", "convert-labels-calms21_npy.1-5c0d7e21ab")
+```
+
+Each returns the number of rows it wrote, one for each `<entry key>.parquet` or
+`<entry key>.npz` of the directory. A name that starts with `.` and any other file are
+skipped. `std_format` is the track schema that every table must pass, and
+`carries_tracklets` says whether an `id` follows one animal over time, or is `None` when
+you do not know. Run either call again after adding files. It replaces the variant's
+rows and keeps the rest of the index.
+
+A row records what mosaic measures from the file: for tracks, the row count, the
+keypoints, the extent and the pair counts, and for labels the `label_format`, the frame
+count and the label ids and names. The frame count is one past the last frame, so a file
+whose last frame is 899 records 900, and a file without frames records 0. The `producer`
+is the kind that the run id names. The source file, its md5, what the variant consumed
+and, for tracks, the first frame stay blank, because the dataset does not contain the
+source file. With the first frame blank, mosaic reads each table's `frame` values as
+frames of the video counted from its first frame, so copy tables numbered that way.
+
+Both calls refuse before they write anything, and a refusal leaves the index and the
+files as they were. Each raises `ValueError` for:
+
+- a `run_id` that is not an op run id, such as `<kind>.<version>-<digest>`;
+- a directory without a readable `params.json`, or one whose op is not the kind of the
+  run id;
+- a table or file whose `group` and `sequence` are not the one entry that its file name
+  gives;
+- a variant whose index rows a conversion or another producer wrote. Those rows record
+  the inputs it consumed, and indexing again would drop them. Index only what the
+  dataset received by copy.
+
+For tracks, it also refuses a table that fails the strict schema check for `std_format`.
+For labels, it also refuses a sidecar whose `kind` is not `label_kind` and a file that
+lacks `label_format`, `frames`, `label_ids`, `label_names`, `group` or `sequence`. An
+entry that shares its key with another entry of the index or of the media index raises
+`EntryKeyCollisionError`. Each call writes its rows in one batch, so after a refusal
+or a collision no row of the variant is written.
+
 ## Add sources and scan
 
 When the files stay where they are — a NAS, an external volume — or when one dataset

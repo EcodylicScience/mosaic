@@ -132,9 +132,9 @@ def refuse_rows_with_inputs(
     """
     if any(held[cell].ne("").any() for cell in cells):
         raise ValueError(
-            f"The {index_name} holds rows of {run_id!r} that record a source or a "
-            "consumed composition. Indexing the files again would replace them "
-            "and drop the inputs that they record."
+            f"The {index_name} holds rows of {run_id!r} that record the inputs "
+            "their producer consumed. Indexing the files again would replace them "
+            "and drop those inputs."
         )
 
 

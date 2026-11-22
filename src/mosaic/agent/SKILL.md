@@ -158,6 +158,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   `features/`, `models/`, `media/`, `frame_predictions/`, `selections/` or `_tracking/`.
   Produce outputs through `run_feature`, `mosaic run` and the ops, which keep the
   indexes and run ids consistent.
+- A table the user copied into `tracks/<variant>/` or `labels/<kind>/<variant>/` has no
+  index row. Record it with `index_tracks_variant` or `index_labels_variant`, which
+  convert nothing and refuse a variant that a conversion or another producer indexed
+  (https://ecodylicscience.github.io/mosaic/dataset/#index-tables-already-in-the-dataset).
 - Do not hand-edit an `index.csv`, delete a `*.lock` file, or edit `.mosaic/`. Keep
   `.mosaic/claims/`, the only record of which entries are known to fail, and
   `.mosaic/selections/`, the user's saved entry sets (see Bringing data in). Never

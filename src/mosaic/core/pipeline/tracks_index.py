@@ -2505,8 +2505,9 @@ def index_tracks_variant(
             sidecar's op is not the kind of *run_id*, a table's ``group`` and
             ``sequence`` columns do not hold the one entry that its file name
             gives, a table fails the strict schema check for *std_format*, or
-            the index holds a row of *run_id* that records a source, its md5 or
-            a consumed composition. Such a row comes from a conversion, and
+            the index holds a row of *run_id* that records a source, its md5,
+            consumed source roots, or a consumed composition or media
+            composition. Such a row comes from a conversion or a tracker, and
             replacing it would drop the inputs it records.
     """
     parsed = parse_variant_run_id(run_id)
