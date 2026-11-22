@@ -36,9 +36,10 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import numpy as np
 import pandas as pd
 
-from mosaic.core.entry import validate_entry_name
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pipeline.dataset_indexes import (
@@ -50,10 +51,22 @@ from mosaic.core.pipeline.index_csv import (
     RunIndexRowBase,
     project_to_schema,
 )
+from mosaic.core.pipeline.labels_identity import (
+    labels_variant_root,
+    read_labels_variant,
+)
 from mosaic.core.pipeline.linked_rows import LINK_ID_COLUMN, merge_linked_rows
 from mosaic.core.pipeline.tracks_index import (
-    consumed_composition_for,
+    consumed_compositions_for,
     encode_source_roots,
+)
+from mosaic.core.pipeline.variant_rows import (
+    check_variant_sidecar,
+    keep_last_of_each_key,
+    parse_variant_run_id,
+    refuse_rows_with_inputs,
+    refuse_unnamed_entry,
+    validated_entries,
 )
 
 if TYPE_CHECKING:
@@ -65,8 +78,10 @@ __all__ = [
     "LABELS_INDEX_PATH_COLUMNS",
     "LABELS_ROWS_PATH_COLUMNS",
     "LabelsIndexRow",
+    "LabelsRowDraft",
     "adopt_legacy_label_columns",
     "empty_labels_frame",
+    "index_labels_variant",
     "labels_index",
     "labels_index_path",
     "labels_rows",
@@ -75,6 +90,7 @@ __all__ = [
     "readable_label_kinds",
     "select_label_variant_rows",
     "write_labels_row",
+    "write_labels_rows",
 ]
 
 
@@ -362,6 +378,30 @@ def legacy_labels_view(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LabelsRowDraft:
+    """The arguments of one :func:`write_labels_row` call, held for a later write.
+
+    The fields are those of :func:`write_labels_row` after ``ds``, which documents
+    each of them.
+    """
+
+    run_id: str
+    group: object
+    sequence: object
+    out_path: Path
+    producer: str
+    label_kind: str
+    label_format: str = ""
+    n_frames: int
+    label_ids: str = ""
+    label_names: str = ""
+    producer_run_id: str = ""
+    source: Path | str = ""
+    source_md5: str = ""
+    consumed_source_roots: Sequence[str] = ()
+
+
 def write_labels_row(
     ds: Dataset,
     *,
@@ -380,7 +420,7 @@ def write_labels_row(
     source_md5: str = "",
     consumed_source_roots: Sequence[str] = (),
 ) -> None:
-    """Record one converted-labels table. The only way to write this index.
+    """Record one converted-labels table. The only way to write one row of this index.
 
     Keyword-only, and ``group``/``sequence`` are read through
     :func:`~mosaic.core.helpers.text_cell` for the same reason the tracks writer
@@ -389,39 +429,212 @@ def write_labels_row(
     entry, and a blank cell arrives there as a float NaN that ``str()`` spells
     as the word ``nan`` -- a group no composition was ever recorded under.
     ``consumed_composition`` is computed here from the declared
-    ``consumed_source_roots`` via the shared :func:`consumed_composition_for`,
-    which now covers ``labels_raw`` too.
+    ``consumed_source_roots`` via the shared :func:`consumed_compositions_for`,
+    which covers ``labels_raw`` too.
 
     Call this *after* writing the ``.npz``: ``IndexRowBase`` existence-checks an
     absolute ``abs_path``.
     """
-    entry_group = validate_entry_name(text_cell(group), "group")
-    entry_sequence = validate_entry_name(text_cell(sequence), "sequence")
-    row = LabelsIndexRow(
-        abs_path=Path(ds.relative_to_root(out_path)),
-        run_id=run_id,
-        group=entry_group,
-        sequence=entry_sequence,
-        producer=producer,
-        label_kind=label_kind,
-        label_format=label_format,
-        producer_run_id=producer_run_id,
-        source_abs_path=ds.relative_to_root(source) if source else "",
-        source_md5=source_md5,
-        consumed_source_roots=encode_source_roots(consumed_source_roots),
-        n_frames=int(n_frames),
-        label_ids=label_ids,
-        label_names=label_names,
-        consumed_composition=consumed_composition_for(
-            ds, entry_group, entry_sequence, consumed_source_roots
-        ),
+    write_labels_rows(
+        ds,
+        [
+            LabelsRowDraft(
+                run_id=run_id,
+                group=group,
+                sequence=sequence,
+                out_path=out_path,
+                producer=producer,
+                label_kind=label_kind,
+                label_format=label_format,
+                n_frames=n_frames,
+                label_ids=label_ids,
+                label_names=label_names,
+                producer_run_id=producer_run_id,
+                source=source,
+                source_md5=source_md5,
+                consumed_source_roots=consumed_source_roots,
+            )
+        ],
     )
+
+
+def write_labels_rows(ds: Dataset, drafts: Sequence[LabelsRowDraft]) -> None:
+    """Record several converted-labels tables of one kind in one write of the index.
+
+    What :func:`write_labels_row` does for one table, for a writer of many: the
+    rows are built, checked for key collisions and appended in one
+    read-modify-write of the kind's index under its lock, and the compositions
+    they record are read once.
+
+    The result is the index that writing the drafts one after another gives. A
+    draft that names an entry (and variant) another draft of the batch names
+    replaces it, so the last of them keeps its row, at its place in the order. A
+    collision between any two entries of the batch, or with the index, refuses
+    the whole batch and writes none of it.
+
+    Raises:
+        ValueError: If the drafts name more than one ``label_kind``.
+        EntryKeyCollisionError: If a new entry shares its key with an entry of
+            the index, of the media index or of the batch, or takes a continuous
+            group's name.
+    """
+    if not drafts:
+        return
+    kinds = sorted({draft.label_kind for draft in drafts})
+    if len(kinds) > 1:
+        raise ValueError(
+            f"A batch of labels rows is of one kind, and these name {kinds}."
+        )
+    entries = validated_entries((draft.group, draft.sequence) for draft in drafts)
+    compositions = consumed_compositions_for(
+        ds,
+        [
+            (entry, draft.consumed_source_roots)
+            for entry, draft in zip(entries, drafts, strict=True)
+        ],
+    )
+    rows = [
+        LabelsIndexRow(
+            abs_path=Path(ds.relative_to_root(draft.out_path)),
+            run_id=draft.run_id,
+            group=group,
+            sequence=sequence,
+            producer=draft.producer,
+            label_kind=draft.label_kind,
+            label_format=draft.label_format,
+            producer_run_id=draft.producer_run_id,
+            source_abs_path=ds.relative_to_root(draft.source) if draft.source else "",
+            source_md5=draft.source_md5,
+            consumed_source_roots=encode_source_roots(draft.consumed_source_roots),
+            n_frames=int(draft.n_frames),
+            label_ids=draft.label_ids,
+            label_names=draft.label_names,
+            consumed_composition=composition,
+        )
+        for (group, sequence), draft, composition in zip(
+            entries, drafts, compositions, strict=True
+        )
+    ]
     append_refusing_key_collision(
         ds,
-        labels_index(labels_index_path(ds, label_kind)),
-        [row],
-        [(entry_group, entry_sequence)],
+        labels_index(labels_index_path(ds, kinds[0])),
+        keep_last_of_each_key(rows),
+        set(entries),
     )
+
+
+_LABELS_CONVERSION_CELLS: Final = (
+    "source_abs_path",
+    "source_md5",
+    "consumed_source_roots",
+    "consumed_composition",
+)
+"""The cells of a row that only a conversion or a derivation fills."""
+
+
+def index_labels_variant(ds: Dataset, label_kind: str, run_id: str) -> int:
+    """Record the files already under ``labels/<label_kind>/<run_id>/`` in the index.
+
+    The call reads the dataset's label files and records them without
+    converting: no file is written, moved or renamed. It writes one row per
+    ``<entry key>.npz`` of the variant directory through
+    :func:`write_labels_rows`, in one write. A name that starts with ``.`` (a
+    file being staged) and every file that is not an ``.npz`` are skipped.
+
+    A row records ``producer`` as the kind of *run_id*, and from the file its
+    ``label_format``, ``n_frames`` as one past its last frame (0 for a file
+    without frames, counted on the file's frame axis), and ``label_ids`` and
+    ``label_names`` joined by commas as a conversion joins them. The source,
+    its md5 and the consumed source roots and composition stay blank. A rerun
+    writes the same rows apart from ``started_at`` and replaces the earlier
+    ones by key.
+
+    Args:
+        ds: The dataset that holds the variant.
+        label_kind: The kind's directory name under ``labels/``, which the
+            variant's sidecar records as its ``kind``.
+        run_id: The variant's run id, the name of its directory under the kind.
+
+    Returns:
+        The number of rows written.
+
+    Raises:
+        ValueError: Before any row is written, if *run_id* is not an op run id,
+            the variant directory has no readable ``params.json``, the
+            sidecar's op is not the kind of *run_id* or its kind is not
+            *label_kind*, a file lacks ``label_format``, ``frames``,
+            ``label_ids``, ``label_names``, ``group`` or ``sequence``, a file's
+            ``group`` and ``sequence`` are not the entry that its name gives, or
+            the kind's index holds a row of *run_id* that records a source, its
+            md5, consumed source roots or a consumed composition. Such a row
+            comes from a conversion, and replacing it would drop the inputs it
+            records.
+        EntryKeyCollisionError: If an entry shares its key with another entry
+            of the index or of the media index. No row is written.
+    """
+    parsed = parse_variant_run_id(run_id)
+    root = labels_variant_root(ds.get_root("labels") / label_kind, run_id)
+    sidecar = check_variant_sidecar(root, parsed, read_labels_variant(root))
+    if sidecar.kind != label_kind:
+        raise ValueError(
+            f"The sidecar of {root} records kind {sidecar.kind!r}, "
+            f"and the kind to index is {label_kind!r}."
+        )
+    held = read_labels_index(ds, label_kind)
+    refuse_rows_with_inputs(
+        held[held["run_id"] == run_id],
+        run_id,
+        _LABELS_CONVERSION_CELLS,
+        f"labels index of {label_kind!r}",
+    )
+    drafts = [
+        _label_draft(path, label_kind, run_id, parsed.kind)
+        for path in sorted(root.glob("*.npz"))
+        if not path.name.startswith(".") and path.is_file()
+    ]
+    write_labels_rows(ds, drafts)
+    return len(drafts)
+
+
+def _label_draft(
+    path: Path, label_kind: str, run_id: str, producer: str
+) -> LabelsRowDraft:
+    """The row of the label file at *path*, as its contents and its name give it.
+
+    Raises:
+        ValueError: If the file lacks a key that the row records, or its ``group``
+            and ``sequence`` are not the entry whose key is the file's stem.
+    """
+    with np.load(path, allow_pickle=True) as loaded:
+        for key in ("label_format", "frames", "label_ids", "label_names"):
+            if key not in loaded.files:
+                raise ValueError(f"{path} has no {key!r} array.")
+        entry = _file_entry(loaded, path)
+        frames = np.asarray(loaded["frames"])
+        return LabelsRowDraft(
+            run_id=run_id,
+            group=entry[0],
+            sequence=entry[1],
+            out_path=path,
+            producer=producer,
+            label_kind=label_kind,
+            label_format=str(loaded["label_format"]),
+            n_frames=int(frames.max()) + 1 if frames.size else 0,
+            label_ids=",".join(str(value) for value in loaded["label_ids"]),
+            label_names=",".join(str(value) for value in loaded["label_names"]),
+        )
+
+
+def _file_entry(loaded: np.lib.npyio.NpzFile, path: Path) -> Entry:
+    """The ``(group, sequence)`` scalars of a label file, as its stem names them."""
+    values: list[str] = []
+    for key in ("group", "sequence"):
+        if key not in loaded.files:
+            raise ValueError(f"{path} has no {key!r} scalar.")
+        values.append(text_cell(loaded[key].item()))
+    group, sequence = values
+    refuse_unnamed_entry(path, group, sequence)
+    return group, sequence
 
 
 # Item 6.1: reconciled through the shared registry, so ``reindex`` and the sweep

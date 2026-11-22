@@ -43,13 +43,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 
-from mosaic.core.entry import (
-    Entry,
-    EntryKeyCollisionError,
-    make_entry_key,
-    parse_entry_key,
-    validate_entry_name,
-)
+from mosaic.core.entry import Entry, EntryKeyCollisionError
 from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import (
     append_refusing_key_collision,
@@ -88,6 +82,14 @@ from mosaic.core.pipeline.tracks_identity import (
     recorded_model_id,
     recorded_models,
     tracks_variant_root,
+)
+from mosaic.core.pipeline.variant_rows import (
+    check_variant_sidecar,
+    keep_last_of_each_key,
+    parse_variant_run_id,
+    refuse_rows_with_inputs,
+    refuse_unnamed_entry,
+    validated_entries,
 )
 from mosaic.core.schema import ensure_track_schema
 from mosaic.core.pipeline.sequence_index import (
@@ -2409,7 +2411,7 @@ def write_tracks_rows(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
 
     if not drafts:
         return
-    entries = _draft_entries(drafts)
+    entries = validated_entries((draft.group, draft.sequence) for draft in drafts)
     unrecorded = [
         position
         for position, draft in enumerate(drafts)
@@ -2450,14 +2452,11 @@ def write_tracks_rows(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
         )
         for position, (entry, draft) in enumerate(zip(entries, drafts, strict=True))
     ]
-    last_of = {
-        (row.run_id, row.group, row.sequence): position
-        for position, row in enumerate(rows)
-    }
-    survivors = set(last_of.values())
-    kept = [row for position, row in enumerate(rows) if position in survivors]
     append_refusing_key_collision(
-        ds, tracks_index(tracks_index_path(ds)), kept, set(entries)
+        ds,
+        tracks_index(tracks_index_path(ds)),
+        keep_last_of_each_key(rows),
+        set(entries),
     )
 
 
@@ -2510,28 +2509,15 @@ def index_tracks_variant(
             a consumed composition. Such a row comes from a conversion, and
             replacing it would drop the inputs it records.
     """
-    parsed = parse_op_run_id(run_id)
-    if parsed is None:
-        raise ValueError(
-            f"{run_id!r} is not an op run id, so the kind of its producer is unknown."
-        )
+    parsed = parse_variant_run_id(run_id)
     root = tracks_variant_root(ds.get_root("tracks"), run_id)
-    sidecar = read_tracks_variant(ds.get_root("tracks"), run_id)
-    if sidecar is None:
-        raise ValueError(f"{root} has no readable params.json.")
-    if sidecar.op != parsed.kind:
-        raise ValueError(
-            f"The sidecar of {root} records op {sidecar.op!r}, "
-            f"and the run id names {parsed.kind!r}."
-        )
+    _ = check_variant_sidecar(
+        root, parsed, read_tracks_variant(ds.get_root("tracks"), run_id)
+    )
     held = read_tracks_index(ds)
-    held = held[held["run_id"] == run_id]
-    if any(held[cell].ne("").any() for cell in _CONVERSION_CELLS):
-        raise ValueError(
-            f"The tracks index holds rows of {run_id!r} that record a source or a "
-            "consumed composition. Indexing the tables again would replace them "
-            "and drop the inputs that they record."
-        )
+    refuse_rows_with_inputs(
+        held[held["run_id"] == run_id], run_id, _CONVERSION_CELLS, "tracks index"
+    )
     drafts: list[TracksRowDraft] = []
     for table in sorted(root.glob("*.parquet")):
         if table.name.startswith(".") or not table.is_file():
@@ -2574,29 +2560,8 @@ def _single_entry(frame: pd.DataFrame, table: Path) -> tuple[str, str]:
             )
         values.append(held.pop())
     group, sequence = values
-    group_named, sequence_named = parse_entry_key(table.stem)
-    if make_entry_key(group, sequence) != table.stem:
-        raise ValueError(
-            f"{table} holds the entry ({group!r}, {sequence!r}), and its name "
-            f"gives ({group_named!r}, {sequence_named!r})."
-        )
+    refuse_unnamed_entry(table, group, sequence)
     return group, sequence
-
-
-def _draft_entries(drafts: Sequence[TracksRowDraft]) -> list[Entry]:
-    """The validated ``(group, sequence)`` of each draft.
-
-    Validated before anything else, because the composition is looked up by the
-    same key the row is written under: a lookup on the raw value would miss for the
-    caller that reads its group off a pandas Series as a numpy scalar.
-    """
-    return [
-        (
-            validate_entry_name(text_cell(draft.group), "group"),
-            validate_entry_name(text_cell(draft.sequence), "sequence"),
-        )
-        for draft in drafts
-    ]
 
 
 def refuse_colliding_drafts(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
@@ -2609,7 +2574,11 @@ def refuse_colliding_drafts(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> No
     Raises:
         EntryKeyCollisionError: As :func:`write_tracks_rows` does.
     """
-    reason = key_collision_at_write(ds, _draft_entries(drafts), tracks_index_path(ds))
+    reason = key_collision_at_write(
+        ds,
+        validated_entries((draft.group, draft.sequence) for draft in drafts),
+        tracks_index_path(ds),
+    )
     if reason is not None:
         raise EntryKeyCollisionError(reason)
 

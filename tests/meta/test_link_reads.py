@@ -145,6 +145,8 @@ GUARDED_SITES: Final = (
     GuardedSite("core/pipeline/reconcile_variants.py", "_VariantReconciler"),
     GuardedSite("core/pipeline/reconcile_variants.py", "LabelsReconciler"),
     GuardedSite("core/pipeline/labels_index.py", "write_labels_row"),
+    GuardedSite("core/pipeline/labels_index.py", "write_labels_rows"),
+    GuardedSite("core/pipeline/labels_index.py", "index_labels_variant"),
     GuardedSite("core/pipeline/labels_migration.py", "revert_labels"),
     GuardedSite("core/pipeline/tracks_index.py", "backfill_frame_extents"),
     GuardedSite("core/pipeline/tracks_index.py", "backfill_pair_frames"),

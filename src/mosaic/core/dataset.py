@@ -12873,4 +12873,5 @@ class Dataset:
 
 # The hand-written ``_ensure_labels_index`` / ``_append_labels_index`` are gone:
 # ``labels/<kind>/index.csv`` is now the typed ``LabelsIndexRow`` index, written
-# only through ``write_labels_row`` and read only through ``read_labels_index``.
+# only through ``write_labels_rows`` (which ``write_labels_row`` calls with one
+# row) and read only through ``read_labels_index``.

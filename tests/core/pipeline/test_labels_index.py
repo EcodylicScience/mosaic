@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar, override
 
@@ -13,6 +14,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import EntryKeyCollisionError
 from mosaic.core.helpers import place_label_payload
 from mosaic.core.label_converter import (
     LABEL_CONVERTERS,
@@ -23,6 +25,7 @@ from mosaic.core.label_converter import (
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
+    LabelsRowDraft,
     LABELS_ROWS_PATH_COLUMNS,
     empty_labels_frame,
     labels_rows,
@@ -30,6 +33,7 @@ from mosaic.core.pipeline.labels_index import (
     readable_label_kinds,
     select_label_variant_rows,
     write_labels_row,
+    write_labels_rows,
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 from mosaic.core.pipeline.types import (
@@ -387,6 +391,118 @@ def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
     row = read_labels_index(ds, "behavior").iloc[0]
     assert str(row["group"]) == ""
     assert str(row["sequence"]) == "s"
+
+
+# --- write_labels_rows: one write of many rows -------------------------------
+
+_BATCH_RUN = "convert-labels-x.0.1-aaaaaaaaaa"
+
+
+def _labels_draft(
+    ds: Dataset, sequence: str, *, group: str = "", source_md5: str = ""
+) -> LabelsRowDraft:
+    out_path = ds.get_root("labels") / "behavior" / _BATCH_RUN / f"{sequence}.npz"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, labels=np.array([0, 1]))
+    return LabelsRowDraft(
+        run_id=_BATCH_RUN,
+        group=group,
+        sequence=sequence,
+        out_path=out_path,
+        producer="convert-labels-x",
+        label_kind="behavior",
+        label_format="individual_pair_v1",
+        n_frames=2,
+        label_ids="0,1",
+        label_names="none,other",
+        source_md5=source_md5,
+    )
+
+
+def test_a_batch_of_label_drafts_gives_the_index_of_the_same_rows_written_one_by_one(
+    tmp_path: Path,
+) -> None:
+    batched = make_dataset(tmp_path / "a", save=False, ensure_roots=False)
+    single = make_dataset(tmp_path / "b", save=False, ensure_roots=False)
+    names = [f"s{i}" for i in range(5)]
+
+    write_labels_rows(batched, [_labels_draft(batched, name) for name in names])
+    for name in names:
+        draft = _labels_draft(single, name)
+        write_labels_row(
+            single,
+            run_id=draft.run_id,
+            group=draft.group,
+            sequence=draft.sequence,
+            out_path=draft.out_path,
+            producer=draft.producer,
+            label_kind=draft.label_kind,
+            label_format=draft.label_format,
+            n_frames=draft.n_frames,
+            label_ids=draft.label_ids,
+            label_names=draft.label_names,
+        )
+
+    def cells(ds: Dataset) -> list[list[object]]:
+        frame = read_labels_index(ds, "behavior").drop(columns=["started_at"])
+        return frame.to_numpy().tolist()
+
+    assert cells(batched) == cells(single)
+    assert len(cells(batched)) == len(names)
+
+
+def test_a_batch_of_label_drafts_keeps_the_last_draft_of_an_entry_it_names_twice(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+
+    write_labels_rows(
+        ds,
+        [
+            _labels_draft(ds, "a", source_md5="1"),
+            _labels_draft(ds, "b"),
+            _labels_draft(ds, "a", source_md5="2"),
+        ],
+    )
+
+    index = read_labels_index(ds, "behavior")
+    assert list(index["sequence"]) == ["b", "a"]
+    assert list(index["source_md5"]) == ["", "2"]
+
+
+def test_a_batch_of_label_drafts_with_a_colliding_entry_writes_none_of_it(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+    write_labels_rows(ds, [_labels_draft(ds, "x", group="a__b")])
+
+    with pytest.raises(EntryKeyCollisionError):
+        write_labels_rows(
+            ds, [_labels_draft(ds, "fresh"), _labels_draft(ds, "b__x", group="a")]
+        )
+
+    assert list(read_labels_index(ds, "behavior")["sequence"]) == ["x"]
+
+
+def test_a_batch_of_label_drafts_of_two_kinds_is_refused_and_writes_none_of_it(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+    other = replace(_labels_draft(ds, "b"), label_kind="other")
+
+    with pytest.raises(ValueError, match="kind"):
+        write_labels_rows(ds, [_labels_draft(ds, "a"), other])
+
+    assert read_labels_index(ds, "behavior").empty
+    assert read_labels_index(ds, "other").empty
+
+
+def test_an_empty_batch_of_label_drafts_creates_no_index(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+
+    write_labels_rows(ds, [])
+
+    assert not (ds.get_root("labels") / "behavior" / "index.csv").exists()
 
 
 # --- convert_all_labels end to end --------------------------------------------
