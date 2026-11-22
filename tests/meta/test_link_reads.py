@@ -149,6 +149,7 @@ GUARDED_SITES: Final = (
     GuardedSite("core/pipeline/tracks_index.py", "backfill_frame_extents"),
     GuardedSite("core/pipeline/tracks_index.py", "backfill_pair_frames"),
     GuardedSite("core/pipeline/tracks_index.py", "_backfill_cell"),
+    GuardedSite("core/pipeline/tracks_index.py", "index_tracks_variant"),
     GuardedSite("core/pipeline/upgrade_tracks.py", "upgrade_trex_tables"),
     GuardedSite("core/pipeline/pipeline.py", "Pipeline.clean"),
     GuardedSite("core/pipeline/run.py", "_run_feature_impl"),

@@ -43,7 +43,13 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 
-from mosaic.core.entry import Entry, EntryKeyCollisionError, validate_entry_name
+from mosaic.core.entry import (
+    Entry,
+    EntryKeyCollisionError,
+    make_entry_key,
+    parse_entry_key,
+    validate_entry_name,
+)
 from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import (
     append_refusing_key_collision,
@@ -51,7 +57,7 @@ from mosaic.core.pipeline.entry_keys import (
 )
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
-from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
+from mosaic.core.pipeline.parquet_reader import read_footer, read_parquet_column_names
 from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
@@ -83,6 +89,7 @@ from mosaic.core.pipeline.tracks_identity import (
     recorded_models,
     tracks_variant_root,
 )
+from mosaic.core.schema import ensure_track_schema
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -126,6 +133,7 @@ __all__ = [
     "frame_axis_verdict",
     "frame_tail_shortfalls",
     "frame_measures",
+    "index_tracks_variant",
     "legacy_view",
     "media_drift",
     "read_first_frame",
@@ -2451,6 +2459,128 @@ def write_tracks_rows(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
     append_refusing_key_collision(
         ds, tracks_index(tracks_index_path(ds)), kept, set(entries)
     )
+
+
+_CONVERSION_CELLS: Final = (
+    "source_abs_path",
+    "source_md5",
+    "consumed_source_roots",
+    "consumed_composition",
+    "consumed_media_composition",
+)
+"""The cells of a row that only a conversion or a tracker fills."""
+
+
+def index_tracks_variant(
+    ds: Dataset, run_id: str, *, std_format: str, carries_tracklets: bool | None
+) -> int:
+    """Record the tables already under ``tracks/<run_id>/`` in the tracks index.
+
+    The call reads the dataset's tables and records them without converting: no
+    table is written, moved or renamed. It writes one row per
+    ``<entry key>.parquet`` of the variant directory through
+    :func:`write_tracks_rows`, in one write. A name that starts with ``.`` (a
+    table being staged) and every file that is not a ``.parquet`` are skipped.
+
+    A row records ``producer`` as the kind of *run_id* and ``n_rows`` as the
+    footer's row count. The counts that every row measures are measured. The
+    source, its md5, the consumed source roots, the consumed composition and the
+    first frame stay blank, and the row records no media, as for a conversion
+    whose source file the dataset does not contain. A rerun writes the same rows
+    apart from ``started_at`` and replaces the earlier ones by key.
+
+    Args:
+        ds: The dataset that holds the variant.
+        run_id: The variant's run id, the name of its directory under ``tracks/``.
+        std_format: The registered track schema that every table is checked
+            against and that its row records.
+        carries_tracklets: Whether the tables' ``id`` follows one animal over
+            time, or ``None`` when that is not known.
+
+    Returns:
+        The number of rows written.
+
+    Raises:
+        ValueError: Before any row is written, if *run_id* is not an op run id,
+            the variant directory has no readable ``params.json``, the
+            sidecar's op is not the kind of *run_id*, a table's ``group`` and
+            ``sequence`` columns do not hold the one entry that its file name
+            gives, a table fails the strict schema check for *std_format*, or
+            the index holds a row of *run_id* that records a source, its md5 or
+            a consumed composition. Such a row comes from a conversion, and
+            replacing it would drop the inputs it records.
+    """
+    parsed = parse_op_run_id(run_id)
+    if parsed is None:
+        raise ValueError(
+            f"{run_id!r} is not an op run id, so the kind of its producer is unknown."
+        )
+    root = tracks_variant_root(ds.get_root("tracks"), run_id)
+    sidecar = read_tracks_variant(ds.get_root("tracks"), run_id)
+    if sidecar is None:
+        raise ValueError(f"{root} has no readable params.json.")
+    if sidecar.op != parsed.kind:
+        raise ValueError(
+            f"The sidecar of {root} records op {sidecar.op!r}, "
+            f"and the run id names {parsed.kind!r}."
+        )
+    held = read_tracks_index(ds)
+    held = held[held["run_id"] == run_id]
+    if any(held[cell].ne("").any() for cell in _CONVERSION_CELLS):
+        raise ValueError(
+            f"The tracks index holds rows of {run_id!r} that record a source or a "
+            "consumed composition. Indexing the tables again would replace them "
+            "and drop the inputs that they record."
+        )
+    drafts: list[TracksRowDraft] = []
+    for table in sorted(root.glob("*.parquet")):
+        if table.name.startswith(".") or not table.is_file():
+            continue
+        frame = pd.read_parquet(table)
+        group, sequence = _single_entry(frame, table)
+        _ = ensure_track_schema(frame, std_format, strict=True, source=str(table))
+        drafts.append(
+            TracksRowDraft(
+                run_id=run_id,
+                group=group,
+                sequence=sequence,
+                out_path=table,
+                producer=parsed.kind,
+                std_format=std_format,
+                n_rows=read_footer(table).n_rows,
+                carries_tracklets=carries_tracklets,
+            )
+        )
+    write_tracks_rows(ds, drafts)
+    return len(drafts)
+
+
+def _single_entry(frame: pd.DataFrame, table: Path) -> tuple[str, str]:
+    """The one ``(group, sequence)`` of *frame*, checked against *table*'s stem.
+
+    Raises:
+        ValueError: If a column is absent or holds more than one value, or the
+            values are not the entry whose key is the file's stem.
+    """
+    values: list[str] = []
+    for column in ("group", "sequence"):
+        if column not in frame.columns:
+            raise ValueError(f"{table} has no {column!r} column.")
+        held = {text_cell(value) for value in frame[column].unique()}
+        if len(held) != 1:
+            raise ValueError(
+                f"{table} holds {len(held)} values in its {column!r} column, "
+                "and a table holds one entry."
+            )
+        values.append(held.pop())
+    group, sequence = values
+    group_named, sequence_named = parse_entry_key(table.stem)
+    if make_entry_key(group, sequence) != table.stem:
+        raise ValueError(
+            f"{table} holds the entry ({group!r}, {sequence!r}), and its name "
+            f"gives ({group_named!r}, {sequence_named!r})."
+        )
+    return group, sequence
 
 
 def _draft_entries(drafts: Sequence[TracksRowDraft]) -> list[Entry]:

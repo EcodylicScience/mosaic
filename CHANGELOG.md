@@ -8,6 +8,21 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: indexing tables in place and copying a model run root
+
+No run id or output byte moves. `index_tracks_variant(ds, run_id, *, std_format,
+carries_tracklets)` writes one row of the tracks index for each `<entry key>.parquet`
+under `tracks/<run_id>/` and returns their number. It reads the tables and records them
+without converting, so it serves a dataset whose tables arrived by copy. A row has the
+`producer` that the run id names and the measured counts, and its source, md5, consumed
+roots, consumed composition and first frame are blank, as for a conversion whose source
+file the dataset does not contain. A rerun replaces the rows by key. It raises
+`ValueError` before it writes anything for a run id that is not an op run id, a variant
+directory without a `params.json`, a sidecar whose op is not the run id's, a table whose
+`group` and `sequence` columns are not the one entry that its file name gives, a table
+that fails the strict schema check for `std_format`, and a variant whose rows in the
+index record a source, md5 or consumed composition.
+
 ## Unreleased: derived data through linked datasets
 
 No run id or output byte moves. The manifest key `libraries` becomes `links`, and each

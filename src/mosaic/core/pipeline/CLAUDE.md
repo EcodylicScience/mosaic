@@ -150,6 +150,8 @@ are in `graph/CLAUDE.md`.
   (`tracks_index.py`). A writer of many rows uses the batch. Rows written one at a time
   reread the whole index each. Rewrites (`delete_set`, `reconcile_variants`,
   `Dataset.drop_entries`, the backfill passes) take `index_lock` on the same file.
+- `index_tracks_variant` writes rows over tables already under `tracks/<run_id>/`
+  through `write_tracks_rows`, without converting them.
 - One row per `(run_id, group, sequence)`, with no camera column. An absent index reads
   as an empty frame with the full schema. An older schema is widened in memory inside
   the write lock (`adopt_legacy_columns`), and a read leaves the file as it is
