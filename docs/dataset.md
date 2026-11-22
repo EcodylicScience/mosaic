@@ -904,11 +904,17 @@ ds.adopt_raw_rows(source)
 
 The call raises `ValueError` and writes no row when no link names `source`. The form of
 the link's `path` sets the form of the adopted cells. Under a relative link, a cell for
-a file inside the source is stored relative to the new dataset, which suits datasets
-that move together. Under an absolute link it is stored absolute, which suits a source
-on another mount, and a path map repairs it after the source moves. A cell for a file
-outside the source's base directory, such as a file of a scan source, is absolute under
-either form.
+a file inside the directory that the link's `..` steps lead to is stored relative to the
+new dataset, which suits datasets that move together: with `../source`, that directory
+holds both datasets, so a file beside `source` in it is relative too. A file outside
+that directory, such as a file of a scan source elsewhere, is stored absolute. Under an
+absolute link every cell is stored absolute, which suits a source on another mount, and
+a path map repairs it after the source moves. When the link's path or a file's path
+passes through a symlink, such as a source reached through a symlinked directory, the
+cell is stored absolute, as the resolved path. Move the whole directory that the link
+leads to, not the new dataset and its source without the rest of it: a relative cell
+that reaches beyond the two then names a missing file, and a path map does not repair a
+relative cell.
 
 ## Describe a dataset
 

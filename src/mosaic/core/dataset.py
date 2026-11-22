@@ -88,11 +88,13 @@ from .schema import (
     ensure_track_schema,
 )
 from .stored_paths import (
+    link_tree,
     manifest_file_path,
     remap_single_path as _remap_single_path,
     resolve_stored_path,
     resolve_stored_paths,
     stored_form,
+    tree_relative_cell,
 )
 from .track_converter import (
     TRACK_CONVERTERS,
@@ -3516,12 +3518,13 @@ class Dataset:
         labels. Label series stay a linked kind and are not written.
 
         Each cell names *source*'s file in the form of this dataset's link to
-        it. Under a relative link, a file inside *source* is stored relative to
-        the cell's anchor (the base directory for an ``abs_path``, the ``media``
-        root for a derivative link cell), so datasets that move together keep
-        resolving. Under an absolute link, and for a file outside *source* such
-        as one of a scan source, the absolute path is stored, which a path map
-        repairs after the source moves.
+        it. Under a relative link, a file inside the directory that the link's
+        ``..`` steps lead to is stored relative to the cell's anchor (the base
+        directory for an ``abs_path``, the ``media`` root for a derivative link
+        cell) when neither the link's target nor the file is reached through a
+        symlink, so datasets that move together keep resolving. Every other
+        cell, and every cell under an absolute link, stores the absolute
+        resolved path, which a path map repairs after the source moves.
 
         Args:
             source: The dataset whose raw rows are adopted.
@@ -3540,7 +3543,6 @@ class Dataset:
                 a row. Nothing is written then.
         """
         from mosaic.core.media.prune import LINK_COLUMNS
-        from mosaic.core.pipeline.transcode import relative_to_anchor
 
         link = self._link_to_adopt_from(source)
         indexes = {
@@ -3556,15 +3558,31 @@ class Dataset:
             entry = (str(row.get("group", "")), str(row.get("sequence", "")))
             return wanted is None or entry in wanted
 
-        source_base = _dataset_base_dir(source)
         source_media = source.get_root("media")
         base = _dataset_base_dir(self)
         media_anchor = self.get_root("media").resolve()
-        relative = not user_path(link.path).is_absolute()
+        target: Path | None = None
+        tree: Path | None = None
+        lexical_media: Path | None = None
+        if not user_path(link.path).is_absolute():
+            target = Path(os.path.normpath(base / link.path))
+            tree = link_tree(base, link.path)
+            try:
+                media = source_media.resolve().relative_to(_dataset_base_dir(source))
+            except ValueError:
+                media = None
+            if media is not None:
+                lexical_media = target / media
 
-        def stored(resolved: Path, anchor: Path) -> str:
-            if relative and resolved.resolve().is_relative_to(source_base):
-                return relative_to_anchor(resolved, anchor)
+        def stored(
+            cell: str, resolved: Path, anchor: Path, lexical_anchor: Path | None
+        ) -> str:
+            if target is not None and lexical_anchor is not None:
+                path = user_path(cell)
+                lexical = Path(os.path.normpath(lexical_anchor / path))
+                relative = tree_relative_cell(lexical, resolved, anchor, tree, target)
+                if relative is not None:
+                    return relative
             return str(resolved)
 
         live: set[Path] = set()
@@ -3573,20 +3591,26 @@ class Dataset:
             if not adopted(record):
                 continue
             row: dict[str, object] = dict(record)
-            row["abs_path"] = stored(source.resolve_path(record["abs_path"]), base)
+            cell = record["abs_path"]
+            row["abs_path"] = stored(cell, source.resolve_path(cell), base, target)
             for column in LINK_COLUMNS:
                 cell = read_link_cell(record, column)
                 if cell:
                     derivative = source.resolve_path(cell, source_media)
                     live.add(derivative.resolve())
-                    row[column] = stored(derivative, media_anchor)
+                    row[column] = stored(cell, derivative, media_anchor, lexical_media)
             media_rows.append(row)
         raw_rows: dict[SourceRoot, list[dict[str, object]]] = {}
         for root in ("tracks_raw", "labels_raw"):
             raw_rows[root] = [
                 {
                     **record,
-                    "abs_path": stored(source.resolve_path(record["abs_path"]), base),
+                    "abs_path": stored(
+                        record["abs_path"],
+                        source.resolve_path(record["abs_path"]),
+                        base,
+                        target,
+                    ),
                 }
                 for record in _read_tracks_raw_index(
                     source.get_root(root) / "index.csv"
@@ -3599,7 +3623,12 @@ class Dataset:
                 continue
             resolved = source.resolve_path(record["abs_path"])
             if resolved.resolve() in live:
-                derivative_rows.append({**record, "abs_path": stored(resolved, base)})
+                derivative_rows.append(
+                    {
+                        **record,
+                        "abs_path": stored(record["abs_path"], resolved, base, target),
+                    }
+                )
 
         if media_rows:
             with index_lock(indexes["media_raw"]):

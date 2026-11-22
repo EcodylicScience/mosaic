@@ -14,10 +14,15 @@ Deliberately dependency-free and free of the ``Dataset`` object: it holds the
 the dataset that owns the manifest. ``core.helpers`` is not a home for this -- it
 pulls numpy and pandas, and a caller that needs one path rule should not pay for
 those. Its one import, ``mosaic.user_paths``, is a leaf of the same shape.
+
+A dataset that adopts another's rows through a relative link stores a cell
+relative to itself when the file lies in the link's tree and no symlink lies on
+its path (:func:`link_tree`, :func:`tree_relative_cell`).
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
@@ -152,3 +157,67 @@ def manifest_file_path(recorded: str) -> str:
     """
     path = PurePosixPath(recorded)
     return path.name if path.is_absolute() else recorded
+
+
+def link_tree(base: Path, link_path: str) -> Path | None:
+    """The directory that a relative link's ``..`` steps lead to, or ``None``.
+
+    The tree is the common directory of *base* and the link's target, both taken
+    lexically: the target is *link_path* joined to *base* and normalized, and
+    neither path is resolved. A link that crosses no symlink reaches its target
+    and any sibling of it inside the tree by a relative path, wherever the tree
+    is mounted.
+
+    Args:
+        base: The resolved directory of the dataset that declares the link.
+        link_path: The link's relative path as written.
+
+    Returns:
+        The tree, or ``None`` when it is the file-system root (its own anchor)
+        or when ``os.path.commonpath`` refuses the two paths, as it does on
+        Windows for paths on two drives.
+    """
+    target = os.path.normpath(base / link_path)
+    try:
+        tree = Path(os.path.commonpath([base, target]))
+    except ValueError:
+        return None
+    return None if tree == Path(tree.anchor) else tree
+
+
+def tree_relative_cell(
+    lexical: Path, resolved: Path, anchor: Path, tree: Path | None, target: Path
+) -> str | None:
+    """The cell that names a file from inside a link's tree, or ``None``.
+
+    The cell is relative only when the file lies under *tree* and neither the
+    link's target nor the file is reached through a symlink: *target* and
+    *lexical* each resolve to themselves, and *lexical* is the file that
+    *resolved* names. A cell that a path map remapped then differs from its
+    lexical form, and a file behind a symlink would move apart from the tree, so
+    each is stored absolute by the caller.
+
+    Args:
+        lexical: The file's normalized path, built from the link's target
+            without resolving it.
+        resolved: The file as the linked dataset resolves its stored cell,
+            with that dataset's path map applied.
+        anchor: The resolved directory that the relative cell is read against.
+        tree: The link's tree, from :func:`link_tree`.
+        target: The link's normalized target, built without resolving it.
+
+    Returns:
+        *lexical* relative to *anchor* in POSIX form, or ``None`` when the cell
+        is stored absolute, including when ``os.path.relpath`` refuses the two
+        paths.
+    """
+    if tree is None or not lexical.is_relative_to(tree):
+        return None
+    if target.resolve() != target or lexical.resolve() != lexical:
+        return None
+    if lexical != resolved.resolve():
+        return None
+    try:
+        return Path(os.path.relpath(lexical, anchor)).as_posix()
+    except ValueError:
+        return None

@@ -222,12 +222,12 @@ A dataset is a directory with `dataset.yaml` and named roots
   link's, and a linked dataset answers for its data alone, one level deep. To build a
   copy on another dataset's raw files, declare the link to the source first, then call
   `Dataset.adopt_raw_rows(source)`, which refuses without the link. The form of the
-  link's path sets the form of the adopted cells: relative under a relative link and
-  absolute under an absolute one, and absolute under either for a file outside the
-  source's base directory. Give a relative link for datasets that move together. A
-  classifier on a copy reads the source's converted labels without converting them
-  again. Converting an entry's labels on the copy writes the copy's own variant, which
-  wins over the source's for that entry.
+  link's path sets the form of the adopted cells: absolute under an absolute link, and
+  under a relative link relative for a file inside the directory that the link's `..`
+  steps lead to and reached through no symlink, and absolute otherwise. Give a relative
+  link for datasets that move together. A classifier on a copy reads the source's
+  converted labels without converting them again. Converting an entry's labels on the
+  copy writes the copy's own variant, which wins over the source's for that entry.
   (https://ecodylicscience.github.io/mosaic/dataset/#link-a-dataset)
 - A scan replaces the rows its sources claim and keeps every other row. A files source
   (`mosaic sources add --file ...`) claims only the paths it lists, and indexes each

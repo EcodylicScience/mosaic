@@ -127,14 +127,15 @@ importing `mosaic.tracking` registers neither.
   link (`tests/meta/test_link_reads.py`).
 - `Dataset.adopt_raw_rows(source)` writes a new dataset's raw rows to name `source`'s
   files. The link to `source` comes first, and the call raises `ValueError` without it.
-  The stored form follows the link's path. A cell naming a file inside `source` is
-  relative under a relative link and absolute under an absolute one. A cell naming a
-  file outside `source`'s base directory stays absolute under either
-  (`tests/core/test_dataset_links.py`).
+  The stored form follows the link's path. Under a relative link, a cell is relative
+  when its file lies inside the directory that the link's `..` steps lead to
+  (`link_tree`) and neither the link's path nor the file's passes through a symlink
+  (`tree_relative_cell`, `core/stored_paths.py`), and absolute otherwise. Under an
+  absolute link every cell is absolute (`tests/core/test_dataset_links.py`).
 - **A stored path follows one rule.** A dataset's own cells are relative to its base
   directory. The cells `adopt_raw_rows` writes take the link's form, except a file
-  outside the source's base directory. Every other writer stores a path outside the
-  dataset absolute through `Dataset.relative_to_root`, annotation revisions
+  outside the link's tree or behind a symlink. Every other writer stores a path outside
+  the dataset absolute through `Dataset.relative_to_root`, annotation revisions
   (`anchored_keypoint_set`) included. A path map repairs an absolute cell and leaves a
   relative one that names another dataset as it is.
 - `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key

@@ -1023,35 +1023,177 @@ def test_a_link_stored_from_the_home_directory_counts_as_absolute(
     assert all(Path(cell).is_absolute() for cell in cells), cells
 
 
-@link_forms
-def test_a_raw_file_outside_the_source_stays_absolute(
-    tmp_path: Path, relative: bool
-) -> None:
-    source = raw_source(tmp_path / "source")
-    outside = tmp_path / "elsewhere" / "s3"
-    outside.mkdir(parents=True)
-    _ = (outside / "s3.npy").write_bytes(b"s3")
+def _add_raw_tracks_file(source: Dataset, directory: Path) -> None:
+    """Index one raw tracks file of entry ``("g", "s3")`` in *directory*."""
+    directory.mkdir(parents=True)
+    _ = (directory / "s3.npy").write_bytes(b"s3")
     _ = source.write_tracks_raw_index(
         [
             TracksRawIndexScope(
-                directory=outside, group="g", sequence="s3", src_format="trex_npz"
+                directory=directory, group="g", sequence="s3", src_format="trex_npz"
             )
         ],
         patterns="*.npy",
     )
-    stored = {
-        row["sequence"]: row["abs_path"] for row in _index_rows(source, "tracks_raw")
-    }
+
+
+def _raw_cells(ds: Dataset, root: str) -> dict[str, str]:
+    return {row["sequence"]: row["abs_path"] for row in _index_rows(ds, root)}
+
+
+@link_forms
+def test_a_raw_file_outside_the_source_inside_the_links_tree_is_relative(
+    tmp_path: Path, relative: bool
+) -> None:
+    source = raw_source(tmp_path / "source")
+    outside = tmp_path / "elsewhere" / "s3"
+    _add_raw_tracks_file(source, outside)
+    stored = _raw_cells(source, "tracks_raw")
     assert Path(stored["s3"]).is_absolute(), "a scan source's file is stored absolute"
 
     copy = copy_of(source, tmp_path / "copy", relative=relative)
 
-    cells = {
-        row["sequence"]: row["abs_path"] for row in _index_rows(copy, "tracks_raw")
-    }
-    assert cells["s3"] == str((outside / "s3.npy").resolve())
+    cells = _raw_cells(copy, "tracks_raw")
+    expected = (
+        "../elsewhere/s3/s3.npy" if relative else str(outside.resolve() / "s3.npy")
+    )
+    assert cells["s3"] == expected
     assert copy.resolve_path(cells["s3"]) == source.resolve_path(stored["s3"])
     assert Path(cells["s1"]).is_absolute() is not relative
+
+
+def _cells(ds: Dataset) -> list[tuple[str, str, Path]]:
+    """Every adopted cell of *ds* as ``(where, cell, the file it names)``."""
+    cells: list[tuple[str, str, Path]] = []
+    for root in (*RAW_ROOTS, "media"):
+        for number, row in enumerate(_index_rows(ds, root)):
+            path = ds.resolve_path(row["abs_path"]).resolve()
+            cells.append((f"{root} row {number}", row["abs_path"], path))
+    targets: tuple[Target, ...] = ("analysis", "playback")
+    for row in _index_rows(ds, "media_raw"):
+        for target in targets:
+            cell = derivative_cell(row, target)
+            if cell:
+                path = _derivative(ds, row, target)
+                cells.append((f"{target} of {row['sequence']}", cell, path))
+    return cells
+
+
+def test_a_fork_two_links_from_the_share_reads_it_after_the_tree_moves(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    share = raw_source(root / "share")
+    example = copy_of(share, root / "example")
+    fork = copy_of(example, root / "fork")
+    before = _cells(fork)
+    share_base = share.base_dir
+    assert len(before) == 14
+    assert all(not Path(cell).is_absolute() for _, cell, _ in before), before
+    assert all(path.is_relative_to(share_base) for _, _, path in before), before
+    video = next(path for where, _, path in before if where.startswith("media_raw"))
+    content = video.read_bytes()
+
+    moved = tmp_path / "elsewhere" / "root"
+    _ = shutil.copytree(root, moved, symlinks=True)
+    shutil.rmtree(root)
+    reopened = _reopened_at(moved / "fork")
+
+    after = _cells(reopened)
+    moved_share = (moved / "share").resolve()
+    assert [(where, cell) for where, cell, _ in after] == [
+        (where, cell) for where, cell, _ in before
+    ]
+    for (where, _, old), (_, _, new) in zip(before, after, strict=True):
+        assert new == moved_share / old.relative_to(share_base), where
+        assert new.is_file(), where
+    moved_video = moved_share / video.relative_to(share_base)
+    assert (
+        reopened.resolve_path(
+            next(cell for where, cell, _ in after if where.startswith("media_raw"))
+        ).read_bytes()
+        == moved_video.read_bytes()
+        == content
+    )
+
+
+def _reopened_at(base: Path) -> Dataset:
+    return Dataset(manifest_path=base / "dataset.yaml").load()
+
+
+def test_a_raw_file_outside_the_tree_stays_absolute_in_every_copy(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    share = raw_source(root / "share")
+    outside = tmp_path / "outside" / "s3"
+    _add_raw_tracks_file(share, outside)
+
+    example = copy_of(share, root / "example")
+    fork = copy_of(example, root / "fork")
+
+    expected = str(outside.resolve() / "s3.npy")
+    for ds in (example, fork):
+        cells = _raw_cells(ds, "tracks_raw")
+        assert cells["s3"] == expected, ds.name
+        assert not Path(cells["s1"]).is_absolute(), ds.name
+
+
+def test_a_share_behind_a_symlink_is_stored_absolute_and_still_read(
+    tmp_path: Path,
+) -> None:
+    share = raw_source(tmp_path / "other" / "share")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "share").symlink_to(share.base_dir, target_is_directory=True)
+    example = make_dataset(root / "example", name="example")
+    _ = example.add_link(DatasetLink(id="share", path="../share"))
+
+    _ = example.adopt_raw_rows(share)
+
+    cells = _cells(example)
+    assert cells
+    for where, cell, path in cells:
+        assert cell == str(path), where
+        assert path.is_relative_to(share.base_dir), where
+    fork = copy_of(example, root / "fork")
+    for where, cell, path in _cells(fork):
+        assert cell == str(path), where
+        assert path.is_file(), where
+    row = _index_rows(fork, "media_raw")[0]
+    original = _index_rows(share, "media_raw")[0]
+    assert (
+        fork.resolve_path(row["abs_path"]).read_bytes()
+        == share.resolve_path(original["abs_path"]).read_bytes()
+    )
+
+
+def test_link_cells_of_a_media_root_outside_the_source_are_stored_absolute(
+    tmp_path: Path,
+) -> None:
+    source = raw_source(tmp_path / "source")
+    media = tmp_path / "source-media"
+    _ = shutil.move(source.get_root("media"), media)
+    source.roots["media"] = str(media.resolve())
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="../source"))
+
+    _ = copy.adopt_raw_rows(source)
+
+    targets: tuple[Target, ...] = ("analysis", "playback")
+    links = [
+        (derivative_cell(row, target), _derivative(source, original, target))
+        for row, original in zip(
+            _index_rows(copy, "media_raw"),
+            _index_rows(source, "media_raw"),
+            strict=True,
+        )
+        for target in targets
+    ]
+    assert len(links) == 4
+    for cell, derivative in links:
+        assert derivative.is_file()
+        assert cell == str(derivative)
 
 
 def test_entries_adopt_only_the_named_sequences(tmp_path: Path) -> None:

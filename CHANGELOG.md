@@ -58,9 +58,11 @@ written into this dataset's, so a copy reads the derivatives in place. Label ser
 indexes are not written. It refuses with `ValueError`, writing nothing, when no link of
 the dataset records `source`'s `uuid` (declare the link first), when `source` has the
 dataset's `uuid`, when either dataset's media root is not `media_raw`, and when one of
-the indexes it writes already has a row. A cell naming a file inside `source` is stored
-relative to the dataset under a relative link and absolute under an absolute one, and a
-cell naming a file outside `source`'s base directory stays absolute under either.
+the indexes it writes already has a row. Under a relative link a cell is stored relative
+to the dataset when its file lies inside the directory that the link's `..` steps lead
+to and neither the link's path nor the file's passes through a symlink, and absolute
+otherwise. Under an absolute link every cell is absolute. A source reached through a
+symlink is now stored absolute.
 
 The `transcode` op reuses a derivative that a row's link cell names in another dataset
 when the file name equals the one the recipe would write, which is the case for the

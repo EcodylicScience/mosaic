@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
 from mosaic.core.stored_paths import (
+    link_tree,
     resolve_stored_path,
     resolve_stored_paths,
     stored_form,
+    tree_relative_cell,
 )
 
 
@@ -103,3 +108,121 @@ def test_a_stored_form_resolves_back_to_its_path(tmp_path: Path) -> None:
 
     assert resolve_stored_path(stored_form(inside, anchor), anchor) == inside
     assert resolve_stored_path(stored_form(outside, anchor), anchor) == outside
+
+
+# --- the tree of a relative link ------------------------------------------------
+
+
+def _raise_value_error(*_args: object) -> str:
+    raise ValueError("paths on two drives")
+
+
+@pytest.mark.parametrize(
+    ("link", "tree"),
+    [("../share", "data"), ("../../examples/calms21", ".")],
+    ids=["sibling", "two-levels-up"],
+)
+def test_a_links_tree_is_where_its_parent_steps_lead(
+    tmp_path: Path, link: str, tree: str
+) -> None:
+    base = tmp_path.resolve() / "data" / "fork"
+
+    assert link_tree(base, link) == Path(os.path.normpath(tmp_path.resolve() / tree))
+
+
+def test_a_links_tree_is_found_without_resolving_a_path(tmp_path: Path) -> None:
+    base = tmp_path.resolve() / "data" / "fork"
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "share").symlink_to(
+        tmp_path / "elsewhere", target_is_directory=True
+    )
+
+    assert link_tree(base, "../share") == tmp_path.resolve() / "data"
+
+
+def test_a_tree_at_the_file_system_root_is_none() -> None:
+    base = Path(Path.cwd().anchor) / "fork"
+
+    assert link_tree(base, "../share") is None
+
+
+def test_a_tree_that_commonpath_refuses_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os.path, "commonpath", _raise_value_error)
+
+    assert link_tree(tmp_path.resolve() / "fork", "../share") is None
+
+
+def _tree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """A tree holding a fork, a share and a video, as resolved paths."""
+    tree = tmp_path.resolve() / "data"
+    fork = tree / "fork"
+    share = tree / "share"
+    video = share / "media_raw" / "s1.mp4"
+    fork.mkdir(parents=True)
+    video.parent.mkdir(parents=True)
+    _ = video.write_bytes(b"video")
+    return tree, fork, share, video
+
+
+def test_a_file_under_the_tree_is_stored_relative_to_the_anchor(
+    tmp_path: Path,
+) -> None:
+    tree, fork, share, video = _tree(tmp_path)
+
+    cell = tree_relative_cell(video, video, fork, tree, share)
+
+    assert cell == "../share/media_raw/s1.mp4"
+    assert cell == Path(os.path.relpath(video, fork)).as_posix()
+
+
+def test_a_file_outside_the_tree_is_none(tmp_path: Path) -> None:
+    tree, fork, share, _video = _tree(tmp_path)
+    outside = tmp_path.resolve() / "outside" / "s3.npy"
+    outside.parent.mkdir()
+    _ = outside.write_bytes(b"s3")
+
+    assert tree_relative_cell(outside, outside, fork, tree, share) is None
+
+
+def test_a_file_reached_through_a_symlink_is_none(tmp_path: Path) -> None:
+    tree, fork, share, video = _tree(tmp_path)
+    alias = tree / "alias"
+    alias.symlink_to(share, target_is_directory=True)
+    lexical = alias / "media_raw" / "s1.mp4"
+
+    assert tree_relative_cell(lexical, video, fork, tree, share) is None
+
+
+def test_a_target_reached_through_a_symlink_is_none(tmp_path: Path) -> None:
+    tree, fork, share, video = _tree(tmp_path)
+    alias = tree / "alias"
+    alias.symlink_to(share, target_is_directory=True)
+
+    assert tree_relative_cell(video, video, fork, tree, alias) is None
+
+
+def test_a_file_a_path_map_moved_is_none(tmp_path: Path) -> None:
+    tree, fork, share, video = _tree(tmp_path)
+    moved = tree / "moved" / "s1.mp4"
+    moved.parent.mkdir()
+    _ = moved.write_bytes(b"video")
+
+    assert tree_relative_cell(video, moved, fork, tree, share) is None
+
+
+def test_a_file_with_no_tree_is_none(tmp_path: Path) -> None:
+    _tree_path, fork, share, video = _tree(tmp_path)
+
+    assert tree_relative_cell(video, video, fork, None, share) is None
+
+
+def test_a_cell_that_relpath_refuses_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree, fork, share, video = _tree(tmp_path)
+    monkeypatch.setattr(os.path, "relpath", _raise_value_error)
+
+    assert tree_relative_cell(video, video, fork, tree, share) is None
