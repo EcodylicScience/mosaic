@@ -345,6 +345,7 @@ def test_global_marker(tmp_path: Path) -> None:
     idx_df = idx.read(run_id=result.run_id)
     assert len(idx_df) == 1
     assert idx_df.iloc[0]["sequence"] == "__global__"
+    assert idx_df.iloc[0]["abs_path"] == ds.relative_to_root(run_root)
     assert idx_df.iloc[0]["group"] == ""
 
 

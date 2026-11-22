@@ -453,6 +453,24 @@ def test_a_feature_run_reads_each_input_footer_once_per_entry(
     assert len(footers) <= FOOTER_ENTRIES + PER_RUN_READS, footers
 
 
+def test_a_feature_run_relativizes_no_path_per_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
+    relativized: list[str | Path] = []
+    original = Dataset.relative_to_root
+
+    def counting(self: Dataset, path: str | Path) -> str:
+        relativized.append(path)
+        return original(self, path)
+
+    monkeypatch.setattr(Dataset, "relative_to_root", counting)
+
+    _speed(dataset)
+
+    assert len(relativized) < FOOTER_ENTRIES, relativized
+
+
 NEIGHBOR_ROWS = {"id": [0, 1, 0, 1], "nn_id": [1.0, 0.0, NAN, 0.0]}
 
 

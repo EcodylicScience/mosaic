@@ -92,6 +92,7 @@ from .stored_paths import (
     remap_single_path as _remap_single_path,
     resolve_stored_path,
     resolve_stored_paths,
+    stored_form,
 )
 from .track_converter import (
     TRACK_CONVERTERS,
@@ -4726,11 +4727,7 @@ class Dataset:
         Internal paths (inside dataset tree) become relative strings.
         External paths (outside dataset tree) remain absolute.
         """
-        root = _dataset_base_dir(self)
-        try:
-            return str(abs_path.resolve().relative_to(root))
-        except ValueError:
-            return str(abs_path.resolve())
+        return stored_form(abs_path.resolve(), _dataset_base_dir(self))
 
     def relative_to_root(self, path: str | Path) -> str:
         """Public: dataset-root-relative storage form of *path* (abs stays abs).

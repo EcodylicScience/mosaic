@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mosaic.core.stored_paths import resolve_stored_path, resolve_stored_paths
+from mosaic.core.stored_paths import (
+    resolve_stored_path,
+    resolve_stored_paths,
+    stored_form,
+)
 
 
 def test_a_list_resolves_as_each_cell_does(tmp_path: Path) -> None:
@@ -62,3 +66,40 @@ def test_the_anchor_is_asked_for_only_when_a_cell_is_relative(tmp_path: Path) ->
 
     _ = resolve_stored_paths(["a", "b/c", "b/d"], anchor)
     assert asked == [1]
+
+
+def test_a_path_under_the_base_is_stored_relative_to_it(tmp_path: Path) -> None:
+    base = tmp_path / "study"
+
+    assert stored_form(base / "tracks" / "a.parquet", base) == str(
+        Path("tracks") / "a.parquet"
+    )
+
+
+def test_a_path_outside_the_base_is_stored_as_it_is(tmp_path: Path) -> None:
+    base = tmp_path / "study"
+    outside = tmp_path / "elsewhere" / "a.parquet"
+
+    assert stored_form(outside, base) == str(outside)
+
+
+def test_a_sibling_that_shares_the_base_prefix_is_outside_it(tmp_path: Path) -> None:
+    base = tmp_path / "study"
+    sibling = tmp_path / "study2" / "a.parquet"
+
+    assert stored_form(sibling, base) == str(sibling)
+
+
+def test_the_base_itself_is_stored_as_a_dot(tmp_path: Path) -> None:
+    base = tmp_path / "study"
+
+    assert stored_form(base, base) == str(Path("."))
+
+
+def test_a_stored_form_resolves_back_to_its_path(tmp_path: Path) -> None:
+    anchor = tmp_path.resolve() / "study"
+    inside = anchor / "tracks" / "a.parquet"
+    outside = tmp_path.resolve() / "elsewhere" / "a.parquet"
+
+    assert resolve_stored_path(stored_form(inside, anchor), anchor) == inside
+    assert resolve_stored_path(stored_form(outside, anchor), anchor) == outside

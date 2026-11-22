@@ -50,6 +50,7 @@ from tests.helpers import (
     extract_entry_camera,
     make_dataset,
     register_trained_model,
+    result_run_root,
     sole_frames_row_files,
     write_litpose_model,
 )
@@ -212,6 +213,100 @@ def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
         assert not Path(stored).is_absolute(), f"index path is absolute: {stored}"
         # And it still resolves to a real file under the dataset root.
         assert ds.resolve_path(stored).exists()
+
+
+@dataclass(frozen=True)
+class _OpenedDataset:
+    """A dataset a feature run writes to, and whether its rows are root-relative."""
+
+    dataset: Dataset
+    inside: bool
+
+
+def _open_through_a_relative_manifest_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _OpenedDataset:
+    _ = make_dataset(tmp_path / "ds", name="relative")
+    monkeypatch.chdir(tmp_path)
+    return _OpenedDataset(
+        Dataset(manifest_path=Path("ds") / "dataset.yaml").load(), inside=True
+    )
+
+
+def _symlink_to_directory(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable here")
+
+
+def _open_through_a_symlinked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _OpenedDataset:
+    _ = monkeypatch
+    _ = make_dataset(tmp_path / "real", name="linked")
+    _symlink_to_directory(tmp_path / "link", tmp_path / "real")
+    return _OpenedDataset(
+        Dataset(manifest_path=tmp_path / "link" / "dataset.yaml").load(), inside=True
+    )
+
+
+def _put_features_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _OpenedDataset:
+    _ = monkeypatch
+    dataset = make_dataset(tmp_path / "ds", name="outside")
+    outside = tmp_path / "external-features"
+    outside.mkdir()
+    dataset.roots["features"] = str(outside)
+    return _OpenedDataset(dataset, inside=False)
+
+
+def _link_features_to_a_directory_outside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _OpenedDataset:
+    _ = monkeypatch
+    dataset = make_dataset(tmp_path / "ds", name="linked-features")
+    outside = tmp_path / "external-features"
+    outside.mkdir()
+    link = dataset.base_dir / "features-link"
+    _symlink_to_directory(link, outside)
+    dataset.roots["features"] = str(link)
+    return _OpenedDataset(dataset, inside=False)
+
+
+@pytest.mark.parametrize(
+    "open_dataset",
+    [
+        _open_through_a_relative_manifest_path,
+        _open_through_a_symlinked_directory,
+        _put_features_outside,
+        _link_features_to_a_directory_outside,
+    ],
+)
+def test_a_feature_run_stores_each_output_as_the_dataset_stores_a_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    open_dataset: Callable[[Path, pytest.MonkeyPatch], _OpenedDataset],
+) -> None:
+    """The run's rows equal ``relative_to_root`` of each output, whatever the layout."""
+    opened = open_dataset(tmp_path, monkeypatch)
+    ds = opened.dataset
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=12)
+
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {"step_size": 1}))
+    results = pipe.run(ds)
+    feat, run_id = results["speed"].feature, results["speed"].run_id
+
+    outputs = sorted(result_run_root(ds, results["speed"]).glob("*.parquet"))
+    assert len(outputs) == 2
+    stored = feature_index(feature_index_path(ds, feat)).read(run_id=run_id)
+    assert sorted(stored["abs_path"]) == sorted(
+        ds.relative_to_root(output) for output in outputs
+    )
+    assert all(Path(cell).is_absolute() != opened.inside for cell in stored["abs_path"])
+    assert all(ds.resolve_path(cell).exists() for cell in stored["abs_path"])
 
 
 # --- a dataset opened through a relative manifest path ------------------------

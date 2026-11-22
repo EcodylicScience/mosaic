@@ -33,6 +33,7 @@ from mosaic.core.helpers import (
 )
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
+from mosaic.core.stored_paths import stored_form
 from mosaic.core.timebase import IrregularNotice, collect_irregular_notices
 
 from ._utils import (
@@ -2573,6 +2574,12 @@ def _run_feature_impl(
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
     run_root.mkdir(parents=True, exist_ok=True)
+    dataset_base = ds.base_dir.resolve()
+    resolved_run_root = run_root.resolve()
+
+    def stored_output(output: Path) -> Path:
+        """The index cell of *output*, a file directly in the run root."""
+        return Path(stored_form(resolved_run_root / output.name, dataset_base))
 
     params_path = run_root / "params.json"
     try:
@@ -3242,7 +3249,7 @@ def _run_feature_impl(
                             version=feature.version,
                             group=meta.group,
                             sequence=meta.sequence,
-                            abs_path=Path(ds.relative_to_root(meta.out_path)),
+                            abs_path=stored_output(meta.out_path),
                             consumed_roots=encode_consumed_roots(
                                 feature.consumed_roots
                             ),
@@ -3424,7 +3431,7 @@ def _run_feature_impl(
                         version=feature.version,
                         group=meta.group,
                         sequence=meta.sequence,
-                        abs_path=Path(ds.relative_to_root(meta.out_path)),
+                        abs_path=stored_output(meta.out_path),
                         consumed_roots=encode_consumed_roots(feature.consumed_roots),
                         consumed_composition=entry_composition(
                             feature, resolved, (meta.group, meta.sequence)
@@ -3768,7 +3775,7 @@ def _run_feature_impl(
                 version=feature.version,
                 group="",
                 sequence="__global__",
-                abs_path=Path(ds.relative_to_root(run_root)),
+                abs_path=Path(stored_form(resolved_run_root, dataset_base)),
                 n_rows=0,
                 params_hash=params_hash,
                 identity_scheme=FEATURE_IDENTITY_SCHEME,

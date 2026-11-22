@@ -74,6 +74,27 @@ def resolve_stored_path(
     return path if remapped is None else remapped
 
 
+def stored_form(resolved: Path, base: Path) -> str:
+    """The cell that an index stores for *resolved*.
+
+    The cell is root-relative inside *base* and absolute outside it, which
+    :func:`resolve_stored_path` reverses. Neither argument is resolved here and
+    the filesystem is not touched, so a caller that stores many paths under one
+    directory resolves *base* and that directory once.
+
+    Args:
+        resolved: A resolved absolute path.
+        base: The resolved dataset directory that a relative cell is anchored to.
+
+    Returns:
+        *resolved* relative to *base* when it lies under it, else *resolved*.
+    """
+    try:
+        return str(resolved.relative_to(base))
+    except ValueError:
+        return str(resolved)
+
+
 def resolve_stored_paths(
     stored: Iterable[str | Path],
     anchor: Callable[[], Path],
