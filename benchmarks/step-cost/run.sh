@@ -22,7 +22,7 @@
 set -u
 
 if [ $# -lt 2 ]; then
-    sed -n '2,22p' "$0"
+    sed -n '2,21p' "$0"
     exit 2
 fi
 here="$(cd "$(dirname "$0")" && pwd)"

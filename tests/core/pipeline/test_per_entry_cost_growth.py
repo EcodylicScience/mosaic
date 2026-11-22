@@ -41,6 +41,7 @@ from tests.helpers import (
     add_tracks_variant_in_bulk,
     count_property_reads,
     make_dataset,
+    record_path_calls,
     write_tracktor_recording,
 )
 
@@ -417,19 +418,6 @@ def _neighbor_run(dataset: Dataset, table: pd.DataFrame) -> tuple[NNResult, Path
     return NNResult(feature=NN_STORAGE, run_id=NN_RUN), output
 
 
-def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """The files whose footer is parsed, memoized or not."""
-    footers: list[Path] = []
-    original = parquet_reader.parse_footer
-
-    def counting(path: Path) -> parquet_reader.ParquetFooter:
-        footers.append(path)
-        return original(path)
-
-    monkeypatch.setattr(parquet_reader, "parse_footer", counting)
-    return footers
-
-
 FOOTER_ENTRIES = 12
 INPUTS_PER_ENTRY = 1
 """``speed-angvel`` reads one tracks table for each entry."""
@@ -441,7 +429,7 @@ def test_a_feature_run_reads_each_input_footer_once_per_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
-    footers = _count_footer_reads(monkeypatch)
+    footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     _speed(dataset)
 
@@ -491,7 +479,7 @@ def test_the_neighbor_lookup_reads_three_columns_of_its_table(
     dataset = make_dataset(tmp_path / "nn", name="nn")
     table = pd.DataFrame({order: values, **NEIGHBOR_ROWS, "nn_dist": 1.0})
     spec, output = _neighbor_run(dataset, table)
-    footers = _count_footer_reads(monkeypatch)
+    footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
     reads = _count_table_reads(monkeypatch, output.parent)
 
     lookup = loading.build_nn_lookup(dataset, "", "seq_a", spec)

@@ -21,23 +21,11 @@ from mosaic.core.pipeline.parquet_reader import (
     read_footer,
     read_parquet_column_names,
 )
+from tests.helpers import record_path_calls
 
 
 def _write(path: Path, columns: dict[str, list[int]]) -> None:
     pd.DataFrame(columns).to_parquet(path, index=False)
-
-
-def _count_parses(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """Record each file that the memo reads from disk."""
-    parsed: list[Path] = []
-    real = parquet_reader.parse_footer
-
-    def counted(path: Path) -> parquet_reader.ParquetFooter:
-        parsed.append(path)
-        return real(path)
-
-    monkeypatch.setattr(parquet_reader, "parse_footer", counted)
-    return parsed
 
 
 def test_two_footer_calls_on_one_file_parse_once(
@@ -45,7 +33,7 @@ def test_two_footer_calls_on_one_file_parse_once(
 ) -> None:
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1, 2, 3]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
     memo = ParquetFooterMemo()
 
     first = memo.footer(path)
@@ -64,7 +52,7 @@ def test_a_rewrite_with_another_size_parses_again(
     _write(path, {"x": [1]})
     memo = ParquetFooterMemo()
     _ = memo.footer(path)
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
     stamp = path.stat()
 
     _write(path, {"x": list(range(500))})
@@ -81,7 +69,7 @@ def test_a_rewrite_with_another_modification_time_parses_again(
     _write(path, {"x": [1, 2]})
     memo = ParquetFooterMemo()
     _ = memo.footer(path)
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
     stamp = path.stat()
 
     os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
@@ -102,7 +90,7 @@ def test_a_file_replaced_by_a_rename_parses_again(
     os.utime(other, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     memo = ParquetFooterMemo()
     assert [column.name for column in memo.footer(path).columns] == ["x"]
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     _ = other.replace(path)
 
@@ -117,7 +105,7 @@ def test_a_torn_file_raises_and_is_parsed_again(
 ) -> None:
     path = tmp_path / "a.parquet"
     _ = path.write_bytes(b"torn")
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
     memo = ParquetFooterMemo()
 
     with pytest.raises(ParquetUnreadable):
@@ -159,7 +147,7 @@ def test_the_reads_of_one_file_parse_it_once_under_a_memo(
 ) -> None:
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1, 2, 3]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with memoized_footers(ParquetFooterMemo()):
         _read_three_ways(path)
@@ -174,7 +162,7 @@ def test_each_read_parses_with_no_memo_entered(
 ) -> None:
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1, 2, 3]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     _read_three_ways(path)
 
@@ -187,7 +175,7 @@ def test_a_read_after_the_block_parses(
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1]})
     memo = ParquetFooterMemo()
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with memoized_footers(memo):
         _ = read_footer(path)
@@ -202,7 +190,7 @@ def test_a_block_that_raises_resets_the_memo(
 ) -> None:
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with pytest.raises(RuntimeError), memoized_footers(ParquetFooterMemo()):
         _ = read_footer(path)
@@ -218,7 +206,7 @@ def test_a_nested_block_restores_the_outer_memo(
 ) -> None:
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with memoized_footers(ParquetFooterMemo()):
         _ = read_footer(path)
@@ -238,7 +226,7 @@ def test_a_new_thread_parses_what_the_block_has_memoized(
     """
     path = tmp_path / "a.parquet"
     _write(path, {"x": [1]})
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with memoized_footers(ParquetFooterMemo()):
         _ = read_footer(path)
@@ -279,7 +267,7 @@ def test_a_torn_file_under_a_memo_raises_and_is_parsed_again(
 ) -> None:
     path = tmp_path / "a.parquet"
     _ = path.write_bytes(b"torn")
-    parsed = _count_parses(monkeypatch)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     with memoized_footers(ParquetFooterMemo()):
         with pytest.raises(ParquetUnreadable):

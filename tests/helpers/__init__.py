@@ -101,8 +101,9 @@ What lives where:
   programs and environments of each.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
-- ``spies`` -- a function with its own signature that calls a watcher first, and
-  a property that records its reads, for the tests that count what a run calls, and
+- ``spies`` -- a function with its own signature that calls a watcher first, a
+  module function that records the paths it receives, and a property that records
+  its reads, for the tests that count what a run calls, and
   a process high-water mark that rises once a feature has applied.
 - ``source_scan`` -- reads a module's source as a tree, for the tests that
   assert what a code path reads, calls and imports.
@@ -398,6 +399,7 @@ from tests.helpers.spies import (
     count_property_reads,
     observed,
     raise_high_water_mark_once_applied,
+    record_path_calls,
 )
 from tests.helpers.pyproject_requirements import (
     SELF_REFERENCE,
@@ -899,6 +901,7 @@ __all__ = [
     "count_property_reads",
     "observed",
     "raise_high_water_mark_once_applied",
+    "record_path_calls",
     "resolved_scope",
     "result_outputs",
     "result_run_root",

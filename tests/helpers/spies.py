@@ -5,6 +5,8 @@ from __future__ import annotations
 import inspect
 import threading
 from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType
 from typing import ParamSpec, TypeVar
 
 import pytest
@@ -24,6 +26,21 @@ def observed(
         return real(*args, **kwargs)
 
     return wrapper
+
+
+def record_path_calls(
+    monkeypatch: pytest.MonkeyPatch, owner: ModuleType, name: str
+) -> list[Path]:
+    """Replace the function *name* of *owner* with one that records each path it receives.
+
+    The replacement returns what the original returns. The list holds the first
+    argument of each call, in call order, until the test ends and *monkeypatch*
+    restores the original.
+    """
+    paths: list[Path] = []
+    real: Callable[[Path], object] = getattr(owner, name)
+    monkeypatch.setattr(owner, name, observed(real, paths.append))
+    return paths
 
 
 def count_property_reads(

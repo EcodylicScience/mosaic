@@ -1,14 +1,13 @@
-"""Resolving the paths an index CSV or a frame-extraction manifest stores.
-
-It also remaps a moved tree.
+"""Storing and resolving the paths an index CSV or a frame-extraction manifest stores.
 
 An index stores a file's location root-relative when it lives inside the dataset
-tree and absolute otherwise, so reading one back is a two-case rule rather than a
-plain ``Path()``. That rule is shared by the dataset layer and by the media
-tooling underneath it, and a second copy of it would be free to drift. A
-frame-extraction manifest's ``files`` records are read by one rule too
-(:func:`manifest_file_path`), shared by the frames readers and the dataset's
-repair.
+tree and absolute otherwise. :func:`stored_form` applies that two-case rule to
+store a path. :func:`resolve_stored_path` reverses it to read a path back, and
+remaps a path recorded before a tree moved. The dataset layer and the media
+tooling underneath it share both functions, so the write rule and the read rule
+cannot drift apart. A frame-extraction manifest's ``files`` records are read by
+one rule too (:func:`manifest_file_path`), shared by the frames readers and the
+dataset's repair.
 
 Deliberately dependency-free and free of the ``Dataset`` object: it holds the
 *mechanism*, while which remapping applies and when it is established stays with

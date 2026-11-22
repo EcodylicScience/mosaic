@@ -70,3 +70,40 @@ alone, `MemoryWatch.cpu_seconds` costs 11.7 ms and `MemoryWatch.sample` 21.5 ms.
 The footer reads stay under 1%. In the 61-step cached run, `DataFrame.iterrows`
 in `rows_in_scope` and `rows_without_tracklets` takes 67% of the main thread.
 Every worker setting wrote byte-identical outputs and index rows.
+
+### Footer memo, before and after
+
+The footer memo and the single dataset-base resolution of a feature run,
+measured before (`fcff1e14`) and after the change over one `WORK` path per
+machine, 160 entries, 8 workers. The `fingerprint-*.txt` files are
+byte-identical before and after on both machines.
+
+| Figure                                      | Mac before | Mac after | Task machine before | Task machine after |
+| ------------------------------------------- | ---------- | --------- | ------------------- | ------------------ |
+| processes on the host                       | 739        | 741       | 547                 | 551                |
+| `speed-angvel` cold, serial (s)             | 15.63      | 15.94     | 29.20               | 28.06              |
+| `speed-angvel` cold, thread 4 (s)           | 14.27      | 14.03     | 37.45               | 37.65              |
+| `speed-angvel` cold, thread 8 (s)           | 14.49      | 14.30     | 39.96               | 38.21              |
+| `speed-angvel` cold, process 8 (s)          | 19.46      | 18.84     | 34.25               | 34.31              |
+| the same recipe all cached, one process (s) | 4.59       | 4.55      | 5.48                | 5.53               |
+| one cached step process, median of 16 (s)   | 4.25       | 4.20      | 4.98                | 5.03               |
+| 61 cached steps in one process (s)          | 34.48      | 34.26     | 91.58               | 92.40              |
+| parent cost per entry, cold thread 8 (ms)   | 61.9       | 60.9      | 215.5               | 204.2              |
+
+The cold thread-8 parent cost per entry moves from 61.9 to 60.9 ms on the Mac
+and from 215.5 to 204.2 ms on the task machine. Both are within the spread of
+repeated runs: the Mac's two back-to-back cached runs took 5.11 and 4.59 s
+before the change.
+
+A cProfile of the cold serial run after the change shows the footer reads at
+about 1% of the run, 0.40 s of 38.6 s on the task machine and 0.25 s of 20.6 s
+on the Mac. In the cold serial run, 640 of the 800 `read_parquet_column_names`
+calls come from `tracks_table_columns` while the graph is planned, outside the
+memo. In a cached step process, every one of the 160 `read_footer` calls comes
+from `tracks_table_columns` too. The inventory's whole-file checks in that
+process open 800 footers more through `parquet_is_readable`, as before the
+change. The count of footer parses in the cold run falls from 960 to 800. A
+stack sample of the cold thread-8 run on the Mac after the change puts every
+footer frame below 4.2% of the main thread, the least share that it reports. A
+sample at the earlier `d73a57f0` put them at 10.7%. The memo removes 160 of the
+960 parses, so it accounts for only part of that drop.

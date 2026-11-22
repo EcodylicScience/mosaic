@@ -8,6 +8,7 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -60,8 +61,8 @@ from tests.helpers import (
     add_tracks_table,
     add_tracks_variant,
     make_dataset,
-    observed,
     raw_source,
+    record_path_calls,
     run_fresh,
     track_table,
 )
@@ -181,19 +182,6 @@ def test_the_stems_a_run_holds_account_for_entries_by_key_or_key_and_double_unde
     assert ("", "a_") in held
 
 
-def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """Record each parquet footer that a scan reads."""
-    read: list[Path] = []
-    real = parquet_reader.parquet_is_readable
-
-    def counted(path: Path) -> bool:
-        read.append(path)
-        return real(path)
-
-    monkeypatch.setattr(parquet_reader, "parquet_is_readable", counted)
-    return read
-
-
 def test_a_footer_is_read_once_until_its_file_moves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,7 +190,7 @@ def test_a_footer_is_read_once_until_its_file_moves(
     target = frozenset({("", "seq_a"), ("", "seq_b")})
     for name in ("seq_a", "seq_b"):
         pd.DataFrame({"a": [1]}).to_parquet(run_root / f"{name}.parquet", index=False)
-    read = _count_footer_reads(monkeypatch)
+    read = record_path_calls(monkeypatch, parquet_reader, "parquet_is_readable")
     footers = ParquetFooterMemo()
 
     first = run_covers(run_root, target, footers=footers)
@@ -233,12 +221,7 @@ def test_a_deleted_output_is_forgotten_by_the_next_scan_of_its_directory(
 
     assert footers.whole_stems(run_root) == {"seq_a"}
 
-    parsed: list[Path] = []
-    monkeypatch.setattr(
-        parquet_reader,
-        "parquet_is_readable",
-        observed(parquet_reader.parquet_is_readable, parsed.append),
-    )
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parquet_is_readable")
     _ = aside.replace(output)
 
     assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
@@ -252,12 +235,7 @@ def test_a_scan_keeps_the_stored_footer_of_an_unmoved_file(
     pd.DataFrame({"x": [1]}).to_parquet(path, index=False)
     footers = ParquetFooterMemo()
     stored = footers.footer(path)
-    parsed: list[Path] = []
-    monkeypatch.setattr(
-        parquet_reader,
-        "parse_footer",
-        observed(parquet_reader.parse_footer, parsed.append),
-    )
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     assert footers.whole_stems(tmp_path) == {"a"}
 
@@ -272,12 +250,7 @@ def test_a_scan_records_a_footer_for_a_later_footer_call(
     pd.DataFrame({"x": [1, 2]}).to_parquet(path, index=False)
     footers = ParquetFooterMemo()
     assert footers.whole_stems(tmp_path) == {"a"}
-    parsed: list[Path] = []
-    monkeypatch.setattr(
-        parquet_reader,
-        "parse_footer",
-        observed(parquet_reader.parse_footer, parsed.append),
-    )
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     assert footers.footer(path).n_rows == 2
     assert footers.footer(path).n_rows == 2
@@ -298,12 +271,7 @@ def test_a_scan_forgets_the_footer_of_a_deleted_file(
     _ = path.replace(aside)
     assert footers.whole_stems(run_root) == set()
     _ = aside.replace(path)
-    parsed: list[Path] = []
-    monkeypatch.setattr(
-        parquet_reader,
-        "parse_footer",
-        observed(parquet_reader.parse_footer, parsed.append),
-    )
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     _ = footers.footer(path)
 
@@ -320,7 +288,7 @@ def test_a_rebuild_after_an_index_moved_reads_no_footer_of_a_file_that_did_not(
     _ = holder.get(kinds=["feature"])
     index_path = scenario_dataset.get_root("features") / STORAGE / "index.csv"
     _ = index_path.write_text(index_path.read_text() + "\n")
-    read = _count_footer_reads(monkeypatch)
+    read = record_path_calls(monkeypatch, parquet_reader, "parquet_is_readable")
 
     assert holder.revalidate().stale
 
@@ -607,7 +575,7 @@ print(json.dumps({{
 
 
 def test_an_empty_dataset_reports_nothing_rather_than_raising(
-    make_media_dataset, tmp_path: Path
+    make_media_dataset: Callable[[Path], Dataset], tmp_path: Path
 ) -> None:
     """A dataset with no artifacts is an ordinary answer, not an error.
 
@@ -989,7 +957,7 @@ def test_a_footer_memo_reads_each_linked_footer_once(
     copy = copy_of(source, tmp_path / "copy")
     own = _write_outputs(copy, CONVERTED_ENTRIES[:1])
     target = entry_universe(copy)
-    read = _count_footer_reads(monkeypatch)
+    read = record_path_calls(monkeypatch, parquet_reader, "parquet_is_readable")
     footers = ParquetFooterMemo()
 
     first = run_coverage(copy, STORAGE, LINKED_RUN, target, footers=footers)
