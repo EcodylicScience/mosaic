@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: indexing tables in place and copying a model run root
+## 0.26.0: linked datasets, indexing tables in place and copying a model run root
+
+### Indexing tables in place and copying a model run root
 
 No run id or output byte moves. `index_tracks_variant(ds, run_id, *, std_format,
 carries_tracklets)` writes one row of the tracks index for each `<entry key>.parquet`
@@ -58,7 +60,7 @@ a run id that the destination holds from another origin. `EXCHANGE_DIRECTORY` mo
 `mosaic.core.pipeline.markers`, and `MODEL_INDEX_PATH_COLUMNS`
 (`mosaic.core.pipeline.models`) names the path columns of a `models` index.
 
-## Unreleased: derived data through linked datasets
+### Derived data through linked datasets
 
 No run id or output byte moves. The manifest key `libraries` becomes `links`, and each
 link names the kinds of derived data it provides in `provides`: `models`, `features`,
@@ -239,7 +241,7 @@ labels, and a conversion step whose variant a link holds plans complete. No run 
 output byte of a dataset without links moves. Playback of an entry with two converted
 variants now raises, as the other label readers do.
 
-## Unreleased: a feature that needs its scope computes in threads when processes are asked
+### A feature that needs its scope computes in threads when processes are asked
 
 `run_feature` with `parallel_mode="process"` computes a feature that defines
 `set_scope` in threads. Before, it started process workers that rebuilt the
@@ -249,7 +251,7 @@ for itself and refused an entry that has two tracks variants. The run's
 step's graph run already planned it, and the run prints that processes were
 asked and threads were used. No run id or output moves.
 
-## Unreleased: `run_feature` records the outputs it wrote on every exit
+### `run_feature` records the outputs it wrote on every exit
 
 An exception that `run_feature` did not list, such as an `OSError` from a full
 disk, a failure while loading an entry, `IndexLockTimeout` or `KeyboardInterrupt`,
@@ -260,7 +262,7 @@ and records `entries_written`, then raises the same exception. A failure of that
 write is attached to the exception as a note and does not replace it. Which
 exceptions end a run, the run-log events and the terminal statuses are unchanged.
 
-## Unreleased: a cancelled process-mode run ends `cancelled`, not `failed`
+### A cancelled process-mode run ends `cancelled`, not `failed`
 
 A cancel that signals the process group of a run in process mode, as
 mosaic-queue's local backend and the pipeline driver do, kills the workers as well
@@ -277,7 +279,7 @@ rule that read such an attempt as an out-of-memory stop sees an ordinary
 cancel. The run-log events and the terminal statuses are unchanged. Workers still
 take the default action on SIGTERM.
 
-## Unreleased: a process worker ends with the process that started it
+### A process worker ends with the process that started it
 
 A process worker of `run_feature`, of an op that sets `parallelizable`, of
 `run_trex_batch` and of `extract-frames` in process mode now exits when the process
@@ -293,7 +295,7 @@ as output. `extract-frames` writes its frames in place, so a worker ended mid-se
 leaves a partial directory. Workers still receive SIGTERM and SIGINT as before, and no
 run id, output or run-log event changes.
 
-## Unreleased: `resample-tracks` keeps a hole that a converter wrote as missing rows
+### `resample-tracks` keeps a hole that a converter wrote as missing rows
 
 `resample-tracks` is version `0.3`. Its variants are named
 `resample-tracks.0.3-<digest>`, and a variant resampled under `0.2` is not
@@ -314,7 +316,7 @@ missing inside such a hole when its dtype can hold a missing value, such as
 value. The `prefilter` no longer rejects the first sample after a hole as a fast
 step. No other op or feature run id moves.
 
-## Unreleased: `load_run_matrix` returns `time` in its index
+### `load_run_matrix` returns `time` in its index
 
 `RunMatrix.index` holds a run's `time` column, after `frame`, when the run writes one.
 It was in neither the index nor the values, so a caller recomputed it from the frame and
@@ -324,7 +326,7 @@ column, and of a table with no numeric payload column, now name the text columns
 are not values. A caller that selects `index` columns by position or compares the frame
 with a fixed list of names sees one more column.
 
-## Unreleased: a definition's track-space refusal names its fix
+### A definition's track-space refusal names its fix
 
 The refusal that a planar step meets over world-frame tracks (`schema_family_mismatch`)
 now adds, for a `def:` feature, that the class declares `track_spaces` and the
@@ -333,7 +335,7 @@ definition is defined again. The per-sequence feature template declares
 computes in and when to widen the set. A plan already refuses such a definition before
 it runs, and `define` reads no tracks, so it cannot. No run id moves.
 
-## Unreleased: the per-sequence feature template reads another feature's output
+### The per-sequence feature template reads another feature's output
 
 `feature_template__per_sequence.py` declares `Inputs[TrackInput | Result]` where it
 declared `TrackInputs`, so a definition copied from it can read another feature's
@@ -341,7 +343,7 @@ output. A recipe refuses a `TrackInputs` class after a feature that writes no `X
 `Y`, such as `keypoint-kinematics`. No run id moves, and a definition that already
 declares its inputs keeps its digest.
 
-## Unreleased: a sequence-tag bool is read in any case
+### A sequence-tag bool is read in any case
 
 `mosaic sequence-tags import` and a `--tag NAME=VALUE` selection read a `bool` tag as
 `true` or `false` in any case, so the `True` and `False` that pandas writes are
@@ -6038,7 +6040,7 @@ the base, with no torch, so replace each in a saved command:
 - `identity`, `localizer`, `pose` and `polo` with `deep-learning`;
 - `gpu` with `faiss`.
 
-## Unreleased: a codec refusal exits 65, and a cancel is recorded as cancelled
+### A codec refusal exits 65, and a cancel is recorded as cancelled
 
 **A tracker's codec refusal is a refusal.** When a tracker refuses to hand its
 tool a file whose codec the tool's environment does not decode, `mosaic run`,
@@ -6082,7 +6084,7 @@ message. For `unidentified_clips` that remedy is `mosaic reprobe-media --apply`
 before the join. The error behind it, `EntryJoinMissingError`, is a
 `JoinedExportMissingError` with the same `cause`.
 
-## Unreleased: the frame-axis check compares the frames each tool read
+### The frame-axis check compares the frames each tool read
 
 **The tracks index gains a `frames_read` cell, and the frame-axis comparison
 reads it instead of a table's last frame.** A table's last frame is the last
@@ -6163,7 +6165,7 @@ sequence projection once. These three passes take the tracks-index lock only to
 write. A producer publishing during a pass no longer waits for it, and a row
 published while a pass runs keeps the values it was published with.
 
-## Unreleased: inference tables are timed in seconds and numbered by source frame
+### Inference tables are timed in seconds and numbered by source frame
 
 **`infer-pose` and `infer-points` re-address from `0.3` to `0.4`, and
 `infer-localizer` from `0.2` to `0.3`.** The version is a visible segment of the
@@ -6180,7 +6182,7 @@ that the model read. A run over frames 5, 7 and 9 of the video numbered its rows
 0, 1 and 2. It is now the frame that the model read, as a tracker's is. A run
 without a frame window numbered its rows by the source frame already.
 
-## Unreleased: a table from several clips is timed by each clip's rate
+### A table from several clips is timed by each clip's rate
 
 **A SLEAP, Lightning Pose or Ultralytics entry of several clips is tracked again
 on its next run, with no `--overwrite`.** A table of such an entry made before
