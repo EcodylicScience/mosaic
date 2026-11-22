@@ -2302,7 +2302,10 @@ def write_tracks_row(
     consumed_composition: str | None = None,
     appearance_path: Path | None = None,
 ) -> None:
-    """Record one standardized-tracks table. The only way to write this index.
+    """Record one standardized-tracks table.
+
+    The only way to write one row of this index. :func:`write_tracks_rows` writes
+    several rows in one write of the same index, and this calls it with one row.
 
     Keyword-only throughout: the call sites pass ``group`` and
     ``sequence`` adjacently, and transposing them would be silent.

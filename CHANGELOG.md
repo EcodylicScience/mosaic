@@ -44,16 +44,17 @@ kind in one write, and `write_labels_row` calls it with one row.
 one dataset into another under the same run id, and appends its row to the
 destination's index with the source row's times. Each path cell under the source's
 `models` root names the same place under the destination's, and a path cell elsewhere
-is stored absolute. The copied run root holds a new file, `.mosaic-origin.json`, which
-names the source dataset's name, uuid and path and a digest of the copied files. The
-source's in-flight marker and `.mosaic-train/` are not copied. A dry run returns a
-`CopyReport` and writes nothing. A second copy from the same dataset changes nothing,
-and the next copy completes one that stopped part way. The call raises
-`CopyRefusedError`, whose `reason` names the refusal, before it writes anything for a
-dataset without a uuid, a root other than `models`, a kind of prepared data, a run id
-of another kind, a run that the source did not finish, a source run root that is a
-link, a copy into the same dataset, a destination without a `models` root, and a run
-id that the destination holds from another origin. `EXCHANGE_DIRECTORY` moves to
+keeps the path it resolves to. A cell is stored as the destination stores its own
+paths, so a path outside the destination is stored absolute. The copied run root holds
+a new file, `.mosaic-origin.json`, which names the source dataset's name, uuid and path
+and a digest of the copied files. The source's in-flight marker and `.mosaic-train/` are
+not copied. A dry run returns a `CopyReport` and writes nothing. A second copy from the
+same dataset changes nothing, and the next copy completes one that stopped part way. The
+call raises `CopyRefusedError`, whose `reason` names the refusal, before it writes
+anything for a dataset without a uuid, a root other than `models`, a kind of prepared
+data, a run id of another kind, a run that the source did not finish, a source run root
+that is a link, a copy into the same dataset, a destination without a `models` root, and
+a run id that the destination holds from another origin. `EXCHANGE_DIRECTORY` moves to
 `mosaic.core.pipeline.markers`, and `MODEL_INDEX_PATH_COLUMNS`
 (`mosaic.core.pipeline.models`) names the path columns of a `models` index.
 

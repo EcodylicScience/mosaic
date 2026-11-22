@@ -736,6 +736,18 @@ def _dataset_base_dir(ds) -> Path:
     return base
 
 
+def _link_directory(base: Path, link_path: str) -> Path:
+    """The directory a relative link names, taken lexically from *base*.
+
+    A link names its dataset's directory or its manifest file, as
+    :func:`~mosaic.core.manifest.resolve_manifest_path` reads it: a path that is
+    not a directory names the manifest, and the directory is its parent. The
+    path is normalized and not resolved, so a symlink on it stays visible.
+    """
+    target = Path(os.path.normpath(base / link_path))
+    return target if target.is_dir() else target.parent
+
+
 def _refuse_adopting_into(index_path: Path) -> None:
     """Refuse to adopt raw rows into *index_path* when it already has a row."""
     if _read_media_index(index_path):
@@ -3560,8 +3572,8 @@ class Dataset:
         tree: Path | None = None
         lexical_media: Path | None = None
         if not user_path(link.path).is_absolute():
-            target = Path(os.path.normpath(base / link.path))
-            tree = link_tree(base, link.path)
+            target = _link_directory(base, link.path)
+            tree = link_tree(base, target)
             try:
                 media = source_media.resolve().relative_to(_dataset_base_dir(source))
             except ValueError:

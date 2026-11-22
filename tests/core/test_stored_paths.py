@@ -127,7 +127,9 @@ def test_a_links_tree_is_where_its_parent_steps_lead(
 ) -> None:
     base = tmp_path.resolve() / "data" / "fork"
 
-    assert link_tree(base, link) == Path(os.path.normpath(tmp_path.resolve() / tree))
+    assert link_tree(base, Path(os.path.normpath(base / link))) == Path(
+        os.path.normpath(tmp_path.resolve() / tree)
+    )
 
 
 def test_a_links_tree_is_found_without_resolving_a_path(tmp_path: Path) -> None:
@@ -138,13 +140,13 @@ def test_a_links_tree_is_found_without_resolving_a_path(tmp_path: Path) -> None:
         tmp_path / "elsewhere", target_is_directory=True
     )
 
-    assert link_tree(base, "../share") == tmp_path.resolve() / "data"
+    assert link_tree(base, base.parent / "share") == tmp_path.resolve() / "data"
 
 
 def test_a_tree_at_the_file_system_root_is_none() -> None:
     base = Path(Path.cwd().anchor) / "fork"
 
-    assert link_tree(base, "../share") is None
+    assert link_tree(base, base.parent / "share") is None
 
 
 def test_a_tree_that_commonpath_refuses_is_none(
@@ -152,7 +154,7 @@ def test_a_tree_that_commonpath_refuses_is_none(
 ) -> None:
     monkeypatch.setattr(os.path, "commonpath", _raise_value_error)
 
-    assert link_tree(tmp_path.resolve() / "fork", "../share") is None
+    assert link_tree(tmp_path.resolve() / "fork", tmp_path.resolve() / "share") is None
 
 
 def _tree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

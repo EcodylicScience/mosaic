@@ -1117,6 +1117,48 @@ def test_a_fork_two_links_from_the_share_reads_it_after_the_tree_moves(
     )
 
 
+def test_a_link_naming_the_manifest_stores_the_cells_of_a_directory_link(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    share = raw_source(root / "share")
+    stored: dict[str, list[tuple[str, str]]] = {}
+    for name, path in (
+        ("directory", "../share"),
+        ("manifest", "../share/dataset.yaml"),
+    ):
+        example = make_dataset(root / name, name=name)
+        _ = example.add_link(DatasetLink(id="share", path=path))
+        _ = example.adopt_raw_rows(share)
+        stored[name] = [(where, cell) for where, cell, _ in _cells(example)]
+
+    assert stored["manifest"] == stored["directory"]
+    assert all(not Path(cell).is_absolute() for _, cell in stored["manifest"])
+
+
+def test_a_fork_through_a_manifest_link_reads_the_share_after_the_tree_moves(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    share = raw_source(root / "share")
+    fork = make_dataset(root / "fork", name="fork")
+    _ = fork.add_link(DatasetLink(id="share", path="../share/dataset.yaml"))
+    _ = fork.adopt_raw_rows(share)
+    before = _cells(fork)
+    share_base = share.base_dir
+    assert all(not Path(cell).is_absolute() for _, cell, _ in before), before
+
+    moved = tmp_path / "elsewhere" / "root"
+    _ = shutil.copytree(root, moved, symlinks=True)
+    shutil.rmtree(root)
+
+    after = _cells(_reopened_at(moved / "fork"))
+    moved_share = (moved / "share").resolve()
+    for (where, _, old), (_, _, new) in zip(before, after, strict=True):
+        assert new == moved_share / old.relative_to(share_base), where
+        assert new.is_file(), where
+
+
 def _reopened_at(base: Path) -> Dataset:
     return Dataset(manifest_path=base / "dataset.yaml").load()
 

@@ -159,25 +159,24 @@ def manifest_file_path(recorded: str) -> str:
     return path.name if path.is_absolute() else recorded
 
 
-def link_tree(base: Path, link_path: str) -> Path | None:
+def link_tree(base: Path, target: Path) -> Path | None:
     """The directory that a relative link's ``..`` steps lead to, or ``None``.
 
     The tree is the common directory of *base* and the link's target, both taken
-    lexically: the target is *link_path* joined to *base* and normalized, and
-    neither path is resolved. A link that crosses no symlink reaches its target
-    and any sibling of it inside the tree by a relative path, wherever the tree
-    is mounted.
+    lexically: neither path is resolved. A link that crosses no symlink reaches
+    its target and any sibling of it inside the tree by a relative path,
+    wherever the tree is mounted.
 
     Args:
         base: The resolved directory of the dataset that declares the link.
-        link_path: The link's relative path as written.
+        target: The linked dataset's directory, the link's relative path joined
+            to *base* and normalized without resolving it.
 
     Returns:
         The tree, or ``None`` when it is the file-system root (its own anchor)
         or when ``os.path.commonpath`` refuses the two paths, as it does on
         Windows for paths on two drives.
     """
-    target = os.path.normpath(base / link_path)
     try:
         tree = Path(os.path.commonpath([base, target]))
     except ValueError:

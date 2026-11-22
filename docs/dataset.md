@@ -253,8 +253,8 @@ Each returns the number of rows it wrote, one for each `<entry key>.parquet` or
 `<entry key>.npz` of the directory. A name that starts with `.` and any other file are
 skipped. `std_format` is the track schema that every table must pass, and
 `carries_tracklets` says whether an `id` follows one animal over time, or is `None` when
-you do not know. Run either call again after adding files. It replaces the variant's
-rows and keeps the rest of the index.
+you do not know. Run either call again after adding files. It replaces the rows of the
+files it finds. To drop the row of a file you removed, run `mosaic reindex --apply`.
 
 A row records what mosaic measures from the file: for tracks, the row count, the
 keypoints, the extent and the pair counts, and for labels the `label_format`, the frame
