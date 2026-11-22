@@ -214,6 +214,7 @@ from .pipeline.staged_tables import (
     stage_table,
     sweep_staged,
 )
+from .pipeline.models import MODEL_INDEX_PATH_COLUMNS
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
@@ -426,13 +427,7 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     # ``abs_path``, so a dataset moved between machines kept a labels row
     # pointing at the old one's filesystem -- and reported itself portable.
     "labels": LABELS_INDEX_PATH_COLUMNS,
-    "models": (
-        "best_model_path",
-        "metrics_path",
-        "artifact_path",
-        "data_yaml",
-        "data_path",
-    ),
+    "models": MODEL_INDEX_PATH_COLUMNS,
     **{key: root.path_columns for key, root in TRACKING_ROOTS.items()},
 }
 

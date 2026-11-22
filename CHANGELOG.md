@@ -38,6 +38,24 @@ composition. A file whose entry key collides with another entry raises
 of the labels index: it appends the rows of one kind in one write, and
 `write_labels_row` calls it with one row.
 
+`copy_run_root(src, dst, *, root_key="models", kind, run_id, dry_run=True)`
+(`mosaic.tracking.ops.copy_run_root`) copies a finished trained model's run root from
+one dataset into another under the same run id, and appends its row to the
+destination's index with the source row's times. Each path cell under the source's
+`models` root names the same place under the destination's, and a path cell elsewhere
+is stored absolute. The copied run root holds a new file, `.mosaic-origin.json`, which
+names the source dataset's name, uuid and path and a digest of the copied files. The
+source's in-flight marker and `.mosaic-train/` are not copied. A dry run returns a
+`CopyReport` and writes nothing. A second copy from the same dataset changes nothing,
+and the next copy completes one that stopped part way. The call raises
+`CopyRefusedError`, whose `reason` names the refusal, before it writes anything for a
+dataset without a uuid, a root other than `models`, a kind of prepared data, a run id
+of another kind, a run that the source did not finish, a source run root that is a
+link, a copy into the same dataset, a destination without a `models` root, and a run
+id that the destination holds from another origin. `EXCHANGE_DIRECTORY` moves to
+`mosaic.core.pipeline.markers`, and `MODEL_INDEX_PATH_COLUMNS`
+(`mosaic.core.pipeline.models`) names the path columns of a `models` index.
+
 ## Unreleased: derived data through linked datasets
 
 No run id or output byte moves. The manifest key `libraries` becomes `links`, and each

@@ -31,6 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from mosaic.core.pipeline.markers import EXCHANGE_DIRECTORY
 from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError, missing_output_error
 from mosaic.tracking.common.ultralytics_env import (
     POLO_BOOTSTRAP,
@@ -54,15 +55,6 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     TrainResponse,
     TrainStop,
 )
-
-EXCHANGE_DIRECTORY = ".mosaic-train"
-"""Where one training run's attempts keep their exchange, inside the run root.
-
-Dot-prefixed and ``.mosaic-`` named for the reason every other marker is: it sits
-in a directory Ultralytics also writes into, and the prefix is what says at a
-glance which files are mosaic's. It is a sibling of the ``train/`` subdirectory
-the tool owns, never inside it.
-"""
 
 TRAIN_REQUEST_NAME = "request.json"
 """What one attempt asked the tool to do."""
@@ -295,7 +287,6 @@ def run_point_training_tool(
 
 __all__ = [
     "CANCEL_SENTINEL_NAME",
-    "EXCHANGE_DIRECTORY",
     "TRAIN_REQUEST_NAME",
     "TRAIN_RESPONSE_NAME",
     "TrainingDirectoryError",

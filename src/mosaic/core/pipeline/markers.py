@@ -80,6 +80,7 @@ from mosaic.runlog import (
 
 __all__ = [
     "BOOT_TIME_TOLERANCE_SECONDS",
+    "EXCHANGE_DIRECTORY",
     "INFLIGHT_GRACE_SECONDS",
     "INFLIGHT_MARKER_NAME",
     "INFLIGHT_MIN_TTL_SECONDS",
@@ -199,6 +200,15 @@ MARKER_SCHEMA_VERSION: Final = 1
 # directory generically, so ownership must be unambiguous.
 MARKER_PREFIX: Final = ".mosaic-"
 INFLIGHT_MARKER_NAME: Final = f"{MARKER_PREFIX}inflight.json"
+
+EXCHANGE_DIRECTORY: Final = f"{MARKER_PREFIX}train"
+"""Where one training run's attempts keep their exchange, inside the run root.
+
+Dot-prefixed and ``.mosaic-`` named for the reason every other marker is: it sits
+in a directory Ultralytics also writes into, and the prefix is what says at a
+glance which files are mosaic's. It is a sibling of the ``train/`` subdirectory
+the tool owns, never inside it.
+"""
 
 # Added to the caller's inactivity window to get the claim's expiry: silence up
 # to the idle bound is normal (the phase refreshes its claim on output), so the

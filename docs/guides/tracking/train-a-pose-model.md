@@ -287,6 +287,14 @@ Once a dataset links a library, a model there is named by its run id exactly as 
 trained locally is. Give the link as a relative path when the two datasets move
 together.
 
+To keep a model in a library instead of the dataset that trained it, copy its run root
+with `copy_run_root(src, dst, kind="train-pose", run_id="<run_id>")` from
+`mosaic.tracking.ops.copy_run_root`. The call is a dry run until you pass
+`dry_run=False`, and its report names the files it would copy. The copy keeps the run
+id and records the dataset it came from in `.mosaic-origin.json`. Copying again from
+that dataset changes nothing, and a copy is refused with `CopyRefusedError` when the
+library already holds the run id from another dataset.
+
 ### Ask a model what it saw
 
 ```bash

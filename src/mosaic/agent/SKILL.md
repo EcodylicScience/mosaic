@@ -758,6 +758,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Refer to a model by its run id. To use a model trained in another dataset, link that
   dataset with `mosaic links add --provides models`. Do not pass a path into its
   `models/`. `mosaic models provenance <run_id>` shows what a model was trained on.
+  A model that must live in another dataset, such as a library, is copied there with
+  `copy_run_root`
+  (https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/#use-the-model-from-any-dataset).
 - A hand-corrected track set becomes source data through `promote_correction`, as
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/ describes.
 

@@ -94,6 +94,10 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   models, with no finished row in a reachable dataset, raises `LinkUnreachableError`
   rather than training. `training_is_complete` reads one dataset's index, and
   `trained_model_records` keeps it for an own record's `complete` cell.
+- `copy_run_root` (`ops/copy_run_root.py`) copies a finished run root into another
+  dataset and records `.mosaic-origin.json` in the copy. Code that reconciles or
+  classifies model run roots treats a run root that carries the marker as only `ok` or
+  `scheme_stale`, and never moves it to another run id.
 
 ## Training data and provenance
 

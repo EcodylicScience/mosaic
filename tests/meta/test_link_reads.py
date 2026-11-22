@@ -156,6 +156,7 @@ GUARDED_SITES: Final = (
     GuardedSite("core/pipeline/pipeline.py", "Pipeline.clean"),
     GuardedSite("core/pipeline/run.py", "_run_feature_impl"),
     GuardedSite("tracking/frame_extraction/dataset_runs.py", "_run_extract_frames"),
+    GuardedSite("tracking/ops/copy_run_root.py", "copy_run_root"),
 )
 """The write, removal and reconcile sites that stay on own addresses."""
 

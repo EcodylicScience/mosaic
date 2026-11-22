@@ -49,6 +49,21 @@ def holds_trained_models(kind: str) -> bool:
     return kind not in PREPARED_DATA_KINDS
 
 
+MODEL_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "best_model_path",
+    "metrics_path",
+    "artifact_path",
+    "data_yaml",
+    "data_path",
+)
+"""The columns of a ``models/<kind>/index.csv`` that hold a path, beside ``abs_path``.
+
+The trained-model and the prepared-data rows share the index layout, and each
+declares some of these columns. The portability passes rewrite them, and a copy
+of a model's run root stores them for its destination.
+"""
+
+
 PREPARED_ARTIFACT_COLUMNS: Final = ("artifact_path", "data_yaml")
 """Where a prepared-data row names what a trainer is handed, newest first.
 
