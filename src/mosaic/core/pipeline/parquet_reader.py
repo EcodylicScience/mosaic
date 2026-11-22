@@ -6,9 +6,10 @@ pipeline and the preview's reads, each returning plain Python values, so its
 callers type-check in full. The file-level directives below cover the unknown
 types of pyarrow alone.
 
-Each read opens the file and reads only the columns it names. None of them
-builds a pandas frame. A file that pyarrow cannot read raises
-:class:`ParquetUnreadable`.
+A footer read opens the file, unless the thread entered :func:`memoized_footers`,
+which reads each file's footer once until the file changes. Every other read
+opens the file and reads only the columns it names. None of them builds a
+pandas frame. A file that pyarrow cannot read raises :class:`ParquetUnreadable`.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -18,9 +19,10 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -40,6 +42,7 @@ __all__ = [
     "ParquetFooterMemo",
     "ParquetUnreadable",
     "iter_column_batches",
+    "memoized_footers",
     "output_n_rows",
     "parquet_is_readable",
     "parse_footer",
@@ -141,8 +144,17 @@ def parse_footer(path: Path) -> ParquetFooter:
 
 
 def read_footer(path: Path) -> ParquetFooter:
-    """Return the schema and the row count that *path*'s footer records."""
-    return parse_footer(path)
+    """Return the schema and the row count that *path*'s footer records.
+
+    Inside :func:`memoized_footers` the footer is parsed only when the file moved
+    since the memo last read it. A file that cannot be examined raises
+    :class:`ParquetUnreadable`, as one that cannot be opened does.
+    """
+    memo = _MEMO.get()
+    if memo is None:
+        return parse_footer(path)
+    with _reading(path):
+        return memo.footer(path)
 
 
 def parquet_is_readable(path: Path) -> bool:
@@ -270,18 +282,45 @@ class ParquetFooterMemo:
         return footer
 
 
+_MEMO: Final[ContextVar[ParquetFooterMemo | None]] = ContextVar(
+    "mosaic_parquet_footer_memo", default=None
+)
+
+
+@contextmanager
+def memoized_footers(memo: ParquetFooterMemo) -> Generator[None]:
+    """Route :func:`read_footer` through *memo* for the block, in this thread or task.
+
+    The memo belongs to the context that entered it. A thread that the block
+    starts does not share it and reads each file. The block restores the memo
+    found on entry when it exits.
+    """
+    token = _MEMO.set(memo)
+    try:
+        yield
+    finally:
+        _MEMO.reset(token)
+
+
 def read_parquet_column_names(path: Path) -> tuple[str, ...] | None:
     """The column names of a parquet, read from its footer and not its data.
 
     ``None`` for an absent file and for one whose footer does not parse, as an
     interrupted write leaves it. A caller asking what a table contains treats
-    that as unknown.
+    that as unknown. A path that cannot be examined for another reason, such as a
+    directory that denies search, raises the :class:`OSError` that
+    :meth:`pathlib.Path.exists` raises for it, with or without a memo.
     """
-    if not path.exists():
+    memo = _MEMO.get()
+    if memo is None and not path.exists():
         return None
     try:
         footer = read_footer(path)
     except ParquetUnreadable:
+        if memo is not None:
+            # The memo's stat replaced the check above. Ask Path.exists about
+            # the failed path so that it raises what it raises without a memo.
+            _ = path.exists()
         return None
     return tuple(column.name for column in footer.columns)
 
