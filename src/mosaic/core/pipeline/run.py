@@ -180,7 +180,7 @@ from .parallelism import (
     valid_admission_margin,
 )
 from .params_facts import params_equal_defaults, params_identity_digest
-from .parquet_reader import output_n_rows
+from .parquet_reader import ParquetFooterMemo, memoized_footers, output_n_rows
 from .process_pool import caller_guarded_process_pool
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
@@ -2171,7 +2171,8 @@ def run_feature(
     """Apply a Feature over a chosen scope (default: whole dataset).
 
     Input routing is determined by ``feature.inputs``: tracks (default),
-    a single upstream feature, or a multi-input set.
+    a single upstream feature, or a multi-input set. Within a run each parquet's
+    footer is read once until the file changes.
 
     Parameters
     ----------
@@ -2356,30 +2357,31 @@ def run_feature(
             try:
                 if probe is not None and ctx.run_log is not None:
                     probe.write(ctx.run_log)
-                return _run_feature_impl(
-                    ds,
-                    feature,
-                    ctx,
-                    storage_feature_name,
-                    scope=scope,
-                    tracks_run_id=tracks_run_id,
-                    labels_run_id=labels_run_id,
-                    overwrite=overwrite,
-                    parallel_workers=parallel_workers,
-                    parallel_mode=parallel_mode,
-                    overlap_frames=overlap_frames,
-                    filter_start_frame=filter_start_frame,
-                    filter_end_frame=filter_end_frame,
-                    filter_start_time=filter_start_time,
-                    filter_end_time=filter_end_time,
-                    check_output=check_output,
-                    asks_every_entry=asks_every_entry,
-                    min_free_memory_fraction=min_free_memory_fraction,
-                    measure_worker_base=measure_worker_base,
-                    admission_margin=admission_margin,
-                    phases=phases,
-                    tag_revision=tag_revision,
-                )
+                with memoized_footers(ParquetFooterMemo()):
+                    return _run_feature_impl(
+                        ds,
+                        feature,
+                        ctx,
+                        storage_feature_name,
+                        scope=scope,
+                        tracks_run_id=tracks_run_id,
+                        labels_run_id=labels_run_id,
+                        overwrite=overwrite,
+                        parallel_workers=parallel_workers,
+                        parallel_mode=parallel_mode,
+                        overlap_frames=overlap_frames,
+                        filter_start_frame=filter_start_frame,
+                        filter_end_frame=filter_end_frame,
+                        filter_start_time=filter_start_time,
+                        filter_end_time=filter_end_time,
+                        check_output=check_output,
+                        asks_every_entry=asks_every_entry,
+                        min_free_memory_fraction=min_free_memory_fraction,
+                        measure_worker_base=measure_worker_base,
+                        admission_margin=admission_margin,
+                        phases=phases,
+                        tag_revision=tag_revision,
+                    )
             finally:
                 _close_feature(feature)
 

@@ -3,8 +3,9 @@
 A dataset of 8,400 entries converts at 4 entries a second, with idle workers, when
 each published table rereads and rewrites the whole tracks index. A feature step spends
 170 ms an entry in the calling process, most of it in a full garbage collection after
-each entry, in a map of every entry rebuilt for each one, and in a write of the feature
-index every ten rows. These tests count that work instead of timing it, with a clock
+each entry, in a map of every entry rebuilt for each one, in a write of the feature
+index every ten rows, and in a parse of an input's parquet footer by each function that
+asks for it. These tests count that work instead of timing it, with a clock
 that moves a fixed step on each read, so that a slow or a busy machine changes
 nothing. A pass over everything for each entry, or for each handful of them, exceeds
 the bounds, and a run that does each pass a few times does not.
@@ -24,7 +25,7 @@ import pytest
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
 from mosaic.core import dataset as dataset_module
-from mosaic.core.pipeline import loading, pacing, tracks_index
+from mosaic.core.pipeline import loading, pacing, parquet_reader, tracks_index
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.loading import input_projection
@@ -417,16 +418,39 @@ def _neighbor_run(dataset: Dataset, table: pd.DataFrame) -> tuple[NNResult, Path
 
 
 def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """The files whose footer is read for their column names."""
+    """The files whose footer is parsed, memoized or not."""
     footers: list[Path] = []
-    original = loading.read_parquet_column_names
+    original = parquet_reader.parse_footer
 
-    def counting(path: Path) -> tuple[str, ...] | None:
+    def counting(path: Path) -> parquet_reader.ParquetFooter:
         footers.append(path)
         return original(path)
 
-    monkeypatch.setattr(loading, "read_parquet_column_names", counting)
+    monkeypatch.setattr(parquet_reader, "parse_footer", counting)
     return footers
+
+
+FOOTER_ENTRIES = 12
+INPUTS_PER_ENTRY = 1
+"""``speed-angvel`` reads one tracks table for each entry."""
+PER_RUN_READS = 2
+"""``is_track_shaped`` and ``carries_z``, which may read a file that no entry does."""
+
+
+def test_a_feature_run_reads_each_input_footer_once_per_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
+    footers = _count_footer_reads(monkeypatch)
+
+    _speed(dataset)
+
+    assert len(footers) <= FOOTER_ENTRIES * INPUTS_PER_ENTRY, footers
+
+    footers.clear()
+    _speed(dataset)
+
+    assert len(footers) <= FOOTER_ENTRIES + PER_RUN_READS, footers
 
 
 NEIGHBOR_ROWS = {"id": [0, 1, 0, 1], "nn_id": [1.0, 0.0, NAN, 0.0]}
