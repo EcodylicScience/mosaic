@@ -1,0 +1,25 @@
+{
+ "schema_version": 1,
+ "name": "step-cost convert and speed-angvel",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  },
+  {
+   "id": "speed",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  }
+ ]
+}

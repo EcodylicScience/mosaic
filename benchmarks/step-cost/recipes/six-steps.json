@@ -1,0 +1,73 @@
+{
+ "schema_version": 1,
+ "name": "step-cost six steps",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  },
+  {
+   "id": "smooth",
+   "type": "feature",
+   "feature": "trajectory-smooth",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "speed",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "heading",
+   "type": "feature",
+   "feature": "heading",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "kin",
+   "type": "feature",
+   "feature": "keypoint-kinematics",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "agg",
+   "type": "feature",
+   "feature": "individual-aggregate",
+   "inputs": [
+    {
+     "step": "speed"
+    }
+   ],
+   "params": {
+    "columns": [
+     "speed"
+    ]
+   }
+  }
+ ]
+}

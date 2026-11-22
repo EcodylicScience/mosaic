@@ -1,0 +1,14 @@
+{
+ "schema_version": 1,
+ "name": "step-cost convert",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  }
+ ]
+}

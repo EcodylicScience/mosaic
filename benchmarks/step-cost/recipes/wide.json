@@ -1,0 +1,854 @@
+{
+ "schema_version": 1,
+ "name": "step-cost 61 steps",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  },
+  {
+   "id": "sp01",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 1
+   }
+  },
+  {
+   "id": "sp02",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 2
+   }
+  },
+  {
+   "id": "sp03",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 3
+   }
+  },
+  {
+   "id": "sp04",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 4
+   }
+  },
+  {
+   "id": "sp05",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 5
+   }
+  },
+  {
+   "id": "sp06",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 6
+   }
+  },
+  {
+   "id": "sp07",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 7
+   }
+  },
+  {
+   "id": "sp08",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 8
+   }
+  },
+  {
+   "id": "sp09",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 9
+   }
+  },
+  {
+   "id": "sp10",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 10
+   }
+  },
+  {
+   "id": "sp11",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 11
+   }
+  },
+  {
+   "id": "sp12",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 12
+   }
+  },
+  {
+   "id": "sp13",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 13
+   }
+  },
+  {
+   "id": "sp14",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 14
+   }
+  },
+  {
+   "id": "sp15",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 15
+   }
+  },
+  {
+   "id": "sp16",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 16
+   }
+  },
+  {
+   "id": "sp17",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 17
+   }
+  },
+  {
+   "id": "sp18",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 18
+   }
+  },
+  {
+   "id": "sp19",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 19
+   }
+  },
+  {
+   "id": "sp20",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 20
+   }
+  },
+  {
+   "id": "sp21",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 21
+   }
+  },
+  {
+   "id": "sp22",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 22
+   }
+  },
+  {
+   "id": "sp23",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 23
+   }
+  },
+  {
+   "id": "sp24",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 24
+   }
+  },
+  {
+   "id": "sp25",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 25
+   }
+  },
+  {
+   "id": "sp26",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 26
+   }
+  },
+  {
+   "id": "sp27",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 27
+   }
+  },
+  {
+   "id": "sp28",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 28
+   }
+  },
+  {
+   "id": "sp29",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 29
+   }
+  },
+  {
+   "id": "sp30",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 30
+   }
+  },
+  {
+   "id": "sp31",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 31
+   }
+  },
+  {
+   "id": "sp32",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 32
+   }
+  },
+  {
+   "id": "sp33",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 33
+   }
+  },
+  {
+   "id": "sp34",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 34
+   }
+  },
+  {
+   "id": "sp35",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 35
+   }
+  },
+  {
+   "id": "sp36",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 36
+   }
+  },
+  {
+   "id": "sp37",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 37
+   }
+  },
+  {
+   "id": "sp38",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 38
+   }
+  },
+  {
+   "id": "sp39",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 39
+   }
+  },
+  {
+   "id": "sp40",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 40
+   }
+  },
+  {
+   "id": "sp41",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 41
+   }
+  },
+  {
+   "id": "sp42",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 42
+   }
+  },
+  {
+   "id": "sp43",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 43
+   }
+  },
+  {
+   "id": "sp44",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 44
+   }
+  },
+  {
+   "id": "sp45",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 45
+   }
+  },
+  {
+   "id": "sp46",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 46
+   }
+  },
+  {
+   "id": "sp47",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 47
+   }
+  },
+  {
+   "id": "sp48",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 48
+   }
+  },
+  {
+   "id": "sp49",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 49
+   }
+  },
+  {
+   "id": "sp50",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 50
+   }
+  },
+  {
+   "id": "sp51",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 51
+   }
+  },
+  {
+   "id": "sp52",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 52
+   }
+  },
+  {
+   "id": "sp53",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 53
+   }
+  },
+  {
+   "id": "sp54",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 54
+   }
+  },
+  {
+   "id": "sp55",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 55
+   }
+  },
+  {
+   "id": "sp56",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 56
+   }
+  },
+  {
+   "id": "sp57",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 57
+   }
+  },
+  {
+   "id": "sp58",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 58
+   }
+  },
+  {
+   "id": "sp59",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 59
+   }
+  },
+  {
+   "id": "sp60",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   },
+   "params": {
+    "step_size": 60
+   }
+  }
+ ]
+}
