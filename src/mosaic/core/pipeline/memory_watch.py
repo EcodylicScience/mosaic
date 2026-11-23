@@ -46,6 +46,7 @@ Imports the standard library only. ``psutil`` is imported inside the methods, as
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -264,26 +265,28 @@ def _process_has_gone(pid: int, proc_root: Path) -> bool:
     return False
 
 
-def _tree_cpu_seconds() -> float:
-    """The user and system time of this process, its reaped children and its live ones."""
+def _own_cpu_seconds() -> float:
+    """The user and system time of this process and of its reaped children.
+
+    ``resource.getrusage`` reads it to the microsecond, where ``os.times()`` rounds
+    to 10 ms on macOS, and counts reaped children on macOS, where ``psutil``
+    reports 0. ``os.times()`` reads it where ``resource`` cannot be imported
+    (Windows).
+    """
     try:
-        import psutil
+        import resource
     except ImportError:
-        return 0.0
-    try:
-        root = psutil.Process()
-        own = root.cpu_times()
-        total = own.user + own.system + own.children_user + own.children_system
-        children = root.children(recursive=True)
-    except psutil.Error:
-        return 0.0
-    for child in children:
-        try:
-            times = child.cpu_times()
-        except psutil.Error:
-            continue
-        total += times.user + times.system
-    return float(total)
+        times = os.times()
+        return times.user + times.system + times.children_user + times.children_system
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    reaped = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + reaped.ru_utime + reaped.ru_stime
+
+
+def _process_cpu_seconds(process: psutil.Process) -> float:
+    """The user and system time of *process*, without its children's."""
+    times = process.cpu_times()
+    return float(times.user + times.system)
 
 
 @dataclass(slots=True)
@@ -294,6 +297,8 @@ class _Member:
         direct: Whether the watching process is its parent.
         found_at_begin: Whether the walk of :meth:`MemoryWatch.begin` found it.
         first_walk: The number of the walk that first found it.
+        cpu_base: Its user and system time when first found.
+        cpu_last: Its user and system time at the last read that succeeded.
         spawned: Whether its command line, read at the last walk, marks it a
             worker that ``multiprocessing`` spawned. Read for a direct child only.
     """
@@ -301,6 +306,8 @@ class _Member:
     direct: bool
     found_at_begin: bool
     first_walk: int
+    cpu_base: float
+    cpu_last: float
     spawned: bool = False
 
 
@@ -361,6 +368,7 @@ class MemoryWatch:
         self._members: dict[psutil.Process, _Member] = {}
         self._walks: int = 0
         self._walked_at: float | None = None
+        self._reaped_bases: float = 0.0
         self._stop: threading.Event = threading.Event()
         self._sampler: threading.Thread | None = None
         self.peak_rss_bytes: int = 0
@@ -376,21 +384,71 @@ class MemoryWatch:
         """Start measuring cost: CPU, wall time and the high-water mark count from now.
 
         The child processes alive now are earlier work, and no sample counts them as
-        this run's workers.
+        this run's workers. A process found now counts its CPU from now.
         """
         with self._membership:
             self._members = {}
+            self._reaped_bases = 0.0
             self._walked_at = None
             _ = self._walk(at_begin=True)
-        self._cpu_at_begin = _tree_cpu_seconds()
+        self._cpu_at_begin = _own_cpu_seconds()
         self._max_rss_at_begin = max_rss_bytes()
         self._began = time.monotonic()
 
     def cpu_seconds(self) -> float:
-        """Return the tree's user and system time since :meth:`begin`, 0 before it."""
+        """Return the tree's user and system time since :meth:`begin`, 0 before it.
+
+        A process below this one counts its CPU from the walk that first finds it,
+        also after it is reaped. The figure is this process's time and its reaped
+        children's, plus each member's time since it was first found, less the
+        times at first sighting of the direct members that have been reaped, whose
+        whole time the reaped children's now holds, less the same figure at
+        :meth:`begin`.
+
+        It walks the tree when the membership is stale, then reads the members, and
+        then this process's own time, under the membership lock that every leave
+        holds, so a member that has left was reaped before that read and its whole
+        time is in it. A direct member reaped between its read and the last is
+        counted twice by that one read, which the next read corrects once the
+        member leaves. The other order would undercount instead, and a span whose
+        start read undercounted would take the difference.
+
+        Returns:
+            The seconds, never below 0, and 0 where ``psutil`` is not importable.
+        """
         if self._began is None:
             return 0.0
-        return max(0.0, _tree_cpu_seconds() - self._cpu_at_begin)
+        try:
+            import psutil
+        except ImportError:
+            return 0.0
+        with self._membership:
+            if self._membership_is_stale():
+                _ = self._walk()
+            known = list(self._members)
+        read: dict[psutil.Process, float] = {}
+        gone: list[psutil.Process] = []
+        for process in known:
+            try:
+                read[process] = _process_cpu_seconds(process)
+            except psutil.ZombieProcess:
+                pass
+            except psutil.NoSuchProcess:
+                gone.append(process)
+            except psutil.Error:
+                pass
+        with self._membership:
+            self._leave(gone)
+            own = _own_cpu_seconds()
+            for process, cpu in read.items():
+                member = self._members.get(process)
+                if member is not None:
+                    member.cpu_last = cpu
+            members = sum(
+                member.cpu_last - member.cpu_base for member in self._members.values()
+            )
+            total = own + members - self._reaped_bases
+        return max(0.0, total - self._cpu_at_begin)
 
     @property
     def walks(self) -> int:
@@ -421,7 +479,8 @@ class MemoryWatch:
         """List the processes below this one, keeping the record of each known one.
 
         The caller holds the membership lock. A walk that fails, or a host without
-        ``psutil``, changes nothing.
+        ``psutil``, changes nothing. A new member's CPU now is its base, and a direct
+        member that the walk no longer finds has been reaped and leaves.
 
         Returns:
             Whether the walk succeeded.
@@ -442,18 +501,36 @@ class MemoryWatch:
             if member is None:
                 try:
                     direct = process.ppid() == root.pid
+                    cpu = _process_cpu_seconds(process)
                 except psutil.Error:
                     continue
                 member = _Member(
-                    direct=direct, found_at_begin=at_begin, first_walk=walk
+                    direct=direct,
+                    found_at_begin=at_begin,
+                    first_walk=walk,
+                    cpu_base=cpu,
+                    cpu_last=cpu,
                 )
             if member.direct and not member.found_at_begin:
                 member.spawned = _is_spawned_worker(process)
             members[process] = member
+        self._leave([process for process in self._members if process not in members])
         self._members = members
         self._walks = walk
         self._walked_at = now()
         return True
+
+    def _leave(self, gone: list[psutil.Process]) -> None:
+        """Drop the members in *gone*, which have been reaped.
+
+        The caller holds the membership lock. A direct member's CPU base is
+        subtracted from then on, because the reaped children's time holds its
+        whole CPU.
+        """
+        for process in gone:
+            member = self._members.pop(process, None)
+            if member is not None and member.direct:
+                self._reaped_bases += member.cpu_base
 
     def _membership_is_stale(self) -> bool:
         """Whether the last walk is an interval old, or there was none."""
@@ -528,8 +605,7 @@ class MemoryWatch:
                 pass
             pids.append(process.pid)
         with self._membership:
-            for process in gone:
-                _ = self._members.pop(process, None)
+            self._leave(gone)
             workers = sum(
                 1 for member in self._members.values() if self._is_worker(member)
             )

@@ -25,10 +25,17 @@ import pytest
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
 from mosaic.core import dataset as dataset_module
-from mosaic.core.pipeline import loading, pacing, parquet_reader, tracks_index
+from mosaic.core.pipeline import (
+    loading,
+    memory_watch,
+    pacing,
+    parquet_reader,
+    tracks_index,
+)
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.loading import input_projection
+from mosaic.core.pipeline.memory_watch import ESTIMATE_SAMPLE_INTERVAL_SECONDS
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import NNResult
@@ -457,6 +464,77 @@ def test_a_feature_run_relativizes_no_path_per_entry(
     _speed(dataset)
 
     assert len(relativized) < FOOTER_ENTRIES, relativized
+
+
+WALKS_PER_RUN = 2
+"""The walks of the process tree that a feature run makes whatever its entry count:
+the one in ``MemoryWatch.begin``, and one more, by a read that crosses the interval
+boundary or by a submission whose counted call finished before ``executor.submit``."""
+WORKERS = 2
+"""The workers of a process run, each sighted by the walk after the submission that
+started it."""
+
+
+@pytest.fixture
+def membership_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """The age of every watch's membership reads this clock."""
+    stepped = _Clock()
+    monkeypatch.setattr(memory_watch, "now", stepped)
+    return stepped
+
+
+def _count_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record a 1 for each ``psutil.Process.children`` call in this process."""
+    import psutil
+
+    walks: list[int] = []
+    children = psutil.Process.children
+
+    def counting(self: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        walks.append(1)
+        return children(self, recursive=recursive)
+
+    monkeypatch.setattr(psutil.Process, "children", counting)
+    return walks
+
+
+def test_a_feature_run_walks_the_process_tree_a_bounded_number_of_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, membership_clock: _Clock
+) -> None:
+    dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
+    walks = _count_walks(monkeypatch)
+    started = membership_clock.now
+
+    _speed(dataset)
+
+    elapsed = membership_clock.now - started
+    bound = WALKS_PER_RUN + elapsed / ESTIMATE_SAMPLE_INTERVAL_SECONDS
+    assert len(walks) <= bound, (len(walks), bound)
+
+
+@pytest.mark.parametrize("admission_margin", [0.0, 1.5])
+def test_a_process_run_walks_the_process_tree_once_more_for_each_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    membership_clock: _Clock,
+    admission_margin: float,
+) -> None:
+    dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
+    walks = _count_walks(monkeypatch)
+    started = membership_clock.now
+
+    result = run_feature(
+        dataset,
+        SpeedAngvel(),
+        parallel_workers=WORKERS,
+        parallel_mode="process",
+        admission_margin=admission_margin,
+    )
+
+    assert not result.failed_entries
+    elapsed = membership_clock.now - started
+    bound = WALKS_PER_RUN + WORKERS + elapsed / ESTIMATE_SAMPLE_INTERVAL_SECONDS
+    assert len(walks) <= bound, (len(walks), bound)
 
 
 NEIGHBOR_ROWS = {"id": [0, 1, 0, 1], "nn_id": [1.0, 0.0, NAN, 0.0]}

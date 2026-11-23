@@ -14,6 +14,7 @@ import os
 import signal
 import socket
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,38 @@ def five(tmp_path: Path) -> Dataset:
     return dataset
 
 
+PAIR = ("seq_d", "seq_c")
+"""The entries a probe of three or more computes two at a time in threads."""
+
+PAIR_HOLD_SECONDS = 30.0
+"""How long an entry of the pair waits in apply for the other to start."""
+
+
+@pytest.fixture
+def overlapping_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit the probe's thread pair together, and hold each until the other starts.
+
+    The admission gate admits the second entry beside the first once its estimate
+    has formed, which the rising non-reclaimable figure guarantees, and the hold
+    keeps the first in flight until the second has started. The pair is then in
+    flight together by construction, however fast an entry computes. A pair that
+    never forms fails both entries after ``PAIR_HOLD_SECONDS`` instead of hanging
+    the run.
+    """
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+
+    _measures_non_reclaimable_memory(monkeypatch)
+    together = threading.Barrier(len(PAIR), timeout=PAIR_HOLD_SECONDS)
+    apply = SpeedAngvel.apply
+
+    def held(self: SpeedAngvel, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) in PAIR:
+            _ = together.wait()
+        return apply(self, df)
+
+    monkeypatch.setattr(SpeedAngvel, "apply", held)
+
+
 @pytest.fixture
 def seven(tmp_path: Path) -> Dataset:
     """Seven track tables of distinct sizes: a probe of five leaves two."""
@@ -140,6 +173,7 @@ def _step_status(ds: Dataset, request: Request, step_id: str) -> str:
 # --- a probe -------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("overlapping_pair")
 def test_a_probe_computes_the_largest_entries_alone_then_in_a_pair(
     five: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -503,6 +537,7 @@ def test_a_probe_of_four_runs_threads_only(
     assert {level.mode for level in cost.levels} == {"thread"}
 
 
+@pytest.mark.usefixtures("overlapping_pair")
 def test_a_probe_of_five_over_a_feature_that_is_not_process_capable_computes_three(
     five: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -604,6 +639,7 @@ def test_every_entry_lost_in_both_phases_raises_all_entries_failed(
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("overlapping_pair")
 def test_a_process_phase_memory_death_keeps_the_thread_phases_resources(
     five: Dataset, process_fault: pytest.MonkeyPatch
 ) -> None:

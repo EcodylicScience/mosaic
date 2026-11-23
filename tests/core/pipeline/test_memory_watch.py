@@ -65,6 +65,8 @@ class _Process:
         self._cmdline = cmdline or ["python"]
         self.pid = next(_pids)
         self.parent_pid = 1
+        self.cpu = 0.0
+        """The user and system time that :meth:`cpu_times` reads."""
         self.read_error: type[_Error] | None = None
         """What every read of this process raises, ``None`` while it reads."""
         self.cmdline_error: type[_Error] | None = None
@@ -95,8 +97,10 @@ class _Process:
         return self._cmdline
 
     def cpu_times(self) -> types.SimpleNamespace:
+        if self.read_error is not None:
+            raise self.read_error
         return types.SimpleNamespace(
-            user=0.0, system=0.0, children_user=0.0, children_system=0.0
+            user=self.cpu, system=0.0, children_user=0.0, children_system=0.0
         )
 
     def children(self, recursive: bool = False) -> list[_Process]:
@@ -441,6 +445,235 @@ def test_a_worker_whose_command_line_is_denied_is_not_counted(
 
     assert sample is not None
     assert (sample.tree_rss_bytes, sample.spawned_workers) == (2 * GIB, 0)
+
+
+class _OwnCpu:
+    """This process's CPU and its reaped children's, which the test sets."""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+
+    def __call__(self) -> float:
+        return self.seconds
+
+
+@pytest.fixture
+def own_cpu(monkeypatch: pytest.MonkeyPatch) -> _OwnCpu:
+    """The CPU that every watch reads for this process and its reaped children."""
+    counter = _OwnCpu()
+    monkeypatch.setattr(memory_watch, "_own_cpu_seconds", counter)
+    return counter
+
+
+@pytest.mark.usefixtures("own_cpu")
+def test_begin_walks_the_tree_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_psutil(monkeypatch, _Process(GIB, [_Process(GIB)]))
+
+    MemoryWatch().begin()
+
+    assert _Process.walks == 1
+
+
+def test_the_cpu_before_begin_and_right_after_it_is_zero(
+    monkeypatch: pytest.MonkeyPatch, own_cpu: _OwnCpu
+) -> None:
+    child = _Process(GIB)
+    child.cpu = 5.0
+    _install_psutil(monkeypatch, _Process(GIB, [child]))
+    own_cpu.seconds = 3.0
+    watch = MemoryWatch()
+
+    assert watch.cpu_seconds() == 0.0
+    watch.begin()
+    assert watch.cpu_seconds() == 0.0
+
+    own_cpu.seconds = 4.0
+    child.cpu = 6.5
+    assert watch.cpu_seconds() == pytest.approx(2.5)
+
+
+@pytest.mark.usefixtures("own_cpu")
+def test_a_member_counts_its_cpu_from_its_first_sighting(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    root.child_processes = [member]
+    clock.advance()
+
+    assert watch.cpu_seconds() == 0.0
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+
+def _sighted(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock, root: _Process, member: _Process
+) -> MemoryWatch:
+    """A watch begun over *root*, which has since sighted *member* below it."""
+    watch = _begun(monkeypatch, root)
+    root.child_processes = [member]
+    clock.advance()
+    assert watch.cpu_seconds() == 0.0
+    return watch
+
+
+def test_a_direct_member_reaped_between_walks_leaves_the_cpu_unchanged(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock, own_cpu: _OwnCpu
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    watch = _sighted(monkeypatch, clock, root, member)
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+    root.child_processes = []
+    own_cpu.seconds += 7.0
+    clock.advance()
+
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+
+def test_a_direct_member_whose_read_finds_it_gone_leaves_the_cpu_unchanged(
+    monkeypatch: pytest.MonkeyPatch, own_cpu: _OwnCpu, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    watch = _sighted(monkeypatch, clock, root, member)
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+    member.read_error = _NoSuchProcess
+    own_cpu.seconds += 7.0
+
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+    member.read_error = None
+    member.cpu = 9.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+
+def test_a_direct_member_that_a_sample_finds_gone_leaves_the_cpu_unchanged(
+    monkeypatch: pytest.MonkeyPatch, own_cpu: _OwnCpu, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    watch = _sighted(monkeypatch, clock, root, member)
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+    member.read_error = _NoSuchProcess
+    _ = watch.sample()
+    own_cpu.seconds += 7.0
+
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+
+class _ReapedAfterRead(_OwnCpu):
+    """Own CPU whose next read is followed by a reap and another thread's sample.
+
+    The sample, which finds the member gone, gets *join_seconds* to finish before
+    the read returns. A watch that reads its own CPU under the membership lock
+    holds the sample back until the read is done.
+    """
+
+    def __init__(self, member: _Process, *, reaped_cpu: float) -> None:
+        super().__init__()
+        self.member = member
+        self.reaped_cpu = reaped_cpu
+        self.watch: MemoryWatch | None = None
+        self.sampler: threading.Thread | None = None
+
+    def __call__(self) -> float:
+        value = self.seconds
+        watch, self.watch = self.watch, None
+        if watch is not None:
+            self.member.read_error = _NoSuchProcess
+            self.seconds += self.reaped_cpu
+            self.sampler = threading.Thread(target=watch.sample)
+            self.sampler.start()
+            self.sampler.join(timeout=0.5)
+        return value
+
+
+def test_a_member_reaped_after_the_own_read_and_left_by_another_thread_is_not_lost(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    own = _ReapedAfterRead(member, reaped_cpu=7.0)
+    monkeypatch.setattr(memory_watch, "_own_cpu_seconds", own)
+    watch = _sighted(monkeypatch, clock, root, member)
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+    own.watch = watch
+    racing = watch.cpu_seconds()
+    assert own.sampler is not None
+    own.sampler.join()
+
+    assert racing == pytest.approx(2.0)
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+
+@pytest.mark.usefixtures("own_cpu")
+@pytest.mark.parametrize("error", [_ZombieProcess, _AccessDenied])
+def test_a_member_that_cannot_be_read_keeps_its_last_cpu(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock, error: type[_Error]
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    watch = _sighted(monkeypatch, clock, root, member)
+    member.cpu = 7.0
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+
+    member.read_error = error
+    member.cpu = 9.0
+
+    assert watch.cpu_seconds() == pytest.approx(2.0)
+    member.read_error = None
+    assert watch.cpu_seconds() == pytest.approx(4.0)
+
+
+@pytest.mark.usefixtures("own_cpu")
+def test_a_grandchild_that_leaves_takes_its_share_out(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    grandchild = _Process(GIB)
+    grandchild.cpu = 1.0
+    worker = _Process(GIB, [grandchild], cmdline=_SPAWNED)
+    worker.cpu = 2.0
+    watch = _sighted(monkeypatch, clock, root, worker)
+    worker.cpu, grandchild.cpu = 3.0, 4.0
+    assert watch.cpu_seconds() == pytest.approx(4.0)
+
+    worker.child_processes = []
+    clock.advance()
+
+    assert watch.cpu_seconds() == pytest.approx(1.0)
+
+
+@pytest.mark.usefixtures("own_cpu")
+def test_cpu_reads_within_the_interval_walk_nothing(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB, [_Process(GIB)])
+    watch = _begun(monkeypatch, root)
+
+    for _ in range(3):
+        _ = watch.cpu_seconds()
+    assert _Process.walks == 0
+
+    clock.advance()
+    for _ in range(3):
+        _ = watch.cpu_seconds()
+    assert _Process.walks == 1
 
 
 def test_a_process_that_ended_during_the_sample_is_left_out(
