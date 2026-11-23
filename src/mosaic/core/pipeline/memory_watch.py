@@ -398,17 +398,20 @@ class MemoryWatch:
     def cpu_seconds(self) -> float:
         """Return the tree's user and system time since :meth:`begin`, 0 before it.
 
-        A process below this one counts its CPU from the walk that first finds it,
-        also after it is reaped. The figure is this process's time and its reaped
+        A process below this one counts its CPU from the walk that first finds it. A
+        direct child keeps counting after it is reaped, through this process's
+        reaped children's time. The figure is this process's time and its reaped
         children's, plus each member's time since it was first found, less the
         times at first sighting of the direct members that have been reaped, whose
         whole time the reaped children's now holds, less the same figure at
-        :meth:`begin`.
+        :meth:`begin`. A member that is not a direct child leaves the figure at its
+        reap, and its whole CPU returns when its parent is reaped, so the figure can
+        fall between two reads.
 
         It walks the tree when the membership is stale, then reads the members, and
         then this process's own time, under the membership lock that every leave
-        holds, so a member that has left was reaped before that read and its whole
-        time is in it. A direct member reaped between its read and the last is
+        holds, so a direct member that has left was reaped before that read and its
+        whole time is in it. A direct member reaped between its read and the last is
         counted twice by that one read, which the next read corrects once the
         member leaves. The other order would undercount instead, and a span whose
         start read undercounted would take the difference.

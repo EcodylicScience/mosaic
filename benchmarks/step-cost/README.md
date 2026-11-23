@@ -107,3 +107,53 @@ stack sample of the cold thread-8 run on the Mac after the change puts every
 footer frame below 4.2% of the main thread, the least share that it reports. A
 sample at the earlier `d73a57f0` put them at 10.7%. The memo removes 160 of the
 960 parses, so it accounts for only part of that drop.
+
+### Process-tree walks, before and after
+
+The memory watch's process-tree walks, measured before (`53b03cdd`) and after
+the change (`b819e312`), each pair run back to back on one machine over one
+`WORK` path, 160 entries, 8 workers. The `fingerprint-*.txt` files of a full
+before and after run are byte-identical on both machines. The task machine
+carried other work during the pair that the table gives: a load average of 12
+to 13 with eight dolt servers and seven pytest processes at both starts. The Mac
+ran at a load average of 5.6 to 6.5 with one dolt server, after a stretch above
+30.
+
+| Figure                                                    | Mac before | Mac after  | Task machine before | Task machine after |
+| --------------------------------------------------------- | ---------- | ---------- | ------------------- | ------------------ |
+| processes on the host                                     | 829        | 865        | 597                 | 584                |
+| `speed-angvel` cold, serial (s)                           | 18.78      | 9.76       | 41.68               | 22.00              |
+| `speed-angvel` cold, thread 4 (s)                         | 16.80      | 8.43       | 52.27               | 20.04              |
+| `speed-angvel` cold, thread 8 (s)                         | 17.64      | 8.63       | 51.67               | 21.62              |
+| `speed-angvel` cold, process 8 (s)                        | 22.94      | 12.79      | 46.44               | 24.60              |
+| the same recipe all cached, one process (s)               | 4.87       | 4.65       | 7.56                | 7.36               |
+| one cached step process, median of 16 (s)                 | 4.49       | 4.28       | 6.80                | 5.12               |
+| 61 cached steps in one process (s)                        | 36.67      | 35.22      | 126.07              | 93.94              |
+| parent cost per entry, cold thread 8 (ms)                 | 79.8       | 24.9       | 276.4               | 89.1               |
+| `MemoryWatch.cpu_seconds`, median alone (ms)              | 8.1        | under 0.05 | 17.6                | 0.1                |
+| `MemoryWatch.sample`, median alone (ms)                   | 15.9       | 0.2        | 34.9                | 0.9                |
+| cold thread-8 main thread under `psutil.Process.children` | 15.6%      | below 3.8% | 70.3%               | 13.7%              |
+
+The targets for the parent's per-entry cost of the cold thread-8 step are met:
+it falls by 54.9 ms (68.8%) on the Mac, where at least 20 ms and 25% were
+wanted, and by 187.3 ms (67.8%) on the task machine, where at least 25% was
+wanted.
+
+The targets for one cached step process and for 61 cached steps in one process
+are not met on either machine. A cached step process moves from 4.49 to 4.28 s
+on the Mac (under 1.5 s wanted) and from 6.80 to 5.12 s on the task machine, 75%
+of the before figure (at most 35% wanted). The 61-step run moves from 36.67 to
+35.22 s on the Mac (under 10 s wanted) and from 126.07 to 93.94 s on the task
+machine, 75% of the before figure (at most 28% wanted).
+
+An earlier task-machine pair ran its before run at a load average of 2.3 and its
+after run at 14.5. Its parent cost per entry moved from 222.2 to 93.5 ms, 57.9%
+lower, and its cached step process from 5.28 to 6.67 s. Both pairs meet the 25%
+target.
+
+On the task machine the main thread still spends 13.7% under
+`psutil.Process.children` after the change, down from 70.3%. The watch repeats
+its walk at most once an interval and after a pool's submission. The micro run
+measures `psutil children(recursive=True)` alone at 11.8 ms on the task machine
+and 8.2 ms on the Mac after the change. On the Mac the main-thread samples show
+no `children` frame above 3.8%, the least share that the sampler reports.

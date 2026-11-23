@@ -8,6 +8,14 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a run's CPU figures count a process from when the run first sees it
+
+No run id or output moves. A run's CPU figures count a process from the moment
+the run first sees it, and a worker is seen as soon as its pool starts it. On
+macOS they now count the CPU of reaped child processes, as on Linux. A run
+spends less fixed time on each entry, and a subprocess that a feature starts
+can go uncounted for up to half a second after it starts.
+
 ## Unreleased: a feature definition applies its fit through `model`
 
 No existing run id, sidecar or golden file moves. A definition that sets `fits = True`
