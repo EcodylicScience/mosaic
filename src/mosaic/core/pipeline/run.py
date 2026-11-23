@@ -143,7 +143,13 @@ from .manifest import (
     verify_overlap_supported,
 )
 from .op_identity import parse_op_run_id
-from .fit_scope import derive_fit_scope, write_fit_scope
+from .fit_scope import (
+    derive_fit_scope,
+    list_run_root,
+    read_fit_state_digest,
+    saved_state_digest,
+    write_fit_scope,
+)
 from .labels_index import labels_rows, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import SourceRoot, encode_entry_composition
@@ -302,6 +308,27 @@ def model_reference(params: Params) -> ModelReference | None:
             return (feature, run_id, None) if feature else None
         case _:
             return None
+
+
+def _current_model_state(ds: Dataset, feature: Feature) -> str:
+    """The fit-state digest of the fit that *feature*'s ``model`` names.
+
+    Read from the root that
+    :func:`~mosaic.core.pipeline.index.model_state_root` resolves, the root the
+    apply loads its state from.
+
+    Returns:
+        The digest, and ``""`` when *feature* names no fit through
+        ``model``, no root holds the fit's state, or the fit records no digest.
+
+    Raises:
+        FitStateUnreadable: The fit's ``fit_scope.json`` cannot be read.
+    """
+    reference = model_reference(feature.params)
+    if reference is None:
+        return ""
+    root = model_state_root(ds, reference)
+    return "" if root is None else read_fit_state_digest(root)
 
 
 def _model_path(ds: Dataset, reference: ModelReference) -> Path | None:
@@ -1028,6 +1055,32 @@ def _disposition_reason(
     if recorded:
         return "the composition it was built from is no longer recorded"
     return "nothing records what it was built from"
+
+
+def _model_state_reason(recorded: str, current: str) -> str:
+    """Why a cached entry was refused for its model's fit-state digest.
+
+    Args:
+        recorded: The digest the entry's row recorded.
+        current: The digest the fit records now.
+    """
+    if recorded and current:
+        return "the model it applies was fitted again"
+    if recorded:
+        return "its model's fit no longer records a fit-state digest"
+    return "nothing records which fit of its model it applied"
+
+
+def _model_state_blind_warning(
+    feature_name: str, model_feature: str, model_run_id: str, count: int
+) -> str:
+    """What to say when served entries and their fit record no digest."""
+    return (
+        f"[feature:{feature_name}] {count} entries apply run {model_run_id} of "
+        f"{model_feature}, which records no fit-state digest, so a fit written "
+        "again under that run id goes undetected: remove the run and fit it again "
+        "to record one"
+    )
 
 
 def _neighbors_reason(recorded: str) -> str:
@@ -2150,6 +2203,7 @@ class _CachedOutput:
         tracks_composition: The tracks composition its row recorded.
         input_composition: The upstream roots' composition its row recorded.
         neighbors: The neighbors its row recorded.
+        model_state: The fit-state digest of its model that its row recorded.
     """
 
     n_rows: int
@@ -2157,6 +2211,7 @@ class _CachedOutput:
     tracks_composition: str
     input_composition: str
     neighbors: str
+    model_state: str
 
 
 @dataclass
@@ -2609,6 +2664,11 @@ def _run_feature_impl(
     # run that consumed a later one shared one identifier and one directory.
     # Resolution reads the filesystem; compute_run_id below stays pure.
     resolutions = resolve_references(ds, feature)
+    # The fit-state digest of the pinned model, read before anything of the run
+    # is written. An unreadable digest then refuses the run with its root
+    # unmade. Rows record it, and a cached row that recorded another is
+    # recomputed.
+    model_state_now = _current_model_state(ds, feature)
     _refuse_inputs_without_columns(ds, feature)
 
     # Build manifest
@@ -3057,7 +3117,11 @@ def _run_feature_impl(
                         _observe(watch.sample())
                         cost.end_fit(watch, time.monotonic() - fit_started)
                     _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
+                    before_save = list_run_root(run_root)
                     feature.save_state(run_root)
+                    state_digest = saved_state_digest(
+                        run_root, before_save, list_run_root(run_root)
+                    )
                     state_root = run_root
                     # Written here rather than beside params.json because only this
                     # branch means a fit actually ran: params.json is written on every
@@ -3065,12 +3129,13 @@ def _run_feature_impl(
                     # whichever run came last. A params-level fitter -- scope-free, so
                     # every apply scope shares one run root -- fits from its pinned
                     # artifacts, not from this invocation's scope, so its record is
-                    # derived from theirs.
+                    # derived from theirs. It also records the digest of the files
+                    # save_state wrote, which an apply through `model` compares.
+                    fit_scope = derive_fit_scope(
+                        ds, feature, resolved, resolutions, artifact_paths
+                    )
                     write_fit_scope(
-                        run_root,
-                        derive_fit_scope(
-                            ds, feature, resolved, resolutions, artifact_paths
-                        ),
+                        run_root, replace(fit_scope, state_digest=state_digest)
                     )
                     fitted = True
             if fitted:
@@ -3255,6 +3320,9 @@ def _run_feature_impl(
             # was served in silence.
             roots_blind: set[tuple[str, str]] = set()
             tracks_blind: set[tuple[str, str]] = set()
+            # Entries served with no digest on their row or on the fit.
+            model_blind: set[tuple[str, str]] = set()
+            applied_model = model_reference(feature.params)
             # Only a source root can be blind. An entry without an arena layout is a
             # known state, and one that gains a layout recomputes once.
             blind_capable = sorted(
@@ -3322,6 +3390,10 @@ def _run_feature_impl(
                 neighbors_now = neighbors_now_by_entry.get(entry, "")
                 inputs_was = recorded_reads.inputs
                 inputs_now = inputs_now_by_entry.get(entry, "")
+                model_state_was = recorded_reads.model_state
+                model_disposition = cached_entry_disposition(
+                    model_state_was, model_state_now
+                )
                 disposition = cached_entry_disposition(was_made_from, now_made_of)
                 tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
                 refusal: str | None = None
@@ -3338,6 +3410,8 @@ def _run_feature_impl(
                     == "recompute"
                 ):
                     refusal = _neighbors_reason(neighbors_was)
+                elif model_disposition == "recompute":
+                    refusal = _model_state_reason(model_state_was, model_state_now)
                 if refusal is None and blind_arena_rows is not None:
                     arena_count = entry_arena_count(
                         ds, group, sequence, blind_arena_rows
@@ -3363,12 +3437,15 @@ def _run_feature_impl(
                     resolved.tracks_variants or upstreams_over_variants
                 ):
                     tracks_blind.add(entry)
+                if applied_model is not None and model_disposition == "undetectable":
+                    model_blind.add(entry)
                 return _CachedOutput(
                     n_rows=n_rows,
                     composition=was_made_from,
                     tracks_composition=tracks_was,
                     input_composition=inputs_was,
                     neighbors=neighbors_was,
+                    model_state=model_state_was,
                 )
 
             if state_ready and not overwrite:
@@ -3402,6 +3479,7 @@ def _run_feature_impl(
                             consumed_tracks_composition=cached.tracks_composition,
                             consumed_input_composition=cached.input_composition,
                             consumed_neighbors=cached.neighbors,
+                            consumed_model_state=cached.model_state,
                             n_rows=cached.n_rows,
                             params_hash=params_hash,
                             identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -3443,6 +3521,14 @@ def _run_feature_impl(
                 print(
                     _blind_upstream_tracks_warning(
                         feature.name, upstreams_over_variants, len(tracks_blind)
+                    ),
+                    file=sys.stderr,
+                )
+            if model_blind and applied_model is not None:
+                model_feature, model_run_id, _ = applied_model
+                print(
+                    _model_state_blind_warning(
+                        feature.name, model_feature, model_run_id, len(model_blind)
                     ),
                     file=sys.stderr,
                 )
@@ -3587,6 +3673,7 @@ def _run_feature_impl(
                         consumed_neighbors=neighbors_now_by_entry.get(
                             (meta.group, meta.sequence), ""
                         ),
+                        consumed_model_state=model_state_now,
                         n_rows=n_rows,
                         params_hash=params_hash,
                         identity_scheme=FEATURE_IDENTITY_SCHEME,

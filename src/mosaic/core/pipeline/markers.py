@@ -79,6 +79,8 @@ from mosaic.runlog import (
 )
 
 __all__ = [
+    "ATOMIC_TEMP_PREFIX",
+    "ATOMIC_TEMP_SUFFIX",
     "BOOT_TIME_TOLERANCE_SECONDS",
     "EXCHANGE_DIRECTORY",
     "INFLIGHT_GRACE_SECONDS",
@@ -101,6 +103,7 @@ __all__ = [
     "inflight_expiry",
     "inflight_marker_path",
     "inflight_state",
+    "is_atomic_temp",
     "new_inflight",
     "phase_fields",
     "phase_marker_path",
@@ -209,6 +212,20 @@ in a directory Ultralytics also writes into, and the prefix is what says at a
 glance which files are mosaic's. It is a sibling of the ``train/`` subdirectory
 the tool owns, never inside it.
 """
+
+ATOMIC_TEMP_PREFIX: Final = "."
+ATOMIC_TEMP_SUFFIX: Final = ".tmp"
+"""The affixes of the temporary file a write fills before it moves into place.
+
+``atomic_write`` in ``_utils`` and :func:`create_exclusive` both name their
+temporary file this way.
+"""
+
+
+def is_atomic_temp(name: str) -> bool:
+    """Is *name* a temporary file of a write still in flight, or one a kill left?"""
+    return name.startswith(ATOMIC_TEMP_PREFIX) and name.endswith(ATOMIC_TEMP_SUFFIX)
+
 
 # Added to the caller's inactivity window to get the claim's expiry: silence up
 # to the idle bound is normal (the phase refreshes its claim on output), so the
@@ -428,7 +445,9 @@ def create_exclusive(path: Path, text: str) -> bool:
     whose first reply was lost.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}-{os.getpid()}-{secrets.token_hex(4)}.tmp")
+    temp = path.with_name(
+        f"{ATOMIC_TEMP_PREFIX}{path.name}-{os.getpid()}-{secrets.token_hex(4)}{ATOMIC_TEMP_SUFFIX}"
+    )
     fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         _ = handle.write(text)

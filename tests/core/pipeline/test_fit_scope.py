@@ -12,20 +12,35 @@ that artifact's own record, never from the scope it was invoked over.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX, file_digest
 from mosaic.core.pipeline.fit_scope import (
     FIT_SCOPE_NAME,
     FitScope,
+    FitStateUnreadable,
     fit_and_apply_scopes,
+    list_run_root,
     read_fit_scope,
+    read_fit_state_digest,
+    read_run_fit_scope,
+    saved_state_digest,
     write_fit_scope,
 )
+from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.markers import (
+    new_inflight,
+    refresh_inflight,
+    write_inflight,
+)
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -438,3 +453,234 @@ def test_a_cache_hit_does_not_rewrite_the_record(scenario_dataset: Dataset) -> N
     _ = _run(scenario_dataset, feature, ["seq_a"])
 
     assert (run_root / FIT_SCOPE_NAME).stat().st_mtime_ns == before
+
+
+# --- the digest of the state a fit saved ------------------------------------
+
+
+def _empty_digest() -> str:
+    """The digest of a save that wrote no file."""
+    return hashlib.blake2b(b"[]", digest_size=MODEL_DIGEST_HEX // 2).hexdigest()
+
+
+def _fitted_run_root(tmp_path: Path) -> Path:
+    """A run root holding what a run writes before ``save_state``."""
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    _ = (run_root / "params.json").write_text("{}")
+    _ = (run_root / ".identity_scheme").write_text("scheme")
+    _ = (run_root / "g__s1.parquet").write_bytes(b"entry output")
+    return run_root
+
+
+def _save_state(run_root: Path) -> None:
+    """A save that writes a state file and a nested state file."""
+    _ = (run_root / "state.bin").write_bytes(b"state")
+    (run_root / "model").mkdir()
+    _ = (run_root / "model" / "weights.bin").write_bytes(b"weights")
+
+
+def _expected(run_root: Path, paths: list[str]) -> str:
+    """The digest of *paths*, as the record names it."""
+    pairs = [[path, file_digest(run_root / path)] for path in sorted(paths)]
+    payload = json.dumps(pairs).encode()
+    return hashlib.blake2b(payload, digest_size=MODEL_DIGEST_HEX // 2).hexdigest()
+
+
+def test_the_digest_covers_exactly_the_files_the_save_wrote(tmp_path: Path) -> None:
+    run_root = _fitted_run_root(tmp_path)
+    before = list_run_root(run_root)
+
+    _save_state(run_root)
+
+    after = list_run_root(run_root)
+    assert sorted(after) == ["g__s1.parquet", "model/weights.bin", "state.bin"]
+    digest = saved_state_digest(run_root, before, after)
+    assert digest == _expected(run_root, ["model/weights.bin", "state.bin"])
+    assert len(digest) == MODEL_DIGEST_HEX
+    assert int(digest, 16) >= 0
+
+
+def test_the_digest_covers_a_file_the_save_rewrote(tmp_path: Path) -> None:
+    """A file present before the save counts when its size or mtime changed."""
+    run_root = _fitted_run_root(tmp_path)
+    _ = (run_root / "resized.bin").write_bytes(b"old")
+    _ = (run_root / "touched.bin").write_bytes(b"old")
+    before = list_run_root(run_root)
+
+    _ = (run_root / "resized.bin").write_bytes(b"longer")
+    touched = run_root / "touched.bin"
+    _ = touched.write_bytes(b"new")
+    stamp = touched.stat().st_mtime_ns + 1_000_000_000
+    os.utime(touched, ns=(stamp, stamp))
+
+    after = list_run_root(run_root)
+    assert saved_state_digest(run_root, before, after) == _expected(
+        run_root, ["resized.bin", "touched.bin"]
+    )
+
+
+def test_the_digest_does_not_depend_on_listing_order(tmp_path: Path) -> None:
+    run_root = _fitted_run_root(tmp_path)
+    before = list_run_root(run_root)
+    _save_state(run_root)
+    after = list_run_root(run_root)
+
+    reordered = dict(reversed(list(after.items())))
+
+    assert list(reordered) != list(after)
+    assert saved_state_digest(run_root, before, reordered) == saved_state_digest(
+        run_root, before, after
+    )
+
+
+def test_a_save_that_writes_nothing_gives_the_digest_of_no_files(
+    tmp_path: Path,
+) -> None:
+    run_root = _fitted_run_root(tmp_path)
+    listing = list_run_root(run_root)
+
+    assert saved_state_digest(run_root, listing, listing) == _empty_digest()
+
+
+def _scope_with_digest(digest: str) -> FitScope:
+    return FitScope(
+        scope_dependent=True,
+        entries=(("", "seq_a"),),
+        tracks_variants=(),
+        labels_variants=(),
+        fitted_at="2026-01-01T00:00:00Z",
+        identity_scheme="x",
+        state_digest=digest,
+    )
+
+
+def test_the_record_holds_the_state_digest(scenario_dataset: Dataset) -> None:
+    run_root = feature_run_root(scenario_dataset, FIT_DIR, "0.1-abc")
+    run_root.mkdir(parents=True)
+
+    write_fit_scope(run_root, _scope_with_digest("0123456789abcdef"))
+
+    stored = json.loads((run_root / FIT_SCOPE_NAME).read_text())
+    assert stored["state_digest"] == "0123456789abcdef"
+    fitted = read_fit_scope(run_root)
+    assert fitted is not None
+    assert fitted.state_digest == "0123456789abcdef"
+    linked = read_run_fit_scope(scenario_dataset, FIT_DIR, "0.1-abc")
+    assert linked is not None
+    assert linked.state_digest == "0123456789abcdef"
+    assert read_fit_state_digest(run_root) == "0123456789abcdef"
+
+
+def test_a_record_without_the_digest_reads_as_blank(tmp_path: Path) -> None:
+    _write_record(
+        tmp_path,
+        {
+            "scope_dependent": True,
+            "entries": [["", "seq_a"]],
+            "tracks_variants": [],
+            "labels_variants": [],
+            "fitted_at": "2026-01-01T00:00:00Z",
+            "identity_scheme": "x",
+            "source": "stream",
+            "via": [],
+        },
+    )
+
+    fitted = read_fit_scope(tmp_path)
+
+    assert fitted is not None
+    assert fitted.state_digest == ""
+    assert read_fit_state_digest(tmp_path) == ""
+
+
+def test_a_run_without_a_record_has_a_blank_digest(tmp_path: Path) -> None:
+    assert read_fit_state_digest(tmp_path) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["[1, 2]", "not json", json.dumps({"state_digest": 7})],
+    ids=["not-an-object", "not-json", "not-a-string"],
+)
+def test_an_unreadable_record_refuses_the_digest_read(
+    tmp_path: Path, text: str
+) -> None:
+    """``read_fit_scope`` reads the same file as unknown without raising."""
+    run_root = tmp_path / "fit-scope-fit__from__tracks" / "0.1-abc"
+    run_root.mkdir(parents=True)
+    _ = (run_root / FIT_SCOPE_NAME).write_text(text)
+
+    with pytest.raises(FitStateUnreadable) as raised:
+        _ = read_fit_state_digest(run_root)
+
+    assert raised.value.error_kind == "conflict"
+    assert raised.value.error_detail() == {
+        "feature": "fit-scope-fit__from__tracks",
+        "run_id": "0.1-abc",
+    }
+    assert "run 0.1-abc of fit-scope-fit__from__tracks" in str(raised.value)
+    assert read_fit_scope(run_root) is None
+
+
+def test_a_fit_records_the_digest_of_the_state_it_saved(
+    scenario_dataset: Dataset,
+) -> None:
+    run_id = _templates(scenario_dataset, ["seq_a"])
+    run_root = feature_run_root(scenario_dataset, SOURCE_DIR, run_id)
+
+    recorded = read_fit_state_digest(run_root)
+
+    assert recorded == _expected(run_root, ["state.txt", "templates.parquet"])
+
+
+def _claimed_run_root(tmp_path: Path) -> Path:
+    """A run root as a fit leaves it before ``save_state``: under its claim."""
+    run_root = _fitted_run_root(tmp_path)
+    marker = new_inflight(
+        execution_id="fit", host="h", pid=1, phase=None, idle_seconds=60.0
+    )
+    write_inflight(run_root, marker)
+    return run_root
+
+
+def test_a_claim_refreshed_during_the_save_is_left_out(tmp_path: Path) -> None:
+    """The claim timer rewrites the marker by rename while the fit saves."""
+    run_root = _claimed_run_root(tmp_path)
+    before = list_run_root(run_root)
+
+    _save_state(run_root)
+    marker = new_inflight(
+        execution_id="fit", host="h", pid=1, phase=None, idle_seconds=60.0
+    )
+    assert refresh_inflight(run_root, marker, 3600.0) is not None
+
+    after = list_run_root(run_root)
+    assert saved_state_digest(run_root, before, after) == _expected(
+        run_root, ["model/weights.bin", "state.bin"]
+    )
+
+
+def test_run_bookkeeping_a_peer_writes_during_the_save_is_left_out(
+    tmp_path: Path,
+) -> None:
+    """A second invocation of the run rewrites ``params.json`` and the scheme marker.
+
+    A write still in flight leaves its temporary file, a claim's or any other.
+    """
+    run_root = _claimed_run_root(tmp_path)
+    before = list_run_root(run_root)
+
+    _save_state(run_root)
+    _ = (run_root / "params.json").write_text(json.dumps({"peer": True}))
+    write_identity_scheme(run_root, "peer")
+    _ = (run_root / FIT_SCOPE_NAME).write_text("{}")
+    _ = (run_root / "..mosaic-inflight-abc123.tmp").write_text("{")
+    _ = (run_root / ".params-abc123.tmp").write_text("{")
+    _ = (run_root / ".g__s2-abc123.tmp").write_bytes(b"partial")
+
+    after = list_run_root(run_root)
+    assert sorted(after) == ["g__s1.parquet", "model/weights.bin", "state.bin"]
+    assert saved_state_digest(run_root, before, after) == _expected(
+        run_root, ["model/weights.bin", "state.bin"]
+    )

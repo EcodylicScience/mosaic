@@ -83,9 +83,13 @@ A run root holds one output per sequence, so a hundred-sequence dataset would
 otherwise put a hundred filenames in one message."""
 
 
+class AmbiguousArtifactFile(ValueError):
+    """A pattern that matches more than one file of a run root."""
+
+
 def ambiguous_artifact_error(
     field_name: str, feature_name: str, run_root: Path, pattern: str, files: list[Path]
-) -> ValueError:
+) -> AmbiguousArtifactFile:
     """Build an actionable error for a pattern that names more than one file.
 
     Args:
@@ -98,7 +102,7 @@ def ambiguous_artifact_error(
     listed = ", ".join(path.name for path in files[:_MAX_LISTED_MATCHES])
     if len(files) > _MAX_LISTED_MATCHES:
         listed = f"{listed}, and {len(files) - _MAX_LISTED_MATCHES} more"
-    return ValueError(
+    return AmbiguousArtifactFile(
         f"Field {field_name!r} references feature {feature_name!r}, whose run root "
         f"{run_root} holds {len(files)} files matching {pattern!r}: {listed}. A run "
         f"root is not a directory of named state files -- it holds one per-entry "
@@ -131,7 +135,7 @@ def resolve_artifact_file(
         pattern: The glob to match, already defaulted by ``ArtifactSpec``.
 
     Raises:
-        ValueError: The pattern matched more than one file.
+        AmbiguousArtifactFile: The pattern matched more than one file.
     """
     files = sorted(run_root.glob(pattern))
     if len(files) > 1:
@@ -200,6 +204,12 @@ class FeatureIndexRow(RunIndexRowBase):
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
     # ``overlap_frames=0``, and out of the run id, like the cells above.
     consumed_neighbors: str = ""
+    # The digest of the saved fit state that an apply row read, copied from the
+    # ``fit_scope.json`` of the run its ``model`` names. Blank on a row of a run
+    # that sets no ``model``, and on a row written before the column existed. A
+    # text cell and not a path, so ``merge_linked_rows`` leaves it as stored. Out
+    # of the run id, like the cells above.
+    consumed_model_state: str = ""
 
 
 def adopt_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -407,7 +417,7 @@ def model_state_root(ds: Dataset, reference: ModelReference) -> Path | None:
         The root, or ``None`` when no root holds the state.
 
     Raises:
-        ValueError: The pattern matches more than one file of a root.
+        AmbiguousArtifactFile: The pattern matches more than one file of a root.
     """
     from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME
 
@@ -476,19 +486,21 @@ class RecordedTracksReads:
     Attributes:
         composition: The entry's ``consumed_tracks_composition``.
         neighbors: Its ``consumed_neighbors``, empty without overlap.
+        model_state: Its ``consumed_model_state``, empty without a ``model``.
         inputs: Its ``consumed_input_composition``, empty without a feature
             input whose upstream records a declared root.
     """
 
     composition: str = ""
     neighbors: str = ""
+    model_state: str = ""
     inputs: str = ""
 
 
 def recorded_tracks_reads(
     ds: Dataset, feature_name: str, run_id: str
 ) -> dict[tuple[str, str], RecordedTracksReads]:
-    """Per entry, the tracks, neighbors and input cells each row recorded reading.
+    """Per entry, the tracks, neighbors, model state and input cells each row recorded.
 
     Its own reader rather than a third element on :func:`recorded_consumption`,
     which drops every row whose ``consumed_roots`` is empty -- and that is the forty
@@ -503,11 +515,12 @@ def _run_rows(ds: Dataset, feature_name: str, run_id: str) -> pd.DataFrame:
 
 
 def _tracks_reads_of(rows: pd.DataFrame) -> dict[Entry, RecordedTracksReads]:
-    """Per entry, the tracks, neighbors and input cells of one run's *rows*."""
+    """Per entry, the tracks, neighbors, model state and input cells of *rows*."""
     return {
         (str(row["group"]), str(row["sequence"])): RecordedTracksReads(
             composition=str(row.get("consumed_tracks_composition", "")),
             neighbors=str(row.get("consumed_neighbors", "")),
+            model_state=str(row.get("consumed_model_state", "")),
             inputs=str(row.get("consumed_input_composition", "")),
         )
         for _, row in rows.iterrows()
@@ -554,8 +567,9 @@ class DriftReads:
 
     An inventory scan builds one and passes it to the call for every run: each feature
     storage's index is read once and divided by run once, the tracks cells of each set
-    of variants are computed once, each root's ``sequences.csv`` is read once, and the
-    arenas lookup is taken once. A call given none builds one for itself.
+    of variants are computed once, each root's ``sequences.csv`` is read once, each
+    fit's ``fit_scope.json`` is read once, and the arenas lookup is taken once. A
+    call given none builds one for itself.
 
     Args:
         ds: The dataset whose indexes are read.
@@ -577,6 +591,7 @@ class DriftReads:
         self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
         self._arena_lookup: ArenaLookup | None = None
         self._recorded: dict[Entry, dict[str, str]] | None = None
+        self._model_states: dict[ModelReference, str] = {}
 
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
         runs = self._runs.get(storage)
@@ -597,6 +612,30 @@ class DriftReads:
     ) -> dict[Entry, RecordedTracksReads]:
         """What :func:`recorded_tracks_reads` returns, from the shared frame."""
         return _tracks_reads_of(self._rows(storage, run_id))
+
+    def model_state(self, reference: ModelReference) -> str:
+        """The fit-state digest of the fit *reference* names, read once per fit.
+
+        Read from the root :func:`model_state_root` resolves, through the
+        datasets the dataset links. A fit that no reachable root holds, a
+        ``fit_scope.json`` that cannot be read and a pattern that matches more
+        than one file of a root (:class:`AmbiguousArtifactFile`) read as blank:
+        a status read does not raise.
+
+        Returns:
+            The digest, and ``""`` when none is recorded or readable.
+        """
+        from .fit_scope import FitStateUnreadable, read_fit_state_digest
+
+        digest = self._model_states.get(reference)
+        if digest is None:
+            try:
+                root = model_state_root(self._ds, reference)
+                digest = "" if root is None else read_fit_state_digest(root)
+            except (AmbiguousArtifactFile, FitStateUnreadable):
+                digest = ""
+            self._model_states[reference] = digest
+        return digest
 
     def consumption(
         self, storage: str, run_id: str
@@ -679,7 +718,11 @@ def drifted_entries(
       cell being its upstream row's ``consumed_tracks_composition``;
     - its upstreams' roots: the row's ``consumed_input_composition`` against its
       feature inputs' parts (:func:`~.composition.input_root_part`), joined the
-      same way.
+      same way;
+    - its model: for a run whose ``params.json`` records a ``model``, the row's
+      ``consumed_model_state`` against the digest the fit records now
+      (:meth:`DriftReads.model_state`). A fit under an unreachable link, or whose
+      record cannot be read, reads as blank.
 
     The neighbors cell is compared by ``run_feature`` alone. An entry the run's
     inputs no longer resolve, dropped from the tracks index for instance, is not
@@ -719,6 +762,8 @@ def drifted_entries(
     recorded_roots = shared.consumption(feature_name, run_id)
     declared = tuple(run_params.scope.consumed_roots) if run_params else ()
     recorded_reads = shared.tracks_reads(feature_name, run_id) if run_params else {}
+    model = run_params.model_reference() if run_params else None
+    model_now = "" if model is None else shared.model_state(model)
     entries = sorted(set(recorded_roots) | set(recorded_reads))
     if not entries:
         return ()
@@ -747,6 +792,8 @@ def drifted_entries(
             read = recorded_reads.get(entry, RecordedTracksReads())
             channels.append((read.composition, tracks_now.get(entry, "")))
             channels.append((read.inputs, inputs_now.get(entry, "")))
+            if model is not None:
+                channels.append((read.model_state, model_now))
         if any(
             cached_entry_disposition(recorded, current) == "recompute"
             for recorded, current in channels

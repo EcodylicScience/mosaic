@@ -634,3 +634,44 @@ def test_a_run_report_is_read_bounded_and_by_one_path_component(
         _ = read_run_report(run_root, "big.json")
     with pytest.raises(ValueError, match="one path component"):
         _ = read_run_report(run_root, "../metrics.json")
+
+
+class TestModelReference:
+    """The fit a run applies, as its recorded ``_params.model`` names it."""
+
+    @staticmethod
+    def _recorded(model: object) -> RunParams:
+        return RunParams.model_validate({"_params": {"model": model}})
+
+    def test_an_artifact_record_gives_its_feature_run_and_pattern(self) -> None:
+        params = self._recorded(
+            {"feature": "global-kmeans", "run_id": "0.1-abc", "pattern": "model.joblib"}
+        )
+
+        assert params.model_reference() == (
+            "global-kmeans",
+            "0.1-abc",
+            "model.joblib",
+        )
+
+    def test_a_definition_model_record_has_no_pattern(self) -> None:
+        params = self._recorded({"feature": "def:mine", "run_id": "0.1-abc"})
+
+        assert params.model_reference() == ("def:mine", "0.1-abc", None)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            pytest.param(None, id="null"),
+            pytest.param("global-kmeans", id="not-a-record"),
+            pytest.param({"feature": "", "run_id": "0.1-abc"}, id="empty-feature"),
+            pytest.param({"run_id": "0.1-abc"}, id="no-feature"),
+            pytest.param({"feature": "global-kmeans"}, id="no-run"),
+            pytest.param({"feature": "global-kmeans", "run_id": ""}, id="empty-run"),
+        ],
+    )
+    def test_a_record_that_names_no_fit_gives_none(self, model: object) -> None:
+        assert self._recorded(model).model_reference() is None
+
+    def test_a_run_without_a_model_gives_none(self) -> None:
+        assert RunParams.model_validate({}).model_reference() is None

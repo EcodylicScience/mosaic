@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import Final
 
@@ -30,6 +32,11 @@ from mosaic.core.pipeline.definitions.scope import (
 )
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.fit_scope import (
+    list_run_root,
+    read_fit_state_digest,
+    saved_state_digest,
+)
 from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.index import feature_index_path, feature_run_root
 from mosaic.core.pipeline.inventory.params import read_run_params
@@ -365,6 +372,23 @@ def test_an_apply_reads_the_state_of_the_fit_its_model_names(
         "feature": fit.feature,
         "run_id": fit.run_id,
     } in document["_resolved"]
+
+
+def test_a_definitions_fit_records_the_digest_of_its_saved_state(
+    tmp_path: Path,
+) -> None:
+    """The digest covers the one file the definition's ``save_state`` writes."""
+    name = PARALLEL_APPLYING_NAME
+    ds = _three_entry_dataset(tmp_path, name, PARALLEL_APPLYING_SOURCE)
+
+    root = _root(ds, _fit(ds, name))
+
+    listing = list_run_root(root)
+    saved = {path: stamp for path, stamp in listing.items() if path == "mean.pkl"}
+    assert saved
+    recorded = read_fit_state_digest(root)
+    assert recorded
+    assert recorded == saved_state_digest(root, {}, saved)
 
 
 def test_an_instance_built_by_its_class_with_a_model_applies_it(
@@ -709,3 +733,107 @@ def test_a_model_naming_a_fit_of_another_version_is_refused(
         f"{second.digest[:12]}. An apply reads a fit of its own version: fit again "
         f"with this version, or run this step as def:{APPLYING_NAME}@{fit_digest}"
     )
+
+
+# --- an apply after its fit is written again ---------------------------------------
+
+_REFUSAL: Final = re.compile(
+    r"^\[feature:def:(?P<name>[^\]]*)\] cannot serve cached output for "
+    r"\((?P<group>[^,]*),(?P<sequence>[^)]*)\): (?P<reason>.*); recomputing\.$",
+    re.MULTILINE,
+)
+
+FITTED_AGAIN: Final = "the model it applies was fitted again"
+
+
+def _apply_refusals(
+    ds: Dataset,
+    name: str,
+    fit: Result[str],
+    capsys: pytest.CaptureFixture[str],
+    *,
+    mode: str = "thread",
+) -> tuple[Result[str], dict[str, str]]:
+    """Apply *fit* to every entry with the definition *name*.
+
+    Returns:
+        The apply's result, and the reason printed for each entry not served.
+    """
+    with definition_scope(ds, load=True):
+        feature = build_feature(f"def:{name}", None, {"model": _model(fit)})
+    _ = capsys.readouterr()
+    applied = run_feature(
+        ds, feature, parallel_workers=WORKERS, parallel_mode=mode, track=False
+    )
+    err = capsys.readouterr().err
+    refusals = {
+        match["sequence"]: match["reason"]
+        for match in _REFUSAL.finditer(err)
+        if match["name"] == name
+    }
+    return applied, refusals
+
+
+def _model_cells(ds: Dataset, result: Result[str]) -> set[str]:
+    """The ``consumed_model_state`` cells of the rows of *result*'s run."""
+    rows = pd.read_csv(
+        feature_index_path(ds, result.feature), dtype=str, keep_default_na=False
+    )
+    return set(rows.loc[rows["run_id"] == result.run_id, "consumed_model_state"])
+
+
+def _fit_again(ds: Dataset, name: str, fit: Result[str]) -> None:
+    """Remove *fit*'s run root and fit again under its run id."""
+    shutil.rmtree(_root(ds, fit))
+    assert _fit(ds, name).run_id == fit.run_id
+
+
+@pytest.mark.parametrize("mode", ["thread", "process"])
+def test_an_apply_recomputes_after_its_fit_saves_other_state(
+    mode: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workers in either mode apply the state, and the rows in the parent record it."""
+    canary = tmp_path / "canary.jsonl"
+    monkeypatch.setenv(CANARY_VARIABLE, str(canary))
+    name = PARALLEL_APPLYING_NAME
+    ds = _three_entry_dataset(tmp_path, name, PARALLEL_APPLYING_SOURCE)
+    fit = _fit(ds, name)
+    applied, refusals = _apply_refusals(ds, name, fit, capsys, mode=mode)
+    assert refusals == {}
+    before = read_fit_state_digest(_root(ds, fit))
+    assert _model_cells(ds, applied) == {before}
+    moved = track_table(*_FITTED_ENTRY)
+    moved[["X", "Y"]] = moved[["X", "Y"]] * 2.0
+    moved.to_parquet(ds.get_root("tracks") / "g__s1.parquet")
+    _fit_again(ds, name, fit)
+    after = read_fit_state_digest(_root(ds, fit))
+    assert after != before
+    canary.unlink()
+
+    applied, refusals = _apply_refusals(ds, name, fit, capsys, mode=mode)
+
+    assert refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN, "s3": FITTED_AGAIN}
+    assert _model_cells(ds, applied) == {after}
+    appliers = _applying_pids(canary)
+    if mode == "process":
+        assert appliers - {os.getpid()}
+    else:
+        assert appliers == {os.getpid()}
+    assert _apply_refusals(ds, name, fit, capsys, mode=mode)[1] == {}
+
+
+def test_an_apply_is_served_after_its_fit_saves_the_same_state(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _three_entry_dataset(tmp_path, APPLYING_NAME, APPLYING_SOURCE)
+    fit = _fit(ds, APPLYING_NAME)
+    assert _apply_refusals(ds, APPLYING_NAME, fit, capsys)[1] == {}
+    digest = read_fit_state_digest(_root(ds, fit))
+
+    _fit_again(ds, APPLYING_NAME, fit)
+
+    assert read_fit_state_digest(_root(ds, fit)) == digest
+    assert _apply_refusals(ds, APPLYING_NAME, fit, capsys)[1] == {}

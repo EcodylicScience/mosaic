@@ -237,18 +237,22 @@ are in `graph/CLAUDE.md`.
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
-- `drifted_entries` (`index.py`) follows `cached_entry_disposition` over three
+- `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four
   channels, given the run's `RunParams`: the declared roots, the tracks cell and the
-  upstreams' roots cell, each built as `build_manifest` builds it. One known side is
-  drift, and the plan names every entry `run_feature` recomputes. The neighbors cell
-  stays `run_feature`'s (`TestDriftedEntries` in
-  `tests/core/pipeline/test_tracks_source_staleness.py`). An entry the inputs no
-  longer resolve, such as one dropped from the tracks index, is not drift: every input
-  holds it for a run that intersects its inputs, and any input for a stacked run, as
-  `_scope.stacks_inputs` in `params.json` records (`stacks_inputs`, `loading.py`). A
-  file without the key counts any input, so a false drift lasts one run, where every
-  input would hide a stacked run's drift. Without params it compares the declared
-  roots alone.
+  upstreams' roots cell, each built as `build_manifest` builds it, and for a run that
+  records a `model` the fit-state cell, against the digest `DriftReads.model_state`
+  reads once per fit through `model_state_root`. That digest is blank under an
+  unreachable link, for an unreadable `fit_scope.json`, and for a pattern that matches
+  more than one file of the fit's root (`AmbiguousArtifactFile`), since a status read
+  does not raise. One known side is drift, and the plan names every entry
+  `run_feature` recomputes. The neighbors cell stays `run_feature`'s
+  (`TestDriftedEntries` in `tests/core/pipeline/test_tracks_source_staleness.py`). An
+  entry the inputs no longer resolve, such as one dropped from the tracks index, is
+  not drift: every input holds it for a run that intersects its inputs, and any input
+  for a stacked run, as `_scope.stacks_inputs` in `params.json` records
+  (`stacks_inputs`, `loading.py`). A file without the key counts any input, so a false
+  drift lasts one run, where every input would hide a stacked run's drift. Without
+  params it compares the declared roots alone.
 - `arenas` is a composition root outside `SourceRoot`: an entry's layout digest
   (`arenas_compositions`, `arena_index.py`), read only where a feature declares it in
   `consumed_roots`. `build_manifest(consumed_roots=...)`, `resolve_feature_identity`

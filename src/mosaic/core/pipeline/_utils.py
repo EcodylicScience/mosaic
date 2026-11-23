@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from mosaic.core import scope as scope_module
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.markers import ATOMIC_TEMP_PREFIX, ATOMIC_TEMP_SUFFIX
 from mosaic.core.pipeline.storage_names import text_digest
 from mosaic.core.spaces import TrackSpace
 
@@ -356,7 +357,9 @@ def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
     """
     final_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
-        dir=final_path.parent, prefix=f".{final_path.stem}-", suffix=".tmp"
+        dir=final_path.parent,
+        prefix=f"{ATOMIC_TEMP_PREFIX}{final_path.stem}-",
+        suffix=ATOMIC_TEMP_SUFFIX,
     )
     os.close(fd)  # mkstemp returns an open fd; the writer reopens tmp by path
     tmp_path = Path(tmp)

@@ -55,6 +55,7 @@ from mosaic.core.pipeline._utils import LabelRevisionTerm
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.index import (
     DatasetRoots,
+    ModelReference,
     feature_run_file,
     feature_run_root,
 )
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "RUN_PARAMS_NAME",
     "InputSource",
     "ParamsState",
     "ResolvedRef",
@@ -86,6 +88,9 @@ __all__ = [
     "run_tracks_variants",
     "upstream_runs",
 ]
+
+RUN_PARAMS_NAME: Final = "params.json"
+"""The provenance document ``run_feature`` writes in each feature run root."""
 
 ParamsState = Literal["present", "absent", "unreadable"]
 """Whether a run's sidecar was read, was never written, or could not be parsed."""
@@ -367,6 +372,29 @@ class RunParams(BaseModel):
             sources.append((feature, pins.get(f"inputs[{position}]") or run_id))
         return tuple(sources)
 
+    def model_reference(self) -> ModelReference | None:
+        """The fit the run applied, as its recorded ``_params.model`` names it.
+
+        ``run_feature`` pinned the reference before it wrote the file, so the
+        record holds the fit's run id.
+
+        Returns:
+            The fit's storage, run id and pattern, the pattern ``None`` for a
+            record without one, as a ``DefinitionModel`` is. ``None`` when the
+            run records no ``model`` or one that names no feature or no run.
+        """
+        model = self.params.get("model")
+        if not is_str_mapping(model):
+            return None
+        feature = model.get("feature")
+        run_id = model.get("run_id")
+        if not isinstance(feature, str) or not feature:
+            return None
+        if not isinstance(run_id, str) or not run_id:
+            return None
+        pattern = model.get("pattern")
+        return feature, run_id, pattern if isinstance(pattern, str) else None
+
     def upstream_references(self) -> tuple[frozenset[RunKey], frozenset[str]]:
         """The feature runs this run read, as ``(pairs, storages)``.
 
@@ -595,7 +623,7 @@ def read_run_params(run_root: Path) -> RunParamsRead:
         read, one that was never written, and one that could not be parsed at
         all -- which now means only a document that is not a mapping.
     """
-    path = run_root / "params.json"
+    path = run_root / RUN_PARAMS_NAME
     try:
         text = path.read_text()
     except FileNotFoundError:
@@ -631,7 +659,7 @@ def linked_run_root(ds: Dataset, storage: str, run_id: str) -> Path:
         That run root, and the run root of *ds* itself when no dataset holds
         the file.
     """
-    path = feature_run_file(ds, storage, run_id, "params.json")
+    path = feature_run_file(ds, storage, run_id, RUN_PARAMS_NAME)
     return feature_run_root(ds, storage, run_id) if path is None else path.parent
 
 

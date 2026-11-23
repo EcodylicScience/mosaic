@@ -794,6 +794,27 @@ def test_a_relocated_run_keeps_the_neighbors_each_entry_read(
     }
 
 
+def test_a_relocated_run_keeps_the_model_state_each_entry_recorded(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    del registered_feature
+    ds = scenario_dataset
+    true_run_id = _run(ds)
+    path = feature_index_path(ds, _storage(ds))
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows["consumed_model_state"] = "state-of-" + rows["sequence"]
+    rows.to_csv(path, index=False)
+
+    _ = _fabricate_shifted_run(ds, true_run_id, scheme="5")
+    _ = ds.reconcile(apply=True)
+
+    moved = feature_index(path).read(run_id=true_run_id)
+    assert dict(zip(moved["sequence"], moved["consumed_model_state"], strict=True)) == {
+        "seq_a": "state-of-seq_a",
+        "seq_b": "state-of-seq_b",
+    }
+
+
 # --- Recorded params of a labels source -------------------------------------
 
 

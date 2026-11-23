@@ -27,14 +27,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import ClassVar
 
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import fit_scope as fit_scope_module
+from mosaic.core.pipeline.fit_scope import read_fit_state_digest
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
+    DriftReads,
+    adopt_feature_columns,
     drifted_entries,
     feature_index_path,
     feature_run_root,
@@ -62,6 +67,7 @@ from mosaic.core.scope import Scope
 from tests.helpers import (
     CropLike,
     PlainFeature,
+    add_feature_run,
     add_tracks_variant,
     convert_tracks_from_raw,
     write_media_index,
@@ -154,6 +160,41 @@ def test_a_row_predating_the_column_is_not_forced_to_recompute(
 def test_a_computed_row_records_the_tracks_cell() -> None:
     """The column exists, so the next run has something to compare against."""
     assert "consumed_tracks_composition" in FEATURE_INDEX_COLUMNS
+
+
+def test_the_model_state_column_follows_the_neighbors_column() -> None:
+    columns = FEATURE_INDEX_COLUMNS
+    assert columns.index("consumed_model_state") == (
+        columns.index("consumed_neighbors") + 1
+    )
+
+
+def test_an_index_written_without_the_model_state_column_reads_a_blank_cell() -> None:
+    written = pd.DataFrame({"run_id": ["r", "r"], "sequence": ["a", "b"]})
+
+    adopted = adopt_feature_columns(written)
+
+    assert adopted["consumed_model_state"].tolist() == ["", ""]
+
+
+def test_a_rows_model_state_cell_reads_back_as_the_recorded_model_state(
+    scenario_dataset: Dataset,
+) -> None:
+    ds = scenario_dataset
+    run_id = "0.1-0123456789"
+    _ = add_feature_run(ds, "demo", run_id)
+    path = feature_index_path(ds, "demo")
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    assert set(rows["consumed_model_state"]) == {""}
+    rows["consumed_model_state"] = "state-of-" + rows["sequence"]
+    rows.to_csv(path, index=False)
+
+    reads = recorded_tracks_reads(ds, "demo", run_id)
+
+    assert {entry: read.model_state for entry, read in reads.items()} == {
+        (group, sequence): f"state-of-{sequence}"
+        for group, sequence in zip(rows["group"], rows["sequence"], strict=True)
+    }
 
 
 class TestWhichChannelIsBlind:
@@ -909,6 +950,155 @@ class TestDriftedEntries:
 
         assert _drifted(ds, upstream) == (("", "seq_a"), ("", "seq_b"))
         assert _drifted(ds, upstream, with_params=False) == (("", "seq_a"),)
+
+
+FIT_FEATURE = "prov-fit"
+"""The storage of the fit the applies below name through ``model``."""
+
+FIT_RUN = "0.1-fitfitfitf"
+
+
+def _write_fit(ds: Dataset, digest: str | None) -> None:
+    """Write the ``fit_scope.json`` of the fit run, recording *digest* when given."""
+    root = feature_run_root(ds, FIT_FEATURE, FIT_RUN)
+    root.mkdir(parents=True, exist_ok=True)
+    record: dict[str, object] = {} if digest is None else {"state_digest": digest}
+    _ = (root / "fit_scope.json").write_text(json.dumps(record))
+
+
+def _apply_recording(
+    ds: Dataset,
+    result: Result,
+    digest: str,
+    *,
+    model: bool,
+    pattern: str | None = None,
+) -> None:
+    """Make *result*'s run an apply of the fit run whose rows recorded *digest*.
+
+    Its ``params.json`` names the fit through ``model`` when *model* is set,
+    with *pattern* when one is given.
+    """
+    assert result.run_id is not None
+    if model:
+        path = feature_run_root(ds, result.feature, result.run_id) / "params.json"
+        document = json.loads(path.read_text())
+        reference: dict[str, str] = {"feature": FIT_FEATURE, "run_id": FIT_RUN}
+        if pattern is not None:
+            reference["pattern"] = pattern
+        document["_params"]["model"] = reference
+        path.write_text(json.dumps(document))
+    index_path = feature_index_path(ds, result.feature)
+    rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    rows.loc[rows["run_id"] == result.run_id, "consumed_model_state"] = digest
+    rows.to_csv(index_path, index=False)
+
+
+class TestDriftedEntriesOfAFitWrittenAgain:
+    """An apply is drifted once the fit it names records another digest."""
+
+    def _apply(self, ds: Dataset, digest: str = "d1", *, model: bool = True) -> Result:
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        _apply_recording(ds, applied, digest, model=model)
+        return applied
+
+    def test_a_digest_that_differs_from_the_fits_is_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds)
+        _write_fit(ds, "d1")
+        assert _drifted(ds, applied) == ()
+
+        _write_fit(ds, "d2")
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_run_without_a_model_adds_no_channel(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds, "stale", model=False)
+        _write_fit(ds, "d2")
+
+        assert _drifted(ds, applied) == ()
+
+    def test_an_unreadable_fit_scope_reads_blank_and_drifts_recorded_digests(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds)
+        root = feature_run_root(ds, FIT_FEATURE, FIT_RUN)
+        root.mkdir(parents=True)
+        _ = (root / "fit_scope.json").write_text("{not json")
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_fit_no_root_holds_reads_blank(self, scenario_dataset: Dataset) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds)
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_pattern_matching_two_files_reads_blank_and_drifts_recorded_digests(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        _apply_recording(ds, applied, "d1", model=True, pattern="*.joblib")
+        _write_fit(ds, "d1")
+        root = feature_run_root(ds, FIT_FEATURE, FIT_RUN)
+        for name in ("model.joblib", "other.joblib"):
+            _ = (root / name).write_bytes(b"state")
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_two_blank_sides_are_not_drift_here_either(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds, "")
+        _write_fit(ds, None)
+
+        assert _drifted(ds, applied) == ()
+
+    def test_several_applies_of_a_fit_read_its_record_once(
+        self, scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applies = [
+            run_feature(ds, feature, tracks_run_id=VARIANT)
+            for feature in (_Upstream(), _Third())
+        ]
+        for applied in applies:
+            _apply_recording(ds, applied, "d1", model=True)
+        _write_fit(ds, "d2")
+        reads: list[Path] = []
+
+        def counted(run_root: Path) -> str:
+            reads.append(run_root)
+            return read_fit_state_digest(run_root)
+
+        monkeypatch.setattr(fit_scope_module, "read_fit_state_digest", counted)
+        shared = DriftReads(ds)
+        found = [
+            drifted_entries(
+                ds,
+                applied.feature,
+                applied.run_id or "",
+                read_run_params(
+                    feature_run_root(ds, applied.feature, applied.run_id or "")
+                ).params,
+                shared,
+            )
+            for applied in applies
+        ]
+
+        assert found == [(("", "seq_a"), ("", "seq_b"))] * 2
+        assert reads == [feature_run_root(ds, FIT_FEATURE, FIT_RUN)]
 
 
 def test_a_scan_reads_each_variants_tracks_compositions_once(

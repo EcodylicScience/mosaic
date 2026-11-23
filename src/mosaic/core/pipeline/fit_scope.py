@@ -40,18 +40,25 @@ is not copied here, where it could go stale.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeGuard, get_args
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeGuard, get_args
 
 from ._utils import ResolvedScope, atomic_write, now_iso
+from .error_kind import ClassifiedError, ErrorKind
+from .file_digest import MODEL_DIGEST_HEX, file_digest
 from .identity_scheme import FEATURE_IDENTITY_SCHEME
+from .identity_scheme import MARKER_NAME as IDENTITY_SCHEME_NAME
+from .inventory.params import RUN_PARAMS_NAME
+from .markers import MARKER_PREFIX, is_atomic_temp
 from .types import ArtifactSpec, Feature
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.json_value import JsonValue
 
     from .resolve import Resolution
 
@@ -60,10 +67,14 @@ __all__ = [
     "FitScope",
     "FitSource",
     "FitSourceRef",
+    "FitStateUnreadable",
     "derive_fit_scope",
     "fit_and_apply_scopes",
+    "list_run_root",
     "read_fit_scope",
+    "read_fit_state_digest",
     "read_run_fit_scope",
+    "saved_state_digest",
     "write_fit_scope",
 ]
 
@@ -120,6 +131,10 @@ class FitScope:
     applied without fitting them. Those entries are not in ``entries``, and the
     artifact's run says what it was fitted over (``known`` is False when it
     cannot).
+
+    ``state_digest`` is the digest of the files ``save_state`` wrote
+    (:func:`saved_state_digest`), and ``""`` when unknown. It is recorded, never
+    hashed into a run id.
     """
 
     scope_dependent: bool
@@ -130,6 +145,152 @@ class FitScope:
     identity_scheme: str
     source: FitSource = "stream"
     via: tuple[FitSourceRef, ...] = ()
+    state_digest: str = ""
+
+
+_RUN_BOOKKEEPING: Final = frozenset(
+    {RUN_PARAMS_NAME, IDENTITY_SCHEME_NAME, FIT_SCOPE_NAME}
+)
+"""The run-level files ``run_feature`` writes in a run root."""
+
+type RunRootListing = dict[str, tuple[int, int, int]]
+"""Each file under a run root, by relative POSIX path: its inode, size and mtime."""
+
+
+def list_run_root(run_root: Path) -> RunRootListing:
+    """Each file under *run_root*, recursively, with its inode, size and ``mtime_ns``.
+
+    The files the engine writes there are left out, because they can change while
+    a fit saves its state, and they are not that state:
+
+    - a top-level file named with ``MARKER_PREFIX`` (``markers.py``): the fit's
+      claim, which its timer rewrites by rename every ``INFLIGHT_REFRESH_SECONDS``;
+    - top-level ``params.json``, ``.identity_scheme`` and ``fit_scope.json``,
+      which another invocation of the same run writes before it is refused the
+      claim;
+    - a temporary file of a write still in flight (``is_atomic_temp``), the
+      claim's included. The temporary files of the save are renamed or removed
+      by the time it returns.
+
+    A file removed between the walk and its ``stat`` is left out. An absent
+    *run_root* lists as empty.
+    """
+    listing: RunRootListing = {}
+    if not run_root.is_dir():
+        return listing
+    for path in run_root.rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        relative = path.relative_to(run_root).as_posix()
+        if _is_engine_file(relative):
+            continue
+        listing[relative] = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    return listing
+
+
+def _is_engine_file(relative: str) -> bool:
+    """Is *relative*, a path under a run root, a file the engine writes there?"""
+    name = relative.rpartition("/")[2]
+    if is_atomic_temp(name):
+        return True
+    top_level = name == relative
+    return top_level and (name.startswith(MARKER_PREFIX) or name in _RUN_BOOKKEEPING)
+
+
+def saved_state_digest(
+    run_root: Path, before: RunRootListing, after: RunRootListing
+) -> str:
+    """The digest of the files a ``save_state`` created or changed in *run_root*.
+
+    A file of *after* counts when *before* does not hold it or holds another
+    inode, size or ``mtime_ns``. Each counted file contributes
+    ``[relative POSIX path, file_digest(path)]``, and the digest is a blake2b of
+    the JSON of that list sorted by path, ``MODEL_DIGEST_HEX`` hex characters
+    wide. It therefore does not depend on listing order, and a save that writes
+    nothing gives the digest of the empty list. A counted file removed before it
+    is read is left out.
+
+    Args:
+        run_root: The run root the listings were taken of.
+        before: :func:`list_run_root` just before ``save_state``.
+        after: :func:`list_run_root` just after it.
+
+    Returns:
+        The digest, ``MODEL_DIGEST_HEX`` hex characters.
+    """
+    pairs: list[list[str]] = []
+    for relative in sorted(after):
+        if before.get(relative) == after[relative]:
+            continue
+        try:
+            digest = file_digest(run_root / relative)
+        except FileNotFoundError:
+            continue
+        pairs.append([relative, digest])
+    payload = json.dumps(pairs).encode()
+    return hashlib.blake2b(payload, digest_size=MODEL_DIGEST_HEX // 2).hexdigest()
+
+
+class FitStateUnreadable(ClassifiedError):
+    """A ``fit_scope.json`` that is not a JSON object, or holds a non-string digest."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+    def __init__(self, *, feature: str, run_id: str, error: str) -> None:
+        super().__init__(
+            f"run {run_id} of {feature} holds a {FIT_SCOPE_NAME} that cannot be "
+            f"read ({error}), so whether the model this step applies has changed "
+            "cannot be told: remove the run and fit it again"
+        )
+        self.feature: str = feature
+        self.run_id: str = run_id
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the feature and the run whose record is unreadable."""
+        return {"feature": self.feature, "run_id": self.run_id}
+
+
+def read_fit_state_digest(run_root: Path) -> str:
+    """The digest of the state the fit in *run_root* saved.
+
+    Args:
+        run_root: A run root, ``features/<feature>/<run_id>``.
+
+    Returns:
+        The recorded digest, and ``""`` when the run has no ``fit_scope.json``
+        or a record without the ``state_digest`` key.
+
+    Raises:
+        FitStateUnreadable: The record cannot be read, is not a JSON object, or
+            holds a ``state_digest`` that is not a string.
+    """
+    path = run_root / FIT_SCOPE_NAME
+
+    def unreadable(error: str) -> FitStateUnreadable:
+        return FitStateUnreadable(
+            feature=run_root.parent.name, run_id=run_root.name, error=error
+        )
+
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return ""
+    except OSError as error:
+        raise unreadable(str(error)) from error
+    try:
+        parsed: object = json.loads(text)
+    except ValueError as error:
+        raise unreadable(str(error)) from error
+    if not _is_object(parsed):
+        raise unreadable("not a JSON object")
+    digest = parsed.get("state_digest", "")
+    if not isinstance(digest, str):
+        raise unreadable("its state_digest is not a string")
+    return digest
 
 
 def derive_fit_scope(
@@ -292,6 +453,7 @@ def write_fit_scope(run_root: Path, scope: FitScope) -> None:
             }
             for ref in scope.via
         ],
+        "state_digest": scope.state_digest,
     }
     atomic_write(
         run_root / FIT_SCOPE_NAME,
@@ -359,7 +521,9 @@ def read_fit_scope(run_root: Path) -> FitScope | None:
     ``source`` key reads as ``source="legacy"``. A legacy scope-free record held
     the scope it was *invoked* over, not what its artifacts held, so its entries
     and variants read as ``None``; a legacy scope-dependent record keeps them.
-    Nothing is rewritten on disk.
+    A record without ``state_digest`` reads it as ``""``, and one whose
+    ``state_digest`` is not a string reads as ``None``. Nothing is rewritten on
+    disk.
     """
     path = run_root / FIT_SCOPE_NAME
     if not path.exists():
@@ -375,6 +539,9 @@ def read_fit_scope(run_root: Path) -> FitScope | None:
     if not _is_object(parsed):
         return None
     raw = parsed
+    state_digest = raw.get("state_digest", "")
+    if not isinstance(state_digest, str):
+        return None
     scope_dependent = bool(raw.get("scope_dependent", False))
     raw_source = raw.get("source")
     source: FitSource = "legacy"
@@ -399,6 +566,7 @@ def read_fit_scope(run_root: Path) -> FitScope | None:
         identity_scheme=str(raw.get("identity_scheme", "")),
         source=source,
         via=tuple(ref for ref in map(_source_ref, _items(raw.get("via"))) if ref),
+        state_digest=state_digest,
     )
 
 
