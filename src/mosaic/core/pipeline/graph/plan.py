@@ -54,13 +54,22 @@ import shlex
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
+from mosaic.core.dataset import LinkUnreachableError
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.label_converter import TracksPlacementRefused
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..column_contract import PairRead
+from ..definitions.fit_run import refuse_unusable_fit_run
 from ..definitions.scope import definition_scope
+from ..definitions.store import (
+    MODEL_FIELD,
+    DefinitionModelMissing,
+    DefinitionModelRefused,
+    is_definition_slug,
+    parse_definition_slug,
+)
 from ..convert_ops import (
     ConvertLabelsOp,
     ConvertLabelsParams,
@@ -104,6 +113,7 @@ from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from ..tag_reads import ResolvedTagTable, resolve_tag_table, tag_read_problems
 from ..types.feature import ReadsTags
+from ..types.results import DefinitionModel
 from ..track_space import TrackSpaceRefused
 from .digest import recipe_digest
 from .heldout import deferred_scope_problem, held_out_fit_problem
@@ -132,6 +142,7 @@ from .resolve import (
     build_step_op_params,
     declaration_catalog,
     declared_fit,
+    definition_model_field,
     feature_class_for_slug,
     feature_parallelizable,
     op_class_for_kind,
@@ -1055,6 +1066,8 @@ def plan_pipeline(
         planned: dict[str, PlannedStep] = {}
         steps: list[PlannedStep] = []
         findings = _Findings()
+        # Merged with the steps _link_unreachable_problems refuses after the walk.
+        model_unreachable: list[Problem] = []
         remainders: dict[str, ConversionRemainder] = {}
         splits = ds.splits
         for step in topological_order(recipe):
@@ -1081,6 +1094,13 @@ def plan_pipeline(
             )
             if isinstance(step, FeatureStepSpec):
                 findings.problems.extend(_shared_run_problems(recipe, step, resolved))
+                for found in _definition_model_run_problems(
+                    ds, step, step_plan, bind=bind, pins=pins
+                ):
+                    if found.where == "link_unreachable":
+                        model_unreachable.append(found)
+                    else:
+                        findings.problems.append(found)
                 # A step bound or pinned to a run is not executed and fits nothing.
                 # The guard does not wait on a step scope. A whole-dataset request
                 # with none is the case it exists for.
@@ -1185,7 +1205,12 @@ def plan_pipeline(
             )
         )
         problems.extend(_bind_problems(ds, recipe, planned, bind))
-        problems.extend(_link_unreachable_problems(ds, steps))
+        unreachable = _link_unreachable_problems(ds, steps)
+        refused_for_links = {found.step for found in unreachable}
+        problems.extend(unreachable)
+        problems.extend(
+            found for found in model_unreachable if found.step not in refused_for_links
+        )
         if findings.tracks:
             problems.extend(
                 check_recipe(
@@ -1545,6 +1570,50 @@ def _link_unreachable_problems(
             )
             found.append(Problem(planned.step_id, "link_unreachable", message))
     return found
+
+
+def _definition_model_run_problems(
+    ds: Dataset,
+    step: FeatureStepSpec,
+    step_plan: PlannedStep,
+    *,
+    bind: Mapping[str, BoundRef],
+    pins: Mapping[str, str],
+) -> list[Problem]:
+    """What is wrong with the fit run that a definition's ``model`` names.
+
+    A ``model`` written as literal params names its run, and a reference names
+    the run of a step that *bind* or *pins* resolves. A reference to a step the
+    request runs names a fit that does not exist yet, and is not checked. The
+    run is read through the lookup of ``ds.lookup_order("features")``, which
+    imports no definition and writes nothing.
+
+    Returns:
+        A problem at ``params.model``, with the text of the refusal a run would
+        raise. When an unreachable link may hold the fit, a problem at
+        ``link_unreachable`` instead.
+    """
+    if step.params.get(MODEL_FIELD) is None:
+        return []
+    reference = params_step_refs(step.params).get(MODEL_FIELD)
+    if reference is not None and reference.step not in {*bind, *pins}:
+        return []
+    slug = step_plan.spec.feature
+    if not is_definition_slug(slug) or not definition_model_field(slug):
+        return []
+    name, digest = parse_definition_slug(slug)
+    if digest is None:
+        return []
+    model = DefinitionModel.model_validate(step_plan.spec.params[MODEL_FIELD])
+    try:
+        refuse_unusable_fit_run(
+            ds, model, name=name, digest=digest, storage=step_plan.storage_name
+        )
+    except LinkUnreachableError as unreachable:
+        return [Problem(step.id, "link_unreachable", str(unreachable))]
+    except (DefinitionModelMissing, DefinitionModelRefused) as refused:
+        return [Problem(step.id, f"params.{MODEL_FIELD}", str(refused))]
+    return []
 
 
 def _pinned_view(

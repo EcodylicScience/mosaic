@@ -296,6 +296,31 @@ def test_an_artifact_reference_to_a_step_of_another_feature_is_refused() -> None
     assert "speed-angvel" in problem.message
 
 
+def test_a_pattern_on_an_artifact_field_is_not_a_definition_model_refusal() -> None:
+    """The pattern check reads the declared type, whatever the field is called."""
+    problems = check_recipe(
+        Recipe.model_validate(
+            {
+                "steps": [
+                    SPEED_STEP,
+                    {
+                        "id": "kmeans",
+                        "type": "feature",
+                        "feature": "global-kmeans",
+                        "inputs": [{"step": "speed"}],
+                        "params": {
+                            "model": {"step": "speed", "pattern": "model.joblib"}
+                        },
+                    },
+                ]
+            }
+        )
+    )
+
+    assert [problem.where for problem in problems] == ["params.model"]
+    assert "takes no pattern" not in problems[0].message
+
+
 def test_an_artifact_reference_to_a_step_of_its_own_feature_is_admissible() -> None:
     reject_unless_valid(
         Recipe.model_validate(

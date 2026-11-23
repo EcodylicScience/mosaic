@@ -55,11 +55,19 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     submit_request,
 )
+from mosaic.core.pipeline.definitions.define import load_feature_definition
+from mosaic.core.pipeline.definitions.scope import definition_scope
+from mosaic.core.pipeline.definitions.store import (
+    DefinitionModelMissing,
+    DefinitionModelRefused,
+)
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.graph.plan import ConversionAdds, GrowthNote
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
+from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracks_index import (
@@ -68,6 +76,8 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
     SPEED_RECIPE,
     add_raw_track_files,
     calms21_dataset,
@@ -80,6 +90,8 @@ from tests.helpers import (
     assert_tree_unchanged,
     clip_facts,
     convert_tracks_from_raw,
+    defined_dataset,
+    definitions_forgotten,
     finish_media_variant,
     install_fake_trex,
     make_dataset,
@@ -1252,6 +1264,106 @@ def test_the_live_pipeline_and_the_planner_agree(tracked: Dataset) -> None:
         graph.step("speed").run_id,
         graph.step("templates").run_id,
     ]
+
+
+_APPLYING_SLUG = f"def:{APPLYING_NAME}"
+_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
+
+
+def _fit_and_apply(
+    cls: type, model: Document, scope: Scope
+) -> tuple[FeatureStep, FeatureStep]:
+    """A live fit step of *cls* and an apply step given *model*, over *scope*."""
+    return (
+        FeatureStep("fit", cls, None, run_kwargs={"scope": scope}),
+        FeatureStep("apply", cls, {"model": model}, run_kwargs={"scope": scope}),
+    )
+
+
+@pytest.mark.parametrize(
+    "entries", [[("g", "s1")], [("g", "s1"), ("g", "s2")]], ids=["one", "both"]
+)
+def test_the_live_pipeline_and_the_planner_agree_on_an_apply(
+    tmp_path: Path, entries: list[tuple[str, str]]
+) -> None:
+    """An apply that names its fit by run id is predicted alike over each scope."""
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        cls = load_feature_definition(dataset, _APPLYING_SLUG)
+        fitted = run_feature(
+            dataset, cls(), scope=Scope(entries=[("g", "s2")]), track=False
+        )
+        model: Document = {"feature": _APPLYING_STORAGE, "run_id": fitted.run_id}
+        scope = Scope(entries=entries)
+        live = Pipeline()
+        for step in _fit_and_apply(cls, model, scope):
+            _ = live.add(step)
+        graph = plan_pipeline(
+            dataset,
+            Recipe.model_validate(
+                {
+                    "steps": [
+                        {
+                            "id": "fit",
+                            "type": "feature",
+                            "feature": _APPLYING_SLUG,
+                            "inputs": ["tracks"],
+                        },
+                        {
+                            "id": "apply",
+                            "type": "feature",
+                            "feature": _APPLYING_SLUG,
+                            "inputs": ["tracks"],
+                            "params": {"model": model},
+                        },
+                    ]
+                }
+            ),
+            scope=scope,
+        )
+
+        executed = live.run(dataset)
+        predicted = live.status(dataset)["run_id"].tolist()
+        with definition_scope(dataset, load=True):
+            applying = build_feature(_APPLYING_SLUG, None, {"model": model})
+        applied = run_feature(dataset, applying, track=False)
+
+        planned = [graph.step("fit").run_id, graph.step("apply").run_id]
+        assert predicted == planned
+        assert [executed["fit"].run_id, executed["apply"].run_id] == planned
+        assert applied.run_id == graph.step("apply").run_id
+
+
+def test_the_live_pipeline_refuses_an_unpinned_model(tmp_path: Path) -> None:
+    """``status`` refuses as a run does, and leaves the step's reference unpinned."""
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        cls = load_feature_definition(dataset, _APPLYING_SLUG)
+        model: Document = {"feature": _APPLYING_STORAGE}
+        live = Pipeline()
+        for step in _fit_and_apply(cls, model, Scope()):
+            _ = live.add(step)
+
+        with pytest.raises(DefinitionModelMissing) as caught:
+            _ = live.status(dataset)
+
+        assert caught.value.reason == "unpinned"
+        assert model == {"feature": _APPLYING_STORAGE}
+
+
+def test_the_live_pipeline_refuses_a_model_of_another_feature(tmp_path: Path) -> None:
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        cls = load_feature_definition(dataset, _APPLYING_SLUG)
+        live = Pipeline()
+        model: Document = {"feature": "def.mean-distance__from__tracks"}
+        for step in _fit_and_apply(cls, model, Scope()):
+            _ = live.add(step)
+
+        with pytest.raises(DefinitionModelRefused) as caught:
+            _ = live.status(dataset)
+
+        assert caught.value.reason == "other_feature"
 
 
 # --- planning writes nothing ----------------------------------------------------

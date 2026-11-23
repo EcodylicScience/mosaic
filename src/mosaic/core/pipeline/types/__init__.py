@@ -53,6 +53,7 @@ from mosaic.core.pipeline.types.params import GlobalModelParams
 from mosaic.core.pipeline.types.results import (
     BodyLengthResult,
     BodyScaleResult,
+    DefinitionModel,
     NNResult,
     Result,
     ResultColumn,
@@ -67,6 +68,7 @@ __all__ = [
     "COLUMNS",
     "ClosesResources",
     "Columns",
+    "DefinitionModel",
     "DependencyLookup",
     "Feature",
     "FeatureLabelsSource",

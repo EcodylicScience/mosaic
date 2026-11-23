@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.pipeline.definitions.store import (
+    MODEL_FIELD,
     DefinitionCorrupt,
     DefinitionInvalid,
     DefinitionToolkitModelMissing,
@@ -131,6 +132,7 @@ __all__ = [
     "declared_fit",
     "declared_version",
     "definition_declaration",
+    "definition_model_field",
     "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
@@ -141,6 +143,7 @@ __all__ = [
     "op_class_for_kind",
     "op_writes_tracks",
     "params_reference_site",
+    "pinned_feature_slug",
     "registry_snapshot",
     "resolve_step_spec",
     "run_reference_fields",
@@ -527,6 +530,8 @@ def _construct(
     """
     from pydantic import BaseModel, ValidationError
 
+    from mosaic.core.pipeline.definitions.loader import narrow_to_apply
+
     inputs_cls: object = getattr(cls, "Inputs", None)
     if not (isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel)):
         raise StepBuildError("inputs", slug, "the feature declares no Inputs model")
@@ -549,9 +554,11 @@ def _construct(
         # The uniform feature constructor, which every feature follows:
         # ``FeatureCls(inputs, params: dict | None)``. ``Feature`` is a Protocol
         # and declares no ``__init__``, hence the targeted ignore.
-        return cls(inputs_obj, params)  # pyright: ignore[reportCallIssue]
+        feature: Feature = cls(inputs_obj, params)  # pyright: ignore[reportCallIssue]
     except ValidationError as exc:
         raise _build_error("params", slug, exc) from exc
+    narrow_to_apply(feature)
+    return feature
 
 
 def build_op_params(kind: str, params: Mapping[str, JsonValue]) -> "Params":
@@ -1568,6 +1575,29 @@ def run_reference_fields(name: str) -> frozenset[str]:
     )
 
 
+def definition_model_field(slug: str) -> bool:
+    """Whether feature *slug* declares ``model`` as a reference to a fit.
+
+    True when the declaring class of *slug* types the top-level params field
+    ``model`` as ``DefinitionModel | None``. A ``def:`` slug reads the declared
+    class of its sidecar, so no definition source is imported.
+
+    Args:
+        slug: A feature slug, built-in or ``def:``.
+    """
+    return _is_definition_model_field(
+        _params_field_types("feature", slug).get(MODEL_FIELD)
+    )
+
+
+def _is_definition_model_field(annotation: object) -> bool:
+    """Does this declared type hold a ``DefinitionModel``?"""
+    from mosaic.core.pipeline.types import DefinitionModel
+
+    candidates = [annotation, *getattr(annotation, "__args__", ())]
+    return any(candidate is DefinitionModel for candidate in candidates)
+
+
 def _reference_site_of(annotation: object) -> ReferenceSite:
     """How a reference would substitute into a field declared as *annotation*."""
     if _is_labels_field(annotation):
@@ -1716,7 +1746,7 @@ def resolve_step_spec(
     return StepSpec(
         step_id=step_id,
         kind="feature",
-        feature=_pinned_feature_slug(step.feature),
+        feature=pinned_feature_slug(step.feature),
         inputs=tuple(inputs),
         params=params,
         tracks_run_id=read_variant,
@@ -1730,7 +1760,7 @@ def resolve_step_spec(
     )
 
 
-def _pinned_feature_slug(slug: str) -> str:
+def pinned_feature_slug(slug: str) -> str:
     """*slug* naming one version: a ``def:`` slug with its full digest.
 
     A built-in slug is returned as it is. A ``def:`` slug resolves in the

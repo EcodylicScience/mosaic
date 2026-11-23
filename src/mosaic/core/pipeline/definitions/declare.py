@@ -93,6 +93,7 @@ from mosaic.core.pipeline.definitions.sidecar import (
     sidecar_json,
 )
 from mosaic.core.pipeline.definitions.store import (
+    MODEL_FIELD,
     DefinitionCheck,
     DefinitionFinding,
     DefinitionInvalid,
@@ -113,7 +114,7 @@ from mosaic.core.pipeline.run import identity_terms
 from mosaic.core.pipeline.track_space import feature_track_spaces
 from mosaic.core.pipeline.types.inputs import Inputs, TrackInput
 from mosaic.core.pipeline.types.labels import LabelsSource
-from mosaic.core.pipeline.types.results import Result
+from mosaic.core.pipeline.types.results import DefinitionModel, Result
 from mosaic.core.strict_model import terse
 from mosaic.optional_dependency import OptionalModule
 from mosaic.version import installed_version
@@ -155,6 +156,7 @@ _INPUT_REQUIRES: Final = ("nonempty", "empty", "any")
 _MODEL_MARKER: Final = "$model"
 _TOOLKIT_PREFIX: Final = "mosaic."
 _ACCEPTED_FORM: Final = "Annotated[list[str] | None, Declared(...)]"
+_MODEL_TYPES: Final = frozenset((DefinitionModel, type(None)))
 
 _ALIAS_ATTRIBUTES: Final = (
     "alias",
@@ -781,6 +783,7 @@ class _ParamsWalker:
         self._findings: _Findings = findings
         self._own: dict[type[BaseModel], ModelType] = {}
         self._walking: list[type[BaseModel]] = []
+        self._admits_model = False
 
     def params(self, cls: type) -> tuple[type[Params] | None, tuple[ParamRecord, ...]]:
         """The class's ``Params`` model and one record per field."""
@@ -790,7 +793,15 @@ class _ParamsWalker:
                 "params_base", None, "Params must subclass mosaic.core.params.Params"
             )
             return None, ()
-        return model, self._records(model, Params, None)
+        records = self._records(model, Params, None)
+        if self._admits_model and _declared(cls, "fits") is not True:
+            self._findings.add(
+                "params_reference",
+                MODEL_FIELD,
+                f"{MODEL_FIELD} is typed DefinitionModel, which is admitted only "
+                "in a class that declares fits = True",
+            )
+        return model, records
 
     def _records(
         self, model: type[BaseModel], base: type[BaseModel], path: str | None
@@ -844,8 +855,12 @@ class _ParamsWalker:
         node = self._type(info.annotation, path)
         constraints = self._constraints(info, path)
         self._attribute_findings(info, path)
+        holds_model = self._admits_model and path == MODEL_FIELD
+        if holds_model:
+            self._model_field_findings(info, path)
         if info.is_required():
-            self._findings.add("params_default", path, f"{path} has no default")
+            if not holds_model:
+                self._findings.add("params_default", path, f"{path} has no default")
             return None
         try:
             default: object = info.get_default(call_default_factory=True)
@@ -873,6 +888,35 @@ class _ParamsWalker:
             unwired="" if declared is None else declared.unwired,
             keypoint=None if declared is None else declared.keypoint,
         )
+
+    def _model_field_findings(self, info: FieldInfo, path: str) -> None:
+        """Refuse a ``model`` field that is not the one admitted form."""
+        annotation: object = info.annotation
+        if (
+            get_origin(annotation) not in (Union, types.UnionType)
+            or frozenset(get_args(annotation)) != _MODEL_TYPES
+        ):
+            self._findings.add(
+                "params_reference",
+                path,
+                f"{path} is typed DefinitionModel, which is admitted only as "
+                "DefinitionModel | None",
+            )
+        if info.default is not None or info.default_factory is not None:
+            self._findings.add(
+                "params_reference",
+                path,
+                f"{path} is typed DefinitionModel, which must default to None, "
+                "without a default factory",
+            )
+        metadata: list[object] = info.metadata
+        if any(isinstance(entry, HashExclude) for entry in metadata):
+            self._findings.add(
+                "params_reference",
+                path,
+                f"{path} is typed DefinitionModel and must not be HASH_EXCLUDE, "
+                "which drops the fit's run id from the identity",
+            )
 
     def _attribute_findings(self, info: FieldInfo, path: str) -> None:
         """Refuse the ``Field`` arguments that the rebuilt model would not have."""
@@ -1004,6 +1048,17 @@ class _ParamsWalker:
         return None if inner is None else DictType(kind="dict", value=inner)
 
     def _class(self, annotation: type[object], path: str) -> TypeNode | None:
+        if annotation is DefinitionModel:
+            if path != MODEL_FIELD:
+                self._findings.add(
+                    "params_reference",
+                    path,
+                    f"{path} is typed DefinitionModel, which is admitted only as "
+                    f"the top-level field {MODEL_FIELD}",
+                )
+                return None
+            self._admits_model = True
+            return ToolkitModelType(kind="toolkit_model", ref=_ref(annotation))
         if any(issubclass(annotation, each) for each in _REFERENCE_TYPES):
             self._findings.add(
                 "params_reference",

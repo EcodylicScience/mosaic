@@ -99,6 +99,22 @@ def test_result_use_latest() -> None:
     assert r.run_id == "v1"
 
 
+def test_definition_model_is_a_result_with_the_identity_dump_of_one() -> None:
+    from mosaic.core.pipeline.types import DefinitionModel
+
+    model = DefinitionModel(feature="f", run_id="r")
+    assert model.model_dump() == {"feature": "f", "run_id": "r"}
+    assert isinstance(model, Result)
+    assert DefinitionModel(feature="f").run_id is None
+
+
+def test_definition_model_has_one_class_at_both_import_paths() -> None:
+    from mosaic.core.pipeline import DefinitionModel as exported
+    from mosaic.core.pipeline.types import DefinitionModel as declared
+
+    assert exported is declared
+
+
 def test_nn_result_defaults() -> None:
     from mosaic.core.pipeline.types import NNResult
 

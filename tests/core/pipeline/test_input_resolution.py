@@ -28,10 +28,17 @@ import pytest
 
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.definitions.define import load_feature_definition
+from mosaic.core.pipeline.definitions.store import (
+    DefinitionModelMissing,
+    DefinitionModelRefused,
+)
 from mosaic.core.pipeline.pipeline import FeatureStep, build_step_feature
 from mosaic.core.pipeline.resolve import Resolution, resolve_references
 from mosaic.core.pipeline.run import compute_run_id, feature_run_root, run_feature
 from mosaic.core.pipeline.types import (
+    DefinitionModel,
+    DependencyLookup,
     Feature,
     InputRequire,
     Inputs,
@@ -42,7 +49,16 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.types.inputs import InputsLike
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
+from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
+    built_by_class,
+    defined_dataset,
+    definitions_forgotten,
+)
 
 UPSTREAM_DIR = "resolution-upstream__from__tracks"
 UPSTREAM_ENTRY = "seq_a"
@@ -420,6 +436,132 @@ def test_no_unpinned_reference_survives_resolution(
     for record in resolutions:
         index = scenario_dataset.get_root("features") / record.feature / "index.csv"
         assert (record.run_id is not None) == index.exists()
+
+
+# --- A definition's model ------------------------------------------------------
+
+_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
+
+
+def _applying(dataset: Dataset, model: dict[str, object]) -> Feature:
+    """An instance of the applying definition given *model*."""
+    cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
+    return built_by_class(cls, {"model": model})
+
+
+def _applied_model(feature: Feature) -> DefinitionModel:
+    """The ``model`` param of *feature*."""
+    model: object = getattr(feature.params, "model")
+    assert isinstance(model, DefinitionModel)
+    return model
+
+
+def test_an_unpinned_definition_model_is_refused_with_its_fits(
+    tmp_path: Path,
+) -> None:
+    """The pass refuses to guess a fit, and names the fits of the version."""
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        fit = run_feature(
+            dataset,
+            load_feature_definition(dataset, f"def:{APPLYING_NAME}")(),
+            scope=Scope(entries=[("g", "s1")]),
+            track=False,
+        )
+        feature = _applying(dataset, {"feature": _APPLYING_STORAGE})
+
+        with pytest.raises(DefinitionModelMissing) as caught:
+            _ = resolve_references(dataset, feature)
+
+        assert caught.value.reason == "unpinned"
+        assert caught.value.candidates == (fit.run_id,)
+        assert _applied_model(feature).run_id is None
+
+
+def test_an_unpinned_definition_model_of_another_storage_is_refused(
+    tmp_path: Path,
+) -> None:
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        feature = _applying(dataset, {"feature": "def.mean-distance__from__tracks"})
+
+        with pytest.raises(DefinitionModelRefused) as caught:
+            _ = resolve_references(dataset, feature)
+
+        assert caught.value.reason == "other_feature"
+        assert _applied_model(feature).run_id is None
+
+
+def test_a_pinned_definition_model_is_left_as_written_without_a_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with definitions_forgotten():
+        dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+        feature = _applying(dataset, {"feature": _APPLYING_STORAGE, "run_id": "1-abc"})
+
+        def no_lookup(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a pinned model reads no dataset")
+
+        monkeypatch.setattr(dataset, "lookup_order", no_lookup)
+
+        resolutions = resolve_references(dataset, feature)
+
+        assert resolutions == (
+            Resolution(where="params.model", feature=_APPLYING_STORAGE, run_id="1-abc"),
+        )
+        assert _applied_model(feature).run_id == "1-abc"
+
+
+class _BuiltinModelParams(Params):
+    model: ParquetArtifact | None = None
+
+
+class _BuiltinModel:
+    """A built-in whose ``model`` param is an artifact reference."""
+
+    name = "resolution-builtin-model"
+    version = "0.1"
+    parallelizable = False
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+
+    def __init__(self, model: ParquetArtifact | None = None) -> None:
+        self.inputs: InputsLike = Inputs(("tracks",))
+        self.params = _BuiltinModelParams(model=model)
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        pass
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+
+def test_a_builtin_model_reference_is_pinned_to_the_latest_run(
+    scenario_dataset: Dataset,
+) -> None:
+    upstream = _upstream_run_id(scenario_dataset)
+    feature = _BuiltinModel(model=_templates_ref())
+
+    resolutions = resolve_references(scenario_dataset, feature)
+
+    assert feature.params.model is not None
+    assert feature.params.model.run_id == upstream
+    assert resolutions == (
+        Resolution(where="params.model", feature=UPSTREAM_DIR, run_id=upstream),
+    )
 
 
 class _StepFeature(_FeatureBase):

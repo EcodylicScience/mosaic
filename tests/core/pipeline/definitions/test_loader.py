@@ -16,7 +16,9 @@ from mosaic.core.pipeline.definitions.define import (
     load_feature_definition,
 )
 from mosaic.core.pipeline.definitions.loader import (
+    applied_definition_model,
     load_definition,
+    narrow_to_apply,
     register_definitions_root,
 )
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
@@ -28,7 +30,16 @@ from mosaic.core.pipeline.definitions.store import (
     definition_module_name,
     list_versions,
 )
-from tests.helpers import MINIMAL_NAME, MINIMAL_SOURCE, defined_dataset
+from mosaic.core.pipeline.types import DefinitionModel, Feature
+from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
+    MINIMAL_NAME,
+    MINIMAL_SOURCE,
+    PlainFeature,
+    built_by_class,
+    defined_dataset,
+)
 
 SCALED_SOURCE: Final = MINIMAL_SOURCE.replace(
     "scale: float = 1.0", "scale: float = 2.0"
@@ -264,3 +275,69 @@ def test_a_registration_made_at_load_is_refused(
     assert [(each.check, each.field) for each in caught.value.findings] == [
         ("registry", "FEATURES")
     ]
+
+
+# --- an instance given a model fits nothing ----------------------------------
+
+
+FIT_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
+FIT_RUN_ID: Final = "1-abc"
+MODEL: Final = {"feature": FIT_STORAGE, "run_id": FIT_RUN_ID}
+
+
+class _BuiltIn(PlainFeature):
+    """A built-in feature of the full protocol."""
+
+    accepts_overlap = False
+
+
+def _flags(feature: object) -> tuple[object, object]:
+    """The ``fits`` and ``scope_dependent`` values of *feature*, ``None`` if unset."""
+    return getattr(feature, "fits", None), getattr(feature, "scope_dependent", None)
+
+
+def _applying(tmp_path: Path, params: dict[str, object] | None) -> Feature:
+    """An instance of the applying definition's loaded class, built by its class."""
+    dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    cls = load_definition(_root(dataset), APPLYING_NAME, _digest(APPLYING_SOURCE))
+    return built_by_class(cls, params)
+
+
+def test_an_instance_given_a_model_is_narrowed_to_an_apply(tmp_path: Path) -> None:
+    feature = _applying(tmp_path, {"model": MODEL})
+    assert _flags(feature) == (True, True)
+    expected = DefinitionModel(feature=FIT_STORAGE, run_id=FIT_RUN_ID)
+
+    assert applied_definition_model(feature) == expected
+    narrow_to_apply(feature)
+
+    assert _flags(feature) == (False, False)
+    assert applied_definition_model(feature) == expected
+
+
+def test_narrowing_is_idempotent(tmp_path: Path) -> None:
+    feature = _applying(tmp_path, {"model": MODEL})
+
+    narrow_to_apply(feature)
+    narrow_to_apply(feature)
+
+    assert _flags(feature) == (False, False)
+
+
+def test_an_instance_without_a_model_keeps_its_flags(tmp_path: Path) -> None:
+    feature = _applying(tmp_path, None)
+
+    narrow_to_apply(feature)
+
+    assert applied_definition_model(feature) is None
+    assert _flags(feature) == (True, True)
+
+
+def test_a_built_in_is_neither_narrowed_nor_reported_as_applying() -> None:
+    feature = _BuiltIn()
+    flags = _flags(feature)
+
+    narrow_to_apply(feature)
+
+    assert applied_definition_model(feature) is None
+    assert _flags(feature) == flags

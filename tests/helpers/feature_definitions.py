@@ -11,15 +11,27 @@ definition name of the same constant (``MINIMAL_NAME`` for ``MINIMAL_SOURCE``):
   pickles an instance of a class of its own file.
 - ``POSE_SOURCE``: a per-sequence feature whose params hold a ``PoseConfig``
   default.
+- ``APPLYING_SOURCE``: ``GLOBAL_SOURCE``'s feature with the param ``model``.
+  ``load_state`` reads the state from the root of the fit that ``model`` names,
+  and ``fit`` appends a line to the file that ``CANARY_VARIABLE`` names.
+  ``APPLYING_SECOND_SOURCE`` is a second version of it.
+- ``MISREADING_SOURCE``: ``APPLYING_SOURCE`` whose ``load_state`` reads the state
+  from the run root alone, whatever ``model`` names.
+- ``PARALLEL_APPLYING_SOURCE``: ``APPLYING_SOURCE`` that may run in process
+  workers. Each ``apply`` appends ``{"applied": <pid>}`` to the canary file.
 - ``NARROWING_SOURCE``: ``MINIMAL_SOURCE`` whose ``__init__`` sets
   ``scope_dependent`` under the param ``wide``, which its sidecar cannot declare, so
   loading it with ``wide`` set fails the identity check.
+
+``plan_refused`` plans a recipe the dataset cannot run, refusing and not.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
+from functools import reduce
 from pathlib import Path
 from types import ModuleType
 from typing import Final
@@ -28,12 +40,23 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.definitions import loader
+from mosaic.core.pipeline.definitions.scope import clear_definition_caches
+from mosaic.core.pipeline.graph import (
+    BoundRef,
+    Plan,
+    Recipe,
+    RecipeRefused,
+    plan_pipeline,
+)
 from mosaic.core.pipeline.graph.resolve import StepSpec
 from mosaic.core.pipeline.types import Feature
 from tests.helpers.datasets import make_dataset
 from tests.helpers.tracks import add_track_sequences
 
 __all__ = [
+    "APPLYING_NAME",
+    "APPLYING_SECOND_SOURCE",
+    "APPLYING_SOURCE",
     "CANARY_NAME",
     "CANARY_SOURCE",
     "CANARY_VARIABLE",
@@ -41,14 +64,21 @@ __all__ = [
     "GLOBAL_SOURCE",
     "MINIMAL_NAME",
     "MINIMAL_SOURCE",
+    "MISREADING_NAME",
+    "MISREADING_SOURCE",
     "NARROWING_NAME",
     "NARROWING_SOURCE",
+    "PARALLEL_APPLYING_NAME",
+    "PARALLEL_APPLYING_SOURCE",
     "POSE_NAME",
     "POSE_SOURCE",
+    "built_by_class",
     "defined_dataset",
+    "definitions_forgotten",
     "forget_imported_definitions",
     "imported_definitions",
     "noting_definition_loads",
+    "plan_refused",
 ]
 
 MINIMAL_NAME: Final = "origin-distance"
@@ -56,6 +86,9 @@ CANARY_NAME: Final = "canary-distance"
 GLOBAL_NAME: Final = "mean-distance"
 POSE_NAME: Final = "pose-count"
 NARROWING_NAME: Final = "narrow-distance"
+APPLYING_NAME: Final = "centered-distance"
+MISREADING_NAME: Final = "misreading-distance"
+PARALLEL_APPLYING_NAME: Final = "parallel-centered-distance"
 
 CANARY_VARIABLE: Final = "MOSAIC_TEST_DEFINITION_CANARY"
 """The environment variable naming the file that ``CANARY_SOURCE`` appends to."""
@@ -273,6 +306,105 @@ class PoseCount:
 '''
 
 
+def _replaced(source: str, old: str, new: str) -> str:
+    """*source* with its one occurrence of *old* replaced by *new*."""
+    assert source.count(old) == 1, old
+    return source.replace(old, new)
+
+
+_FIT_START: Final = "    def fit(self, inputs: InputStream) -> None:\n"
+_STATE_PATH: Final = "        path = run_root / _STATE\n"
+
+APPLYING_SOURCE: Final = reduce(
+    lambda source, edit: _replaced(source, *edit),
+    (
+        (f'name = "{GLOBAL_NAME}"', f'name = "{APPLYING_NAME}"'),
+        ("import pickle\n", "import json\nimport os\nimport pickle\n"),
+        (
+            "from pathlib import Path\n",
+            "from pathlib import Path\nfrom typing import Annotated\n",
+        ),
+        (
+            "from mosaic.core.params import Params as ParamsBase\n"
+            "from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs\n",
+            "from mosaic.core.params import Declared\n"
+            "from mosaic.core.params import Params as ParamsBase\n"
+            "from mosaic.core.pipeline.types import (\n"
+            "    DefinitionModel,\n"
+            "    DependencyLookup,\n"
+            "    InputStream,\n"
+            "    TrackInputs,\n"
+            ")\n",
+        ),
+        (
+            "    class Params(ParamsBase):\n        pass\n",
+            "    class Params(ParamsBase):\n"
+            "        model: Annotated[\n"
+            '            DefinitionModel | None, Declared("The fit to apply.")\n'
+            "        ] = None\n",
+        ),
+        (
+            _STATE_PATH,
+            '        path = artifact_paths.get("model", run_root) / _STATE\n',
+        ),
+        (
+            _FIT_START,
+            _FIT_START + f"        _canary = os.environ.get({CANARY_VARIABLE!r})\n"
+            "        if _canary:\n"
+            "            with open(_canary, 'a', encoding='utf-8') as _handle:\n"
+            "                _handle.write(json.dumps({'pid': os.getpid()}) + '\\n')\n",
+        ),
+    ),
+    GLOBAL_SOURCE,
+)
+
+APPLYING_SECOND_SOURCE: Final = (
+    APPLYING_SOURCE + "# A second version of the same name.\n"
+)
+
+MISREADING_SOURCE: Final = _replaced(
+    _replaced(
+        APPLYING_SOURCE,
+        'path = artifact_paths.get("model", run_root) / _STATE',
+        "path = run_root / _STATE",
+    ),
+    f'name = "{APPLYING_NAME}"',
+    f'name = "{MISREADING_NAME}"',
+)
+
+_APPLY_START: Final = "    def apply(self, df: pd.DataFrame) -> pd.DataFrame:\n"
+
+PARALLEL_APPLYING_SOURCE: Final = reduce(
+    lambda source, edit: _replaced(source, *edit),
+    (
+        (f'name = "{APPLYING_NAME}"', f'name = "{PARALLEL_APPLYING_NAME}"'),
+        ("parallelizable = False", "parallelizable = True"),
+        (
+            _APPLY_START,
+            _APPLY_START + f"        _canary = os.environ.get({CANARY_VARIABLE!r})\n"
+            "        if _canary:\n"
+            "            with open(_canary, 'a', encoding='utf-8') as _handle:\n"
+            "                _handle.write(json.dumps({'applied': os.getpid()}) + '\\n')\n",
+        ),
+    ),
+    APPLYING_SOURCE,
+)
+
+
+def built_by_class(cls: type[Feature], params: Mapping[str, object] | None) -> Feature:
+    """An instance of *cls*, built by calling the class with default inputs.
+
+    A worker builds a feature the same way, by calling its class directly
+    rather than through ``build_feature``, so the instance holds what its
+    constructor gave it. The ``Feature`` protocol declares no constructor, so
+    the call goes through ``type.__call__`` and the result is narrowed by
+    ``isinstance``.
+    """
+    built: object = type.__call__(cls, None, None if params is None else dict(params))
+    assert isinstance(built, cls)
+    return built
+
+
 def defined_dataset(tmp_path: Path, sources: Mapping[str, str]) -> Dataset:
     """A dataset under *tmp_path* with two tracked sequences that defines *sources*.
 
@@ -299,6 +431,58 @@ def forget_imported_definitions() -> None:
     """Remove every definition module from ``sys.modules``."""
     for name in imported_definitions():
         del sys.modules[name]
+
+
+def plan_refused(
+    ds: Dataset,
+    recipe: Recipe,
+    *,
+    bind: Mapping[str, BoundRef] | None = None,
+    pins: Mapping[str, str] | None = None,
+    applies_request_id: str | None = None,
+) -> Plan:
+    """The plan of *recipe*, after checking that a refusing plan raises its problems.
+
+    The plan is made twice: without refusing, and refusing, which must raise
+    ``RecipeRefused`` with the same problems. The definition modules imported
+    before are forgotten first, and neither plan may import one.
+
+    Returns:
+        The plan made without refusing.
+    """
+    forget_imported_definitions()
+    plan = plan_pipeline(
+        ds,
+        recipe,
+        bind=bind,
+        pins=pins,
+        applies_request_id=applies_request_id,
+        refuse=False,
+    )
+    with pytest.raises(RecipeRefused) as refused:
+        _ = plan_pipeline(
+            ds, recipe, bind=bind, pins=pins, applies_request_id=applies_request_id
+        )
+    assert not imported_definitions()
+    assert refused.value.plan.problems == plan.problems
+    return plan
+
+
+@contextmanager
+def definitions_forgotten() -> Generator[None]:
+    """Remove the definition modules imported inside, and the caches filled inside.
+
+    Two datasets that define one source share a module name. A module left in
+    ``sys.modules`` answers a later test's load without reading its files.
+    """
+    before = set(imported_definitions())
+    clear_definition_caches()
+    try:
+        yield
+    finally:
+        clear_definition_caches()
+        for name in set(imported_definitions()) - before:
+            _ = sys.modules.pop(name)
 
 
 def noting_definition_loads(

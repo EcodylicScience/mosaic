@@ -34,6 +34,7 @@ __all__ = [
     "DEFINITIONS_PACKAGE",
     "DEFINITIONS_ROOT",
     "DIGEST_PREFIX_MIN",
+    "MODEL_FIELD",
     "NAME_MAX_LENGTH",
     "NAME_PATTERN",
     "SLUG_PATTERN",
@@ -43,6 +44,10 @@ __all__ = [
     "DefinitionFinding",
     "DefinitionInvalid",
     "DefinitionMismatch",
+    "DefinitionModelMissing",
+    "DefinitionModelMissingReason",
+    "DefinitionModelRefused",
+    "DefinitionModelRefusedReason",
     "DefinitionNameInvalid",
     "DefinitionNameTaken",
     "DefinitionNotFound",
@@ -69,6 +74,9 @@ DEFINITIONS_PACKAGE: Final = "mosaic_definitions"
 
 DEFINITIONS_ROOT: Final = "feature_definitions"
 """The name of the dataset root that holds the definitions, and its default path."""
+
+MODEL_FIELD: Final = "model"
+"""The params field that names the fit a feature applies."""
 
 NAME_PATTERN: Final = "[a-z][a-z0-9]*(-[a-z0-9]+)*"
 """The grammar of a definition name: kebab-case, lowercase only.
@@ -296,6 +304,86 @@ class DefinitionMismatch(_Coded, ClassifiedError):
         """Return the definition and each field that differs."""
         fields: list[JsonValue] = list(self.fields)
         return {"name": self.name, "digest": self.digest, "fields": fields}
+
+
+type DefinitionModelMissingReason = Literal["unpinned", "missing", "unfitted"]
+"""Why a model reference leads to no fit: an unset run id, an absent run or an unsaved fit."""
+
+type DefinitionModelRefusedReason = Literal[
+    "other_feature", "is_apply", "other_version", "not_loaded"
+]
+"""Why a model reference names a fit that its definition may not apply."""
+
+
+class DefinitionModelMissing(_Coded, ClassifiedError):
+    """A model reference that leads to no fit to apply.
+
+    ``unpinned`` is a reference without a run id, and ``candidates`` lists the runs
+    it could name. ``missing`` is an absent run. ``unfitted`` is a run whose fit
+    is unsaved.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "not_found"
+    code: ClassVar[str] = "definition_model_missing"
+
+    def __init__(
+        self,
+        name: str,
+        feature: str,
+        run_id: str | None,
+        reason: DefinitionModelMissingReason,
+        message: str,
+        *,
+        candidates: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message)
+        self.name: str = name
+        self.feature: str = feature
+        self.run_id: str | None = run_id
+        self.reason: DefinitionModelMissingReason = reason
+        self.candidates: tuple[str, ...] = tuple(candidates)
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the definition, the reference, the reason and any candidates."""
+        detail: dict[str, JsonValue] = {
+            "name": self.name,
+            "feature": self.feature,
+            "run_id": self.run_id,
+            "reason": self.reason,
+        }
+        if self.reason == "unpinned":
+            detail["candidates"] = list(self.candidates)
+        return detail
+
+
+class DefinitionModelRefused(_Coded, ClassifiedError):
+    """A model reference that names a fit its definition may not apply."""
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
+    code: ClassVar[str] = "definition_model_refused"
+
+    def __init__(
+        self,
+        name: str,
+        feature: str,
+        run_id: str | None,
+        reason: DefinitionModelRefusedReason,
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.name: str = name
+        self.feature: str = feature
+        self.run_id: str | None = run_id
+        self.reason: DefinitionModelRefusedReason = reason
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the definition, the reference and the reason."""
+        return {
+            "name": self.name,
+            "feature": self.feature,
+            "run_id": self.run_id,
+            "reason": self.reason,
+        }
 
 
 class DefinitionToolkitModelMissing(_Coded, ClassifiedError):

@@ -92,6 +92,15 @@ class NNResult(Result[str]):
         )
 
 
+class DefinitionModel(Result[str]):
+    """Reference to one fit of the definition that applies it.
+
+    It names one fit run of the applying definition and is admitted only as
+    ``model`` of a definition that fits. Its identity is ``feature`` and
+    ``run_id``, the fields of ``Result``.
+    """
+
+
 class BodyScaleResult(Result[str]):
     """Result for a body-scale-family feature.
 

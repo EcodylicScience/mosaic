@@ -13,15 +13,29 @@ from pathlib import Path
 from typing import NamedTuple
 
 import joblib
+import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.behavior.visualization_library.data_loading import load_tracks_and_labels
 from mosaic.core.analysis import load_feature_sequence_index, list_feature_runs
-from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.dataset import Dataset, LinkUnreachableError, open_dataset
+from mosaic.core.pipeline.definitions.define import (
+    define_feature,
+    load_feature_definition,
+)
+from mosaic.core.pipeline.definitions.store import (
+    DefinitionModelMissing,
+    DefinitionModelRefused,
+)
 from mosaic.core.evaluation import EvaluationReport, tracks_variant_read
 from mosaic.core.pipeline.fit_scope import fit_and_apply_scopes
-from mosaic.core.pipeline.graph import StepRefused, plan_pipeline, run_pipeline
+from mosaic.core.pipeline.graph import (
+    Recipe,
+    StepRefused,
+    plan_pipeline,
+    run_pipeline,
+)
 from mosaic.core.pipeline.graph.pins import refuse_unusable_pins
 from mosaic.core.pipeline.graph.score import run_group_scores
 from mosaic.core.pipeline.fit_scope import FitScope, read_run_fit_scope, write_fit_scope
@@ -56,11 +70,12 @@ from mosaic.core.pipeline.loading import (
 from mosaic.core.pipeline.manifest import unrun_feature_input, upstream_tracks_variants
 from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.provenance import reached_by
+from mosaic.core.pipeline.resolve import resolve_references
 from mosaic.core.pipeline.identity_scheme import MARKER_NAME
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.inventory.scan import run_coverage
 from mosaic.core.pipeline.run import producer_version, run_feature
-from mosaic.core.pipeline.types import InputStream
+from mosaic.core.pipeline.types import Feature, InputStream
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.run_matrix import load_run_matrix
 from mosaic.core.pipeline.track_space import upstream_track_spaces
@@ -76,6 +91,8 @@ from mosaic.core.pipeline.types.results import NNResult, Result, ResultColumn
 from mosaic.runlog import RunLogSnapshot, read_run, run_log_path
 
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
     CONVERTED_ENTRIES,
     SOURCE_ENTRIES,
     CenteringFeature,
@@ -83,15 +100,23 @@ from tests.helpers import (
     add_tracks_table,
     add_tracks_variant,
     add_feature_run,
+    built_by_class,
     calms21_dataset,
     converted_source,
     copy_of,
+    defined_dataset,
+    definitions_forgotten,
     feature_edge,
+    forget_imported_definitions,
+    imported_definitions,
     link_forms,
     make_dataset,
+    plan_refused,
     scored_classifier_recipe,
+    take_link_offline,
     track_table,
     tracks_edge,
+    tree_snapshot,
     write_run_params,
 )
 
@@ -891,3 +916,173 @@ def test_the_run_level_files_of_a_copy_are_the_sources_beside_its_params(
     params = read_run_params(own_root).params
     assert params is not None
     assert params.asked_scope() == {("", "s1"), ("", "s2"), ("", "s3")}
+
+
+# --- an unpinned definition model on a copy --------------------------------------
+
+_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
+
+
+def _definition_copy(tmp_path: Path) -> tuple[Dataset, Dataset, str]:
+    """A source holding a fit of the applying definition, a copy defining it too.
+
+    Returns:
+        The source, the copy and the fit's run id.
+    """
+    source = defined_dataset(tmp_path / "source", {APPLYING_NAME: APPLYING_SOURCE})
+    fit = run_feature(
+        source,
+        load_feature_definition(source, f"def:{APPLYING_NAME}")(),
+        scope=Scope(entries=[("g", "s1")]),
+        track=False,
+    )
+    assert fit.run_id is not None
+    copy = copy_of(source, tmp_path / "copy")
+    _ = define_feature(copy, APPLYING_NAME, APPLYING_SOURCE)
+    return source, copy, fit.run_id
+
+
+def _unpinned_apply(dataset: Dataset) -> Feature:
+    """An instance of the applying definition whose ``model`` names no run."""
+    cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
+    return built_by_class(cls, {"model": {"feature": _APPLYING_STORAGE}})
+
+
+def test_an_unpinned_model_on_a_copy_names_the_sources_fit_by_its_link(
+    tmp_path: Path,
+) -> None:
+    with definitions_forgotten():
+        source, copy, run_id = _definition_copy(tmp_path)
+
+        with pytest.raises(DefinitionModelMissing) as caught:
+            _ = resolve_references(copy, _unpinned_apply(copy))
+
+        assert caught.value.reason == "unpinned"
+        assert f"one of {run_id} (link source-{source.uuid}), or" in str(caught.value)
+        assert caught.value.error_detail()["candidates"] == [run_id]
+
+
+def test_an_unpinned_model_with_the_source_unreachable_is_not_missing(
+    tmp_path: Path,
+) -> None:
+    with definitions_forgotten():
+        _source, copy, _run_id = _definition_copy(tmp_path)
+        offline = take_link_offline(copy)
+
+        with pytest.raises(LinkUnreachableError) as caught:
+            _ = resolve_references(offline, _unpinned_apply(offline))
+
+        assert caught.value.reason == "link_unreachable"
+
+
+# --- a pinned definition model on a copy -----------------------------------------
+
+
+def _pinned_apply(dataset: Dataset, run_id: str) -> Feature:
+    """An instance of the applying definition whose ``model`` names *run_id*."""
+    cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
+    return built_by_class(
+        cls, {"model": {"feature": _APPLYING_STORAGE, "run_id": run_id}}
+    )
+
+
+def _distances(sequence: str) -> pd.Series:
+    """The distance from the origin of each row of ``g/<sequence>``'s track table."""
+    table = track_table("g", sequence)
+    return pd.Series(np.hypot(table["X"], table["Y"]))
+
+
+def test_a_pinned_model_on_a_copy_applies_the_sources_fit(tmp_path: Path) -> None:
+    with definitions_forgotten():
+        source, copy, run_id = _definition_copy(tmp_path)
+        before = tree_snapshot(source.get_root("features"))
+
+        applied = run_feature(copy, _pinned_apply(copy, run_id), track=False)
+
+        assert applied.run_id is not None
+        fitted_mean = float(_distances("s1").mean())
+        root = feature_run_root(copy, _APPLYING_STORAGE, applied.run_id)
+        for _group, sequence in SOURCE_ENTRIES:
+            written = pd.read_parquet(root / f"g__{sequence}.parquet")
+            np.testing.assert_allclose(
+                written["centered"].to_numpy(),
+                (_distances(sequence) - fitted_mean).to_numpy(),
+            )
+        assert not (root / "fit_scope.json").exists()
+        assert tree_snapshot(source.get_root("features")) == before
+
+
+def test_a_pinned_model_with_the_source_unreachable(tmp_path: Path) -> None:
+    """Without the source, a fit the copy lacks is unreachable, an own apply refused."""
+    with definitions_forgotten():
+        source, copy, run_id = _definition_copy(tmp_path)
+        applied = run_feature(copy, _pinned_apply(copy, run_id), track=False)
+        assert applied.run_id is not None
+        source_features = source.get_root("features")
+        before = tree_snapshot(source_features)
+        offline = take_link_offline(copy)
+
+        with pytest.raises(LinkUnreachableError) as unreachable:
+            _ = run_feature(offline, _pinned_apply(offline, run_id), track=False)
+        with pytest.raises(DefinitionModelRefused) as refused:
+            _ = run_feature(
+                offline, _pinned_apply(offline, applied.run_id), track=False
+            )
+
+        assert unreachable.value.reason == "link_unreachable"
+        assert refused.value.reason == "is_apply"
+        assert tree_snapshot(source_features) == before
+
+
+def _literal_apply_recipe(run_id: str) -> Recipe:
+    """A recipe of one apply step whose ``model`` names *run_id* literally."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "apply",
+                    "type": "feature",
+                    "feature": f"def:{APPLYING_NAME}",
+                    "inputs": ["tracks"],
+                    "params": {
+                        "model": {"feature": _APPLYING_STORAGE, "run_id": run_id}
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_a_copy_plans_a_literal_model_naming_the_sources_fit(tmp_path: Path) -> None:
+    with definitions_forgotten():
+        _source, copy, run_id = _definition_copy(tmp_path)
+        forget_imported_definitions()
+
+        plan = plan_pipeline(copy, _literal_apply_recipe(run_id))
+
+        assert plan.problems == ()
+        assert not imported_definitions()
+
+
+@pytest.mark.parametrize("applied", [False, True], ids=["unrun", "applied"])
+def test_a_plan_of_a_literal_model_with_the_source_unreachable(
+    tmp_path: Path, applied: bool
+) -> None:
+    """One problem at ``link_unreachable``, whether or not the step is complete.
+
+    An apply the copy has not run is refused for the link as an incomplete step
+    is. One it has run is complete, and only the model's fit is unreachable.
+    """
+    with definitions_forgotten():
+        _source, copy, run_id = _definition_copy(tmp_path)
+        if applied:
+            _ = run_feature(copy, _pinned_apply(copy, run_id), track=False)
+        offline = take_link_offline(copy)
+
+        plan = plan_refused(offline, _literal_apply_recipe(run_id))
+
+        assert not imported_definitions()
+        assert plan.step("apply").is_complete is applied
+        (problem,) = plan.problems
+        assert (problem.step, problem.where) == ("apply", "link_unreachable")

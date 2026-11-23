@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator
 from typing import ClassVar, Final
 
 import pytest
@@ -31,6 +32,7 @@ from mosaic.core.pipeline.definitions.store import (
     parse_definition_slug,
 )
 from mosaic.core.pipeline.graph import (
+    BoundRef,
     Plan,
     Recipe,
     Request,
@@ -43,15 +45,28 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.graph import step as step_module
+from mosaic.core.pipeline.graph.resolve import (
+    build_feature,
+    declaration_catalog,
+    declared_fit,
+)
+from mosaic.core.pipeline.graph.validate import check_recipe
+from mosaic.core.pipeline.graph.wire import Problem
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SECOND_SOURCE,
+    APPLYING_SOURCE,
     CANARY_NAME,
     CANARY_SOURCE,
     CANARY_VARIABLE,
+    GLOBAL_NAME,
+    GLOBAL_SOURCE,
     MINIMAL_NAME,
     MINIMAL_SOURCE,
     NARROWING_NAME,
@@ -63,6 +78,7 @@ from tests.helpers import (
     imported_definitions,
     make_dataset,
     noting_definition_loads,
+    plan_refused,
 )
 
 SLUG: Final = f"def:{MINIMAL_NAME}"
@@ -689,3 +705,518 @@ def test_the_live_pipeline_enters_a_scope_of_its_dataset(
     for seen in noting.seen:
         assert seen is not None
         assert (seen.base_dir, seen.load) == (plain.base_dir, False)
+
+
+# --- a fitted definition given its model -------------------------------------
+
+
+def _fit_and_apply_recipe() -> Recipe:
+    """A step that fits the definition and a step that applies that fit."""
+    slug = f"def:{APPLYING_NAME}"
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {"id": "fit", "type": "feature", "feature": slug, "inputs": ["tracks"]},
+                {
+                    "id": "apply",
+                    "type": "feature",
+                    "feature": slug,
+                    "inputs": ["tracks"],
+                    "params": {"model": {"step": "fit"}},
+                },
+            ],
+        }
+    )
+
+
+def test_an_apply_step_names_its_fit_and_fits_nothing(tmp_path: Path) -> None:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    plan = plan_pipeline(ds, _fit_and_apply_recipe())
+    fit, apply = plan.steps
+    assert fit.run_id is not None
+    assert apply.run_id not in (None, fit.run_id)
+
+    assert apply.spec.params["model"] == {
+        "feature": fit.storage_name,
+        "run_id": fit.run_id,
+    }
+    for load in (True, False):
+        with definition_scope(ds, load=load):
+            built = build_feature(apply.spec.feature, ["tracks"], apply.spec.params)
+        assert (getattr(built, "fits"), getattr(built, "scope_dependent")) == (
+            False,
+            False,
+        )
+    with definition_scope(ds, load=False):
+        catalog = declaration_catalog()
+        answers = [
+            declared_fit(step.spec.feature, step.spec.params, declaration)
+            for step in (fit, apply)
+            if (declaration := catalog.get(step.spec.feature)) is not None
+        ]
+    assert answers == [(True, True), (False, False)]
+
+
+# --- validating a model reference ---------------------------------------------
+
+APPLYING_SLUG: Final = f"def:{APPLYING_NAME}"
+APPLYING_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
+
+
+def _model_recipe(
+    model: dict[str, object],
+    *,
+    fit: dict[str, object] | None = None,
+    extra: tuple[dict[str, object], ...] = (),
+) -> Recipe:
+    """A fit step, any *extra* steps, and an apply step given *model*.
+
+    *fit* overrides the fit step's own fields.
+    """
+    steps: list[dict[str, object]] = [
+        {
+            "id": "fit",
+            "type": "feature",
+            "feature": APPLYING_SLUG,
+            "inputs": ["tracks"],
+            **(fit or {}),
+        },
+        *extra,
+        {
+            "id": "apply",
+            "type": "feature",
+            "feature": APPLYING_SLUG,
+            "inputs": ["tracks"],
+            "params": {"model": model},
+        },
+    ]
+    return Recipe.model_validate({"schema_version": 1, "steps": steps})
+
+
+def _model_problems(ds: Dataset, recipe: Recipe) -> list[Problem]:
+    """What validation reports at the apply step's ``params.model``.
+
+    Validation reads sidecars only, so no definition module may be imported.
+    """
+    forget_imported_definitions()
+    with definition_scope(ds, load=False):
+        problems = check_recipe(recipe)
+    assert not imported_definitions()
+    return [
+        problem
+        for problem in problems
+        if (problem.step, problem.where) == ("apply", "params.model")
+    ]
+
+
+@pytest.fixture
+def applying(tmp_path: Path) -> Dataset:
+    return defined_dataset(
+        tmp_path,
+        {APPLYING_NAME: APPLYING_SOURCE, GLOBAL_NAME: GLOBAL_SOURCE},
+    )
+
+
+def test_the_recipe_of_a_fit_and_its_apply_validates(applying: Dataset) -> None:
+    forget_imported_definitions()
+    with definition_scope(applying, load=False):
+        problems = check_recipe(_fit_and_apply_recipe())
+
+    assert problems == ()
+    assert not imported_definitions()
+
+
+def test_a_model_naming_a_step_of_another_definition_is_refused(
+    applying: Dataset,
+) -> None:
+    recipe = _model_recipe(
+        {"step": "other"},
+        extra=(
+            {
+                "id": "other",
+                "type": "feature",
+                "feature": f"def:{GLOBAL_NAME}",
+                "inputs": ["tracks"],
+            },
+        ),
+    )
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names def.{GLOBAL_NAME}__from__tracks, and "
+        f"this step stores under {APPLYING_STORAGE}. A model is applied by the "
+        f"definition that fitted it, over the same inputs: name a step of "
+        f"def:{APPLYING_NAME} that reads them"
+    )
+
+
+def test_a_model_naming_a_fit_over_other_inputs_is_refused(applying: Dataset) -> None:
+    recipe = _model_recipe(
+        {"step": "fit"},
+        fit={"inputs": [{"step": "kinematics"}]},
+        extra=(
+            {
+                "id": "kinematics",
+                "type": "feature",
+                "feature": "keypoint-kinematics",
+                "inputs": ["tracks"],
+            },
+        ),
+    )
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message.startswith(
+        f"def:{APPLYING_NAME}'s 'model' names "
+        f"def.{APPLYING_NAME}__from__keypoint-kinematics__from__tracks, and this step "
+        f"stores under {APPLYING_STORAGE}."
+    )
+
+
+def test_a_model_naming_a_step_that_applies_a_model_is_refused(
+    applying: Dataset,
+) -> None:
+    recipe = _model_recipe(
+        {"step": "inner"},
+        extra=(
+            {
+                "id": "inner",
+                "type": "feature",
+                "feature": APPLYING_SLUG,
+                "inputs": ["tracks"],
+                "params": {"model": {"step": "fit"}},
+            },
+        ),
+    )
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names step 'inner', which applies a model "
+        "itself and holds no fit. Name the step that fits"
+    )
+
+
+def test_a_model_naming_a_fit_of_another_version_is_refused(tmp_path: Path) -> None:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    _ = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
+    first, second = _digest(APPLYING_SOURCE), _digest(APPLYING_SECOND_SOURCE)
+    recipe = _model_recipe({"step": "fit"}, fit={"feature": f"{APPLYING_SLUG}@{first}"})
+
+    (problem,) = _model_problems(ds, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names step 'fit', fitted by version "
+        f"{first[:12]} of def:{APPLYING_NAME}, and this step runs version "
+        f"{second[:12]}. An apply reads a fit of its own version: fit again with "
+        f"this version, or run this step as def:{APPLYING_NAME}@{first[:12]}"
+    )
+
+
+def test_a_model_of_the_same_version_pinned_twice_is_accepted(tmp_path: Path) -> None:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    _ = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
+    first = _digest(APPLYING_SOURCE)
+    recipe = _model_recipe({"step": "fit"}, fit={"feature": f"{APPLYING_SLUG}@{first}"})
+    steps = [step.model_dump(mode="json", exclude_none=True) for step in recipe.steps]
+    steps[1]["feature"] = f"{APPLYING_SLUG}@{first[:12]}"
+
+    pinned = Recipe.model_validate({"schema_version": 1, "steps": steps})
+
+    assert _model_problems(ds, pinned) == []
+
+
+def test_a_model_reference_with_a_pattern_is_refused(applying: Dataset) -> None:
+    recipe = _model_recipe({"step": "fit", "pattern": "model.joblib"})
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' is a fit named by its run, and a "
+        "reference to it takes no pattern. Name the step that fits: "
+        '{"step": "fit"}'
+    )
+
+
+def test_literal_params_naming_no_run_are_refused(applying: Dataset) -> None:
+    recipe = _model_recipe({"feature": APPLYING_STORAGE})
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names no run of {APPLYING_STORAGE}. An "
+        "apply reads one fit, named by its run id: give run_id, or reference the "
+        'fit step as {"step": ...}'
+    )
+
+
+def test_literal_params_naming_another_storage_and_no_run_are_refused_by_storage(
+    applying: Dataset,
+) -> None:
+    other = f"def.{GLOBAL_NAME}__from__tracks"
+    recipe = _model_recipe({"feature": other})
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names {other}, and this step stores under "
+        f"{APPLYING_STORAGE}. A model is applied by the definition that fitted it, "
+        f"over the same inputs: name a step of def:{APPLYING_NAME} that reads them"
+    )
+
+
+def test_a_model_naming_an_op_step_is_refused_by_the_step(applying: Dataset) -> None:
+    recipe = _model_recipe(
+        {"step": "convert"},
+        extra=(
+            {
+                "id": "convert",
+                "type": "op",
+                "kind": "convert-tracks",
+                "params": {"source_format": "calms21_npy"},
+            },
+        ),
+    )
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert problem.message == (
+        f"def:{APPLYING_NAME}'s 'model' names step 'convert', and this step stores "
+        f"under {APPLYING_STORAGE}. A model is applied by the definition that "
+        f"fitted it, over the same inputs: name a step of def:{APPLYING_NAME} that "
+        "reads them"
+    )
+
+
+def test_literal_params_naming_another_storage_are_refused(applying: Dataset) -> None:
+    recipe = _model_recipe(
+        {"feature": f"def.{GLOBAL_NAME}__from__tracks", "run_id": "r"}
+    )
+
+    (problem,) = _model_problems(applying, recipe)
+
+    assert f"names def.{GLOBAL_NAME}__from__tracks, and this step stores" in (
+        problem.message
+    )
+
+
+def test_literal_params_naming_a_run_of_the_step_are_accepted(
+    applying: Dataset,
+) -> None:
+    recipe = _model_recipe({"feature": APPLYING_STORAGE, "run_id": "1-abcdef0123"})
+
+    assert _model_problems(applying, recipe) == []
+
+
+# --- planning a fit run that a model names ------------------------------------
+
+
+@dataclass(frozen=True)
+class _ModelRuns:
+    """A dataset of the applying definition, and the runs a ``model`` may name.
+
+    Both versions are defined, and the first is current again.
+
+    Attributes:
+        ds: The dataset.
+        fit: A saved fit of the first version over ``g/s1``.
+        unfitted: A fit of the first version over ``g/s2`` with its
+            ``fit_scope.json`` removed, so its index row stays.
+        apply: A run of the first version that applies *fit*.
+        other_version: A saved fit of the second version over ``g/s1``.
+    """
+
+    ds: Dataset
+    fit: str
+    unfitted: str
+    apply: str
+    other_version: str
+
+
+def _fit_run(ds: Dataset, slug: str, entry: tuple[str, str]) -> str:
+    """The run id of a fit of *slug* over *entry* alone."""
+    fitted = run_feature(
+        ds,
+        load_feature_definition(ds, slug)(),
+        scope=Scope(entries=[entry]),
+        track=False,
+    )
+    assert fitted.run_id is not None
+    return fitted.run_id
+
+
+@pytest.fixture
+def model_runs(tmp_path: Path) -> _ModelRuns:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    first = f"{APPLYING_SLUG}@{_digest(APPLYING_SOURCE)}"
+    fit = _fit_run(ds, first, ("g", "s1"))
+    unfitted = _fit_run(ds, first, ("g", "s2"))
+    (feature_run_root(ds, APPLYING_STORAGE, unfitted) / "fit_scope.json").unlink()
+    with definition_scope(ds, load=True):
+        applying = build_feature(
+            first, None, {"model": {"feature": APPLYING_STORAGE, "run_id": fit}}
+        )
+    applied = run_feature(ds, applying, track=False)
+    assert applied.run_id is not None
+    second = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
+    other_version = _fit_run(ds, f"{APPLYING_SLUG}@{second.digest}", ("g", "s1"))
+    _ = define_feature(ds, APPLYING_NAME, APPLYING_SOURCE)
+    forget_imported_definitions()
+    return _ModelRuns(ds, fit, unfitted, applied.run_id, other_version)
+
+
+def _refusal_text(reason: str, run_id: str) -> str:
+    """The text a plan gives for a ``model`` naming *run_id*, refused for *reason*."""
+    first = _digest(APPLYING_SOURCE)[:12]
+    second = _digest(APPLYING_SECOND_SOURCE)[:12]
+    texts = {
+        "missing": (
+            f"def:{APPLYING_NAME}'s 'model' names run {run_id} of "
+            f"{APPLYING_STORAGE}, which does not exist. A step given a model "
+            "applies it and fits nothing, so run the fit first"
+        ),
+        "unfitted": (
+            f"run {run_id} of {APPLYING_STORAGE} has not saved its fit. Let the fit "
+            "finish, or run it again"
+        ),
+        "is_apply": (
+            f"def:{APPLYING_NAME}'s 'model' names run {run_id}, which applies a "
+            "model itself and holds no fit. Name the step that fits"
+        ),
+        "other_version": (
+            f"def:{APPLYING_NAME}'s 'model' names run {run_id}, fitted by version "
+            f"{second} of def:{APPLYING_NAME}, and this step runs version {first}. "
+            "An apply reads a fit of its own version: fit again with this version, "
+            f"or run this step as def:{APPLYING_NAME}@{second}"
+        ),
+    }
+    return texts[reason]
+
+
+def _planned_model_problems(
+    ds: Dataset,
+    recipe: Recipe,
+    *,
+    bind: Mapping[str, BoundRef] | None = None,
+    pins: Mapping[str, str] | None = None,
+    applies_request_id: str | None = None,
+) -> list[Problem]:
+    """What a plan reports at the apply step's ``params.model``."""
+    plan = plan_refused(
+        ds, recipe, bind=bind, pins=pins, applies_request_id=applies_request_id
+    )
+    return [
+        problem
+        for problem in plan.problems
+        if (problem.step, problem.where) == ("apply", "params.model")
+    ]
+
+
+def _literal_recipe(run_id: str) -> Recipe:
+    """An apply step whose ``model`` names the run *run_id* literally."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "apply",
+                    "type": "feature",
+                    "feature": APPLYING_SLUG,
+                    "inputs": ["tracks"],
+                    "params": {
+                        "model": {"feature": APPLYING_STORAGE, "run_id": run_id}
+                    },
+                }
+            ],
+        }
+    )
+
+
+def _named(runs: _ModelRuns, reason: str) -> str:
+    """The run of *runs* that a plan refuses for *reason*."""
+    if reason == "missing":
+        return f"{runs.fit[:-4]}0000"
+    named = {
+        "unfitted": runs.unfitted,
+        "is_apply": runs.apply,
+        "other_version": runs.other_version,
+    }
+    return named[reason]
+
+
+@pytest.mark.parametrize("reason", ["missing", "unfitted", "is_apply", "other_version"])
+def test_a_plan_refuses_a_literal_model_naming_no_usable_fit(
+    model_runs: _ModelRuns, reason: str
+) -> None:
+    run_id = _named(model_runs, reason)
+
+    (problem,) = _planned_model_problems(model_runs.ds, _literal_recipe(run_id))
+
+    assert problem.message == _refusal_text(reason, run_id)
+
+
+def test_a_plan_of_a_literal_model_naming_a_usable_fit_finds_no_problem(
+    model_runs: _ModelRuns,
+) -> None:
+    forget_imported_definitions()
+
+    plan = plan_pipeline(model_runs.ds, _literal_recipe(model_runs.fit))
+
+    assert plan.problems == ()
+    assert not imported_definitions()
+
+
+@pytest.mark.parametrize("reason", ["is_apply", "other_version"])
+def test_a_plan_refuses_a_model_whose_fit_step_is_bound_to_no_usable_fit(
+    model_runs: _ModelRuns, reason: str
+) -> None:
+    run_id = _named(model_runs, reason)
+    bind = {"fit": BoundRef(feature=APPLYING_STORAGE, run_id=run_id)}
+
+    (problem,) = _planned_model_problems(
+        model_runs.ds, _fit_and_apply_recipe(), bind=bind
+    )
+
+    assert problem.message == _refusal_text(reason, run_id)
+
+
+@pytest.mark.parametrize("reason", ["is_apply", "unfitted"])
+def test_a_plan_refuses_a_model_whose_fit_step_is_pinned_to_no_usable_fit(
+    model_runs: _ModelRuns, reason: str
+) -> None:
+    run_id = _named(model_runs, reason)
+
+    (problem,) = _planned_model_problems(
+        model_runs.ds, _fit_and_apply_recipe(), pins={"fit": run_id}
+    )
+
+    assert problem.message == _refusal_text(reason, run_id)
+
+
+def test_a_plan_refuses_an_apply_of_a_request_fit_by_another_version(
+    tmp_path: Path,
+) -> None:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    _ = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
+    fit_only = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                _fit_and_apply_recipe()
+                .steps[0]
+                .model_dump(mode="json", exclude_none=True)
+            ],
+        }
+    )
+    fitted = run_pipeline(ds, fit_only)
+    (outcome,) = fitted.outcomes
+    assert outcome.run_id is not None
+    _ = define_feature(ds, APPLYING_NAME, APPLYING_SOURCE)
+
+    (problem,) = _planned_model_problems(
+        ds, _fit_and_apply_recipe(), applies_request_id=fitted.request_id
+    )
+
+    assert problem.message == _refusal_text("other_version", outcome.run_id)

@@ -46,12 +46,15 @@ from mosaic.core.pipeline.definitions.store import (
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
     from mosaic.core.pipeline.types.feature import Feature
+    from mosaic.core.pipeline.types.results import DefinitionModel
 
 __all__ = [
     "DEFINITION_MARK",
     "DefinitionFinder",
+    "applied_definition_model",
     "definition_ref_of",
     "load_definition",
+    "narrow_to_apply",
     "register_definitions_root",
 ]
 
@@ -299,6 +302,38 @@ def definition_ref_of(cls: type) -> DefinitionRef | None:
     """
     ref: object = getattr(cls, DEFINITION_MARK, None)
     return ref if isinstance(ref, DefinitionRef) else None
+
+
+def applied_definition_model(feature: Feature) -> DefinitionModel | None:
+    """The fit that *feature* applies, ``None`` when it applies none.
+
+    It is the instance's ``model`` param when its class is a definition that
+    declares ``fits = True`` and the value is a
+    :class:`~mosaic.core.pipeline.types.results.DefinitionModel`. A built-in, a
+    definition that fits nothing and an instance given no model answer
+    ``None``. The class decides, so the answer holds after
+    :func:`narrow_to_apply` has cleared the instance's own ``fits``.
+    """
+    from mosaic.core.pipeline.types.results import DefinitionModel
+
+    cls = type(feature)
+    if definition_ref_of(cls) is None or getattr(cls, "fits", False) is not True:
+        return None
+    model: object = getattr(getattr(feature, "params", None), "model", None)
+    return model if isinstance(model, DefinitionModel) else None
+
+
+def narrow_to_apply(feature: Feature) -> None:
+    """Clear ``fits`` and ``scope_dependent`` on an instance applying a fit.
+
+    An instance that applies a fit learns nothing, and its identity covers no
+    entries. Any other instance is left as it is, and a second call changes
+    nothing.
+    """
+    if applied_definition_model(feature) is None:
+        return
+    setattr(feature, "fits", False)
+    setattr(feature, "scope_dependent", False)
 
 
 def _is_feature_class(cls: type) -> TypeIs[type[Feature]]:

@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.params import Declared, DeclaredModel, NestedParams
+from mosaic.core.params import HASH_EXCLUDE, Declared, DeclaredModel, NestedParams
 from mosaic.core.params import Params as ParamsBase
 import mosaic.core.pipeline.definitions.sidecar as sidecar_module
 from mosaic.core.pipeline.definitions.declare import declare_class
@@ -30,6 +30,9 @@ from mosaic.core.pipeline.definitions.sidecar import (
     ListType,
     LiteralType,
     ParamRecord,
+    ScalarType,
+    ToolkitModelType,
+    UnionType,
     rebuild_inputs_model,
     rebuild_params_model,
 )
@@ -42,8 +45,10 @@ from mosaic.core.pipeline.graph.compatibility import GpuWhen
 from mosaic.core.pipeline.graph.resolve import toolkit_model_for_ref
 from mosaic.core.pipeline.types.data_config import PoseConfig
 from mosaic.core.pipeline.types.inputs import Inputs as InputsBase
+from mosaic.core.pipeline.types.artifacts import ArtifactSpec
 from mosaic.core.pipeline.types.inputs import TrackInput
-from mosaic.core.pipeline.types.results import Result
+from mosaic.core.pipeline.types.labels import GroundTruthLabelsSource, LabelsSource
+from mosaic.core.pipeline.types.results import DefinitionModel, Result
 from mosaic.optional_dependency import OptionalModule
 
 NAME: Final = "demo"
@@ -663,3 +668,190 @@ def test_a_field_description_is_refused_naming_declared() -> None:
     (finding,) = caught.value.findings
     assert (finding.check, finding.field) == ("params_metadata", "rate")
     assert "Declared(...)" in finding.message
+
+
+MODEL_REF = f"{DefinitionModel.__module__}:{DefinitionModel.__qualname__}"
+
+
+class FittedModelParams(ParamsBase):
+    model: DefinitionModel | None = None
+
+
+class DeclaredModelParams(ParamsBase):
+    model: Annotated[DefinitionModel | None, Declared("The fit to apply.")] = None
+
+
+class FitNamedParams(ParamsBase):
+    fit: DefinitionModel | None = None
+
+
+class InnerModelParams(NestedParams):
+    model: DefinitionModel | None = None
+
+
+class NestedModelParams(ParamsBase):
+    inner: InnerModelParams = InnerModelParams()
+
+
+class ModelListParams(ParamsBase):
+    model: list[DefinitionModel] | None = None
+
+
+class BareModelParams(ParamsBase):
+    model: DefinitionModel = DefinitionModel(feature="def.demo")
+
+
+class RequiredModelParams(ParamsBase):
+    model: DefinitionModel | None
+
+
+class DefaultedModelParams(ParamsBase):
+    model: DefinitionModel | None = DefinitionModel(feature="def.demo")
+
+
+class FactoryModelParams(ParamsBase):
+    model: DefinitionModel | None = Field(default_factory=lambda: None)
+
+
+class ExcludedModelParams(ParamsBase):
+    model: Annotated[DefinitionModel | None, HASH_EXCLUDE] = None
+
+
+class ArtifactSpecParams(ParamsBase):
+    source: ArtifactSpec | None = None
+
+
+class LabelsParams(ParamsBase):
+    labels: GroundTruthLabelsSource | None = None
+
+
+class BareLabelsParams(ParamsBase):
+    labels: LabelsSource | None = None
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param(FittedModelParams, id="bare"),
+        pytest.param(DeclaredModelParams, id="Declared"),
+    ],
+)
+def test_a_fitting_class_may_hold_a_definition_model_as_its_model(
+    params: type[ParamsBase],
+) -> None:
+    sidecar = declare(feature(Params=params, fits=True))
+
+    record = record_of(sidecar, "model")
+    assert isinstance(record.type, UnionType)
+    assert record.type.of == (
+        ToolkitModelType(kind="toolkit_model", ref=MODEL_REF),
+        ScalarType(kind="null"),
+    )
+    assert record.default is None
+
+
+def _reference_findings(
+    *classes: type,
+) -> list[tuple[DefinitionCheck, str | None, str]]:
+    with pytest.raises(DefinitionInvalid) as caught:
+        _ = declare(*classes)
+    return [
+        (finding.check, finding.field, finding.message)
+        for finding in caught.value.findings
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cls", "field", "conditions"),
+    [
+        pytest.param(
+            feature(Params=FitNamedParams, fits=True),
+            "fit",
+            ("top-level field model",),
+            id="named fit",
+        ),
+        pytest.param(
+            feature(Params=NestedModelParams, fits=True),
+            "inner.model",
+            ("top-level field model",),
+            id="nested in an own model",
+        ),
+        pytest.param(
+            feature(Params=ModelListParams, fits=True),
+            "model",
+            ("DefinitionModel | None",),
+            id="list",
+        ),
+        pytest.param(
+            feature(Params=BareModelParams, fits=True),
+            "model",
+            ("DefinitionModel | None", "default to None"),
+            id="not optional",
+        ),
+        pytest.param(
+            feature(Params=RequiredModelParams, fits=True),
+            "model",
+            ("default to None",),
+            id="no default",
+        ),
+        pytest.param(
+            feature(Params=DefaultedModelParams, fits=True),
+            "model",
+            ("default to None",),
+            id="a default other than None",
+        ),
+        pytest.param(
+            feature(Params=FactoryModelParams, fits=True),
+            "model",
+            ("default to None",),
+            id="a default factory",
+        ),
+        pytest.param(
+            feature(Params=ExcludedModelParams, fits=True),
+            "model",
+            ("HASH_EXCLUDE",),
+            id="HASH_EXCLUDE",
+        ),
+        pytest.param(
+            feature(Params=FittedModelParams, fits=False),
+            "model",
+            ("fits = True",),
+            id="fits false",
+        ),
+        pytest.param(
+            feature(Params=FittedModelParams),
+            "model",
+            ("fits = True",),
+            id="fits absent",
+        ),
+    ],
+)
+def test_a_definition_model_outside_its_one_form_is_refused_naming_the_condition(
+    cls: type, field: str, conditions: tuple[str, ...]
+) -> None:
+    findings = _reference_findings(cls)
+
+    assert len(findings) == len(conditions)
+    assert all(
+        (check, found) == ("params_reference", field) for check, found, _ in findings
+    )
+    for condition in conditions:
+        assert sum(condition in message for _, _, message in findings) == 1
+
+
+@pytest.mark.parametrize(
+    ("params", "field", "type_name"),
+    [
+        pytest.param(ResultParams, "source", "Result", id="Result"),
+        pytest.param(ArtifactSpecParams, "source", "ArtifactSpec", id="ArtifactSpec"),
+        pytest.param(LabelsParams, "labels", "GroundTruthLabelsSource", id="labels"),
+        pytest.param(BareLabelsParams, "labels", "LabelsSource", id="labels base"),
+    ],
+)
+def test_the_other_reference_types_stay_refused_in_a_fitting_class(
+    params: type[ParamsBase], field: str, type_name: str
+) -> None:
+    ((check, found, message),) = _reference_findings(feature(Params=params, fits=True))
+
+    assert (check, found) == ("params_reference", field)
+    assert f"typed {type_name}" in message

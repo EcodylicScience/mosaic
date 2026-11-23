@@ -45,6 +45,7 @@ still checked.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final
@@ -113,7 +114,9 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    definition_model_field,
     params_reference_site,
+    pinned_feature_slug,
     resolve_step_spec,
 )
 from .topo import RecipeCycle, descendants_of, topological_order
@@ -129,11 +132,22 @@ from .wire import (
     ValidationReport,
     render_location,
 )
+from ..definitions.fit_run import (
+    is_apply_text,
+    other_feature_text,
+    other_version_text,
+    unpinned_text,
+)
 from ..definitions.scope import current_scope
-from ..definitions.store import FeatureDefinitionsNotAllowed, is_definition_slug
+from ..definitions.store import (
+    MODEL_FIELD,
+    FeatureDefinitionsNotAllowed,
+    is_definition_slug,
+    parse_definition_slug,
+)
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
-from mosaic.core.pipeline.types import ArtifactSpec
+from mosaic.core.pipeline.types import ArtifactSpec, DefinitionModel
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
@@ -543,7 +557,10 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
             )
         )
 
-    unsubstitutable = _reference_site_problems(step, name, expected_kind)
+    unsubstitutable = [
+        *_reference_site_problems(step, name, expected_kind),
+        *_definition_model_reference_problems(step, name),
+    ]
     problems.extend(unsubstitutable)
     problems.extend(_tracks_reference_problems(step, walk))
     problems.extend(_labels_reference_problems(step, name, expected_kind, walk))
@@ -626,6 +643,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     problems.extend(_glob_reference_problems(step, name, built))
     problems.extend(_artifact_feature_problems(step, name, built, walk))
     if isinstance(step, FeatureStepSpec):
+        problems.extend(_definition_model_problems(step, name, built, spec, recipe))
         # An edge refusal or an empty input already says why these inputs
         # cannot feed this step. The columns they lack would restate it.
         checked = edge is None and not empty_inputs
@@ -1004,6 +1022,93 @@ def _glob_reference_problems(step: Step, name: str, built: Params) -> list[Probl
             )
         )
     return found
+
+
+def _definition_name(slug: str) -> str:
+    """The definition *slug* names, or *slug* itself for a built-in."""
+    return parse_definition_slug(slug)[0] if is_definition_slug(slug) else slug
+
+
+def _definition_model_reference_problems(step: Step, name: str) -> list[Problem]:
+    """A ``model`` reference that names a fit by a pattern.
+
+    A fit is named by its run root, and the reference becomes a
+    ``DefinitionModel`` that takes no pattern. Asked before the build, which
+    the substituted pattern would fail with a message about the field it does
+    not declare.
+    """
+    if not isinstance(step, FeatureStepSpec):
+        return []
+    reference = params_step_refs(step.params).get(MODEL_FIELD)
+    if reference is None or not reference.pattern:
+        return []
+    if not definition_model_field(name):
+        return []
+    return [
+        Problem(
+            step.id,
+            f"params.{MODEL_FIELD}",
+            f"{name}'s {MODEL_FIELD!r} is a fit named by its run, and a reference "
+            f"to it takes no pattern. Name the step that fits: "
+            f"{json.dumps({'step': reference.step})}",
+        )
+    ]
+
+
+def _definition_model_problems(
+    step: FeatureStepSpec,
+    name: str,
+    built: Params,
+    spec: StepSpec,
+    recipe: Recipe,
+) -> list[Problem]:
+    """A ``model`` that cannot name a fit this step may apply.
+
+    A definition given a ``model`` applies one fit of the same version over the
+    same inputs. The reference must therefore name the storage this step
+    writes, a fit rather than an apply, and a step of the same version. Literal
+    params that name no run are refused too, since a recipe's reference always
+    gives one. Whether the run exists, and what it recorded, is a plan's
+    question.
+    """
+    model: object = getattr(built, MODEL_FIELD, None)
+    if not isinstance(model, DefinitionModel):
+        return []
+    definition = _definition_name(name)
+    where = f"params.{MODEL_FIELD}"
+    reference = params_step_refs(step.params).get(MODEL_FIELD)
+    if model.feature != spec.storage_name:
+        named = model.feature
+        if not named and reference is not None:
+            named = f"step {reference.step!r}"
+        return [
+            Problem(
+                step.id,
+                where,
+                other_feature_text(definition, named, spec.storage_name),
+            )
+        ]
+    if reference is None and model.run_id is None:
+        return [Problem(step.id, where, unpinned_text(definition, model.feature, None))]
+    if reference is None:
+        return []
+    fit = recipe.step(reference.step)
+    if not isinstance(fit, FeatureStepSpec):
+        return []
+    subject = f"step {reference.step!r}"
+    if fit.params.get(MODEL_FIELD) is not None:
+        return [Problem(step.id, where, is_apply_text(definition, subject))]
+    _, fit_digest = parse_definition_slug(pinned_feature_slug(fit.feature))
+    _, digest = parse_definition_slug(spec.feature)
+    if fit_digest is None or digest is None or fit_digest == digest:
+        return []
+    return [
+        Problem(
+            step.id,
+            where,
+            other_version_text(definition, subject, fit_digest, digest),
+        )
+    ]
 
 
 def _artifact_feature_problems(

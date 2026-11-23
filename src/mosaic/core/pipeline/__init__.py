@@ -61,6 +61,7 @@ if TYPE_CHECKING:
         summarize_run as summarize_run,
     )
     from .types import (
+        DefinitionModel as DefinitionModel,
         Feature as Feature,
         Inputs as Inputs,
         InputsLike as InputsLike,
@@ -102,6 +103,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "RunSummary": ".run_summary",
     "RunSummaryWire": ".run_summary",
     "summarize_run": ".run_summary",
+    "DefinitionModel": ".types",
     "Feature": ".types",
     "Inputs": ".types",
     "InputsLike": ".types",
@@ -123,6 +125,7 @@ __all__ = [
     "entity_level_of",
     "alignment_verdict",
     "CallbackStep",
+    "DefinitionModel",
     "Feature",
     "FeatureIndexRow",
     "FeatureStep",

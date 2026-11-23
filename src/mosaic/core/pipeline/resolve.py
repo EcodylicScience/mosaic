@@ -69,6 +69,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard
 
+from .definitions.fit_run import refuse_unpinned_model
 from .track_universe import current_run_id
 from .types import Feature, Result
 
@@ -107,6 +108,10 @@ def resolve_references(ds: Dataset, feature: Feature) -> tuple[Resolution, ...]:
 
     Call it *before* ``compute_run_id``. Afterwards is the defect it fixes.
 
+    A definition's ``model`` that names no run is refused first and never
+    pinned. Fit and apply runs share one storage, and the latest run would be a
+    guess (:func:`~mosaic.core.pipeline.definitions.fit_run.refuse_unpinned_model`).
+
     Args:
         ds: Dataset whose feature indexes name the available runs.
         feature: The feature about to be run. Modified in place.
@@ -116,7 +121,16 @@ def resolve_references(ds: Dataset, feature: Feature) -> tuple[Resolution, ...]:
         inputs first, then params fields in declaration order. References with
         an empty feature name are skipped and absent from the report -- that is
         the unset ``GlobalModelParams.templates`` default, not a dependency.
+
+    Raises:
+        DefinitionModelMissing: A definition's ``model`` names no run.
+        DefinitionModelRefused: A definition's ``model`` names no run of another
+            storage than the definition's own.
+        LinkUnreachableError: A definition's ``model`` names no run, no dataset
+            read holds a fit of its version, and a link providing features is
+            unreachable.
     """
+    refuse_unpinned_model(ds, feature)
     resolutions: list[Resolution] = []
 
     for position, item in enumerate(feature.inputs.root):

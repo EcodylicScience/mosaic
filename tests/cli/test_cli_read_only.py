@@ -7,8 +7,10 @@ a read that rewrites an index changes one. The assertion names each.
 
 A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet. A
-read that needs a finished fitting request joins ``CLI_READS_OF_A_FIT``. A
-read that names entries from the media index also joins ``MEDIA_READS``.
+read that needs a finished fitting request joins ``CLI_READS_OF_A_FIT``. A read
+that needs a finished fit and apply of a definition joins
+``CLI_READS_OF_A_DEFINITION_FIT``. A read that names entries from the media index
+also joins ``MEDIA_READS``.
 ``reprobe-media`` needs indexed videos and ``media probe`` a store, and each has a
 test of its own. ``pipeline catalog``, ``catalog_index``, ``describe_step_type`` and
 ``step_type_detail`` take no dataset and are not listed.
@@ -16,7 +18,8 @@ test of its own. ``pipeline catalog``, ``catalog_index``, ``describe_step_type``
 The ``populated`` dataset holds a definition whose top level writes a canary file.
 A read runs nothing except ``pipeline verify``, which imports the pinned definition of
 a step it refits. Each other case therefore also asserts that the canary was not
-written.
+written. The reads of ``CLI_READS_OF_A_DEFINITION_FIT`` also assert that no definition
+module was imported.
 """
 
 from __future__ import annotations
@@ -88,6 +91,8 @@ from tests.helpers import (
     CANARY_VARIABLE,
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
+    APPLYING_NAME,
+    APPLYING_SOURCE,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
     SPEED_OF_CONVERTED_STEP,
@@ -372,6 +377,85 @@ def fitted(tmp_path: Path) -> FitDataset:
     )
 
 
+DEFINITION_FIT_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
+CANARY_PREFIX = CANARY_SOURCE.partition("\nfrom pathlib import Path\n")[0] + "\n"
+"""The top level of ``CANARY_SOURCE`` that notes each import, before its feature."""
+
+
+def _definition_fit_step(step_id: str, params: dict[str, object]) -> dict[str, object]:
+    step: dict[str, object] = {
+        "id": step_id,
+        "type": "feature",
+        "feature": f"def:{APPLYING_NAME}",
+        "inputs": ["tracks"],
+    }
+    if params:
+        step["params"] = params
+    return step
+
+
+def _recipe_file_of(path: Path, steps: list[dict[str, object]]) -> Path:
+    recipe = Recipe.model_validate({"schema_version": 1, "steps": steps})
+    _ = path.write_text(recipe.model_dump_json(), encoding="utf-8")
+    return path
+
+
+@dataclass(frozen=True)
+class DefinitionFitDataset:
+    """A dataset holding the finished request of a fit and an apply of a definition."""
+
+    dataset: Dataset
+    recipe_path: Path
+    apply_recipe_path: Path
+    request_id: str
+    fit_run_id: str
+    canary: Path
+    """The file the definition writes when it is imported."""
+
+
+@pytest.fixture
+def definition_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> DefinitionFitDataset:
+    """The fit of a definition that applies a model, and an apply of that fit, run."""
+    dataset = defined_dataset(tmp_path, {})
+    _ = define_feature(dataset, APPLYING_NAME, CANARY_PREFIX + APPLYING_SOURCE)
+    canary = tmp_path / "canary.jsonl"
+    monkeypatch.setenv(CANARY_VARIABLE, str(canary))
+    recipe_path = _recipe_file_of(
+        tmp_path / "fit-and-apply.recipe.json",
+        [
+            _definition_fit_step("fit", {}),
+            _definition_fit_step("apply", {"model": {"step": "fit"}}),
+        ],
+    )
+    done = run_pipeline(
+        dataset, Recipe.model_validate_json(recipe_path.read_text(encoding="utf-8"))
+    )
+    fit_run_id = next(o.run_id for o in done.outcomes if o.step_id == "fit")
+    assert fit_run_id
+    assert canary.exists()
+    canary.unlink()
+    apply_recipe_path = _recipe_file_of(
+        tmp_path / "apply.recipe.json",
+        [
+            _definition_fit_step(
+                "apply",
+                {"model": {"feature": DEFINITION_FIT_STORAGE, "run_id": fit_run_id}},
+            )
+        ],
+    )
+    _strip_to_content(dataset.base_dir)
+    return DefinitionFitDataset(
+        dataset=dataset,
+        recipe_path=recipe_path,
+        apply_recipe_path=apply_recipe_path,
+        request_id=done.request_id,
+        fit_run_id=fit_run_id,
+        canary=canary,
+    )
+
+
 def _other_recipe_file(fixture: ReadDataset) -> Path:
     """A recipe other than the one the fixture ran, which can retire it."""
     path = fixture.recipe_path.parent / "other.recipe.json"
@@ -637,6 +721,34 @@ CLI_READS_OF_A_FIT: dict[str, FitArguments] = {
 """Each read's arguments over a finished fit, without ``--manifest`` and ``--json``."""
 
 
+type DefinitionFitArguments = Callable[[DefinitionFitDataset], list[str]]
+
+CLI_READS_OF_A_DEFINITION_FIT: dict[str, DefinitionFitArguments] = {
+    "pipeline plan": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+    ],
+    "pipeline plan --pin": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--pin",
+        f"fit={f.fit_run_id}",
+    ],
+    "pipeline plan of an apply naming its fit by run id": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.apply_recipe_path}",
+    ],
+    "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
+}
+"""Each read's arguments over a finished fit and apply, without ``--manifest`` and ``--json``."""
+
+
 CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset(
     {"pipeline verify", "pipeline verify --tag"}
 )
@@ -678,6 +790,31 @@ def test_a_read_of_a_fit_writes_nothing(fitted: FitDataset, verb: str) -> None:
     json.loads(result.stdout)
 
     assert_tree_unchanged(root, before)
+
+
+@pytest.mark.parametrize("verb", sorted(CLI_READS_OF_A_DEFINITION_FIT))
+def test_a_read_of_a_fit_and_apply_imports_no_definition_and_writes_nothing(
+    definition_fit: DefinitionFitDataset, verb: str
+) -> None:
+    root = definition_fit.dataset.base_dir
+    manifest = str(definition_fit.dataset.manifest_path)
+    forget_imported_definitions()
+    clear_definition_caches()
+    before = tree_snapshot(root)
+
+    result = invoke_ok(
+        [
+            *CLI_READS_OF_A_DEFINITION_FIT[verb](definition_fit),
+            "--manifest",
+            manifest,
+            "--json",
+        ]
+    )
+
+    json.loads(result.stdout)
+    assert_tree_unchanged(root, before)
+    assert imported_definitions() == []
+    assert not definition_fit.canary.exists()
 
 
 MEDIA_READS: dict[str, Callable[[ReadDataset], object]] = {

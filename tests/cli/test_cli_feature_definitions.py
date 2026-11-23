@@ -40,6 +40,9 @@ from mosaic.core.pipeline.graph import status as status_module
 from mosaic.core.pipeline.graph import step as step_module
 from mosaic.core.pipeline.index import feature_run_root
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SECOND_SOURCE,
+    APPLYING_SOURCE,
     MINIMAL_NAME,
     MINIMAL_SOURCE,
     NARROWING_NAME,
@@ -289,6 +292,42 @@ def test_running_a_definition_loads_it_only_to_build_it(
     assert imported_definitions() == [
         definition_module_name(MINIMAL_NAME, _digest_of(MINIMAL_SOURCE))
     ]
+
+
+def test_running_an_apply_of_another_versions_fit_is_refused(tmp_path: Path) -> None:
+    applying = defined_dataset(tmp_path / "applying", {APPLYING_NAME: APPLYING_SOURCE})
+    manifest = str(applying.manifest_path)
+    fit_digest = _digest_of(APPLYING_SOURCE)
+    fit = invoke_json(
+        [
+            "run",
+            "--feature",
+            f"def:{APPLYING_NAME}@{fit_digest}",
+            "--manifest",
+            manifest,
+            "--json",
+        ]
+    )
+    second = define_feature(applying, APPLYING_NAME, APPLYING_SECOND_SOURCE)
+    model = {"feature": fit["feature"], "run_id": fit["run_id"]}
+
+    error = _refused(
+        [
+            "run",
+            "--feature",
+            f"def:{APPLYING_NAME}@{second.digest}",
+            "--params",
+            json.dumps({"model": model}),
+            "--manifest",
+            manifest,
+            "--json",
+        ]
+    )
+
+    assert error.reason == "definition_model_refused"
+    assert error.detail is not None
+    assert error.detail["reason"] == "other_version"
+    assert f"run this step as def:{APPLYING_NAME}@{fit_digest[:12]}" in error.message
 
 
 def _seen_by(

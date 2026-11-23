@@ -21,7 +21,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.index import resolve_artifact_file
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME
+from mosaic.core.pipeline.index import (
+    feature_run_root,
+    model_state_root,
+    resolve_artifact_file,
+)
+from tests.helpers import copy_of, make_dataset
 
 
 def _run_root(tmp_path: Path, *names: str) -> Path:
@@ -117,3 +124,70 @@ def test_one_match_resolves_even_through_a_glob(tmp_path: Path) -> None:
     resolved = resolve_artifact_file("templates", "up", root, "*.parquet")
 
     assert resolved == root / "templates.parquet"
+
+
+# --- the root a model reference reads its state from --------------------------
+
+_STORAGE = "global-kmeans__from__tracks"
+_RUN_ID = "1-abc"
+
+
+@pytest.fixture
+def linked_pair(tmp_path: Path) -> tuple[Dataset, Dataset]:
+    """A dataset and the copy that links it, each holding an empty root of one run."""
+    source = make_dataset(tmp_path / "source")
+    copy = copy_of(source, tmp_path / "copy")
+    for dataset in (copy, source):
+        feature_run_root(dataset, _STORAGE, _RUN_ID).mkdir(parents=True)
+    return copy, source
+
+
+def _put(dataset: Dataset, name: str) -> Path:
+    """Write the file *name* into *dataset*'s root of the run, returning the root."""
+    root = feature_run_root(dataset, _STORAGE, _RUN_ID)
+    _ = (root / name).write_text("{}")
+    return root
+
+
+@pytest.mark.parametrize("holders", ["copy", "source", "both"])
+def test_an_artifact_models_root_is_the_first_that_holds_its_pattern(
+    holders: str, linked_pair: tuple[Dataset, Dataset]
+) -> None:
+    copy, source = linked_pair
+    roots = [
+        _put(dataset, "model.joblib")
+        for name, dataset in (("copy", copy), ("source", source))
+        if holders in (name, "both")
+    ]
+
+    root = model_state_root(copy, (_STORAGE, _RUN_ID, "*.joblib"))
+
+    assert root == roots[0]
+
+
+def test_an_artifact_model_no_root_holds_has_no_root(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    copy, source = linked_pair
+    _ = _put(source, "other.joblib")
+
+    assert model_state_root(copy, (_STORAGE, _RUN_ID, "model.joblib")) is None
+
+
+def test_a_definition_models_root_holds_its_fit_scope(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    """The linked root is read when the copy's root has no fit scope."""
+    copy, source = linked_pair
+    _ = _put(copy, "params.json")
+    fitted = _put(source, FIT_SCOPE_NAME)
+
+    assert model_state_root(copy, (_STORAGE, _RUN_ID, None)) == fitted
+
+
+def test_a_definition_model_no_root_fitted_has_no_root(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    copy, _ = linked_pair
+
+    assert model_state_root(copy, (_STORAGE, _RUN_ID, None)) is None

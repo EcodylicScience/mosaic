@@ -57,6 +57,7 @@ LINK_LOOKUPS: Final = frozenset(
         "linked_training_complete",
         "open_enclosing",
         "linked_run_params",
+        "model_state_root",
     }
 )
 """Every function that reads a link's data, by the name a call spells."""

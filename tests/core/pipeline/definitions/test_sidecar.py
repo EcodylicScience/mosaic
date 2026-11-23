@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import DeclaredModel, Params
+from mosaic.core.pipeline.definitions.define import define_feature
+from mosaic.core.pipeline.definitions.loader import load_definition
 from mosaic.core.pipeline.definitions.sidecar import (
     SIDECAR_FORMAT,
     SIDECAR_FORMAT_VERSION,
@@ -22,9 +26,16 @@ from mosaic.core.pipeline.definitions.sidecar import (
     rebuild_params_model,
     sidecar_json,
 )
-from mosaic.core.pipeline.definitions.store import DefinitionCorrupt, DefinitionInvalid
+from mosaic.core.pipeline.definitions.store import (
+    DEFINITIONS_ROOT,
+    DefinitionCorrupt,
+    DefinitionInvalid,
+    VersionStem,
+)
+from mosaic.core.pipeline.graph.resolve import toolkit_model_for_ref
 from mosaic.core.pipeline.types.data_config import PoseConfig
-from mosaic.core.pipeline.types.results import Result
+from mosaic.core.pipeline.types.results import DefinitionModel, Result
+from tests.helpers import APPLYING_NAME, APPLYING_SOURCE, defined_dataset
 
 DIGEST = "a" * 64
 POSE_REF = f"{PoseConfig.__module__}:{PoseConfig.__qualname__}"
@@ -539,3 +550,37 @@ def test_a_definition_ref_is_a_frozen_value() -> None:
 
     assert ref == DefinitionRef("demo", DIGEST)
     assert hash(ref) == hash(DefinitionRef("demo", DIGEST))
+
+
+def test_the_rebuilt_params_of_a_definition_that_applies_a_model_dump_alike(
+    tmp_path: Path,
+) -> None:
+    dataset: Dataset = defined_dataset(tmp_path, {})
+    record = define_feature(dataset, APPLYING_NAME, APPLYING_SOURCE)
+    root = dataset.get_root(DEFINITIONS_ROOT)
+    stem = VersionStem(record.defined_on, record.digest).stem
+    sidecar = read_sidecar(root / APPLYING_NAME / f"{stem}.json")
+    rebuilt_params = rebuild_params_model(
+        sidecar, partial(toolkit_model_for_ref, definition=APPLYING_NAME)
+    )
+    own_params: object = getattr(
+        load_definition(root, APPLYING_NAME, record.digest), "Params"
+    )
+    assert isinstance(own_params, type) and issubclass(own_params, Params)
+    fit: dict[str, object] = {
+        "feature": "def.centered-distance__from__tracks",
+        "run_id": "x",
+    }
+
+    cases: tuple[dict[str, object], ...] = ({}, {"model": fit})
+    for overrides in cases:
+        assert (
+            rebuilt_params.from_overrides(overrides).identity_dump()
+            == own_params.from_overrides(overrides).identity_dump()
+        )
+    assert rebuilt_params.from_overrides({}).identity_dump() == {"model": None}
+    assert rebuilt_params.from_overrides({"model": fit}).identity_dump() == {
+        "model": fit
+    }
+    annotation = rebuilt_params.model_fields["model"].annotation
+    assert DefinitionModel.__name__ in repr(annotation)

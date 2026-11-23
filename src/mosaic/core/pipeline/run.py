@@ -67,9 +67,13 @@ from .column_contract import (
     check_input_columns,
     declared_provides,
 )
+from .definitions.fit_run import refuse_unpinned_model, refuse_unusable_fit_run
+from .definitions.loader import applied_definition_model, definition_ref_of
 from .definitions.store import (
     DEFINITIONS_PACKAGE,
     DEFINITIONS_ROOT,
+    MODEL_FIELD,
+    DefinitionModelRefused,
     is_definition_slug,
 )
 from .entry_claim import INFLIGHT_REFRESH_SECONDS, held_run_root, renew_run_root_claim
@@ -80,6 +84,7 @@ from .identity_scheme import (
 )
 from .index import (
     FeatureIndexRow,
+    ModelReference,
     RecordedTracksReads,
     feature_index,
     feature_index_path,
@@ -91,8 +96,10 @@ from .index import (
     has_feature_index,
     latest_feature_run_root,
     missing_outputs_error,
+    model_state_root,
     recorded_consumption,
     recorded_tracks_reads,
+    resolve_artifact_file,
 )
 from .arena_index import entry_compositions
 from .index_lock import index_lock
@@ -150,6 +157,7 @@ from mosaic.core.entry import Entry
 from .types import (
     ArtifactSpec,
     ClosesResources,
+    DefinitionModel,
     DependencyLookup,
     Feature,
     InputStream,
@@ -276,6 +284,41 @@ def _optional_results(feature: Feature) -> frozenset[str]:
     return names
 
 
+def model_reference(params: Params) -> ModelReference | None:
+    """The pinned fit that the top-level ``model`` field of *params* names.
+
+    Returns:
+        The reference's storage, run id and pattern, the pattern ``None`` for a
+        reference that is not an ``ArtifactSpec``. ``None`` when ``model`` is
+        absent, names no feature or names no run.
+    """
+    model: object = getattr(params, MODEL_FIELD, None)
+    match model:
+        case ArtifactSpec(
+            feature=str(feature), run_id=str(run_id), pattern=str(pattern)
+        ):
+            return (feature, run_id, pattern) if feature else None
+        case Result(feature=str(feature), run_id=str(run_id)):
+            return (feature, run_id, None) if feature else None
+        case _:
+            return None
+
+
+def _model_path(ds: Dataset, reference: ModelReference) -> Path | None:
+    """The path a ``model`` reference resolves to: its state's root, or its file.
+
+    Returns:
+        The root of :func:`~mosaic.core.pipeline.index.model_state_root` for a
+        reference without a pattern, the file the pattern names in that root for
+        one with a pattern, and ``None`` when no root holds the state.
+    """
+    root = model_state_root(ds, reference)
+    storage, _, pattern = reference
+    if root is None or pattern is None:
+        return root
+    return resolve_artifact_file(MODEL_FIELD, storage, root, pattern)
+
+
 def _resolve_dependencies(
     ds: Dataset,
     feature: Feature,
@@ -296,14 +339,20 @@ def _resolve_dependencies(
     *tags*. The table is the revision the caller resolved for the run's identity,
     so this reads no series index and cannot meet a revision written since.
 
+    The ``model`` field resolves through
+    :func:`~mosaic.core.pipeline.index.model_state_root`. A ``DefinitionModel``
+    resolves to the root of its fit's saved state. An ``ArtifactSpec`` resolves
+    to the file its pattern names in the first root with a match.
+
     Raises:
         IdentityDeferred: *feature* reads the tag table and *tags* is ``None``.
-        ValueError: *tags* has no file to read.
+        ValueError: *tags* has no file to read, or a ``DefinitionModel`` names
+            no run.
     """
     from .index import latest_feature_run_root as _latest_feature_run_root
-    from .index import resolve_artifact_file
 
     params = feature.params
+    model = model_reference(params)
     artifact_paths: dict[str, Path] = {}
     dependency_lookups: dict[str, DependencyLookup] = {}
 
@@ -314,6 +363,24 @@ def _resolve_dependencies(
             case NNResult():
                 # Pair filter -- resolved separately by _resolve_pair_filter
                 continue
+
+            case DefinitionModel(feature=str(feature_name), run_id=None) if (
+                feature_name
+            ):
+                # resolve_references refuses an unpinned model first. Pinning it
+                # here would guess among the fits and applies of one storage.
+                msg = (
+                    f"Field {field_name!r} names no run of {feature_name!r}. A "
+                    f"model is applied from one fit, named by its run id."
+                )
+                raise ValueError(msg)
+
+            case DefinitionModel() | ArtifactSpec() if (
+                field_name == MODEL_FIELD and model is not None
+            ):
+                path = _model_path(ds, model)
+                if path is not None:
+                    artifact_paths[field_name] = path
 
             case ArtifactSpec(
                 feature=str(feature_name),
@@ -493,6 +560,9 @@ def _rebuilt_feature(
     ``run_feature`` built once for the run, before ``load_state``. ``None``
     hands it an empty map.
 
+    A fitting definition given a model is narrowed to an apply, as the run's own
+    instance is.
+
     The worker builds its instance for this one use, and only this use refers to
     it. The worker therefore closes the instance itself. ``run_feature`` closes
     the main-process instance, on which ``apply`` does not run in this mode.
@@ -507,6 +577,8 @@ def _rebuilt_feature(
     runs the loader's checks as every load does. The class therefore has the same
     ``name`` and ``__mosaic_definition__`` as the one the run built.
     """
+    from mosaic.core.pipeline.definitions.loader import narrow_to_apply
+
     if ds_manifest_path is not None and module_name.startswith(
         f"{DEFINITIONS_PACKAGE}."
     ):
@@ -522,6 +594,7 @@ def _rebuilt_feature(
     cls = getattr(mod, class_name)
     inputs_obj = Inputs.model_validate(inputs_dump)
     feature = cls(inputs_obj, params_dump)
+    narrow_to_apply(feature)
     try:
         if ds_manifest_path is not None and hasattr(feature, "bind_dataset"):
             from mosaic.core.dataset import Dataset
@@ -1298,8 +1371,6 @@ def compute_run_id(
         hashable["_time_range"] = [
             None if bound is None else float(bound) for bound in time_window
         ]
-    from mosaic.core.pipeline.definitions.loader import definition_ref_of
-
     definition = definition_ref_of(type(feature))
     if definition is not None:
         hashable["_definition"] = definition.digest
@@ -1340,7 +1411,9 @@ def resolve_feature_identity(
     Args:
         ds: The dataset, for the variants and compositions the terms read.
         feature: The constructed feature, with its references already pinned --
-            call ``resolve_references`` first, exactly as execution does.
+            call ``resolve_references`` first, exactly as execution does. A
+            fitting definition given a ``model`` is narrowed to an apply in
+            place.
         scope: The entries this run will cover, named as
             :class:`~mosaic.core.scope.Scope`. Required, and it must name
             entries. Prediction does not read an index, and it runs before the
@@ -1375,6 +1448,9 @@ def resolve_feature_identity(
         IdentityDeferred: A feature reads the tag table and no revision is
             indexed.
     """
+    from mosaic.core.pipeline.definitions.loader import narrow_to_apply
+
+    narrow_to_apply(feature)
     if scope.groups is not None or scope.sequences is not None:
         raise ValueError(
             f"resolve_feature_identity is handed the entries a run will cover "
@@ -1559,8 +1635,6 @@ def build_run_params_payload(
     *unknown*, as it does for every other unestablishable cell here: a run
     predating these keys, or a source tree with nothing installed.
     """
-    from mosaic.core.pipeline.definitions.loader import definition_ref_of
-
     resolved: list[dict[str, str | None]] = [
         *feature_resolutions,
         *(
@@ -1653,6 +1727,65 @@ def _load_run_state(
         if feature.load_state(root, artifact_paths, dependency_lookups):
             return root
     return None
+
+
+def _refuse_unusable_model(
+    ds: Dataset, feature: Feature, storage_feature_name: str
+) -> None:
+    """Refuse a definition's ``model`` that leads to no usable fit.
+
+    Runs before the references are pinned and before the run root exists. A
+    refused apply leaves the features root unwritten. A feature that applies no
+    definition model returns without a read.
+
+    Raises:
+        DefinitionModelMissing: The model names no run, a run no dataset holds, or
+            a fit that has not saved its state.
+        DefinitionModelRefused: The model names another storage, an apply or a
+            fit of another version.
+        LinkUnreachableError: A link that provides features is unreachable and
+            may hold the fit named.
+    """
+    model = applied_definition_model(feature)
+    definition = definition_ref_of(type(feature))
+    if model is None or definition is None:
+        return
+    if model.run_id is None:
+        refuse_unpinned_model(ds, feature)
+        return
+    refuse_unusable_fit_run(
+        ds,
+        model,
+        name=definition.name,
+        digest=definition.digest,
+        storage=storage_feature_name,
+    )
+
+
+def _refuse_an_unloaded_model(feature: Feature) -> None:
+    """Refuse an apply of a fit whose state ``load_state`` did not load.
+
+    Called when no root of the run loaded a state. A definition given a model
+    applies it and fits nothing, and is refused. Any other feature returns, and
+    fits.
+
+    Raises:
+        DefinitionModelRefused: *feature* applies a fit (``not_loaded``).
+    """
+    model = applied_definition_model(feature)
+    definition = definition_ref_of(type(feature))
+    if model is None or definition is None:
+        return
+    name = definition.name
+    raise DefinitionModelRefused(
+        name,
+        model.feature,
+        model.run_id,
+        "not_loaded",
+        f"def:{name}'s load_state returned False for the model of run "
+        f"{model.run_id}. A step given a model applies it and fits nothing: load "
+        "the state from artifact_paths['model']",
+    )
 
 
 def _serve_linked_entries(
@@ -2337,8 +2470,12 @@ def run_feature(
         ``cache_hit``, ``failed_entries`` and ``entries_written`` (excluded from
         serialization, so they never perturb a downstream feature's ``run_id``).
     """
+    from mosaic.core.pipeline.definitions.loader import narrow_to_apply
     from mosaic.core.pipeline.definitions.scope import definition_scope
 
+    # An instance built by calling its class holds the fit flags its class
+    # declares, and one given a model applies it and fits nothing.
+    narrow_to_apply(feature)
     # The run skips loading a definition because the feature is already built. It
     # reads the sidecar of a ``def.`` producer of its inputs.
     with definition_scope(ds, load=False):
@@ -2462,6 +2599,9 @@ def _run_feature_impl(
                 f"on a tracks input and as 'nothing' on a feature input. Omit "
                 f"the scope to mean every sequence."
             )
+
+    # A definition's model is checked before any root of the run is written.
+    _refuse_unusable_model(ds, feature, storage_feature_name)
 
     # Pin every unpinned upstream *before* anything hashes or reads it. An
     # unpinned reference used to be resolved after the digest, into a local that
@@ -2682,6 +2822,8 @@ def _run_feature_impl(
         feature, ds, storage_feature_name, run_id, artifact_paths, dependency_lookups
     )
     state_ready = state_root is not None
+    if not state_ready:
+        _refuse_an_unloaded_model(feature)
 
     # Build filter factory (shared by fit and apply phases)
     filter_factory = _make_filter_factory(

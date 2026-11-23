@@ -17,6 +17,7 @@ from mosaic.core.pipeline.dataset_indexes import (
     feature_storages,
     register_reconcilable_index,
 )
+from mosaic.core.pipeline.definitions.store import MODEL_FIELD
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -383,6 +384,40 @@ def feature_run_file(ds: Dataset, storage: str, run_id: str, name: str) -> Path 
         candidate = root / name
         if candidate.is_file():
             return candidate
+    return None
+
+
+type ModelReference = tuple[str, str, str | None]
+"""A pinned ``model`` reference: the fit's storage, its run id and its pattern.
+
+The pattern is the glob an ``ArtifactSpec`` names, and ``None`` for a
+``DefinitionModel``, whose fit saved its state into the run root itself.
+"""
+
+
+def model_state_root(ds: Dataset, reference: ModelReference) -> Path | None:
+    """The run root a ``model`` reference loads its state from, in lookup order.
+
+    For a reference with a pattern, the first root of :func:`feature_run_roots`
+    in which :func:`resolve_artifact_file` finds it. For one without, the first
+    root with the fit's ``fit_scope.json``. A fit writes that file after it
+    saves its state.
+
+    Returns:
+        The root, or ``None`` when no root holds the state.
+
+    Raises:
+        ValueError: The pattern matches more than one file of a root.
+    """
+    from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME
+
+    storage, run_id, pattern = reference
+    if pattern is None:
+        fit_scope = feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME)
+        return None if fit_scope is None else fit_scope.parent
+    for root in feature_run_roots(ds, storage, run_id):
+        if resolve_artifact_file(MODEL_FIELD, storage, root, pattern) is not None:
+            return root
     return None
 
 
