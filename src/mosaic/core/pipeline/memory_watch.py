@@ -9,6 +9,10 @@ enforces and ``psutil`` does not show, and on a host with no limit it is the hos
 memory (:mod:`mosaic.core.pipeline.memory_limit`). The free fraction a floor reads is
 the share of that limit still available.
 
+The watch knows the processes below this one from its last walk of the tree, which it
+repeats at most once an interval and after a pool's submission that may have started a
+worker. A sample between walks measures the known processes only.
+
 Resident memory counts a page once for every process that maps it. Thread mode lives in
 one process and is exact. Process mode overstates a little where workers share
 libraries.
@@ -49,9 +53,12 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from .memory_limit import MemoryLimit, read_memory_limit
+
+if TYPE_CHECKING:
+    import psutil
 
 __all__ = [
     "ESTIMATE_SAMPLE_INTERVAL_SECONDS",
@@ -62,6 +69,7 @@ __all__ = [
     "MemoryWatch",
     "NonreclaimablePeak",
     "max_rss_bytes",
+    "now",
     "peak_nonreclaimable_while",
     "process_nonreclaimable_bytes",
     "process_rss_bytes",
@@ -98,16 +106,18 @@ class MemorySample:
         spawned_workers: The children of this process that ``multiprocessing``
             spawned as workers since :meth:`MemoryWatch.begin`, which are a
             process-mode run's live workers. A resource tracker is not one, nor is
-            a process a worker forked, which keeps the worker's command line.
+            a process a worker forked, which keeps the worker's command line. The
+            count comes from the last walk of the tree, which may be up to one
+            interval old between a pool's submissions.
         nonreclaimable_bytes: The memory the kernel cannot reclaim: the limit's
             figure where a cgroup limit applies, else the sum over the process tree
             of ``RssAnon + RssShmem``. ``None`` where ``/proc`` cannot be read,
             where a process that is still alive had no readable figure, or where a
             cgroup's figure is 0, which a cgroup that holds a process never has.
-        started_at: ``time.monotonic()`` when the measurement began, before the
-            processes were listed, so an entry that started after it is not in
-            this sample. ``None`` where the sample was not taken by a
-            :class:`MemoryWatch`.
+        started_at: ``time.monotonic()`` when the measurement began, before its
+            reads and before any walk of the tree it made, so an entry that
+            started after it is not in this sample. ``None`` where the sample was
+            not taken by a :class:`MemoryWatch`.
     """
 
     tree_rss_bytes: int
@@ -117,6 +127,15 @@ class MemorySample:
     spawned_workers: int = 0
     nonreclaimable_bytes: int | None = None
     started_at: float | None = None
+
+
+def now() -> float:
+    """The monotonic time that the age of a watch's membership reads.
+
+    A function of this module, read on each use, so that a test can give every
+    watch one clock that it controls.
+    """
+    return time.monotonic()
 
 
 def max_rss_bytes() -> int:
@@ -245,20 +264,6 @@ def _process_has_gone(pid: int, proc_root: Path) -> bool:
     return False
 
 
-def _child_pids() -> frozenset[int]:
-    """The process ids below this process, empty where ``psutil`` is absent."""
-    try:
-        import psutil
-    except ImportError:
-        return frozenset()
-    try:
-        return frozenset(
-            child.pid for child in psutil.Process().children(recursive=True)
-        )
-    except psutil.Error:
-        return frozenset()
-
-
 def _tree_cpu_seconds() -> float:
     """The user and system time of this process, its reaped children and its live ones."""
     try:
@@ -281,11 +286,47 @@ def _tree_cpu_seconds() -> float:
     return float(total)
 
 
+@dataclass(slots=True)
+class _Member:
+    """What the walks of a :class:`MemoryWatch` know of one process below this one.
+
+    Attributes:
+        direct: Whether the watching process is its parent.
+        found_at_begin: Whether the walk of :meth:`MemoryWatch.begin` found it.
+        first_walk: The number of the walk that first found it.
+        spawned: Whether its command line, read at the last walk, marks it a
+            worker that ``multiprocessing`` spawned. Read for a direct child only.
+    """
+
+    direct: bool
+    found_at_begin: bool
+    first_walk: int
+    spawned: bool = False
+
+
+def _is_spawned_worker(process: psutil.Process) -> bool:
+    """Whether *process*'s command line marks a worker that ``multiprocessing`` spawned."""
+    import psutil
+
+    try:
+        command = process.cmdline()
+    except psutil.Error:
+        return False
+    return any(_SPAWNED_WORKER_MARK in part for part in command)
+
+
 class MemoryWatch:
     """Measure memory repeatedly and keep the extremes.
 
     Every read and update of the extremes holds the watch's lock, because the
     sampling thread and the run's thread both measure.
+
+    The processes below this one are known from the last walk of the tree, which a
+    read repeats once it is ``ESTIMATE_SAMPLE_INTERVAL_SECONDS`` old and
+    :meth:`sight_workers` repeats when a pool may have started a worker. A walk and
+    a read's update of the members hold the membership lock, which is never held
+    while another lock is taken. A member whose pid another process took after it
+    ended is read as that process until the next walk, at most an interval later.
 
     Attributes:
         peak_rss_bytes: The largest ``tree_rss_bytes`` measured, 0 before the first.
@@ -316,7 +357,10 @@ class MemoryWatch:
         self._began: float | None = None
         self._cpu_at_begin: float = 0.0
         self._max_rss_at_begin: int = 0
-        self._children_at_begin: frozenset[int] = frozenset()
+        self._membership: threading.Lock = threading.Lock()
+        self._members: dict[psutil.Process, _Member] = {}
+        self._walks: int = 0
+        self._walked_at: float | None = None
         self._stop: threading.Event = threading.Event()
         self._sampler: threading.Thread | None = None
         self.peak_rss_bytes: int = 0
@@ -334,7 +378,10 @@ class MemoryWatch:
         The child processes alive now are earlier work, and no sample counts them as
         this run's workers.
         """
-        self._children_at_begin = _child_pids()
+        with self._membership:
+            self._members = {}
+            self._walked_at = None
+            _ = self._walk(at_begin=True)
         self._cpu_at_begin = _tree_cpu_seconds()
         self._max_rss_at_begin = max_rss_bytes()
         self._began = time.monotonic()
@@ -344,6 +391,80 @@ class MemoryWatch:
         if self._began is None:
             return 0.0
         return max(0.0, _tree_cpu_seconds() - self._cpu_at_begin)
+
+    @property
+    def walks(self) -> int:
+        """How many walks of the process tree have succeeded."""
+        return self._walks
+
+    def sight_workers(self, *, since: int, running: int) -> None:
+        """Walk the tree when fewer workers are known than calls are running.
+
+        A pool calls it after a submission, and walks only when the submission may
+        have started a worker.
+
+        Args:
+            since: The walk count when the pool was made. The workers first found
+                by that walk or an earlier one belong to an earlier pool.
+            running: The pool's calls not yet done.
+        """
+        with self._membership:
+            known = sum(
+                1
+                for member in self._members.values()
+                if member.first_walk > since and self._is_worker(member)
+            )
+            if known < running:
+                _ = self._walk()
+
+    def _walk(self, *, at_begin: bool = False) -> bool:
+        """List the processes below this one, keeping the record of each known one.
+
+        The caller holds the membership lock. A walk that fails, or a host without
+        ``psutil``, changes nothing.
+
+        Returns:
+            Whether the walk succeeded.
+        """
+        try:
+            import psutil
+        except ImportError:
+            return False
+        try:
+            root = psutil.Process()
+            found = root.children(recursive=True)
+        except psutil.Error:
+            return False
+        walk = self._walks + 1
+        members: dict[psutil.Process, _Member] = {}
+        for process in found:
+            member = self._members.get(process)
+            if member is None:
+                try:
+                    direct = process.ppid() == root.pid
+                except psutil.Error:
+                    continue
+                member = _Member(
+                    direct=direct, found_at_begin=at_begin, first_walk=walk
+                )
+            if member.direct and not member.found_at_begin:
+                member.spawned = _is_spawned_worker(process)
+            members[process] = member
+        self._members = members
+        self._walks = walk
+        self._walked_at = now()
+        return True
+
+    def _membership_is_stale(self) -> bool:
+        """Whether the last walk is an interval old, or there was none."""
+        return (
+            self._walked_at is None
+            or now() - self._walked_at >= ESTIMATE_SAMPLE_INTERVAL_SECONDS
+        )
+
+    @staticmethod
+    def _is_worker(member: _Member) -> bool:
+        return member.direct and member.spawned and not member.found_at_begin
 
     def wall_seconds(self) -> float:
         """Return the wall time since :meth:`begin`, 0 before it."""
@@ -373,6 +494,9 @@ class MemoryWatch:
     def sample(self) -> MemorySample | None:
         """Measure now, and return the measurement.
 
+        Walks the tree only when the membership is stale. A member that has ended
+        adds nothing and leaves the members.
+
         Returns:
             The measurement, or ``None`` where ``psutil`` is not importable.
         """
@@ -385,39 +509,37 @@ class MemoryWatch:
         limit = read_memory_limit()
         if limit is None:
             return None
-        try:
-            root = psutil.Process()
-            members = [root, *root.children(recursive=True)]
-            # Workers are direct children: a fork of a worker keeps its command line.
-            direct = root.children(recursive=False)
-        except psutil.Error:
-            members = []
-            direct = []
+        with self._membership:
+            if self._membership_is_stale():
+                _ = self._walk()
+            known = list(self._members)
         resident = 0
-        for member in members:
+        pids: list[int] = []
+        gone: list[psutil.Process] = []
+        for process in [psutil.Process(), *known]:
             try:
-                resident += int(member.memory_info().rss)
+                resident += int(process.memory_info().rss)
+            except psutil.ZombieProcess:
+                pass
+            except psutil.NoSuchProcess:
+                gone.append(process)
+                continue
             except psutil.Error:
-                continue
-        workers = 0
-        for child in direct:
-            if child.pid in self._children_at_begin:
-                continue
-            try:
-                command = child.cmdline()
-            except psutil.Error:
-                continue
-            if any(_SPAWNED_WORKER_MARK in part for part in command):
-                workers += 1
+                pass
+            pids.append(process.pid)
+        with self._membership:
+            for process in gone:
+                _ = self._members.pop(process, None)
+            workers = sum(
+                1 for member in self._members.values() if self._is_worker(member)
+            )
         sample = MemorySample(
             tree_rss_bytes=resident,
             available_bytes=int(host.available),
             total_bytes=int(host.total),
             limit=limit,
             spawned_workers=workers,
-            nonreclaimable_bytes=self._tree_nonreclaimable_bytes(
-                limit, [member.pid for member in members]
-            ),
+            nonreclaimable_bytes=self._tree_nonreclaimable_bytes(limit, pids),
             started_at=started_at,
         )
         measured = sample.nonreclaimable_bytes or 0

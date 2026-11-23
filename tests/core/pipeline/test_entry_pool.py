@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import pickle
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -564,3 +565,113 @@ def test_a_worker_process_opens_each_dataset_once(tmp_path: Path) -> None:
     assert worker_dataset(ds) is ds
     assert worker_dataset(ref) is worker_dataset(ref)
     assert worker_dataset(ref).manifest_path == ds.manifest_path
+
+
+def wait_for_file(path: str) -> int:
+    while not Path(path).exists():
+        time.sleep(0.01)
+    return 1
+
+
+class _Walks:
+    """The walks of the process tree since the count was made."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+@pytest.fixture
+def walks(monkeypatch: pytest.MonkeyPatch) -> Callable[[], tuple[MemoryWatch, _Walks]]:
+    """Begin a watch, freeze its membership's clock, and count the walks after begin."""
+    import psutil
+
+    monkeypatch.setattr(memory_watch, "now", lambda: 0.0)
+
+    def begun() -> tuple[MemoryWatch, _Walks]:
+        watch = MemoryWatch()
+        watch.begin()
+        counted = _Walks()
+        children = psutil.Process.children
+
+        def counting(
+            self: psutil.Process, recursive: bool = False
+        ) -> list[psutil.Process]:
+            counted.count += 1
+            return children(self, recursive=recursive)
+
+        monkeypatch.setattr(psutil.Process, "children", counting)
+        return watch, counted
+
+    return begun
+
+
+def _process_pool(
+    watch: MemoryWatch, *, workers: int = 2, mode: ParallelMode = "process"
+) -> EntryPool[int, int]:
+    heard = _Heard()
+    return EntryPool(
+        workers=workers,
+        mode=mode,
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        watch=watch,
+    )
+
+
+def test_a_process_pool_sees_each_worker_at_the_submission_that_starts_it(
+    walks: Callable[[], tuple[MemoryWatch, _Walks]], tmp_path: Path
+) -> None:
+    release = tmp_path / "release"
+    watch, counted = walks()
+    pool = _process_pool(watch)
+    try:
+        pool.submit(1, wait_for_file, str(release))
+        assert counted.count == 1
+        first = watch.sample()
+        pool.submit(2, wait_for_file, str(release))
+        assert counted.count == 2
+        second = watch.sample()
+        assert counted.count == 2
+        assert first is not None and second is not None
+        assert (first.spawned_workers, second.spawned_workers) == (1, 2)
+        assert pool.in_flight == 2
+        release.touch()
+        for tag in range(3, 7):
+            pool.submit(tag, wait_for_file, str(release))
+        pool.finish()
+    finally:
+        release.touch()
+        pool.close()
+
+    assert counted.count == 2
+
+
+def test_a_process_pool_fed_one_call_at_a_time_walks_once(
+    walks: Callable[[], tuple[MemoryWatch, _Walks]],
+) -> None:
+    watch, counted = walks()
+    pool = _process_pool(watch)
+    try:
+        for tag in range(4):
+            pool.submit(tag, double, tag)
+            pool.drain_one()
+        pool.finish()
+    finally:
+        pool.close()
+
+    assert counted.count == 1
+
+
+@pytest.mark.parametrize(
+    ("workers", "mode"), [(2, "thread"), (1, "process")], ids=["threads", "one-worker"]
+)
+def test_a_pool_without_process_workers_walks_nothing_on_submission(
+    walks: Callable[[], tuple[MemoryWatch, _Walks]], workers: int, mode: ParallelMode
+) -> None:
+    watch, counted = walks()
+    pool = _process_pool(watch, workers=workers, mode=mode)
+    for tag in range(4):
+        pool.submit(tag, double, tag)
+    pool.finish()
+
+    assert counted.count == 0

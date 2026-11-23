@@ -76,6 +76,15 @@ type ResourceReporter = Callable[[ResourceReport], None]
 class EntryPool[Tag, Result]:
     """Compute calls with a bounded number in flight, and hand back each outcome.
 
+    A process pool of several workers has the watch walk the process tree after a
+    submission whose calls not yet done outnumber the workers the watch has found
+    since the pool was made, the only submission at which the executor can start a
+    worker, apart from the race below, so the watch measures each worker from its
+    start. A call done but not yet handed back has released its worker, which the
+    next submission reuses. The executor marks a call done before it releases the
+    worker, so a submission between the two starts a worker without a walk, and the
+    watch finds that worker at its next interval walk.
+
     Args:
         workers: How many calls are computed at once. 1 computes each call inside
             :meth:`submit`, with no executor.
@@ -137,8 +146,10 @@ class EntryPool[Tag, Result]:
         self.watch: MemoryWatch = MemoryWatch() if watch is None else watch
         self._pending: dict[Future[Result], Tag] = {}
         self._executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
+        self._walks_at_start: int | None = None
         if self.workers > 1:
             if mode == "process":
+                self._walks_at_start = self.watch.walks
                 self._executor = caller_guarded_process_pool(
                     self.workers, mp.get_context("spawn")
                 )
@@ -200,6 +211,7 @@ class EntryPool[Tag, Result]:
             self.wait_for_memory()
         if self._on_dispatch is not None:
             self._on_dispatch(tag)
+        not_done = sum(1 for pending in self._pending if not pending.done())
         try:
             future = executor.submit(fn, *args)
             self._pending[future] = tag
@@ -208,6 +220,8 @@ class EntryPool[Tag, Result]:
         except BrokenProcessPool as exc:
             self.report(final=True)
             self._raise_broken(exc)
+        if self._walks_at_start is not None:
+            self.watch.sight_workers(since=self._walks_at_start, running=not_done + 1)
         self.report()
 
     @property

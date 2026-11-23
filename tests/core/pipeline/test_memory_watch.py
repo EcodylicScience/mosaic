@@ -8,6 +8,7 @@ import time
 import types
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -26,6 +27,18 @@ class _Error(Exception):
     """Stands in for ``psutil.Error``."""
 
 
+class _NoSuchProcess(_Error):
+    """Stands in for ``psutil.NoSuchProcess``."""
+
+
+class _ZombieProcess(_NoSuchProcess):
+    """Stands in for ``psutil.ZombieProcess``, which psutil derives from ``NoSuchProcess``."""
+
+
+class _AccessDenied(_Error):
+    """Stands in for ``psutil.AccessDenied``."""
+
+
 _SPAWNED = [
     "python",
     "-c",
@@ -38,6 +51,9 @@ _pids = iter(range(1000, 100_000))
 
 
 class _Process:
+    walks: ClassVar[int] = 0
+    """The calls of :meth:`children` on any process since the count was reset."""
+
     def __init__(
         self,
         rss: int,
@@ -46,11 +62,36 @@ class _Process:
         cmdline: list[str] | None = None,
     ) -> None:
         self._rss = rss
-        self.child_processes = children or []
         self._cmdline = cmdline or ["python"]
         self.pid = next(_pids)
+        self.parent_pid = 1
+        self.read_error: type[_Error] | None = None
+        """What every read of this process raises, ``None`` while it reads."""
+        self.cmdline_error: type[_Error] | None = None
+        self.walk_error: type[_Error] | None = None
+        self._children: list[_Process] = []
+        self.child_processes = children or []
+
+    @property
+    def child_processes(self) -> list[_Process]:
+        return self._children
+
+    @child_processes.setter
+    def child_processes(self, children: list[_Process]) -> None:
+        for child in children:
+            child.parent_pid = self.pid
+        self._children = children
+
+    def ppid(self) -> int:
+        if self.read_error is not None:
+            raise self.read_error
+        return self.parent_pid
 
     def cmdline(self) -> list[str]:
+        if self.read_error is not None:
+            raise self.read_error
+        if self.cmdline_error is not None:
+            raise self.cmdline_error
         return self._cmdline
 
     def cpu_times(self) -> types.SimpleNamespace:
@@ -59,20 +100,50 @@ class _Process:
         )
 
     def children(self, recursive: bool = False) -> list[_Process]:
-        if not recursive:
-            return self.child_processes
+        _Process.walks += 1
+        if self.walk_error is not None:
+            raise self.walk_error
+        return self._below() if recursive else list(self._children)
+
+    def _below(self) -> list[_Process]:
         below: list[_Process] = []
-        for child in self.child_processes:
-            below.extend([child, *child.children(recursive=True)])
+        for child in self._children:
+            below.extend([child, *child._below()])
         return below
 
     def memory_info(self) -> types.SimpleNamespace:
+        if self.read_error is not None:
+            raise self.read_error
         return types.SimpleNamespace(rss=self._rss)
 
 
 class _Vanished(_Process):
     def memory_info(self) -> types.SimpleNamespace:
         raise _Error
+
+
+class _Clock:
+    """The membership's clock, which moves only when the test moves it."""
+
+    def __init__(self) -> None:
+        self.time = 0.0
+
+    def __call__(self) -> float:
+        return self.time
+
+    def advance(
+        self, seconds: float = memory_watch.ESTIMATE_SAMPLE_INTERVAL_SECONDS
+    ) -> None:
+        self.time += seconds
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """The time that the age of every watch's membership reads."""
+    frozen = _Clock()
+    monkeypatch.setattr(memory_watch, "now", frozen)
+    _Process.walks = 0
+    return frozen
 
 
 def _no_cgroup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -104,6 +175,9 @@ def _install_psutil(
         Process=lambda: process,
         virtual_memory=lambda: host,
         Error=_Error,
+        NoSuchProcess=_NoSuchProcess,
+        ZombieProcess=_ZombieProcess,
+        AccessDenied=_AccessDenied,
     )
     monkeypatch.setitem(sys.modules, "psutil", module)
 
@@ -136,7 +210,7 @@ def test_a_sample_records_when_its_measurement_began(
 
 
 def test_a_sample_counts_the_spawned_workers_started_since_measuring_began(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
 ) -> None:
     earlier = _Process(GIB, cmdline=_SPAWNED)
     root = _Process(GIB, [earlier])
@@ -152,6 +226,7 @@ def test_a_sample_counts_the_spawned_workers_started_since_measuring_began(
         ],
     )
     root.child_processes = [earlier, tracker, _Process(GIB, cmdline=_SPAWNED)]
+    clock.advance()
 
     sample = watch.sample()
 
@@ -160,7 +235,7 @@ def test_a_sample_counts_the_spawned_workers_started_since_measuring_began(
 
 
 def test_a_child_that_a_worker_forked_is_not_a_worker_but_counts_in_the_tree(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
 ) -> None:
     # A fork keeps its parent's command line, so a worker's own child reads as a
     # spawned worker by its command line alone.
@@ -170,12 +245,202 @@ def test_a_child_that_a_worker_forked_is_not_a_worker_but_counts_in_the_tree(
     watch.begin()
     forked = _Process(2 * GIB, cmdline=_SPAWNED)
     root.child_processes = [_Process(GIB, [forked], cmdline=_SPAWNED)]
+    clock.advance()
 
     sample = watch.sample()
 
     assert sample is not None
     assert sample.spawned_workers == 1
     assert sample.tree_rss_bytes == 4 * GIB
+
+
+def _begun(monkeypatch: pytest.MonkeyPatch, root: _Process) -> MemoryWatch:
+    """A watch begun over *root*, with the walks counted from after its begin."""
+    _install_psutil(monkeypatch, root)
+    watch = MemoryWatch()
+    watch.begin()
+    _Process.walks = 0
+    return watch
+
+
+def _tree_rss(watch: MemoryWatch) -> int:
+    sample = watch.sample()
+    assert sample is not None
+    return sample.tree_rss_bytes
+
+
+def _workers(watch: MemoryWatch) -> int:
+    sample = watch.sample()
+    assert sample is not None
+    return sample.spawned_workers
+
+
+def test_samples_within_the_interval_read_the_known_members_without_a_walk(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB, [_Process(2 * GIB)])
+    watch = _begun(monkeypatch, root)
+
+    assert _tree_rss(watch) == 3 * GIB
+    root.child_processes = [*root.child_processes, _Process(4 * GIB)]
+    assert _tree_rss(watch) == 3 * GIB
+    assert _Process.walks == 0
+
+    clock.advance()
+
+    assert _tree_rss(watch) == 7 * GIB
+    assert _Process.walks == 1
+
+
+def test_sighting_walks_until_the_running_calls_have_workers_found_since_the_mark(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    earlier_pool = _Process(GIB, cmdline=_SPAWNED)
+    root.child_processes = [earlier_pool]
+    clock.advance()
+    _ = watch.sample()
+    mark = watch.walks
+    _Process.walks = 0
+    first, second = _Process(GIB, cmdline=_SPAWNED), _Process(GIB, cmdline=_SPAWNED)
+
+    root.child_processes = [earlier_pool, first]
+    watch.sight_workers(since=mark, running=1)
+    assert _Process.walks == 1
+    watch.sight_workers(since=mark, running=1)
+    assert _Process.walks == 1
+    watch.sight_workers(since=mark, running=2)
+    assert _Process.walks == 2
+
+    root.child_processes = [earlier_pool, first, second]
+    watch.sight_workers(since=mark, running=2)
+    assert _Process.walks == 3
+    watch.sight_workers(since=mark, running=2)
+    assert _Process.walks == 3
+    assert _workers(watch) == 3
+
+
+def test_a_process_with_a_known_members_pid_that_is_another_process_is_a_new_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # psutil compares processes on their pid and creation time, so a reused pid
+    # names another process.
+    original = _Process(GIB, cmdline=_SPAWNED)
+    root = _Process(GIB, [original])
+    watch = _begun(monkeypatch, root)
+    mark = watch.walks
+    successor = _Process(GIB, cmdline=_SPAWNED)
+    successor.pid = original.pid
+    root.child_processes = [successor]
+
+    watch.sight_workers(since=mark, running=1)
+    watch.sight_workers(since=mark, running=1)
+
+    assert _Process.walks == 1
+    assert _workers(watch) == 1
+
+
+def test_a_member_that_has_gone_leaves_the_sum_the_workers_and_the_members(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    gone, staying = (
+        _Process(2 * GIB, cmdline=_SPAWNED),
+        _Process(4 * GIB, cmdline=_SPAWNED),
+    )
+    root.child_processes = [gone, staying]
+    clock.advance()
+    assert _workers(watch) == 2
+    _Process.walks = 0
+
+    gone.read_error = _NoSuchProcess
+    sample = watch.sample()
+    gone.read_error = None
+
+    assert sample is not None
+    assert (sample.tree_rss_bytes, sample.spawned_workers) == (5 * GIB, 1)
+    assert (_tree_rss(watch), _workers(watch)) == (5 * GIB, 1)
+    assert _Process.walks == 0
+
+
+def test_a_zombie_member_adds_nothing_and_stays_a_member(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    zombie = _Process(2 * GIB, cmdline=_SPAWNED)
+    root.child_processes = [zombie]
+    clock.advance()
+    _ = watch.sample()
+
+    zombie.read_error = _ZombieProcess
+    assert (_tree_rss(watch), _workers(watch)) == (GIB, 1)
+    zombie.read_error = None
+    assert _tree_rss(watch) == 3 * GIB
+
+
+def test_workers_that_all_end_at_once_leave_a_sample_of_the_root_alone(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    # A cancel signals the process group, and every worker dies together.
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    workers = [_Process(2 * GIB, cmdline=_SPAWNED) for _ in range(3)]
+    root.child_processes = workers
+    clock.advance()
+    assert _workers(watch) == 3
+
+    for worker in workers:
+        worker.read_error = _NoSuchProcess
+    sample = watch.sample()
+
+    assert sample is not None
+    assert (sample.tree_rss_bytes, sample.spawned_workers) == (GIB, 0)
+
+
+def test_a_walk_that_fails_keeps_the_members_and_leaves_the_next_read_to_walk(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    known = _Process(2 * GIB, cmdline=_SPAWNED)
+    root.child_processes = [known]
+    clock.advance()
+    assert _workers(watch) == 1
+    _Process.walks = 0
+    root.child_processes = [known, _Process(4 * GIB, cmdline=_SPAWNED)]
+    root.walk_error = _AccessDenied
+    clock.advance()
+
+    sample = watch.sample()
+
+    assert sample is not None
+    assert (sample.tree_rss_bytes, sample.spawned_workers) == (3 * GIB, 1)
+    assert _Process.walks == 1
+    _ = watch.sample()
+    assert _Process.walks == 2
+
+    root.walk_error = None
+    assert (_tree_rss(watch), _workers(watch)) == (7 * GIB, 2)
+    assert _Process.walks == 3
+
+
+def test_a_worker_whose_command_line_is_denied_is_not_counted(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    watch = _begun(monkeypatch, root)
+    denied = _Process(GIB, cmdline=_SPAWNED)
+    denied.cmdline_error = _AccessDenied
+    root.child_processes = [denied]
+    clock.advance()
+
+    sample = watch.sample()
+
+    assert sample is not None
+    assert (sample.tree_rss_bytes, sample.spawned_workers) == (2 * GIB, 0)
 
 
 def test_a_process_that_ended_during_the_sample_is_left_out(
