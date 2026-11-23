@@ -42,8 +42,10 @@ from mosaic.core.pipeline.graph import (
     Plan,
     Recipe,
     Request,
+    RetirementKeeper,
     plan_fingerprint,
     plan_pipeline,
+    plan_retirement,
     plan_with_cleanup,
     run_cleanup,
     run_pipeline,
@@ -52,12 +54,17 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.graph import cleanup as cleanup_module
 from mosaic.core.pipeline.graph import plan as plan_module
 from mosaic.core.pipeline.graph import resolve as resolve_module
+from mosaic.core.pipeline.graph.resolve import run_reference_fields
 from mosaic.core.pipeline.graph.step import execute_step
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.verify import verify_plan
+from mosaic.core.scope import Scope
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_STORAGE,
+    APPLYING_SOURCE,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
     LOOSE,
@@ -65,12 +72,15 @@ from tests.helpers import (
     MINIMAL_SOURCE,
     add_track_sequences,
     defined_dataset,
+    fit_over,
     forget_imported_definitions,
     imported_definitions,
     make_dataset,
+    named_recipe,
     noting_definition_loads,
     reasons_by_run,
     record_open_attempt,
+    run_id_of,
     run_speed,
     speed_recipe_stepping,
     tree_snapshot,
@@ -583,3 +593,111 @@ def test_dataset_reconcile_enters_a_scope_of_its_dataset(
         True,
     )
     assert current_scope() is None
+
+
+# --- a fit that an apply names ---------------------------------------------
+
+
+def _fit_recipe(name: str) -> Recipe:
+    """The fit of ``def:centered-distance`` as a recipe named *name*."""
+    return named_recipe(_recipe(f"def:{APPLYING_NAME}"), name)
+
+
+def _apply_recipe(fit: str) -> Recipe:
+    """``def:centered-distance`` applying the fit run *fit* by ``model``."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "applying",
+            "steps": [
+                {
+                    "id": "d",
+                    "type": "feature",
+                    "feature": f"def:{APPLYING_NAME}",
+                    "inputs": ["tracks"],
+                    "params": {"model": {"feature": APPLYING_STORAGE, "run_id": fit}},
+                }
+            ],
+        }
+    )
+
+
+class _FitAndApply:
+    """A fit, its apply and a superseded sibling fit of one definition.
+
+    The fit covers ``g/s1`` and the sibling ``g/s2``. Each is written by the
+    request of its own recipe when *recorded* is true, and by a bare run
+    otherwise, which no request records.
+
+    Attributes:
+        dataset: The dataset that holds the three runs.
+        fit: The fit's run id.
+        sibling: The sibling fit's run id.
+        apply_recipe: The recipe that applies the fit.
+        apply: The apply's run id.
+        digests: The digests of the recipes that wrote the fit and the sibling,
+            empty unless *recorded*.
+    """
+
+    def __init__(self, tmp_path: Path, *, recorded: bool) -> None:
+        self.dataset: Dataset = defined_dataset(
+            tmp_path, {APPLYING_NAME: APPLYING_SOURCE}
+        )
+        self.digests: list[str] = []
+        self.fit: str = self._fit_over("fit", ("g", "s1"), recorded)
+        self.sibling: str = self._fit_over("sibling", ("g", "s2"), recorded)
+        self.apply_recipe: Recipe = _apply_recipe(self.fit)
+        self.apply: str = run_id_of(run_pipeline(self.dataset, self.apply_recipe), "d")
+        assert len({self.fit, self.sibling, self.apply}) == 3
+        forget_imported_definitions()
+
+    def _fit_over(self, name: str, entry: tuple[str, str], recorded: bool) -> str:
+        """The run id of a fit over *entry* alone, recorded or not."""
+        scope = Scope(entries=[entry])
+        if recorded:
+            ran = run_pipeline(self.dataset, _fit_recipe(name), scope=scope)
+            self.digests.append(ran.recipe_digest)
+            return run_id_of(ran, "d")
+        return fit_over(self.dataset, f"def:{APPLYING_NAME}", entry)
+
+
+def test_a_definitions_model_is_a_field_that_may_name_a_run(tmp_path: Path) -> None:
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    forget_imported_definitions()
+
+    with definition_scope(ds, load=False):
+        assert "model" in run_reference_fields(f"def:{APPLYING_NAME}")
+
+    assert not imported_definitions()
+
+
+def test_cleanup_keeps_the_fit_an_apply_names_and_removes_its_sibling(
+    tmp_path: Path,
+) -> None:
+    runs = _FitAndApply(tmp_path, recorded=False)
+
+    cleanup = _cleanup(runs.dataset, runs.apply_recipe)
+
+    assert reasons_by_run(cleanup) == {runs.fit: "read_by", runs.sibling: "superseded"}
+    assert not imported_definitions()
+
+
+def test_retirement_keeps_the_fit_a_kept_apply_names_and_removes_its_sibling(
+    tmp_path: Path,
+) -> None:
+    runs = _FitAndApply(tmp_path, recorded=True)
+
+    plan = plan_retirement(
+        runs.dataset,
+        runs.digests,
+        [RetirementKeeper(recipe=runs.apply_recipe, scope=Scope())],
+        LOOSE,
+        "",
+        now=LATER,
+    )
+
+    assert reasons_by_run(plan.cleanup) == {
+        runs.fit: "read_by",
+        runs.sibling: "superseded",
+    }
+    assert not imported_definitions()

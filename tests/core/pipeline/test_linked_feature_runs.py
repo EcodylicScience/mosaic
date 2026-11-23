@@ -8,9 +8,10 @@ writes one.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Collection
 from pathlib import Path
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import joblib
 import numpy as np
@@ -38,7 +39,13 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph.pins import refuse_unusable_pins
 from mosaic.core.pipeline.graph.score import run_group_scores
-from mosaic.core.pipeline.fit_scope import FitScope, read_run_fit_scope, write_fit_scope
+from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
+from mosaic.core.pipeline.fit_scope import (
+    FitScope,
+    read_fit_state_digest,
+    read_run_fit_scope,
+    write_fit_scope,
+)
 from mosaic.core.pipeline.index import (
     DriftReads,
     FeatureIndexRow,
@@ -75,7 +82,7 @@ from mosaic.core.pipeline.identity_scheme import MARKER_NAME
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.inventory.scan import run_coverage
 from mosaic.core.pipeline.run import producer_version, run_feature
-from mosaic.core.pipeline.types import Feature, InputStream
+from mosaic.core.pipeline.types import DependencyLookup, Feature, InputStream
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.run_matrix import load_run_matrix
 from mosaic.core.pipeline.track_space import upstream_track_spaces
@@ -91,9 +98,13 @@ from mosaic.core.pipeline.types.results import NNResult, Result, ResultColumn
 from mosaic.runlog import RunLogSnapshot, read_run, run_log_path
 
 from tests.helpers import (
+    fit_result,
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SOURCE,
     CONVERTED_ENTRIES,
+    FITTED_AGAIN,
+    KMeansFit,
     SOURCE_ENTRIES,
     CenteringFeature,
     ParallelFeature,
@@ -106,12 +117,21 @@ from tests.helpers import (
     copy_of,
     defined_dataset,
     definitions_forgotten,
+    drifted,
     feature_edge,
     forget_imported_definitions,
     imported_definitions,
+    kmeans_apply_feature,
+    kmeans_fit,
     link_forms,
     make_dataset,
+    model_cells,
+    move_tracks,
     plan_refused,
+    refit_kmeans,
+    refusals,
+    result_run_root,
+    run_step,
     scored_classifier_recipe,
     take_link_offline,
     track_table,
@@ -940,7 +960,10 @@ def test_the_run_level_files_of_a_copy_are_the_sources_beside_its_params(
 
 # --- an unpinned definition model on a copy --------------------------------------
 
-_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
+
+def _definition_fit(dataset: Dataset) -> Result[str]:
+    """A fit of the applying definition over ``g/s1`` in *dataset*."""
+    return fit_result(dataset, f"def:{APPLYING_NAME}", ("g", "s1"))
 
 
 def _definition_copy(tmp_path: Path) -> tuple[Dataset, Dataset, str]:
@@ -950,12 +973,7 @@ def _definition_copy(tmp_path: Path) -> tuple[Dataset, Dataset, str]:
         The source, the copy and the fit's run id.
     """
     source = defined_dataset(tmp_path / "source", {APPLYING_NAME: APPLYING_SOURCE})
-    fit = run_feature(
-        source,
-        load_feature_definition(source, f"def:{APPLYING_NAME}")(),
-        scope=Scope(entries=[("g", "s1")]),
-        track=False,
-    )
+    fit = _definition_fit(source)
     assert fit.run_id is not None
     copy = copy_of(source, tmp_path / "copy")
     _ = define_feature(copy, APPLYING_NAME, APPLYING_SOURCE)
@@ -965,7 +983,7 @@ def _definition_copy(tmp_path: Path) -> tuple[Dataset, Dataset, str]:
 def _unpinned_apply(dataset: Dataset) -> Feature:
     """An instance of the applying definition whose ``model`` names no run."""
     cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
-    return built_by_class(cls, {"model": {"feature": _APPLYING_STORAGE}})
+    return built_by_class(cls, {"model": {"feature": APPLYING_STORAGE}})
 
 
 def test_an_unpinned_model_on_a_copy_names_the_sources_fit_by_its_link(
@@ -1002,7 +1020,7 @@ def _pinned_apply(dataset: Dataset, run_id: str) -> Feature:
     """An instance of the applying definition whose ``model`` names *run_id*."""
     cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
     return built_by_class(
-        cls, {"model": {"feature": _APPLYING_STORAGE, "run_id": run_id}}
+        cls, {"model": {"feature": APPLYING_STORAGE, "run_id": run_id}}
     )
 
 
@@ -1021,7 +1039,7 @@ def test_a_pinned_model_on_a_copy_applies_the_sources_fit(tmp_path: Path) -> Non
 
         assert applied.run_id is not None
         fitted_mean = float(_distances("s1").mean())
-        root = feature_run_root(copy, _APPLYING_STORAGE, applied.run_id)
+        root = feature_run_root(copy, APPLYING_STORAGE, applied.run_id)
         for _group, sequence in SOURCE_ENTRIES:
             written = pd.read_parquet(root / f"g__{sequence}.parquet")
             np.testing.assert_allclose(
@@ -1066,7 +1084,7 @@ def _literal_apply_recipe(run_id: str) -> Recipe:
                     "feature": f"def:{APPLYING_NAME}",
                     "inputs": ["tracks"],
                     "params": {
-                        "model": {"feature": _APPLYING_STORAGE, "run_id": run_id}
+                        "model": {"feature": APPLYING_STORAGE, "run_id": run_id}
                     },
                 }
             ],
@@ -1106,3 +1124,245 @@ def test_a_plan_of_a_literal_model_with_the_source_unreachable(
         assert plan.step("apply").is_complete is applied
         (problem,) = plan.problems
         assert (problem.step, problem.where) == ("apply", "link_unreachable")
+
+
+# --- a fit the source holds, applied on a copy through ``model`` ---
+
+UNRECORDED_TRACKS: Final = "nothing records what it was built from"
+"""The reason a run gives for an entry whose row records no tracks composition.
+
+The tracks are added without a composition and moved with one. An apply row
+written before the move records none, and its input records one after.
+"""
+
+_WITHOUT_FEATURES: Final[tuple[LinkedKind, ...]] = tuple(
+    kind for kind in LINKED_KINDS if kind != "features"
+)
+
+
+class Applied(NamedTuple):
+    """One run of an apply, with what its ``load_state`` was handed.
+
+    Attributes:
+        result: The apply's result.
+        models: The ``model`` path of each ``load_state`` call that had one.
+        refusals: The reason printed for each sequence not served.
+    """
+
+    result: Result[str]
+    models: frozenset[Path]
+    refusals: dict[str, str]
+
+
+def _applied(
+    dataset: Dataset,
+    feature: Feature,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Applied:
+    """Run the apply *feature* over *dataset* in two threads."""
+    models: set[Path] = set()
+    load_state = feature.load_state
+
+    def spied(
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        model = artifact_paths.get("model")
+        if model is not None:
+            models.add(model)
+        return load_state(run_root, artifact_paths, dependency_lookups)
+
+    monkeypatch.setattr(feature, "load_state", spied)
+    _ = capsys.readouterr()
+    result = run_feature(
+        dataset, feature, parallel_workers=2, parallel_mode="thread", track=False
+    )
+    err = capsys.readouterr().err
+    return Applied(result, frozenset(models), refusals(err, feature.name))
+
+
+def _relinked(copy: Dataset, provides: tuple[LinkedKind, ...]) -> Dataset:
+    """*copy* opened again with its one link declared to provide *provides*."""
+    (link,) = copy.manifest.links
+    _ = copy.remove_link(link.id, save=False)
+    _ = copy.add_link(link.model_copy(update={"provides": provides}))
+    return Dataset(manifest_path=copy.manifest_path).load()
+
+
+def _move_definition_tracks(dataset: Dataset) -> None:
+    """Write the track table of ``g/s1`` again with its positions doubled.
+
+    The table is written without a composition. The applying definition
+    therefore sees the change only through the state a fit over it saves.
+    """
+    moved = track_table("g", "s1")
+    moved[["X", "Y"]] = moved[["X", "Y"]] * 2.0
+    moved.to_parquet(dataset.get_root("tracks") / "g__s1.parquet")
+
+
+def test_a_copy_applies_a_definition_fit_the_source_holds_and_follows_its_refit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with definitions_forgotten():
+        source, copy, run_id = _definition_copy(tmp_path)
+        fit_root = feature_run_root(source, APPLYING_STORAGE, run_id)
+        fitted = read_fit_state_digest(fit_root)
+        assert fitted
+        before = tree_snapshot(source.base_dir)
+
+        first = _applied(copy, _pinned_apply(copy, run_id), capsys, monkeypatch)
+
+        assert first.models == {fit_root}
+        assert model_cells(copy, first.result) == {"s1": fitted, "s2": fitted}
+        assert drifted(copy, first.result) == ()
+        assert tree_snapshot(source.base_dir) == before
+
+        _move_definition_tracks(source)
+        shutil.rmtree(fit_root)
+        assert _definition_fit(source).run_id == run_id
+        refitted = read_fit_state_digest(fit_root)
+        assert refitted not in {"", fitted}
+        before = tree_snapshot(source.base_dir)
+
+        assert drifted(copy, first.result) == SOURCE_ENTRIES
+        again = _applied(copy, _pinned_apply(copy, run_id), capsys, monkeypatch)
+
+        assert again.result.run_id == first.result.run_id
+        assert again.refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN}
+        assert model_cells(copy, again.result) == {"s1": refitted, "s2": refitted}
+        assert drifted(copy, again.result) == ()
+        assert tree_snapshot(source.base_dir) == before
+
+
+def test_a_copy_serves_the_sources_definition_apply_until_its_own_fit_shadows_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A linked apply row is compared with the fit the copy resolves."""
+    with definitions_forgotten():
+        source, copy, run_id = _definition_copy(tmp_path)
+        _ = run_feature(source, _pinned_apply(source, run_id), track=False)
+        fitted = read_fit_state_digest(
+            feature_run_root(source, APPLYING_STORAGE, run_id)
+        )
+        link = f"source-{source.uuid}"
+        before = tree_snapshot(source.base_dir)
+
+        served = _applied(copy, _pinned_apply(copy, run_id), capsys, monkeypatch)
+
+        assert served.refusals == {}
+        assert _link_rows(copy, served.result) == {"s1": link, "s2": link}
+        assert list(result_run_root(copy, served.result).glob("*.parquet")) == []
+        assert tree_snapshot(source.base_dir) == before
+
+        _move_definition_tracks(source)
+        before = tree_snapshot(source.base_dir)
+        unlinked = _relinked(copy, _WITHOUT_FEATURES)
+        assert _definition_fit(unlinked).run_id == run_id
+        own_root = feature_run_root(copy, APPLYING_STORAGE, run_id)
+        own = read_fit_state_digest(own_root)
+        assert own not in {"", fitted}
+        relinked = _relinked(unlinked, LINKED_KINDS)
+
+        shadowed = _applied(
+            relinked, _pinned_apply(relinked, run_id), capsys, monkeypatch
+        )
+
+        assert shadowed.models == {own_root}
+        assert shadowed.refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN}
+        assert model_cells(relinked, shadowed.result) == {"s1": own, "s2": own}
+        assert _link_rows(relinked, shadowed.result) == {"s1": "", "s2": ""}
+        assert tree_snapshot(source.base_dir) == before
+
+
+def _rerun_speed(dataset: Dataset, runs: KMeansFit) -> None:
+    """Run ``speed-angvel`` again under its run id."""
+    assert run_step(dataset, "speed-angvel", None, {}).run_id == runs.speed.run_id
+
+
+def test_a_copy_applies_a_kmeans_fit_the_source_holds_and_follows_its_refit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _tracked_source(tmp_path / "source")
+    runs = kmeans_fit(source)
+    copy = copy_of(source, tmp_path / "copy")
+    fit_root = result_run_root(source, runs.fit)
+    fitted = read_fit_state_digest(fit_root)
+    assert fitted
+    before = tree_snapshot(source.base_dir)
+
+    first = _applied(copy, kmeans_apply_feature(runs), capsys, monkeypatch)
+
+    assert {model.parent for model in first.models} == {fit_root}
+    assert model_cells(copy, first.result) == {"s1": fitted, "s2": fitted}
+    assert drifted(copy, first.result) == ()
+    assert tree_snapshot(source.base_dir) == before
+
+    move_tracks(source, VARIANT, ("s1", "s2"))
+    _rerun_speed(source, runs)
+    # The copy's apply first recomputes for its moved input, compared before
+    # the model, and records the digest of the fit before its refit.
+    moved = _applied(copy, kmeans_apply_feature(runs), capsys, monkeypatch)
+    assert moved.refusals == {"s1": UNRECORDED_TRACKS, "s2": UNRECORDED_TRACKS}
+    refitted = refit_kmeans(source, runs)
+    assert refitted not in {"", fitted}
+    before = tree_snapshot(source.base_dir)
+
+    assert drifted(copy, first.result) == (("", "s1"), ("", "s2"))
+    again = _applied(copy, kmeans_apply_feature(runs), capsys, monkeypatch)
+
+    assert again.result.run_id == first.result.run_id
+    assert again.refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN}
+    assert model_cells(copy, again.result) == {"s1": refitted, "s2": refitted}
+    assert drifted(copy, again.result) == ()
+    assert tree_snapshot(source.base_dir) == before
+
+
+def test_a_copy_serves_the_sources_kmeans_apply_until_its_own_fit_shadows_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source's apply records the fit made before its tracks moved.
+
+    The fit the copy makes over the moved tracks saves another state under
+    the same run id.
+    """
+    source = _tracked_source(tmp_path / "source")
+    runs = kmeans_fit(source)
+    _ = run_feature(source, kmeans_apply_feature(runs), track=False)
+    move_tracks(source, VARIANT, ("s1", "s2"))
+    _rerun_speed(source, runs)
+    applied = run_feature(source, kmeans_apply_feature(runs), track=False)
+    fitted = read_fit_state_digest(result_run_root(source, runs.fit))
+    assert model_cells(source, applied) == {"s1": fitted, "s2": fitted}
+    copy = copy_of(source, tmp_path / "copy")
+    link = f"source-{source.uuid}"
+    before = tree_snapshot(source.base_dir)
+
+    served = _applied(copy, kmeans_apply_feature(runs), capsys, monkeypatch)
+
+    assert served.refusals == {}
+    assert _link_rows(copy, served.result) == {"s1": link, "s2": link}
+
+    unlinked = _relinked(copy, _WITHOUT_FEATURES)
+    assert kmeans_fit(unlinked).run_ids() == runs.run_ids()
+    own_root = result_run_root(copy, runs.fit)
+    own = read_fit_state_digest(own_root)
+    assert own not in {"", fitted}
+    relinked = _relinked(unlinked, LINKED_KINDS)
+
+    shadowed = _applied(relinked, kmeans_apply_feature(runs), capsys, monkeypatch)
+
+    assert {model.parent for model in shadowed.models} == {own_root}
+    assert shadowed.refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN}
+    assert model_cells(relinked, shadowed.result) == {"s1": own, "s2": own}
+    assert _link_rows(relinked, shadowed.result) == {"s1": "", "s2": ""}
+    assert tree_snapshot(source.base_dir) == before

@@ -120,6 +120,10 @@ What lives where:
 - ``recipes``: the recipes a graph test validates, plans or runs.
 - ``state_writes``: the files a feature's ``save_state`` publishes and their order,
   and whether ``load_state`` finds a state after each publish fails.
+- ``model_state``: the k-means chain that fits ``global-kmeans`` and applies it
+  through ``model``, a refit of it over moved tracks, the reasons a run printed
+  for the entries it did not serve, the fit-state digest each row of an apply
+  records, and the entries a plan reports as drifted.
 - ``feature_definitions``: the sources of feature definitions, and a dataset with
   tracks that defines them.
 - ``trees``: snapshots and file digests of a directory tree, and the assertion
@@ -172,6 +176,7 @@ from tests.helpers.feature_definitions import (
     APPLYING_NAME,
     APPLYING_SECOND_SOURCE,
     APPLYING_SOURCE,
+    APPLYING_STORAGE,
     CANARY_NAME,
     CANARY_SOURCE,
     CANARY_VARIABLE,
@@ -190,6 +195,8 @@ from tests.helpers.feature_definitions import (
     built_by_class,
     defined_dataset,
     definitions_forgotten,
+    fit_over,
+    fit_result,
     forget_imported_definitions,
     imported_definitions,
     noting_definition_loads,
@@ -343,6 +350,22 @@ from tests.helpers.recipes import (
     speed_heading_recipe,
     speed_recipe,
     speed_recipe_stepping,
+)
+from tests.helpers.model_state import (
+    FITTED_AGAIN,
+    KMEANS,
+    KMeansChain,
+    KMeansFit,
+    drifted,
+    kmeans_apply,
+    kmeans_apply_feature,
+    kmeans_fit,
+    kmeans_fit_and_apply,
+    model_cells,
+    move_tracks,
+    refit_kmeans,
+    refusals,
+    run_step,
 )
 from tests.helpers.models import (
     register_sleap_model,
@@ -654,6 +677,7 @@ __all__ = [
     "APPLYING_NAME",
     "APPLYING_SECOND_SOURCE",
     "APPLYING_SOURCE",
+    "APPLYING_STORAGE",
     "CANARY_NAME",
     "CANARY_SOURCE",
     "CANARY_VARIABLE",
@@ -672,6 +696,8 @@ __all__ = [
     "built_by_class",
     "defined_dataset",
     "definitions_forgotten",
+    "fit_over",
+    "fit_result",
     "forget_imported_definitions",
     "imported_definitions",
     "noting_definition_loads",
@@ -881,6 +907,20 @@ __all__ = [
     "minimal_op_params",
     "mirrored_rows",
     "model_reference",
+    "FITTED_AGAIN",
+    "KMEANS",
+    "KMeansChain",
+    "KMeansFit",
+    "drifted",
+    "kmeans_apply",
+    "kmeans_apply_feature",
+    "kmeans_fit",
+    "kmeans_fit_and_apply",
+    "model_cells",
+    "move_tracks",
+    "refit_kmeans",
+    "refusals",
+    "run_step",
     "missing_ffmpeg_tools",
     "modules_loaded_by",
     "named_recipe",

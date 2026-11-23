@@ -33,6 +33,7 @@ from mosaic.core.pipeline.definitions.store import (
 from mosaic.core.pipeline.types import DefinitionModel, Feature
 from tests.helpers import (
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SOURCE,
     MINIMAL_NAME,
     MINIMAL_SOURCE,
@@ -279,10 +280,8 @@ def test_a_registration_made_at_load_is_refused(
 
 # --- an instance given a model fits nothing ----------------------------------
 
-
-FIT_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
 FIT_RUN_ID: Final = "1-abc"
-MODEL: Final = {"feature": FIT_STORAGE, "run_id": FIT_RUN_ID}
+MODEL: Final = {"feature": APPLYING_STORAGE, "run_id": FIT_RUN_ID}
 
 
 class _BuiltIn(PlainFeature):
@@ -306,7 +305,7 @@ def _applying(tmp_path: Path, params: dict[str, object] | None) -> Feature:
 def test_an_instance_given_a_model_is_narrowed_to_an_apply(tmp_path: Path) -> None:
     feature = _applying(tmp_path, {"model": MODEL})
     assert _flags(feature) == (True, True)
-    expected = DefinitionModel(feature=FIT_STORAGE, run_id=FIT_RUN_ID)
+    expected = DefinitionModel(feature=APPLYING_STORAGE, run_id=FIT_RUN_ID)
 
     assert applied_definition_model(feature) == expected
     narrow_to_apply(feature)

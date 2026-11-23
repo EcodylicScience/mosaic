@@ -60,6 +60,7 @@ from mosaic.core.pipeline.types import Inputs
 from mosaic.core.scope import Scope
 from tests.helpers import (
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SECOND_SOURCE,
     APPLYING_SOURCE,
     CANARY_NAME,
@@ -761,7 +762,6 @@ def test_an_apply_step_names_its_fit_and_fits_nothing(tmp_path: Path) -> None:
 # --- validating a model reference ---------------------------------------------
 
 APPLYING_SLUG: Final = f"def:{APPLYING_NAME}"
-APPLYING_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
 
 
 def _model_recipe(

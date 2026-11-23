@@ -49,7 +49,7 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
 )
 from mosaic.core.pipeline.graph.resolve import StepSpec
-from mosaic.core.pipeline.types import Feature
+from mosaic.core.pipeline.types import Feature, Result
 from tests.helpers.datasets import make_dataset
 from tests.helpers.tracks import add_track_sequences
 
@@ -57,6 +57,7 @@ __all__ = [
     "APPLYING_NAME",
     "APPLYING_SECOND_SOURCE",
     "APPLYING_SOURCE",
+    "APPLYING_STORAGE",
     "CANARY_NAME",
     "CANARY_SOURCE",
     "CANARY_VARIABLE",
@@ -75,6 +76,8 @@ __all__ = [
     "built_by_class",
     "defined_dataset",
     "definitions_forgotten",
+    "fit_over",
+    "fit_result",
     "forget_imported_definitions",
     "imported_definitions",
     "noting_definition_loads",
@@ -87,6 +90,8 @@ GLOBAL_NAME: Final = "mean-distance"
 POSE_NAME: Final = "pose-count"
 NARROWING_NAME: Final = "narrow-distance"
 APPLYING_NAME: Final = "centered-distance"
+APPLYING_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
+"""The storage of the runs of ``APPLYING_NAME`` over the tracks."""
 MISREADING_NAME: Final = "misreading-distance"
 PARALLEL_APPLYING_NAME: Final = "parallel-centered-distance"
 
@@ -403,6 +408,40 @@ def built_by_class(cls: type[Feature], params: Mapping[str, object] | None) -> F
     built: object = type.__call__(cls, None, None if params is None else dict(params))
     assert isinstance(built, cls)
     return built
+
+
+def fit_result(ds: Dataset, slug: str, entry: tuple[str, str]) -> Result[str]:
+    """Run the definition *slug* over the one entry *entry*.
+
+    The run is a fit of a definition that fits, and tracks no attempt.
+
+    Args:
+        ds: The dataset that defines *slug*.
+        slug: The ``def:`` slug, bare or pinned to a digest.
+        entry: The ``(group, sequence)`` the run covers.
+
+    Returns:
+        The result of the run.
+    """
+    from mosaic.core.pipeline.definitions.define import load_feature_definition
+    from mosaic.core.pipeline.run import run_feature
+    from mosaic.core.scope import Scope
+
+    feature = load_feature_definition(ds, slug)()
+    return run_feature(ds, feature, scope=Scope(entries=[entry]), track=False)
+
+
+def fit_over(ds: Dataset, slug: str, entry: tuple[str, str]) -> str:
+    """The run id of the definition *slug* run over the one entry *entry*.
+
+    Args:
+        ds: The dataset that defines *slug*.
+        slug: The ``def:`` slug, bare or pinned to a digest.
+        entry: The ``(group, sequence)`` the run covers.
+    """
+    run_id = fit_result(ds, slug, entry).run_id
+    assert run_id is not None
+    return run_id
 
 
 def defined_dataset(tmp_path: Path, sources: Mapping[str, str]) -> Dataset:

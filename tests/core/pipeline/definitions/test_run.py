@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shutil
 from pathlib import Path
 from typing import Final
@@ -51,7 +50,9 @@ from mosaic.core.pipeline.run_log import read_run, run_log_dir
 from mosaic.core.pipeline.types import Feature, Result
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    FITTED_AGAIN,
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SECOND_SOURCE,
     APPLYING_SOURCE,
     CANARY_NAME,
@@ -67,7 +68,13 @@ from tests.helpers import (
     add_track_sequences,
     built_by_class,
     defined_dataset,
+    fit_over,
+    fit_result,
     make_dataset,
+    model_cells,
+    model_reference,
+    refusals,
+    result_run_root,
     run_fresh,
     track_table,
     tree_snapshot,
@@ -77,16 +84,10 @@ from tests.helpers import (
 WORKERS: Final = 2
 
 
-def _root(ds: Dataset, result: Result[str]) -> Path:
-    """The run root of *result*."""
-    assert result.run_id is not None
-    return feature_run_root(ds, result.feature, result.run_id)
-
-
 def _written(ds: Dataset, result: Result[str], name: str) -> Path:
     """The run root of *result*, after checking it is the definition's storage."""
     assert result.feature == f"def.{name}__from__tracks"
-    root = _root(ds, result)
+    root = result_run_root(ds, result)
     assert sorted(path.name for path in root.glob("*.parquet")) == [
         "g__s1.parquet",
         "g__s2.parquet",
@@ -130,7 +131,7 @@ def test_a_builtin_run_records_no_definition(tmp_path: Path) -> None:
 
     result = run_feature(ds, _RecordingFeature(), track=False)
 
-    root = _root(ds, result)
+    root = result_run_root(ds, result)
     assert "_definition" not in json.loads((root / "params.json").read_text())
     read = read_run_params(root)
     assert read.params is not None
@@ -241,7 +242,7 @@ def test_a_fresh_process_unpickles_state_of_the_definitions_own_class(
 
     result = run_feature(ds, feature, track=False)
 
-    root = _root(ds, result)
+    root = result_run_root(ds, result)
     module_name = f"mosaic_definitions.{GLOBAL_NAME.replace('-', '_')}__{digest}"
     assert module_name.encode() in (root / "mean.pkl").read_bytes()
     fitted = float(feature.apply(_POINT)["centered"].iloc[0])
@@ -260,7 +261,7 @@ def test_a_fresh_process_unpickles_state_of_the_definitions_own_class(
 def test_an_applying_instance_is_predicted_without_its_scope(tmp_path: Path) -> None:
     """A class-built instance with a model hashes no entries, as its run does."""
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
-    model = {"feature": f"def.{APPLYING_NAME}__from__tracks", "run_id": "1-abc"}
+    model = {"feature": APPLYING_STORAGE, "run_id": "1-abc"}
     cls = load_feature_definition(ds, f"def:{APPLYING_NAME}")
     feature = built_by_class(cls, {"model": model})
     assert getattr(feature, "scope_dependent") is True
@@ -298,13 +299,7 @@ def _three_entry_dataset(tmp_path: Path, name: str, source: str) -> Dataset:
 
 def _fit(ds: Dataset, name: str) -> Result[str]:
     """A fit run of the definition *name* over ``g/s1`` alone."""
-    feature = load_feature_definition(ds, f"def:{name}")()
-    return run_feature(ds, feature, scope=Scope(entries=[_FITTED_ENTRY]), track=False)
-
-
-def _model(fit: Result[str]) -> dict[str, object]:
-    """The ``model`` param that names *fit*."""
-    return {"feature": fit.feature, "run_id": fit.run_id}
+    return fit_result(ds, f"def:{name}", _FITTED_ENTRY)
 
 
 def _canary_lines(canary: Path) -> list[dict[str, int]]:
@@ -338,7 +333,7 @@ def test_an_apply_reads_the_state_of_the_fit_its_model_names(
     ds = _three_entry_dataset(tmp_path, name, PARALLEL_APPLYING_SOURCE)
     fit = _fit(ds, name)
     with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{name}", None, {"model": _model(fit)})
+        feature = build_feature(f"def:{name}", None, {"model": model_reference(fit)})
 
     applied = run_feature(
         ds, feature, parallel_workers=WORKERS, parallel_mode=mode, track=False
@@ -351,7 +346,7 @@ def test_an_apply_reads_the_state_of_the_fit_its_model_names(
         ).mean()
     )
     assert not np.isclose(fitted_mean, every_mean)
-    root = _root(ds, applied)
+    root = result_run_root(ds, applied)
     for group, sequence, n_ids in (("g", "s1", 1), ("g", "s2", 1), ("g", "s3", 2)):
         written = pd.read_parquet(root / f"{group}__{sequence}.parquet")
         np.testing.assert_allclose(
@@ -381,7 +376,7 @@ def test_a_definitions_fit_records_the_digest_of_its_saved_state(
     name = PARALLEL_APPLYING_NAME
     ds = _three_entry_dataset(tmp_path, name, PARALLEL_APPLYING_SOURCE)
 
-    root = _root(ds, _fit(ds, name))
+    root = result_run_root(ds, _fit(ds, name))
 
     listing = list_run_root(root)
     saved = {path: stamp for path, stamp in listing.items() if path == "mean.pkl"}
@@ -402,13 +397,15 @@ def test_an_instance_built_by_its_class_with_a_model_applies_it(
     slug = f"def:{APPLYING_NAME}"
     cls = load_feature_definition(ds, slug)
 
-    by_class = run_feature(ds, built_by_class(cls, {"model": _model(fit)}), track=False)
+    by_class = run_feature(
+        ds, built_by_class(cls, {"model": model_reference(fit)}), track=False
+    )
 
     assert _fits_recorded(canary) == 1
-    root = _root(ds, by_class)
+    root = result_run_root(ds, by_class)
     assert not (root / "mean.pkl").exists()
     with definition_scope(ds, load=True):
-        built = build_feature(slug, None, {"model": _model(fit)})
+        built = build_feature(slug, None, {"model": model_reference(fit)})
     assert run_feature(ds, built, track=False).run_id == by_class.run_id
 
 
@@ -422,7 +419,9 @@ def test_an_apply_whose_load_reads_no_state_is_refused(
     fit = _fit(ds, MISREADING_NAME)
     assert fit.run_id is not None
     with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{MISREADING_NAME}", None, {"model": _model(fit)})
+        feature = build_feature(
+            f"def:{MISREADING_NAME}", None, {"model": model_reference(fit)}
+        )
     execution_id = new_execution_id()
 
     with pytest.raises(DefinitionModelRefused) as caught:
@@ -460,7 +459,7 @@ def test_a_definition_model_naming_no_run_is_not_resolved(
 ) -> None:
     """A caller that skips the checks and pinning reaches the dependencies."""
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
-    model = {"feature": f"def.{APPLYING_NAME}__from__tracks"}
+    model = {"feature": APPLYING_STORAGE}
     with definition_scope(ds, load=True):
         feature = build_feature(f"def:{APPLYING_NAME}", None, {"model": model})
     monkeypatch.setattr(run_module, "_refuse_unusable_model", _checks_nothing)
@@ -472,21 +471,11 @@ def test_a_definition_model_naming_no_run_is_not_resolved(
 
 # --- an unpinned model, refused with its candidate fits ---------------------------
 
-_STORAGE: Final = f"def.{APPLYING_NAME}__from__tracks"
-
-
-def _fit_over(ds: Dataset, slug: str, entry: tuple[str, str]) -> str:
-    """The run id of a fit of *slug* over *entry* alone."""
-    feature = load_feature_definition(ds, slug)()
-    fitted = run_feature(ds, feature, scope=Scope(entries=[entry]), track=False)
-    assert fitted.run_id is not None
-    return fitted.run_id
-
 
 def _unpinned_apply(ds: Dataset, slug: str) -> Feature:
     """An instance of *slug* whose ``model`` names the storage and no run."""
     with definition_scope(ds, load=True):
-        return build_feature(slug, None, {"model": {"feature": _STORAGE}})
+        return build_feature(slug, None, {"model": {"feature": APPLYING_STORAGE}})
 
 
 def _refused_unpinned(ds: Dataset, feature: Feature) -> DefinitionModelMissing:
@@ -505,9 +494,10 @@ def _refused_unpinned(ds: Dataset, feature: Feature) -> DefinitionModelMissing:
 def _unpinned_text(candidates: str) -> str:
     """The text of an unpinned ``model`` of the applying definition."""
     return (
-        f"def:{APPLYING_NAME}'s 'model' names no run of {_STORAGE}. An apply reads "
-        f"one fit, named by its run id: give run_id, one of {candidates}, or "
-        'reference the fit step as {"step": ...}'
+        f"def:{APPLYING_NAME}'s 'model' names no run of {APPLYING_STORAGE}. "
+        "An apply reads one fit, named by its run id: give run_id, one of "
+        f"{candidates}, or reference the fit step as "
+        '{"step": ...}'
     )
 
 
@@ -519,14 +509,14 @@ def test_an_unpinned_model_names_the_fits_of_its_version(tmp_path: Path) -> None
     assert reference is not None
     slug = f"def:{APPLYING_NAME}@{reference.digest}"
     second = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
-    fits = sorted(_fit_over(ds, slug, entry) for entry in (("g", "s1"), ("g", "s2")))
-    _ = _fit_over(ds, f"def:{APPLYING_NAME}@{second.digest}", ("g", "s1"))
+    fits = sorted(fit_over(ds, slug, entry) for entry in (("g", "s1"), ("g", "s2")))
+    _ = fit_over(ds, f"def:{APPLYING_NAME}@{second.digest}", ("g", "s1"))
     expected = _unpinned_text(", ".join(fits))
 
     before_apply = _refused_unpinned(ds, _unpinned_apply(ds, slug))
     with definition_scope(ds, load=True):
         pinned = build_feature(
-            slug, None, {"model": {"feature": _STORAGE, "run_id": fits[0]}}
+            slug, None, {"model": {"feature": APPLYING_STORAGE, "run_id": fits[0]}}
         )
     _ = run_feature(ds, pinned, track=False)
     after_apply = _refused_unpinned(ds, _unpinned_apply(ds, slug))
@@ -535,7 +525,7 @@ def test_an_unpinned_model_names_the_fits_of_its_version(tmp_path: Path) -> None
         assert str(refused) == expected
         assert refused.error_detail() == {
             "name": APPLYING_NAME,
-            "feature": _STORAGE,
+            "feature": APPLYING_STORAGE,
             "run_id": None,
             "reason": "unpinned",
             "candidates": fits,
@@ -548,9 +538,9 @@ def test_an_unpinned_model_without_a_fit_says_to_run_one(tmp_path: Path) -> None
     refused = _refused_unpinned(ds, _unpinned_apply(ds, f"def:{APPLYING_NAME}"))
 
     assert str(refused) == (
-        f"def:{APPLYING_NAME}'s 'model' names no run of {_STORAGE}. An apply reads "
-        "one fit, named by its run id, and no fit of this version exists: run the "
-        "fit first"
+        f"def:{APPLYING_NAME}'s 'model' names no run of {APPLYING_STORAGE}. "
+        "An apply reads one fit, named by its run id, and no fit of this version "
+        "exists: run the fit first"
     )
     assert refused.candidates == ()
 
@@ -568,14 +558,14 @@ def _refused_apply[E: Exception](
     """
     features_root = ds.get_root("features")
     before = tree_snapshot(features_root)
-    index_before = feature_index_path(ds, _STORAGE).read_text()
+    index_before = feature_index_path(ds, APPLYING_STORAGE).read_text()
     fits_before = _fits_recorded(canary)
 
     with pytest.raises(error) as caught:
         _ = run_feature(ds, feature, track=False)
 
     assert tree_snapshot(features_root) == before
-    assert feature_index_path(ds, _STORAGE).read_text() == index_before
+    assert feature_index_path(ds, APPLYING_STORAGE).read_text() == index_before
     assert _fits_recorded(canary) == fits_before
     return caught.value
 
@@ -588,7 +578,9 @@ def _pinned_apply(ds: Dataset, slug: str, feature: str, run_id: str) -> Feature:
         )
 
 
-def _detail(run_id: str, reason: str, feature: str = _STORAGE) -> dict[str, object]:
+def _detail(
+    run_id: str, reason: str, feature: str = APPLYING_STORAGE
+) -> dict[str, object]:
     """The ``error_detail`` of a refused model of the applying definition."""
     return {
         "name": APPLYING_NAME,
@@ -610,7 +602,7 @@ def canary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def fitted(tmp_path: Path, canary: Path) -> tuple[Dataset, str]:
     """A dataset defining the applying definition, and a fit's run id."""
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
-    run_id = _fit_over(ds, f"def:{APPLYING_NAME}", _FITTED_ENTRY)
+    run_id = fit_over(ds, f"def:{APPLYING_NAME}", _FITTED_ENTRY)
     assert _fits_recorded(canary) == 1
     return ds, run_id
 
@@ -620,16 +612,16 @@ def test_a_model_naming_no_run_root_is_missing(
 ) -> None:
     ds, fit_run_id = fitted
     absent = f"{fit_run_id[:-4]}0000"
-    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", _STORAGE, absent)
+    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", APPLYING_STORAGE, absent)
 
     refused = _refused_apply(ds, feature, canary, DefinitionModelMissing)
 
     assert refused.reason == "missing"
     assert refused.error_detail() == _detail(absent, "missing")
     assert str(refused) == (
-        f"def:{APPLYING_NAME}'s 'model' names run {absent} of {_STORAGE}, which "
-        "does not exist. A step given a model applies it and fits nothing, so run "
-        "the fit first"
+        f"def:{APPLYING_NAME}'s 'model' names run {absent} of {APPLYING_STORAGE}, "
+        "which does not exist. A step given a model applies it and fits nothing, so "
+        "run the fit first"
     )
 
 
@@ -637,15 +629,15 @@ def test_a_model_naming_a_fit_without_its_fit_scope_is_unfitted(
     fitted: tuple[Dataset, str], canary: Path
 ) -> None:
     ds, fit_run_id = fitted
-    (feature_run_root(ds, _STORAGE, fit_run_id) / "fit_scope.json").unlink()
-    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", _STORAGE, fit_run_id)
+    (feature_run_root(ds, APPLYING_STORAGE, fit_run_id) / "fit_scope.json").unlink()
+    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", APPLYING_STORAGE, fit_run_id)
 
     refused = _refused_apply(ds, feature, canary, DefinitionModelMissing)
 
     assert refused.reason == "unfitted"
     assert refused.error_detail() == _detail(fit_run_id, "unfitted")
     assert str(refused) == (
-        f"run {fit_run_id} of {_STORAGE} has not saved its fit. Let the fit "
+        f"run {fit_run_id} of {APPLYING_STORAGE} has not saved its fit. Let the fit "
         "finish, or run it again"
     )
 
@@ -656,10 +648,10 @@ def test_a_model_naming_an_apply_run_is_refused(
     ds, fit_run_id = fitted
     slug = f"def:{APPLYING_NAME}"
     applied = run_feature(
-        ds, _pinned_apply(ds, slug, _STORAGE, fit_run_id), track=False
+        ds, _pinned_apply(ds, slug, APPLYING_STORAGE, fit_run_id), track=False
     )
     assert applied.run_id is not None
-    feature = _pinned_apply(ds, slug, _STORAGE, applied.run_id)
+    feature = _pinned_apply(ds, slug, APPLYING_STORAGE, applied.run_id)
 
     refused = _refused_apply(ds, feature, canary, DefinitionModelRefused)
 
@@ -688,8 +680,8 @@ def test_a_model_naming_another_storage_is_refused(
     assert refused.error_detail() == _detail(fit_run_id, "other_feature", named)
     assert str(refused) == (
         f"def:{APPLYING_NAME}'s 'model' names {named}, and this step stores under "
-        f"{_STORAGE}. A model is applied by the definition that fitted it, over the "
-        f"same inputs: name a step of def:{APPLYING_NAME} that reads them"
+        f"{APPLYING_STORAGE}. A model is applied by the definition that fitted it, "
+        f"over the same inputs: name a step of def:{APPLYING_NAME} that reads them"
     )
 
 
@@ -698,11 +690,11 @@ def test_a_model_naming_a_run_recorded_for_no_definition_is_refused(
 ) -> None:
     """A run of the storage whose ``params.json`` names no definition fits none."""
     ds, fit_run_id = fitted
-    run_root = feature_run_root(ds, _STORAGE, fit_run_id)
+    run_root = feature_run_root(ds, APPLYING_STORAGE, fit_run_id)
     document: dict[str, object] = json.loads((run_root / "params.json").read_text())
     del document["_definition"]
     write_run_params(run_root, document)
-    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", _STORAGE, fit_run_id)
+    feature = _pinned_apply(ds, f"def:{APPLYING_NAME}", APPLYING_STORAGE, fit_run_id)
 
     refused = _refused_apply(ds, feature, canary, DefinitionModelRefused)
 
@@ -716,10 +708,10 @@ def test_a_model_naming_a_fit_of_another_version_is_refused(
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
     first = definition_ref_of(load_feature_definition(ds, f"def:{APPLYING_NAME}"))
     assert first is not None
-    fit_run_id = _fit_over(ds, f"def:{APPLYING_NAME}@{first.digest}", _FITTED_ENTRY)
+    fit_run_id = fit_over(ds, f"def:{APPLYING_NAME}@{first.digest}", _FITTED_ENTRY)
     second = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
     feature = _pinned_apply(
-        ds, f"def:{APPLYING_NAME}@{second.digest}", _STORAGE, fit_run_id
+        ds, f"def:{APPLYING_NAME}@{second.digest}", APPLYING_STORAGE, fit_run_id
     )
 
     refused = _refused_apply(ds, feature, canary, DefinitionModelRefused)
@@ -737,14 +729,6 @@ def test_a_model_naming_a_fit_of_another_version_is_refused(
 
 # --- an apply after its fit is written again ---------------------------------------
 
-_REFUSAL: Final = re.compile(
-    r"^\[feature:def:(?P<name>[^\]]*)\] cannot serve cached output for "
-    r"\((?P<group>[^,]*),(?P<sequence>[^)]*)\): (?P<reason>.*); recomputing\.$",
-    re.MULTILINE,
-)
-
-FITTED_AGAIN: Final = "the model it applies was fitted again"
-
 
 def _apply_refusals(
     ds: Dataset,
@@ -760,31 +744,17 @@ def _apply_refusals(
         The apply's result, and the reason printed for each entry not served.
     """
     with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{name}", None, {"model": _model(fit)})
+        feature = build_feature(f"def:{name}", None, {"model": model_reference(fit)})
     _ = capsys.readouterr()
     applied = run_feature(
         ds, feature, parallel_workers=WORKERS, parallel_mode=mode, track=False
     )
-    err = capsys.readouterr().err
-    refusals = {
-        match["sequence"]: match["reason"]
-        for match in _REFUSAL.finditer(err)
-        if match["name"] == name
-    }
-    return applied, refusals
-
-
-def _model_cells(ds: Dataset, result: Result[str]) -> set[str]:
-    """The ``consumed_model_state`` cells of the rows of *result*'s run."""
-    rows = pd.read_csv(
-        feature_index_path(ds, result.feature), dtype=str, keep_default_na=False
-    )
-    return set(rows.loc[rows["run_id"] == result.run_id, "consumed_model_state"])
+    return applied, refusals(capsys.readouterr().err, f"def:{name}")
 
 
 def _fit_again(ds: Dataset, name: str, fit: Result[str]) -> None:
     """Remove *fit*'s run root and fit again under its run id."""
-    shutil.rmtree(_root(ds, fit))
+    shutil.rmtree(result_run_root(ds, fit))
     assert _fit(ds, name).run_id == fit.run_id
 
 
@@ -803,20 +773,20 @@ def test_an_apply_recomputes_after_its_fit_saves_other_state(
     fit = _fit(ds, name)
     applied, refusals = _apply_refusals(ds, name, fit, capsys, mode=mode)
     assert refusals == {}
-    before = read_fit_state_digest(_root(ds, fit))
-    assert _model_cells(ds, applied) == {before}
+    before = read_fit_state_digest(result_run_root(ds, fit))
+    assert set(model_cells(ds, applied).values()) == {before}
     moved = track_table(*_FITTED_ENTRY)
     moved[["X", "Y"]] = moved[["X", "Y"]] * 2.0
     moved.to_parquet(ds.get_root("tracks") / "g__s1.parquet")
     _fit_again(ds, name, fit)
-    after = read_fit_state_digest(_root(ds, fit))
+    after = read_fit_state_digest(result_run_root(ds, fit))
     assert after != before
     canary.unlink()
 
     applied, refusals = _apply_refusals(ds, name, fit, capsys, mode=mode)
 
     assert refusals == {"s1": FITTED_AGAIN, "s2": FITTED_AGAIN, "s3": FITTED_AGAIN}
-    assert _model_cells(ds, applied) == {after}
+    assert set(model_cells(ds, applied).values()) == {after}
     appliers = _applying_pids(canary)
     if mode == "process":
         assert appliers - {os.getpid()}
@@ -831,9 +801,9 @@ def test_an_apply_is_served_after_its_fit_saves_the_same_state(
     ds = _three_entry_dataset(tmp_path, APPLYING_NAME, APPLYING_SOURCE)
     fit = _fit(ds, APPLYING_NAME)
     assert _apply_refusals(ds, APPLYING_NAME, fit, capsys)[1] == {}
-    digest = read_fit_state_digest(_root(ds, fit))
+    digest = read_fit_state_digest(result_run_root(ds, fit))
 
     _fit_again(ds, APPLYING_NAME, fit)
 
-    assert read_fit_state_digest(_root(ds, fit)) == digest
+    assert read_fit_state_digest(result_run_root(ds, fit)) == digest
     assert _apply_refusals(ds, APPLYING_NAME, fit, capsys)[1] == {}

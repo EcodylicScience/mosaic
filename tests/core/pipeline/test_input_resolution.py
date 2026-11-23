@@ -51,9 +51,10 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types.inputs import InputsLike
 from mosaic.core.params import Params
-from mosaic.core.scope import Scope
 from tests.helpers import (
+    fit_result,
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SOURCE,
     built_by_class,
     defined_dataset,
@@ -440,8 +441,6 @@ def test_no_unpinned_reference_survives_resolution(
 
 # --- A definition's model ------------------------------------------------------
 
-_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
-
 
 def _applying(dataset: Dataset, model: dict[str, object]) -> Feature:
     """An instance of the applying definition given *model*."""
@@ -462,13 +461,8 @@ def test_an_unpinned_definition_model_is_refused_with_its_fits(
     """The pass refuses to guess a fit, and names the fits of the version."""
     with definitions_forgotten():
         dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
-        fit = run_feature(
-            dataset,
-            load_feature_definition(dataset, f"def:{APPLYING_NAME}")(),
-            scope=Scope(entries=[("g", "s1")]),
-            track=False,
-        )
-        feature = _applying(dataset, {"feature": _APPLYING_STORAGE})
+        fit = fit_result(dataset, f"def:{APPLYING_NAME}", ("g", "s1"))
+        feature = _applying(dataset, {"feature": APPLYING_STORAGE})
 
         with pytest.raises(DefinitionModelMissing) as caught:
             _ = resolve_references(dataset, feature)
@@ -497,7 +491,7 @@ def test_a_pinned_definition_model_is_left_as_written_without_a_read(
 ) -> None:
     with definitions_forgotten():
         dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
-        feature = _applying(dataset, {"feature": _APPLYING_STORAGE, "run_id": "1-abc"})
+        feature = _applying(dataset, {"feature": APPLYING_STORAGE, "run_id": "1-abc"})
 
         def no_lookup(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("a pinned model reads no dataset")
@@ -507,7 +501,7 @@ def test_a_pinned_definition_model_is_left_as_written_without_a_read(
         resolutions = resolve_references(dataset, feature)
 
         assert resolutions == (
-            Resolution(where="params.model", feature=_APPLYING_STORAGE, run_id="1-abc"),
+            Resolution(where="params.model", feature=APPLYING_STORAGE, run_id="1-abc"),
         )
         assert _applied_model(feature).run_id == "1-abc"
 

@@ -20,12 +20,10 @@ from mosaic.core.pipeline.arena_index import (
     cached_arena_lookup,
 )
 from mosaic.core.pipeline.index import (
-    drifted_entries,
     feature_index_path,
     feature_run_root,
 )
 from mosaic.core.pipeline.inventory import FeatureRunRef, inventory
-from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.run import resolve_feature_identity, run_feature
 from mosaic.core.pipeline.sequence_index import (
@@ -41,6 +39,7 @@ from tests.helpers import (
     PlainFeature,
     add_track_sequences,
     convert_tracks_from_raw,
+    drifted,
     make_dataset,
     refuse_index,
     write_media_index,
@@ -235,12 +234,6 @@ def _run(ds: Dataset, feature: ArenaReader | None = None) -> tuple[Result, list[
     return result, sorted(reader.applied)
 
 
-def _drifted(ds: Dataset, result: Result) -> tuple[Entry, ...]:
-    assert result.run_id is not None
-    params = read_run_params(feature_run_root(ds, result.feature, result.run_id))
-    return drifted_entries(ds, result.feature, result.run_id, params.params)
-
-
 class TestCache:
     def test_a_layout_edit_recomputes_that_recording_only(
         self, dataset: Dataset
@@ -284,11 +277,11 @@ class TestCache:
 class TestDrift:
     def test_drift_names_the_edited_recording(self, dataset: Dataset) -> None:
         result, _ = _run(dataset)
-        assert _drifted(dataset, result) == ()
+        assert drifted(dataset, result) == ()
 
         _ = _set(dataset, B, _layout(250))
 
-        assert _drifted(dataset, result) == (B,)
+        assert drifted(dataset, result) == (B,)
 
     def test_an_inventory_scan_reads_the_run_current_then_drifted(
         self, dataset: Dataset

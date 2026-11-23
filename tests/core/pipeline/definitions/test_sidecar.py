@@ -35,7 +35,12 @@ from mosaic.core.pipeline.definitions.store import (
 from mosaic.core.pipeline.graph.resolve import toolkit_model_for_ref
 from mosaic.core.pipeline.types.data_config import PoseConfig
 from mosaic.core.pipeline.types.results import DefinitionModel, Result
-from tests.helpers import APPLYING_NAME, APPLYING_SOURCE, defined_dataset
+from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
+    APPLYING_STORAGE,
+    defined_dataset,
+)
 
 DIGEST = "a" * 64
 POSE_REF = f"{PoseConfig.__module__}:{PoseConfig.__qualname__}"
@@ -568,7 +573,7 @@ def test_the_rebuilt_params_of_a_definition_that_applies_a_model_dump_alike(
     )
     assert isinstance(own_params, type) and issubclass(own_params, Params)
     fit: dict[str, object] = {
-        "feature": "def.centered-distance__from__tracks",
+        "feature": APPLYING_STORAGE,
         "run_id": "x",
     }
 

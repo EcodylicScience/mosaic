@@ -92,6 +92,7 @@ from tests.helpers import (
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SOURCE,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
@@ -377,7 +378,6 @@ def fitted(tmp_path: Path) -> FitDataset:
     )
 
 
-DEFINITION_FIT_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
 CANARY_PREFIX = CANARY_SOURCE.partition("\nfrom pathlib import Path\n")[0] + "\n"
 """The top level of ``CANARY_SOURCE`` that notes each import, before its feature."""
 
@@ -441,7 +441,7 @@ def definition_fit(
         [
             _definition_fit_step(
                 "apply",
-                {"model": {"feature": DEFINITION_FIT_STORAGE, "run_id": fit_run_id}},
+                {"model": {"feature": APPLYING_STORAGE, "run_id": fit_run_id}},
             )
         ],
     )

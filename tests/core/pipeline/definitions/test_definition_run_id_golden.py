@@ -29,6 +29,9 @@ from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.run import compute_run_id
 from tests.helpers import (
+    APPLYING_NAME,
+    APPLYING_SOURCE,
+    APPLYING_STORAGE,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
     MINIMAL_NAME,
@@ -199,3 +202,40 @@ def test_a_comment_in_the_source_is_another_run_with_the_same_version(
 
     assert one != two
     assert one.split("-")[0] == two.split("-")[0] == "1"
+
+
+# --- an apply of a fit ----------------------------------------------------
+
+
+def _apply_run_id(
+    ds: Dataset, instance: Instance, fit: str, scope: ResolvedScope
+) -> str:
+    """The run id of the definition applying the fit run *fit* over *scope*."""
+    model = {"feature": APPLYING_STORAGE, "run_id": fit}
+    with definition_scope(ds, load=_LOAD[instance]):
+        feature = build_feature(f"def:{APPLYING_NAME}", None, {"model": model})
+    run_id, _ = compute_run_id(feature, None, None, scope)
+    return run_id
+
+
+@pytest.mark.parametrize("instance", ["declared", "loaded"])
+def test_an_apply_has_one_run_id_over_every_scope_that_reads_the_same_tracks(
+    instance: Instance, tmp_path: Path
+) -> None:
+    """An apply's id holds the fit's run id, and not the entries it covers."""
+    ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
+    variants = ("convert-trex.0.2-1111111111",)
+    first = ResolvedScope(entries={("g", "s1")}, tracks_variants=variants)
+    second = ResolvedScope(entries={("g", "s2")}, tracks_variants=variants)
+    both = ResolvedScope(entries={("g", "s1"), ("g", "s2")}, tracks_variants=variants)
+    elsewhere = ResolvedScope(
+        entries={("g", "s1")}, tracks_variants=("convert-trex.0.2-2222222222",)
+    )
+
+    ids = {
+        _apply_run_id(ds, instance, "1-abc", scope) for scope in (first, second, both)
+    }
+
+    assert len(ids) == 1
+    assert _apply_run_id(ds, instance, "1-def", first) not in ids
+    assert _apply_run_id(ds, instance, "1-abc", elsewhere) not in ids

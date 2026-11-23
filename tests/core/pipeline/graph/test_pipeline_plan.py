@@ -77,6 +77,7 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
     APPLYING_NAME,
+    APPLYING_STORAGE,
     APPLYING_SOURCE,
     SPEED_RECIPE,
     add_raw_track_files,
@@ -1267,7 +1268,6 @@ def test_the_live_pipeline_and_the_planner_agree(tracked: Dataset) -> None:
 
 
 _APPLYING_SLUG = f"def:{APPLYING_NAME}"
-_APPLYING_STORAGE = f"def.{APPLYING_NAME}__from__tracks"
 
 
 def _fit_and_apply(
@@ -1293,7 +1293,7 @@ def test_the_live_pipeline_and_the_planner_agree_on_an_apply(
         fitted = run_feature(
             dataset, cls(), scope=Scope(entries=[("g", "s2")]), track=False
         )
-        model: Document = {"feature": _APPLYING_STORAGE, "run_id": fitted.run_id}
+        model: Document = {"feature": APPLYING_STORAGE, "run_id": fitted.run_id}
         scope = Scope(entries=entries)
         live = Pipeline()
         for step in _fit_and_apply(cls, model, scope):
@@ -1339,7 +1339,7 @@ def test_the_live_pipeline_refuses_an_unpinned_model(tmp_path: Path) -> None:
     with definitions_forgotten():
         dataset = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
         cls = load_feature_definition(dataset, _APPLYING_SLUG)
-        model: Document = {"feature": _APPLYING_STORAGE}
+        model: Document = {"feature": APPLYING_STORAGE}
         live = Pipeline()
         for step in _fit_and_apply(cls, model, Scope()):
             _ = live.add(step)
@@ -1348,7 +1348,7 @@ def test_the_live_pipeline_refuses_an_unpinned_model(tmp_path: Path) -> None:
             _ = live.status(dataset)
 
         assert caught.value.reason == "unpinned"
-        assert model == {"feature": _APPLYING_STORAGE}
+        assert model == {"feature": APPLYING_STORAGE}
 
 
 def test_the_live_pipeline_refuses_a_model_of_another_feature(tmp_path: Path) -> None:
