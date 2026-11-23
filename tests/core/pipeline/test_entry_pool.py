@@ -33,6 +33,7 @@ from mosaic.core.pipeline.parallelism import (
     WorkerProcessDied,
 )
 from mosaic.runlog import ResourceReport
+from tests.helpers import CLOCK_TICK_SECONDS
 
 
 def double(value: int) -> int:
@@ -675,3 +676,92 @@ def test_a_pool_without_process_workers_walks_nothing_on_submission(
     pool.finish()
 
     assert counted.count == 0
+
+
+def _ended(pid: int) -> bool:
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _reaped(pid: int) -> bool:
+    """Whether the process is gone, which a zombie that nobody has joined is not."""
+    import psutil
+
+    return not psutil.pid_exists(pid)
+
+
+def record_pid_then_sleep_until_the_other_worker_ends(
+    pid_file: str, other_pid_file: str, seconds: float
+) -> int:
+    Path(pid_file).write_text(str(os.getpid()))
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        other = Path(other_pid_file)
+        if other.exists() and other.read_text().isdigit():
+            if _ended(int(other.read_text())):
+                break
+        time.sleep(0.05)
+    return 1
+
+
+def record_pid_then_kill_the_worker(pid_file: str, seconds: float) -> int:
+    Path(pid_file).write_text(str(os.getpid()))
+    time.sleep(seconds)
+    os._exit(1)
+
+
+ENDED_DEADLINE_SECONDS = 30.0
+
+SLEEPER_SECONDS = 20.0
+"""The longest the sleeping call waits for the dying worker's pid to end.
+
+The call returns as soon as that pid has ended. A pool that never noticed the death
+would otherwise hold the test for as long as the call sleeps.
+"""
+
+
+def test_the_cpu_figure_does_not_fall_across_a_worker_that_dies_and_is_reaped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(memory_watch, "now", lambda: clock[0])
+    watch = MemoryWatch()
+    watch.begin()
+    pool = _process_pool(watch)
+    pid_files = [tmp_path / "sleeper", tmp_path / "killed"]
+    try:
+        pool.submit(
+            1,
+            record_pid_then_sleep_until_the_other_worker_ends,
+            str(pid_files[0]),
+            str(pid_files[1]),
+            SLEEPER_SECONDS,
+        )
+        pool.submit(2, record_pid_then_kill_the_worker, str(pid_files[1]), 1.5)
+        deadline = time.monotonic() + ENDED_DEADLINE_SECONDS
+        while not all(path.exists() for path in pid_files):
+            assert time.monotonic() < deadline, "a worker never began its call"
+            time.sleep(0.05)
+        before = watch.cpu_seconds()
+
+        with pytest.raises(WorkerProcessDied):
+            pool.finish()
+
+        pids = [int(path.read_text()) for path in pid_files]
+        deadline = time.monotonic() + ENDED_DEADLINE_SECONDS
+        while not all(_reaped(pid) for pid in pids):
+            assert time.monotonic() < deadline, "a worker was not reaped by the pool"
+            time.sleep(0.05)
+        clock[0] += memory_watch.ESTIMATE_SAMPLE_INTERVAL_SECONDS + 1.0
+        sample = watch.sample()
+        after = watch.cpu_seconds()
+    finally:
+        pool.close()
+
+    assert sample is not None
+    assert sample.spawned_workers == 0
+    assert after >= before - CLOCK_TICK_SECONDS

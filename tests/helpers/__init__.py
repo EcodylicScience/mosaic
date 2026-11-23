@@ -321,6 +321,7 @@ from tests.helpers.guide_recipes import (
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
     CHILD_TIMEOUT_SECONDS,
+    CLOCK_TICK_SECONDS,
     SLEEPER_COMMAND,
     LineChildren,
     appender_program,
@@ -708,6 +709,7 @@ __all__ = [
     "noting_definition_loads",
     "plan_refused",
     "CHILD_TIMEOUT_SECONDS",
+    "CLOCK_TICK_SECONDS",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",
     "CI_IDENTITY_MODULES",

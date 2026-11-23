@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -40,9 +41,10 @@ from mosaic.core.pipeline.parallelism import (
 )
 from mosaic.core.pipeline.run import run_feature
 from mosaic.run_cost import read_run_cost
-from mosaic.runlog import read_run, run_log_dir, run_log_path
+from mosaic.runlog import parse_instant, read_run, run_log_dir, run_log_path
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
+    CLOCK_TICK_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
     REPO_ROOT,
     HoldsOnSequences,
@@ -61,6 +63,17 @@ class _KillsOnSeqB(ParallelFeature):
 
     name = "prov-parallel-kills"
     kill_on = ("seq_b",)
+
+
+class _MarksThenKillsOnSeqB(_KillsOnSeqB):
+    """Touches ``killed`` in the hold directory just before it ends its process."""
+
+    name = "prov-parallel-kills-marked"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) in self.kill_on:
+            (Path(os.environ[HOLD_DIRECTORY_VARIABLE]) / "killed").touch()
+        return super().apply(df)
 
 
 class HoldsOnSeqBC(HoldsOnSequences):
@@ -145,6 +158,26 @@ def test_a_rerun_after_a_dead_worker_finishes_the_same_run(tmp_path: Path) -> No
     assert len(kept) == len(_SEQUENCES)
 
 
+def _assert_cpu_holds_after(ds: Dataset, execution_id: str, instant: float) -> None:
+    """The run's last CPU figure is at least each one written before *instant*.
+
+    *instant* is a ``time.time()`` reading. The reports after it read a membership
+    whose workers were killed, and are not compared with each other.
+    """
+    events = _events(ds, execution_id, "resources")
+    earlier: list[float] = []
+    for event in events:
+        written = parse_instant(str(event["t"]))
+        assert written is not None
+        if written.timestamp() < instant:
+            earlier.append(float(str(event["cpu_seconds"])))
+    assert earlier, "no resources event was written before the kill"
+    last = parse_instant(str(events[-1]["t"]))
+    assert last is not None
+    assert last.timestamp() >= instant, "no resources event was written after the kill"
+    assert float(str(events[-1]["cpu_seconds"])) >= max(earlier) - CLOCK_TICK_SECONDS
+
+
 _CANCELLED_CHILD = """
 import sys
 from mosaic.core.dataset import Dataset
@@ -172,13 +205,17 @@ except WorkerProcessDied:
 """
 
 
-def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
-    tmp_path: Path,
-) -> None:
-    ds = _dataset(tmp_path)
-    marks = tmp_path / "marks"
-    marks.mkdir()
-    execution_id = "TESTPARALLELCANCEL"
+def _cancel_held_child(
+    ds: Dataset, marks: Path, execution_id: str
+) -> tuple[int, float]:
+    """Run a process-mode run in its own process group and cancel it while held.
+
+    Both workers hold an entry when the group is signalled.
+
+    Returns:
+        The child's exit status and the ``time.time()`` reading taken just before
+        the signal.
+    """
     child = subprocess.Popen(
         [sys.executable, "-c", _CANCELLED_CHILD, str(ds.manifest_path), execution_id],
         env={**os.environ, HOLD_DIRECTORY_VARIABLE: str(marks)},
@@ -191,12 +228,23 @@ def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
             CHILD_TIMEOUT_SECONDS,
             "both workers never began a held entry",
         )
+        signalled = time.time()
         os.killpg(child.pid, signal.SIGTERM)
-        status = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+        return child.wait(timeout=CHILD_TIMEOUT_SECONDS), signalled
     finally:
         if child.poll() is None:
             os.killpg(child.pid, signal.SIGKILL)
             _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+
+
+def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    execution_id = "TESTPARALLELCANCEL"
+    status, _ = _cancel_held_child(ds, marks, execution_id)
 
     assert status == 3
     run_dir = run_log_dir(ds.base_dir)
@@ -440,6 +488,42 @@ def test_the_pool_is_shut_down_when_the_run_fails_for_another_reason(
         )
 
     assert True in shutdowns
+
+
+def test_the_cpu_figure_does_not_fall_across_the_cancel_of_a_process_group(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    execution_id = "TESTPARALLELCANCELCPU"
+
+    status, signalled = _cancel_held_child(ds, marks, execution_id)
+
+    assert status == 3
+    _assert_cpu_holds_after(ds, execution_id, signalled)
+
+
+def test_the_cpu_figure_does_not_fall_across_a_dead_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    monkeypatch.setenv(HOLD_DIRECTORY_VARIABLE, str(marks))
+    execution_id = "TESTPARALLELDEADCPU"
+
+    with pytest.raises(WorkerProcessDied):
+        _ = run_feature(
+            ds,
+            _MarksThenKillsOnSeqB(),
+            parallel_workers=2,
+            parallel_mode="process",
+            execution_id=execution_id,
+        )
+
+    killed = (marks / "killed").stat().st_mtime
+    _assert_cpu_holds_after(ds, execution_id, killed)
 
 
 # --- the admission gate -----------------------------------------------------------

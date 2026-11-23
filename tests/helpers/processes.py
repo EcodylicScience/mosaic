@@ -42,6 +42,9 @@ test fails instead of holding the run. ``pytest-timeout`` is not a dependency,
 so this bound is the only one.
 """
 
+CLOCK_TICK_SECONDS: Final[float] = 0.01
+"""The resolution of a ``/proc`` CPU time, which a figure compared across two reads may lose."""
+
 
 def read_line[T: (str, bytes)](
     process: subprocess.Popen[T], timeout: float = CHILD_TIMEOUT_SECONDS
