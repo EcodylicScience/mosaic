@@ -672,13 +672,30 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
     `tuple`, `dict` with `str` keys, unions of these, toolkit config models such as
     `PoseConfig` and models defined in the file from the same types, with `Declared` and
     constraints at the top level of a field (`Annotated[list[str] | None,
-    Declared(...)]`) and no `Result`, `ArtifactSpec` or labels field;
+    Declared(...)]`) and no `Result`, `ArtifactSpec` or labels field, except
+    `model` (below);
   - no validator, serializer, computed field, alias, `model_config`, `model_post_init`
     or `__init__` on a params model;
   - `TrackInputs` as the inputs class for a feature that reads `X` and `Y`, and
     `Inputs[TrackInput | Result]` (the template's) otherwise, so the feature reads
     tracks, another feature's output or both. A recipe refuses a `TrackInputs` class
-    after a feature that writes no `X` and `Y`, such as `keypoint-kinematics`.
+    after a feature that writes no `X` and `Y`, such as `keypoint-kinematics`;
+  - to apply its own fit in a later step, a feature that sets `fits = True` declares
+    `model: Annotated[DefinitionModel | None, Declared(...)] = None`
+    (`mosaic.core.pipeline.types`) and reads the fit's state in `load_state` from
+    `artifact_paths.get("model", run_root)`. The recipe fits in one step and names it
+    as `model` in another, `"params": {"model": {"step": "fit"}}`, both over the same
+    inputs. A step given a `model` applies it, and a `load_state` that reads
+    `run_root` alone is refused with `definition_model_refused` (`not_loaded`). Params
+    written by hand name the fit's run id, `{"feature": "def.<name>__from__<inputs>",
+    "run_id": "<run id>"}`, the fit's storage folder. A `model` without a run id is
+    refused with `definition_model_missing` (`unpinned`) and its `detail.candidates`
+    list the fits of the version. A fit of another version is refused with
+    `definition_model_refused` (`other_version`): fit again, or pin the step to
+    `def:<name>@<digest>`. `load_state` reads only the files `save_state` wrote: a
+    digest of those files recomputes the apply's entries when a fit is written again
+    under the same run id. A fit over some entries sets `scope_dependent = True`. Its
+    run id then names them and differs from the run id of a fit over every entry.
 
   A definition is Python that runs with the privileges of whoever runs a step naming it,
   with no sandbox. Planning, validation and every other read import none of it. `mosaic

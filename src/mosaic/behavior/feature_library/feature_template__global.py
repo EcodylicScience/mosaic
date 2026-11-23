@@ -16,7 +16,27 @@ model, save_state() persists it, and load_state() restores it to skip re-fitting
 apply() then maps per-sequence data using the fitted model.
 
 Set scope_dependent = False unless outputs change depending on which sequences
-are in scope (most global features are scope-independent once fitted).
+are in scope (most global features are scope-independent once fitted). A fit
+over some entries declares scope_dependent = True: its run id then names the
+entries it fit on, and a fit over a subset does not share a run id with a fit
+over every entry.
+
+To apply a fit in another step, the recipe fits in one step and names that step
+as `model` in a second step of the same feature:
+
+    {"id": "fit", "type": "feature", "feature": "def:my-global-feature",
+     "inputs": [{"step": "kinematics"}]},
+    {"id": "apply", "type": "feature", "feature": "def:my-global-feature",
+     "inputs": [{"step": "kinematics"}],
+     "params": {"model": {"step": "fit"}}}
+
+`load_state` then receives the fit's run root as `artifact_paths["model"]` and
+reads the saved model from it. Params written by hand name the fit's `run_id` in
+`model`, and a `model` without one is refused. A built-in feature declares its
+own artifact subclass for `model` instead of `DefinitionModel`. `load_state`
+reads only the files `save_state` wrote: a file that `fit` leaves in the run
+root is not part of the fit's recorded state, and a change to it does not
+recompute the apply.
 
 See GlobalTSNE and GlobalWardClustering for real examples.
 """
@@ -31,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.pipeline.types import (
+    DefinitionModel,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -45,6 +66,7 @@ from .helpers import feature_columns, meta_columns, write_bundle
 # from .registry import register_feature  # <-- uncomment when ready
 
 _RANDOM_STATE_DESCRIPTION = "Random seed for the fit."
+_MODEL_DESCRIPTION = "The fit to apply. Unset, the step fits its own model."
 
 
 @final
@@ -94,6 +116,7 @@ class MyGlobalFeature:
         """Global feature template parameters."""
 
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+        model: Annotated[DefinitionModel | None, Declared(_MODEL_DESCRIPTION)] = None
 
     def __init__(
         self,
@@ -112,8 +135,8 @@ class MyGlobalFeature:
         artifact_paths: dict[str, Path],
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
-        # Check for cached model from a previous run
-        cached_path = run_root / "model.joblib"
+        # An apply reads the fit it names. A step that fits reads its own run root.
+        cached_path = artifact_paths.get("model", run_root) / "model.joblib"
         if cached_path.exists():
             bundle = joblib.load(cached_path)
             self._model = bundle["model"]

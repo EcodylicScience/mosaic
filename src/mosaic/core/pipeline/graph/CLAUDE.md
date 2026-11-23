@@ -113,6 +113,18 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   beside the kind. A params reference is a `ParamsStepRef`; a step's `inputs` and
   `tracks` stay `StepRef`, which takes neither, and a params reference to any other
   site is refused for carrying one.
+- The `model` of a `def:` step typed `DefinitionModel | None` is a reference site that
+  names a fit of the step's own definition (`definition_model_field`, `resolve.py`). A
+  `{"step": ...}` there substitutes as a `Result` does, `{feature, run_id}` of the fit's
+  storage, and takes no `pattern`, which validation refuses before the build
+  (`_definition_model_reference_problems`). The step it names must write the storage of
+  the referring step, be a fit and not an apply, and run the same version
+  (`_definition_model_problems`, which also refuses literal params that name no run).
+  Whether the run exists is the plan's question, asked of a bound or pinned fit through
+  the lookups, and an unreachable link is a `link_unreachable` problem
+  (`_definition_model_run_problems`, `plan.py`). The refusal texts are in
+  `definitions/fit_run.py`, and a plan and a run word each case alike
+  (`tests/core/pipeline/definitions/test_planning.py`).
 - `Request.step_scopes` narrows single steps, and `save_request` leaves the key out
   when it is empty, so such a request file reads in an older mosaic. A step's target
   is the plan's entries narrowed by its scope (`step_target`), and its identity,

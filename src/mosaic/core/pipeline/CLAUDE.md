@@ -22,13 +22,13 @@ are in `graph/CLAUDE.md`.
   (`tests/core/test_irregular_time_notices.py`).
 - **A read site uses a per-kind lookup, and a write site an own-address function.** A
   dataset reads linked data through `tracks_rows`, `feature_rows`, `feature_run_roots`,
-  `feature_run_file`, `readable_feature_storages`, `frame_rows`, `frame_run_file`,
-  `label_series_rows`, `labels_rows`, `readable_label_kinds` and `run_coverage`, which
-  walk `Dataset.lookup_order(kind)`. A site that writes, removes or reconciles stays on
-  `feature_run_root`, `feature_index_path`, `read_tracks_index`, `tracks_table_path`,
-  `frames_run_root`, `list_frame_runs`, `model_index_path`, `read_label_series` and
-  `read_labels_index`. A linked dataset is then never written
-  (`tests/meta/test_link_reads.py` names both sets).
+  `feature_run_file`, `model_state_root`, `readable_feature_storages`, `frame_rows`,
+  `frame_run_file`, `label_series_rows`, `labels_rows`, `readable_label_kinds` and
+  `run_coverage`, which walk `Dataset.lookup_order(kind)`. A site that writes, removes
+  or reconciles stays on `feature_run_root`, `feature_index_path`,
+  `read_tracks_index`, `tracks_table_path`, `frames_run_root`, `list_frame_runs`,
+  `model_index_path`, `read_label_series` and `read_labels_index`. A linked dataset is
+  then never written (`tests/meta/test_link_reads.py` names both sets).
 - **A lookup passes `merge_linked_rows` the path columns it makes absolute.** A linked
   row's cell names a file of its own dataset, and an own cell stays as stored. The
   tracks lookup passes `TRACKS_ROWS_PATH_COLUMNS` (`abs_path` and the columns the
@@ -42,7 +42,9 @@ are in `graph/CLAUDE.md`.
   decides whether data is computed again, and an answer that a reachable dataset already
   gives does not raise it.
 - **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
-  (`tests/core/pipeline/test_unpinned_result_rule.py`).
+  (`tests/core/pipeline/test_unpinned_result_rule.py`). A `DefinitionModel` is the
+  exception: an unpinned one is refused, naming the candidate fits
+  (`definitions/fit_run.py`), since an apply reads one fit.
 - **A lock the filesystem refuses raises `IndexLockUnsupported`**
   (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write
   (`tests/core/pipeline/test_index_lock_capability.py`). The lock serializes writers
@@ -237,6 +239,20 @@ are in `graph/CLAUDE.md`.
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
+- A step that applies a fit through `model` records the fit's state in
+  `consumed_model_state`. A fit writes `state_digest` into `fit_scope.json` right after
+  `save_state`: a blake2b over the files that `save_state` created or changed. The run
+  root is listed before and after it (`list_run_root`, which leaves out the engine's
+  files: the claim marker, the run's `params.json`, `.identity_scheme` and
+  `fit_scope.json`, and temporary files) and digested by `saved_state_digest`
+  (`fit_scope.py`). The run reads the fit's current digest once
+  (`_current_model_state`), and `_servable` compares it with each cached row's cell. A
+  row records the digest of the state it read. A fit written again under its run id
+  then recomputes the entries. A row and a fit that both predate the digest are served,
+  with one warning. The cell is blank on a fit's rows, and the digest stays out of
+  `run_id`. The contract: an apply reads only the files `save_state` wrote, since a file
+  that `fit` leaves in the run root is outside the digest
+  (`tests/core/pipeline/test_model_state_drift.py`).
 - `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four
   channels, given the run's `RunParams`: the declared roots, the tracks cell and the
   upstreams' roots cell, each built as `build_manifest` builds it, and for a run that

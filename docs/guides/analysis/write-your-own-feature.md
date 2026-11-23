@@ -210,13 +210,14 @@ Start from the per-sequence template above, with these differences:
   (`tuple[T, ...]` or a fixed length) or a `dict` with `str` keys of these types; a
   union of them; a toolkit config model such as `PoseConfig`; or a model defined in the
   file from the same types, subclassing `DeclaredModel` or `NestedParams`. A reference
-  to another run (`Result`, `ArtifactSpec`, a labels source) is refused. Constraints
-  (`gt`, `ge`, `lt`, `le`, `multiple_of`, `min_length`, `max_length`, `pattern`),
-  `Declared` and `HASH_EXCLUDE` go at the top level of a field: `Annotated[list[str] |
-  None, Declared(...)]`. `Optional[Annotated[list[str], Declared(...)]]` is refused.
-  Describe a field with `Declared`, because `Field(description=...)` is refused. `Field`
-  takes a default, a default factory and the constraints above, and any other argument
-  is refused.
+  to another run (`Result`, `ArtifactSpec`, a labels source) is refused, except the
+  field `model` of a feature that fits ([below](#apply-a-fit-in-another-step)).
+  Constraints (`gt`, `ge`, `lt`, `le`, `multiple_of`, `min_length`, `max_length`,
+  `pattern`), `Declared` and `HASH_EXCLUDE` go at the top level of a field:
+  `Annotated[list[str] | None, Declared(...)]`.
+  `Optional[Annotated[list[str], Declared(...)]]` is refused. Describe a field with
+  `Declared`, because `Field(description=...)` is refused. `Field` takes a default, a
+  default factory and the constraints above, and any other argument is refused.
 - **Leave the params models plain.** No validator, serializer, computed field, alias,
   `model_config`, `model_post_init` or `__init__`, on `Params` or on a model it
   contains. Planning rebuilds the model from its fields alone, and each of these
@@ -231,6 +232,58 @@ Start from the per-sequence template above, with these differences:
 
 The class must also build as `MyFeature(MyFeature.Inputs(...), None)`, as the template
 does.
+
+### Apply a fit in another step
+
+A definition that sets `fits = True` can apply its own fit in a later step. Declare a
+field named `model`, the one reference a definition may declare, and read the fit's
+state from the run root that the step receives as `artifact_paths["model"]`:
+
+```python
+from mosaic.core.pipeline.types import DefinitionModel
+
+class Params(Params):
+    model: Annotated[DefinitionModel | None, Declared("The fit to apply.")] = None
+
+def load_state(self, run_root, artifact_paths, dependency_lookups) -> bool:
+    path = artifact_paths.get("model", run_root) / "model.joblib"
+    ...
+```
+
+A recipe fits in one step and names that step as `model` in another:
+
+```json
+{"id": "fit", "type": "feature", "feature": "def:my-feature",
+ "inputs": [{"step": "kinematics"}]},
+{"id": "apply", "type": "feature", "feature": "def:my-feature",
+ "inputs": [{"step": "kinematics"}], "params": {"model": {"step": "fit"}}}
+```
+
+- **A step given a `model` applies it and fits nothing.** A `load_state` that reads
+  the state from `run_root` alone finds none, and the run is refused with
+  `definition_model_refused` (reason `not_loaded`).
+- **Params written by hand name the fit's `run_id`**, as `{"feature":
+  "def.my-feature__from__<inputs>", "run_id": "<run id>"}`. The `feature` is the
+  storage folder of the fit under `features/`, which names the fit's inputs. A fit over
+  `keypoint-kinematics` stores under
+  `def.my-feature__from__keypoint-kinematics__from__tracks`. A `model` without a run id
+  is refused with `definition_model_missing` (reason `unpinned`), and its message and
+  `detail.candidates` list the fits of this version. The reasons `missing` (no such
+  run) and `unfitted` (the fit has not saved its state) share the code.
+- **A fit of another version is refused** with `definition_model_refused` (reason
+  `other_version`). Fit again with the current version, or pin the step to the version
+  that fitted it as `def:my-feature@<digest>`. A `model` that names a run of another
+  feature or a fit over other inputs is refused with `other_feature`, since an apply
+  reads the same inputs as its fit. A run that applies a model itself is refused with
+  `is_apply`.
+- **`load_state` reads only the files `save_state` wrote.** Mosaic records a digest of
+  those files with the fit. A fit written again under the same run id recomputes the
+  entries of the apply, and a file that `fit` leaves in the run root is not covered.
+- **A fit over some entries sets `scope_dependent = True`.** Its run id then names the
+  entries it fit on. Without it, a fit over a subset has the run id of a fit over every
+  entry, and whichever ran first is the fit both apply.
+- **A fit in a linked dataset** is read through the link, and an apply compares against
+  it there.
 
 ### Trust
 

@@ -8,6 +8,39 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature definition applies its fit through `model`
+
+No existing run id, sidecar or golden file moves. A definition that sets `fits = True`
+may declare the params field `model` as `DefinitionModel | None`
+(`mosaic.core.pipeline.types`), a reference to one fit run of the definition itself. A
+step given a `model` applies that fit and fits nothing, and its `load_state` reads the
+state from `artifact_paths["model"]`. A recipe names the fit step,
+`"model": {"step": "fit"}`, and params written by hand name the fit's `run_id`. The
+declaration check admits `model`, where it refused every reference to another run.
+
+Two errors refuse a reference that leads to no usable fit, each with a `reason`.
+`definition_model_missing` has the reasons `unpinned` (no `run_id`, with the fits of the
+version in `detail.candidates`), `missing` (no such run) and `unfitted` (the fit has not
+saved its state). `definition_model_refused` has `other_feature`, `is_apply`,
+`other_version` (another version of the definition made the fit) and `not_loaded` (the
+step's `load_state` returned `False`). A fit in a linked dataset is read and compared
+through the link. While a link that provides features is unreachable, `missing`,
+`unfitted` and `unpinned` without a candidate raise `LinkUnreachableError` instead.
+
+A fit records a digest of the state its `save_state` wrote as the `state_digest` key of
+`fit_scope.json`, and each feature row that read a `model` records the digest it read in
+the new `consumed_model_state` column of the index. An apply of a fit written again
+under its run id recomputes its cached entries, and `mosaic inventory` and a plan name
+those entries as `complete-but-drifted`. An apply row and its fit from before the digest
+record none and are served, and the run warns that a fit written again under that run
+id goes undetected: remove the run and fit it again to record one. An old row against a
+fit that records a digest recomputes once. A `fit_scope.json` that is not a JSON object
+raises `FitStateUnreadable`, as does one whose `state_digest` is not a string
+(`error_kind` `conflict`, `detail` `feature` and `run_id`), before any entry runs. An
+apply reads from its fit's run root only the files `save_state` wrote. A toolkit from
+before the column drops it when it rewrites an index, and the next run recomputes those
+entries once.
+
 ## 0.26.0: linked datasets, indexing tables in place and copying a model run root
 
 ### Indexing tables in place and copying a model run root
