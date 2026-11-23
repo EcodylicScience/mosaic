@@ -74,7 +74,9 @@ from tests.helpers import (
     NARROWING_SOURCE,
     PlainFeature,
     add_track_sequences,
+    applying_instance,
     defined_dataset,
+    fit_over,
     forget_imported_definitions,
     imported_definitions,
     make_dataset,
@@ -1035,33 +1037,20 @@ class _ModelRuns:
     other_version: str
 
 
-def _fit_run(ds: Dataset, slug: str, entry: tuple[str, str]) -> str:
-    """The run id of a fit of *slug* over *entry* alone."""
-    fitted = run_feature(
-        ds,
-        load_feature_definition(ds, slug)(),
-        scope=Scope(entries=[entry]),
-        track=False,
-    )
-    assert fitted.run_id is not None
-    return fitted.run_id
-
-
 @pytest.fixture
 def model_runs(tmp_path: Path) -> _ModelRuns:
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
     first = f"{APPLYING_SLUG}@{_digest(APPLYING_SOURCE)}"
-    fit = _fit_run(ds, first, ("g", "s1"))
-    unfitted = _fit_run(ds, first, ("g", "s2"))
+    fit = fit_over(ds, first, ("g", "s1"))
+    unfitted = fit_over(ds, first, ("g", "s2"))
     (feature_run_root(ds, APPLYING_STORAGE, unfitted) / "fit_scope.json").unlink()
-    with definition_scope(ds, load=True):
-        applying = build_feature(
-            first, None, {"model": {"feature": APPLYING_STORAGE, "run_id": fit}}
-        )
+    applying = applying_instance(
+        ds, {"feature": APPLYING_STORAGE, "run_id": fit}, first
+    )
     applied = run_feature(ds, applying, track=False)
     assert applied.run_id is not None
     second = define_feature(ds, APPLYING_NAME, APPLYING_SECOND_SOURCE)
-    other_version = _fit_run(ds, f"{APPLYING_SLUG}@{second.digest}", ("g", "s1"))
+    other_version = fit_over(ds, f"{APPLYING_SLUG}@{second.digest}", ("g", "s1"))
     _ = define_feature(ds, APPLYING_NAME, APPLYING_SOURCE)
     forget_imported_definitions()
     return _ModelRuns(ds, fit, unfitted, applied.run_id, other_version)

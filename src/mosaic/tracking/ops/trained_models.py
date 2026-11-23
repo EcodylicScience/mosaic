@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from mosaic.core.dataset import LinkUnreachableError
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, index_records
@@ -197,17 +196,12 @@ def linked_training_complete(ds: Dataset, kind: str, run_id: str) -> bool:
     for linked in ds.lookup_order("models", fresh=True):
         if training_is_complete(linked.dataset, kind, run_id):
             return True
-    offline = ds.unreachable_links("models")
-    if offline:
-        names = ", ".join(
-            f"{link.id!r} at {ds.resolve_link_path(link)}" for link in offline
-        )
-        msg = (
-            f"Cannot tell whether {run_id} was already trained: {names} provides "
-            "models and is not reachable. Training now would compute again what "
-            "it may hold. Try again once it is reachable."
-        )
-        raise LinkUnreachableError(msg, links=offline)
+    ds.refuse_while_unreachable(
+        "models",
+        ds.unreachable_links("models"),
+        f"whether {run_id} was already trained",
+        "Training now would compute again what it may hold.",
+    )
     return False
 
 

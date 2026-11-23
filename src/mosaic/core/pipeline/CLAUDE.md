@@ -247,28 +247,28 @@ are in `graph/CLAUDE.md`.
   `fit_scope.json`, and temporary files) and digested by `saved_state_digest`
   (`fit_scope.py`). The run reads the fit's current digest once
   (`_current_model_state`), and `_servable` compares it with each cached row's cell. A
-  row records the digest of the state it read. A fit written again under its run id
-  then recomputes the entries. A row and a fit that both predate the digest are served,
-  with one warning. The cell is blank on a fit's rows, and the digest stays out of
-  `run_id`. The contract: an apply reads only the files `save_state` wrote, since a file
-  that `fit` leaves in the run root is outside the digest
+  row records the digest of the state it read. A fit written again under its run id then
+  recomputes the entries. A row and a fit that both predate the digest are served, with
+  one warning. The cell is blank on a fit's rows, and the digest stays out of `run_id`.
+  The contract: an apply reads only the files `save_state` wrote, since a file that
+  `fit` leaves in the run root is outside the digest
   (`tests/core/pipeline/test_model_state_drift.py`).
-- `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four
-  channels, given the run's `RunParams`: the declared roots, the tracks cell and the
-  upstreams' roots cell, each built as `build_manifest` builds it, and for a run that
-  records a `model` the fit-state cell, against the digest `DriftReads.model_state`
-  reads once per fit through `model_state_root`. That digest is blank under an
-  unreachable link, for an unreadable `fit_scope.json`, and for a pattern that matches
-  more than one file of the fit's root (`AmbiguousArtifactFile`), since a status read
-  does not raise. One known side is drift, and the plan names every entry
-  `run_feature` recomputes. The neighbors cell stays `run_feature`'s
-  (`TestDriftedEntries` in `tests/core/pipeline/test_tracks_source_staleness.py`). An
-  entry the inputs no longer resolve, such as one dropped from the tracks index, is
-  not drift: every input holds it for a run that intersects its inputs, and any input
-  for a stacked run, as `_scope.stacks_inputs` in `params.json` records
-  (`stacks_inputs`, `loading.py`). A file without the key counts any input, so a false
-  drift lasts one run, where every input would hide a stacked run's drift. Without
-  params it compares the declared roots alone.
+- `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four channels,
+  given the run's `RunParams`: the declared roots, the tracks cell and the upstreams'
+  roots cell, each built as `build_manifest` builds it, and for a run that records a
+  `model` the fit-state cell, against the digest `DriftReads.model_state` reads once per
+  fit through `model_state_root`. That digest is blank under an unreachable link, for an
+  unreadable `fit_scope.json`, and for a pattern that matches more than one file of the
+  fit's root (`AmbiguousArtifactFile`), since a status read does not raise. One known
+  side is drift, and the plan names every entry `run_feature` recomputes. The neighbors
+  cell stays `run_feature`'s (`TestDriftedEntries` in
+  `tests/core/pipeline/test_tracks_source_staleness.py`). An entry the inputs no longer
+  resolve, such as one dropped from the tracks index, is not drift: every input holds it
+  for a run that intersects its inputs, and any input for a stacked run, as
+  `_scope.stacks_inputs` in `params.json` records (`stacks_inputs`, `loading.py`). A
+  file without the key counts any input, so a false drift lasts one run, where every
+  input would hide a stacked run's drift. Without params it compares the declared roots
+  alone.
 - `arenas` is a composition root outside `SourceRoot`: an entry's layout digest
   (`arenas_compositions`, `arena_index.py`), read only where a feature declares it in
   `consumed_roots`. `build_manifest(consumed_roots=...)`, `resolve_feature_identity`

@@ -53,6 +53,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline._utils import LabelRevisionTerm
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
+from mosaic.core.pipeline.definitions.store import MODEL_FIELD
 from mosaic.core.pipeline.index import (
     DatasetRoots,
     ModelReference,
@@ -383,7 +384,7 @@ class RunParams(BaseModel):
             record without one, as a ``DefinitionModel`` is. ``None`` when the
             run records no ``model`` or one that names no feature or no run.
         """
-        model = self.params.get("model")
+        model = self.params.get(MODEL_FIELD)
         if not is_str_mapping(model):
             return None
         feature = model.get("feature")

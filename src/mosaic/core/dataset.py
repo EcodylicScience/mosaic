@@ -3350,6 +3350,51 @@ class Dataset:
         """
         return self._unreachable.get(kind, ())
 
+    def fresh_unreachable_links(self, kind: LinkedKind) -> tuple[DatasetLink, ...]:
+        """The links providing *kind* that a lookup made now cannot open.
+
+        The links are opened again rather than taken from an earlier lookup,
+        because a link that opened for an earlier read may be offline by now.
+        The lookup it makes is the one :meth:`unreachable_links` reports from.
+
+        Args:
+            kind: The kind whose links are opened.
+
+        Returns:
+            The links skipped as unreachable, in declaration order.
+        """
+        _ = self.lookup_order(kind, fresh=True)
+        return self.unreachable_links(kind)
+
+    def refuse_while_unreachable(
+        self,
+        kind: LinkedKind,
+        offline: Sequence[DatasetLink],
+        question: str,
+        consequence: str,
+    ) -> None:
+        """Refuse to answer *question* while a link in *offline* may hold the answer.
+
+        Args:
+            kind: The kind of data the links in *offline* provide.
+            offline: The unreachable links that provide *kind*.
+            question: What cannot be decided, completing ``Cannot tell``.
+            consequence: A sentence saying what answering "no" would cause.
+
+        Raises:
+            LinkUnreachableError: *offline* names a link.
+        """
+        if not offline:
+            return
+        names = ", ".join(
+            f"{link.id!r} at {self.resolve_link_path(link)}" for link in offline
+        )
+        msg = (
+            f"Cannot tell {question}: {names} provides {kind} and is not "
+            f"reachable. {consequence} Try again once it is reachable."
+        )
+        raise LinkUnreachableError(msg, links=offline)
+
     def _warn_unreachable(self, link: DatasetLink) -> None:
         """Name *link* on stderr as unreachable, once while it stays away."""
         if link.id in self._warned_unreachable:

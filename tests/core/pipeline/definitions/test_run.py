@@ -36,7 +36,6 @@ from mosaic.core.pipeline.fit_scope import (
     read_fit_state_digest,
     saved_state_digest,
 )
-from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.index import feature_index_path, feature_run_root
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline import run as run_module
@@ -66,8 +65,10 @@ from tests.helpers import (
     PARALLEL_APPLYING_SOURCE,
     PlainFeature,
     add_track_sequences,
+    applying_instance,
     built_by_class,
     defined_dataset,
+    distances_from_origin,
     fit_over,
     fit_result,
     make_dataset,
@@ -280,12 +281,6 @@ def test_an_applying_instance_is_predicted_without_its_scope(tmp_path: Path) -> 
 _FITTED_ENTRY: Final = ("g", "s1")
 
 
-def _distances(group: str, sequence: str, n_ids: int = 1) -> pd.Series:
-    """The distance from the origin of each row of an entry's track table."""
-    table = track_table(group, sequence, n_ids=n_ids)
-    return pd.Series(np.hypot(table["X"], table["Y"]))
-
-
 def _three_entry_dataset(tmp_path: Path, name: str, source: str) -> Dataset:
     """A dataset defining *source* whose third entry holds two individuals.
 
@@ -332,17 +327,20 @@ def test_an_apply_reads_the_state_of_the_fit_its_model_names(
     name = PARALLEL_APPLYING_NAME
     ds = _three_entry_dataset(tmp_path, name, PARALLEL_APPLYING_SOURCE)
     fit = _fit(ds, name)
-    with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{name}", None, {"model": model_reference(fit)})
+    feature = applying_instance(ds, model_reference(fit), f"def:{name}")
 
     applied = run_feature(
         ds, feature, parallel_workers=WORKERS, parallel_mode=mode, track=False
     )
 
-    fitted_mean = float(_distances(*_FITTED_ENTRY).mean())
+    fitted_mean = float(distances_from_origin(*_FITTED_ENTRY).mean())
     every_mean = float(
         pd.concat(
-            [_distances("g", "s1"), _distances("g", "s2"), _distances("g", "s3", 2)]
+            [
+                distances_from_origin("g", "s1"),
+                distances_from_origin("g", "s2"),
+                distances_from_origin("g", "s3", 2),
+            ]
         ).mean()
     )
     assert not np.isclose(fitted_mean, every_mean)
@@ -351,7 +349,7 @@ def test_an_apply_reads_the_state_of_the_fit_its_model_names(
         written = pd.read_parquet(root / f"{group}__{sequence}.parquet")
         np.testing.assert_allclose(
             written["centered"].to_numpy(),
-            (_distances(group, sequence, n_ids) - fitted_mean).to_numpy(),
+            (distances_from_origin(group, sequence, n_ids) - fitted_mean).to_numpy(),
         )
     assert not (root / "mean.pkl").exists()
     assert not (root / "fit_scope.json").exists()
@@ -404,8 +402,7 @@ def test_an_instance_built_by_its_class_with_a_model_applies_it(
     assert _fits_recorded(canary) == 1
     root = result_run_root(ds, by_class)
     assert not (root / "mean.pkl").exists()
-    with definition_scope(ds, load=True):
-        built = build_feature(slug, None, {"model": model_reference(fit)})
+    built = applying_instance(ds, model_reference(fit), slug)
     assert run_feature(ds, built, track=False).run_id == by_class.run_id
 
 
@@ -418,10 +415,7 @@ def test_an_apply_whose_load_reads_no_state_is_refused(
     ds = _three_entry_dataset(tmp_path, MISREADING_NAME, MISREADING_SOURCE)
     fit = _fit(ds, MISREADING_NAME)
     assert fit.run_id is not None
-    with definition_scope(ds, load=True):
-        feature = build_feature(
-            f"def:{MISREADING_NAME}", None, {"model": model_reference(fit)}
-        )
+    feature = applying_instance(ds, model_reference(fit), f"def:{MISREADING_NAME}")
     execution_id = new_execution_id()
 
     with pytest.raises(DefinitionModelRefused) as caught:
@@ -460,8 +454,7 @@ def test_a_definition_model_naming_no_run_is_not_resolved(
     """A caller that skips the checks and pinning reaches the dependencies."""
     ds = defined_dataset(tmp_path, {APPLYING_NAME: APPLYING_SOURCE})
     model = {"feature": APPLYING_STORAGE}
-    with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{APPLYING_NAME}", None, {"model": model})
+    feature = applying_instance(ds, model)
     monkeypatch.setattr(run_module, "_refuse_unusable_model", _checks_nothing)
     monkeypatch.setattr(run_module, "resolve_references", _pins_nothing)
 
@@ -474,8 +467,7 @@ def test_a_definition_model_naming_no_run_is_not_resolved(
 
 def _unpinned_apply(ds: Dataset, slug: str) -> Feature:
     """An instance of *slug* whose ``model`` names the storage and no run."""
-    with definition_scope(ds, load=True):
-        return build_feature(slug, None, {"model": {"feature": APPLYING_STORAGE}})
+    return applying_instance(ds, {"feature": APPLYING_STORAGE}, slug)
 
 
 def _refused_unpinned(ds: Dataset, feature: Feature) -> DefinitionModelMissing:
@@ -514,10 +506,7 @@ def test_an_unpinned_model_names_the_fits_of_its_version(tmp_path: Path) -> None
     expected = _unpinned_text(", ".join(fits))
 
     before_apply = _refused_unpinned(ds, _unpinned_apply(ds, slug))
-    with definition_scope(ds, load=True):
-        pinned = build_feature(
-            slug, None, {"model": {"feature": APPLYING_STORAGE, "run_id": fits[0]}}
-        )
+    pinned = _pinned_apply(ds, slug, APPLYING_STORAGE, fits[0])
     _ = run_feature(ds, pinned, track=False)
     after_apply = _refused_unpinned(ds, _unpinned_apply(ds, slug))
 
@@ -572,10 +561,7 @@ def _refused_apply[E: Exception](
 
 def _pinned_apply(ds: Dataset, slug: str, feature: str, run_id: str) -> Feature:
     """An instance of *slug* whose ``model`` names the run *run_id* of *feature*."""
-    with definition_scope(ds, load=True):
-        return build_feature(
-            slug, None, {"model": {"feature": feature, "run_id": run_id}}
-        )
+    return applying_instance(ds, {"feature": feature, "run_id": run_id}, slug)
 
 
 def _detail(
@@ -743,8 +729,7 @@ def _apply_refusals(
     Returns:
         The apply's result, and the reason printed for each entry not served.
     """
-    with definition_scope(ds, load=True):
-        feature = build_feature(f"def:{name}", None, {"model": model_reference(fit)})
+    feature = applying_instance(ds, model_reference(fit), f"def:{name}")
     _ = capsys.readouterr()
     applied = run_feature(
         ds, feature, parallel_workers=WORKERS, parallel_mode=mode, track=False

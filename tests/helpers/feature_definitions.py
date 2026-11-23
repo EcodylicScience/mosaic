@@ -36,11 +36,16 @@ from pathlib import Path
 from types import ModuleType
 from typing import Final
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.definitions import loader
-from mosaic.core.pipeline.definitions.scope import clear_definition_caches
+from mosaic.core.pipeline.definitions.scope import (
+    clear_definition_caches,
+    definition_scope,
+)
 from mosaic.core.pipeline.graph import (
     BoundRef,
     Plan,
@@ -48,10 +53,10 @@ from mosaic.core.pipeline.graph import (
     RecipeRefused,
     plan_pipeline,
 )
-from mosaic.core.pipeline.graph.resolve import StepSpec
+from mosaic.core.pipeline.graph.resolve import StepSpec, build_feature
 from mosaic.core.pipeline.types import Feature, Result
 from tests.helpers.datasets import make_dataset
-from tests.helpers.tracks import add_track_sequences
+from tests.helpers.tracks import add_track_sequences, track_table
 
 __all__ = [
     "APPLYING_NAME",
@@ -73,9 +78,11 @@ __all__ = [
     "PARALLEL_APPLYING_SOURCE",
     "POSE_NAME",
     "POSE_SOURCE",
+    "applying_instance",
     "built_by_class",
     "defined_dataset",
     "definitions_forgotten",
+    "distances_from_origin",
     "fit_over",
     "fit_result",
     "forget_imported_definitions",
@@ -442,6 +449,38 @@ def fit_over(ds: Dataset, slug: str, entry: tuple[str, str]) -> str:
     run_id = fit_result(ds, slug, entry).run_id
     assert run_id is not None
     return run_id
+
+
+def applying_instance(
+    ds: Dataset,
+    model: Mapping[str, object],
+    slug: str = f"def:{APPLYING_NAME}",
+) -> Feature:
+    """An instance of the applying definition *slug* whose ``model`` is *model*.
+
+    The instance is built as a recipe step is, by ``build_feature`` under a
+    definition scope that loads code.
+
+    Args:
+        ds: The dataset that defines *slug*.
+        model: The ``model`` param: a mapping naming a storage and, to name a
+            run, its ``run_id``.
+        slug: The ``def:`` slug, bare or pinned to a digest.
+    """
+    with definition_scope(ds, load=True):
+        return build_feature(slug, None, {"model": dict(model)})
+
+
+def distances_from_origin(group: str, sequence: str, n_ids: int = 1) -> pd.Series:
+    """The distance from the origin of each row of an entry's track table.
+
+    Args:
+        group: The entry's group.
+        sequence: The entry's sequence.
+        n_ids: The individuals per frame of the table.
+    """
+    table = track_table(group, sequence, n_ids=n_ids)
+    return pd.Series(np.hypot(table["X"], table["Y"]))
 
 
 def defined_dataset(tmp_path: Path, sources: Mapping[str, str]) -> Dataset:

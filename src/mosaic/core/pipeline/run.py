@@ -68,7 +68,7 @@ from .column_contract import (
     declared_provides,
 )
 from .definitions.fit_run import refuse_unpinned_model, refuse_unusable_fit_run
-from .definitions.loader import applied_definition_model, definition_ref_of
+from .definitions.loader import applied_definition, definition_ref_of
 from .definitions.store import (
     DEFINITIONS_PACKAGE,
     DEFINITIONS_ROOT,
@@ -290,7 +290,7 @@ def _optional_results(feature: Feature) -> frozenset[str]:
     return names
 
 
-def model_reference(params: Params) -> ModelReference | None:
+def _model_reference(params: Params) -> ModelReference | None:
     """The pinned fit that the top-level ``model`` field of *params* names.
 
     Returns:
@@ -324,7 +324,7 @@ def _current_model_state(ds: Dataset, feature: Feature) -> str:
     Raises:
         FitStateUnreadable: The fit's ``fit_scope.json`` cannot be read.
     """
-    reference = model_reference(feature.params)
+    reference = _model_reference(feature.params)
     if reference is None:
         return ""
     root = model_state_root(ds, reference)
@@ -379,7 +379,7 @@ def _resolve_dependencies(
     from .index import latest_feature_run_root as _latest_feature_run_root
 
     params = feature.params
-    model = model_reference(params)
+    model = _model_reference(params)
     artifact_paths: dict[str, Path] = {}
     dependency_lookups: dict[str, DependencyLookup] = {}
 
@@ -1799,10 +1799,10 @@ def _refuse_unusable_model(
         LinkUnreachableError: A link that provides features is unreachable and
             may hold the fit named.
     """
-    model = applied_definition_model(feature)
-    definition = definition_ref_of(type(feature))
-    if model is None or definition is None:
+    applied = applied_definition(feature)
+    if applied is None:
         return
+    model, definition = applied
     if model.run_id is None:
         refuse_unpinned_model(ds, feature)
         return
@@ -1825,10 +1825,10 @@ def _refuse_an_unloaded_model(feature: Feature) -> None:
     Raises:
         DefinitionModelRefused: *feature* applies a fit (``not_loaded``).
     """
-    model = applied_definition_model(feature)
-    definition = definition_ref_of(type(feature))
-    if model is None or definition is None:
+    applied = applied_definition(feature)
+    if applied is None:
         return
+    model, definition = applied
     name = definition.name
     raise DefinitionModelRefused(
         name,
@@ -3322,7 +3322,7 @@ def _run_feature_impl(
             tracks_blind: set[tuple[str, str]] = set()
             # Entries served with no digest on their row or on the fit.
             model_blind: set[tuple[str, str]] = set()
-            applied_model = model_reference(feature.params)
+            applied_model = _model_reference(feature.params)
             # Only a source root can be blind. An entry without an arena layout is a
             # known state, and one that gains a layout recomputes once.
             blind_capable = sorted(

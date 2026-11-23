@@ -21,10 +21,7 @@ import pytest
 from mosaic.behavior.visualization_library.data_loading import load_tracks_and_labels
 from mosaic.core.analysis import load_feature_sequence_index, list_feature_runs
 from mosaic.core.dataset import Dataset, LinkUnreachableError, open_dataset
-from mosaic.core.pipeline.definitions.define import (
-    define_feature,
-    load_feature_definition,
-)
+from mosaic.core.pipeline.definitions.define import define_feature
 from mosaic.core.pipeline.definitions.store import (
     DefinitionModelMissing,
     DefinitionModelRefused,
@@ -111,12 +108,13 @@ from tests.helpers import (
     add_tracks_table,
     add_tracks_variant,
     add_feature_run,
-    built_by_class,
+    applying_instance,
     calms21_dataset,
     converted_source,
     copy_of,
     defined_dataset,
     definitions_forgotten,
+    distances_from_origin,
     drifted,
     feature_edge,
     forget_imported_definitions,
@@ -980,12 +978,6 @@ def _definition_copy(tmp_path: Path) -> tuple[Dataset, Dataset, str]:
     return source, copy, fit.run_id
 
 
-def _unpinned_apply(dataset: Dataset) -> Feature:
-    """An instance of the applying definition whose ``model`` names no run."""
-    cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
-    return built_by_class(cls, {"model": {"feature": APPLYING_STORAGE}})
-
-
 def test_an_unpinned_model_on_a_copy_names_the_sources_fit_by_its_link(
     tmp_path: Path,
 ) -> None:
@@ -993,7 +985,9 @@ def test_an_unpinned_model_on_a_copy_names_the_sources_fit_by_its_link(
         source, copy, run_id = _definition_copy(tmp_path)
 
         with pytest.raises(DefinitionModelMissing) as caught:
-            _ = resolve_references(copy, _unpinned_apply(copy))
+            _ = resolve_references(
+                copy, applying_instance(copy, {"feature": APPLYING_STORAGE})
+            )
 
         assert caught.value.reason == "unpinned"
         assert f"one of {run_id} (link source-{source.uuid}), or" in str(caught.value)
@@ -1008,7 +1002,9 @@ def test_an_unpinned_model_with_the_source_unreachable_is_not_missing(
         offline = take_link_offline(copy)
 
         with pytest.raises(LinkUnreachableError) as caught:
-            _ = resolve_references(offline, _unpinned_apply(offline))
+            _ = resolve_references(
+                offline, applying_instance(offline, {"feature": APPLYING_STORAGE})
+            )
 
         assert caught.value.reason == "link_unreachable"
 
@@ -1018,16 +1014,7 @@ def test_an_unpinned_model_with_the_source_unreachable_is_not_missing(
 
 def _pinned_apply(dataset: Dataset, run_id: str) -> Feature:
     """An instance of the applying definition whose ``model`` names *run_id*."""
-    cls = load_feature_definition(dataset, f"def:{APPLYING_NAME}")
-    return built_by_class(
-        cls, {"model": {"feature": APPLYING_STORAGE, "run_id": run_id}}
-    )
-
-
-def _distances(sequence: str) -> pd.Series:
-    """The distance from the origin of each row of ``g/<sequence>``'s track table."""
-    table = track_table("g", sequence)
-    return pd.Series(np.hypot(table["X"], table["Y"]))
+    return applying_instance(dataset, {"feature": APPLYING_STORAGE, "run_id": run_id})
 
 
 def test_a_pinned_model_on_a_copy_applies_the_sources_fit(tmp_path: Path) -> None:
@@ -1038,13 +1025,13 @@ def test_a_pinned_model_on_a_copy_applies_the_sources_fit(tmp_path: Path) -> Non
         applied = run_feature(copy, _pinned_apply(copy, run_id), track=False)
 
         assert applied.run_id is not None
-        fitted_mean = float(_distances("s1").mean())
+        fitted_mean = float(distances_from_origin("g", "s1").mean())
         root = feature_run_root(copy, APPLYING_STORAGE, applied.run_id)
         for _group, sequence in SOURCE_ENTRIES:
             written = pd.read_parquet(root / f"g__{sequence}.parquet")
             np.testing.assert_allclose(
                 written["centered"].to_numpy(),
-                (_distances(sequence) - fitted_mean).to_numpy(),
+                (distances_from_origin("g", sequence) - fitted_mean).to_numpy(),
             )
         assert not (root / "fit_scope.json").exists()
         assert tree_snapshot(source.get_root("features")) == before

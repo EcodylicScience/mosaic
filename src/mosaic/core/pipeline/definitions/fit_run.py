@@ -16,12 +16,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
-from mosaic.core.dataset import Dataset, LinkUnreachableError
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.definitions.loader import (
-    applied_definition_model,
-    definition_ref_of,
+    applied_definition,
 )
 from mosaic.core.pipeline.definitions.store import (
     MODEL_FIELD,
@@ -34,7 +33,6 @@ from mosaic.core.pipeline.inventory.params import read_linked_run_params
 from mosaic.core.pipeline.storage_names import derive_storage_name
 
 if TYPE_CHECKING:
-    from mosaic.core.manifest import DatasetLink
     from mosaic.core.pipeline.types.feature import Feature
     from mosaic.core.pipeline.types.results import DefinitionModel
 
@@ -54,6 +52,9 @@ type FitRunReason = Literal[
     "unpinned", "missing", "unfitted", "other_feature", "is_apply", "other_version"
 ]
 """Why a run refuses the fit run that a ``model`` reference leads to."""
+
+_FITTING_AGAIN: Final = "Fitting now would compute again a fit it may hold."
+"""What a refusal names as the cost of answering while a link is unreachable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,19 +142,22 @@ def refuse_unpinned_model(ds: Dataset, feature: Feature) -> None:
         DefinitionModelMissing: The reference names no run (``unpinned``), with
             the fits of the version as its candidates.
     """
-    model = applied_definition_model(feature)
-    definition = definition_ref_of(type(feature))
-    if model is None or model.run_id is not None or definition is None:
+    applied = applied_definition(feature)
+    if applied is None or applied[0].run_id is not None:
         return
+    model, definition = applied
     name = definition.name
     storage = derive_storage_name(feature.name, feature.inputs.storage_suffix())
     if model.feature != storage:
         raise _other_feature(name, model.feature, None, storage)
-    offline = _unreachable_links(ds)
+    offline = ds.fresh_unreachable_links("features")
     candidates = fit_run_candidates(ds, storage, definition.digest)
     if not candidates:
-        _refuse_while_unreachable(
-            ds, offline, f"whether def:{name} has a fit of this version"
+        ds.refuse_while_unreachable(
+            "features",
+            offline,
+            f"whether def:{name} has a fit of this version",
+            _FITTING_AGAIN,
         )
     message = unpinned_text(
         name, storage, [candidate.label for candidate in candidates]
@@ -196,13 +200,16 @@ def refuse_unusable_fit_run(
     run_id = model.run_id
     if run_id is None:
         return
-    offline = _unreachable_links(ds)
+    offline = ds.fresh_unreachable_links("features")
     if model.feature != storage:
         raise _other_feature(name, model.feature, run_id, storage)
     params = read_linked_run_params(ds, storage, run_id).params
     if params is None:
-        _refuse_while_unreachable(
-            ds, offline, f"whether run {run_id} of {storage} exists"
+        ds.refuse_while_unreachable(
+            "features",
+            offline,
+            f"whether run {run_id} of {storage} exists",
+            _FITTING_AGAIN,
         )
         raise DefinitionModelMissing(
             name,
@@ -233,8 +240,11 @@ def refuse_unusable_fit_run(
             other_version_text(name, f"run {run_id}", fitted_by.digest, digest),
         )
     if feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME) is None:
-        _refuse_while_unreachable(
-            ds, offline, f"whether run {run_id} of {storage} has saved its fit"
+        ds.refuse_while_unreachable(
+            "features",
+            offline,
+            f"whether run {run_id} of {storage} has saved its fit",
+            _FITTING_AGAIN,
         )
         raise DefinitionModelMissing(
             name,
@@ -315,31 +325,4 @@ def _other_feature(
         run_id,
         "other_feature",
         other_feature_text(name, feature, storage),
-    )
-
-
-def _unreachable_links(ds: Dataset) -> tuple[DatasetLink, ...]:
-    """The links providing features that cannot be opened now."""
-    _ = ds.lookup_order("features", fresh=True)
-    return ds.unreachable_links("features")
-
-
-def _refuse_while_unreachable(
-    ds: Dataset, offline: Sequence[DatasetLink], question: str
-) -> None:
-    """Refuse to answer *question* while a link in *offline* may hold the answer.
-
-    Raises:
-        LinkUnreachableError: *offline* names a link.
-    """
-    if not offline:
-        return
-    names = ", ".join(
-        f"{link.id!r} at {ds.resolve_link_path(link)}" for link in offline
-    )
-    raise LinkUnreachableError(
-        f"Cannot tell {question}: {names} provides features and is not reachable. "
-        "Fitting now would compute again a fit it may hold. Try again once it is "
-        "reachable.",
-        links=offline,
     )

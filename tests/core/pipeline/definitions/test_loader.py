@@ -16,7 +16,7 @@ from mosaic.core.pipeline.definitions.define import (
     load_feature_definition,
 )
 from mosaic.core.pipeline.definitions.loader import (
-    applied_definition_model,
+    applied_definition,
     load_definition,
     narrow_to_apply,
     register_definitions_root,
@@ -305,13 +305,16 @@ def _applying(tmp_path: Path, params: dict[str, object] | None) -> Feature:
 def test_an_instance_given_a_model_is_narrowed_to_an_apply(tmp_path: Path) -> None:
     feature = _applying(tmp_path, {"model": MODEL})
     assert _flags(feature) == (True, True)
-    expected = DefinitionModel(feature=APPLYING_STORAGE, run_id=FIT_RUN_ID)
+    expected = (
+        DefinitionModel(feature=APPLYING_STORAGE, run_id=FIT_RUN_ID),
+        DefinitionRef(APPLYING_NAME, _digest(APPLYING_SOURCE)),
+    )
 
-    assert applied_definition_model(feature) == expected
+    assert applied_definition(feature) == expected
     narrow_to_apply(feature)
 
     assert _flags(feature) == (False, False)
-    assert applied_definition_model(feature) == expected
+    assert applied_definition(feature) == expected
 
 
 def test_narrowing_is_idempotent(tmp_path: Path) -> None:
@@ -328,7 +331,7 @@ def test_an_instance_without_a_model_keeps_its_flags(tmp_path: Path) -> None:
 
     narrow_to_apply(feature)
 
-    assert applied_definition_model(feature) is None
+    assert applied_definition(feature) is None
     assert _flags(feature) == (True, True)
 
 
@@ -338,5 +341,5 @@ def test_a_built_in_is_neither_narrowed_nor_reported_as_applying() -> None:
 
     narrow_to_apply(feature)
 
-    assert applied_definition_model(feature) is None
+    assert applied_definition(feature) is None
     assert _flags(feature) == flags

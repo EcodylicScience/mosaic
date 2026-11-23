@@ -1559,8 +1559,7 @@ def _link_unreachable_problems(
         if kind is None:
             continue
         if kind not in offline:
-            _ = ds.lookup_order(kind, fresh=True)
-            offline[kind] = ds.unreachable_links(kind)
+            offline[kind] = ds.fresh_unreachable_links(kind)
         for link in offline[kind]:
             message = (
                 f"its {kind} are read through link {link.id!r} "

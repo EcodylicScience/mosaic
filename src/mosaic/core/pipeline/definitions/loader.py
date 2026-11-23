@@ -35,6 +35,7 @@ from mosaic.core.pipeline.definitions.sidecar import (
 )
 from mosaic.core.pipeline.definitions.store import (
     DEFINITIONS_PACKAGE,
+    MODEL_FIELD,
     DefinitionCorrupt,
     DefinitionInvalid,
     DefinitionMismatch,
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFINITION_MARK",
     "DefinitionFinder",
-    "applied_definition_model",
+    "applied_definition",
     "definition_ref_of",
     "load_definition",
     "narrow_to_apply",
@@ -304,10 +305,12 @@ def definition_ref_of(cls: type) -> DefinitionRef | None:
     return ref if isinstance(ref, DefinitionRef) else None
 
 
-def applied_definition_model(feature: Feature) -> DefinitionModel | None:
-    """The fit that *feature* applies, ``None`` when it applies none.
+def applied_definition(
+    feature: Feature,
+) -> tuple[DefinitionModel, DefinitionRef] | None:
+    """The fit that *feature* applies and the definition version that applies it.
 
-    It is the instance's ``model`` param when its class is a definition that
+    The fit is the instance's ``model`` param when its class is a definition that
     declares ``fits = True`` and the value is a
     :class:`~mosaic.core.pipeline.types.results.DefinitionModel`. A built-in, a
     definition that fits nothing and an instance given no model answer
@@ -317,10 +320,11 @@ def applied_definition_model(feature: Feature) -> DefinitionModel | None:
     from mosaic.core.pipeline.types.results import DefinitionModel
 
     cls = type(feature)
-    if definition_ref_of(cls) is None or getattr(cls, "fits", False) is not True:
+    ref = definition_ref_of(cls)
+    if ref is None or getattr(cls, "fits", False) is not True:
         return None
-    model: object = getattr(getattr(feature, "params", None), "model", None)
-    return model if isinstance(model, DefinitionModel) else None
+    model: object = getattr(getattr(feature, "params", None), MODEL_FIELD, None)
+    return (model, ref) if isinstance(model, DefinitionModel) else None
 
 
 def narrow_to_apply(feature: Feature) -> None:
@@ -330,7 +334,7 @@ def narrow_to_apply(feature: Feature) -> None:
     entries. Any other instance is left as it is, and a second call changes
     nothing.
     """
-    if applied_definition_model(feature) is None:
+    if applied_definition(feature) is None:
         return
     setattr(feature, "fits", False)
     setattr(feature, "scope_dependent", False)

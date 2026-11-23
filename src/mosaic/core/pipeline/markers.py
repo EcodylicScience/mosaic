@@ -214,12 +214,10 @@ the tool owns, never inside it.
 """
 
 ATOMIC_TEMP_PREFIX: Final = "."
-ATOMIC_TEMP_SUFFIX: Final = ".tmp"
-"""The affixes of the temporary file a write fills before it moves into place.
+"""The start of the name of an atomic write's temporary file."""
 
-``atomic_write`` in ``_utils`` and :func:`create_exclusive` both name their
-temporary file this way.
-"""
+ATOMIC_TEMP_SUFFIX: Final = ".tmp"
+"""The end of the name of an atomic write's temporary file."""
 
 
 def is_atomic_temp(name: str) -> bool:

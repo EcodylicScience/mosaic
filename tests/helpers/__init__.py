@@ -124,8 +124,9 @@ What lives where:
   through ``model``, a refit of it over moved tracks, the reasons a run printed
   for the entries it did not serve, the fit-state digest each row of an apply
   records, and the entries a plan reports as drifted.
-- ``feature_definitions``: the sources of feature definitions, and a dataset with
-  tracks that defines them.
+- ``feature_definitions``: the sources of feature definitions, a dataset with
+  tracks that defines them, an instance of the applying definition for a ``model``
+  mapping, and the distance from the origin of each row of an entry's tracks.
 - ``trees``: snapshots and file digests of a directory tree, and the assertion
   that a call left one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
@@ -192,9 +193,11 @@ from tests.helpers.feature_definitions import (
     PARALLEL_APPLYING_SOURCE,
     POSE_NAME,
     POSE_SOURCE,
+    applying_instance,
     built_by_class,
     defined_dataset,
     definitions_forgotten,
+    distances_from_origin,
     fit_over,
     fit_result,
     forget_imported_definitions,
@@ -693,9 +696,11 @@ __all__ = [
     "PARALLEL_APPLYING_SOURCE",
     "POSE_NAME",
     "POSE_SOURCE",
+    "applying_instance",
     "built_by_class",
     "defined_dataset",
     "definitions_forgotten",
+    "distances_from_origin",
     "fit_over",
     "fit_result",
     "forget_imported_definitions",
