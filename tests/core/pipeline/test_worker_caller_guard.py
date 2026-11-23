@@ -22,6 +22,8 @@ from pathlib import Path
 import psutil
 import pytest
 
+from tests.helpers import process_alive
+
 POLL_DEADLINE_SECONDS = 15.0
 
 CALLER_PRELUDE = textwrap.dedent(
@@ -141,14 +143,6 @@ START_SCRIPT = textwrap.dedent(
 START_METHODS = ["spawn", "fork", "forkserver", "default-forkserver"]
 
 
-def _alive(pid: int) -> bool:
-    try:
-        process = psutil.Process(pid)
-        return process.status() != psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return False
-
-
 def _skip_unless_available(method: str) -> None:
     if method.removeprefix("default-") not in mp.get_all_start_methods():
         pytest.skip(f"the {method} start method is unavailable on this platform")
@@ -167,7 +161,7 @@ class KilledCaller:
 
 def _end(pids: Iterable[int]) -> None:
     for pid in set(pids):
-        if _alive(pid):
+        if process_alive(pid):
             psutil.Process(pid).kill()
 
 
@@ -233,10 +227,11 @@ def _assert_workers_end(killed: KilledCaller, message: str, *, count: int = 1) -
         assert len(killed.workers) >= count, killed.errors
         deadline = time.monotonic() + POLL_DEADLINE_SECONDS
         while (
-            any(_alive(pid) for pid in killed.workers) and time.monotonic() < deadline
+            any(process_alive(pid) for pid in killed.workers)
+            and time.monotonic() < deadline
         ):
             time.sleep(0.2)
-        survivors = [pid for pid in killed.workers if _alive(pid)]
+        survivors = [pid for pid in killed.workers if process_alive(pid)]
         assert survivors == [], message
     finally:
         _end([*killed.workers, *killed.family])

@@ -33,7 +33,11 @@ from mosaic.core.pipeline.parallelism import (
     WorkerProcessDied,
 )
 from mosaic.runlog import ResourceReport
-from tests.helpers import CLOCK_TICK_SECONDS
+from tests.helpers import (
+    CLOCK_TICK_SECONDS,
+    count_process_tree_walks,
+    process_alive,
+)
 
 
 def double(value: int) -> int:
@@ -574,34 +578,17 @@ def wait_for_file(path: str) -> int:
     return 1
 
 
-class _Walks:
-    """The walks of the process tree since the count was made."""
-
-    def __init__(self) -> None:
-        self.count = 0
-
-
 @pytest.fixture
-def walks(monkeypatch: pytest.MonkeyPatch) -> Callable[[], tuple[MemoryWatch, _Walks]]:
+def walks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[], tuple[MemoryWatch, list[int]]]:
     """Begin a watch, freeze its membership's clock, and count the walks after begin."""
-    import psutil
-
     monkeypatch.setattr(memory_watch, "now", lambda: 0.0)
 
-    def begun() -> tuple[MemoryWatch, _Walks]:
+    def begun() -> tuple[MemoryWatch, list[int]]:
         watch = MemoryWatch()
         watch.begin()
-        counted = _Walks()
-        children = psutil.Process.children
-
-        def counting(
-            self: psutil.Process, recursive: bool = False
-        ) -> list[psutil.Process]:
-            counted.count += 1
-            return children(self, recursive=recursive)
-
-        monkeypatch.setattr(psutil.Process, "children", counting)
-        return watch, counted
+        return watch, count_process_tree_walks(monkeypatch)
 
     return begun
 
@@ -620,19 +607,19 @@ def _process_pool(
 
 
 def test_a_process_pool_sees_each_worker_at_the_submission_that_starts_it(
-    walks: Callable[[], tuple[MemoryWatch, _Walks]], tmp_path: Path
+    walks: Callable[[], tuple[MemoryWatch, list[int]]], tmp_path: Path
 ) -> None:
     release = tmp_path / "release"
     watch, counted = walks()
     pool = _process_pool(watch)
     try:
         pool.submit(1, wait_for_file, str(release))
-        assert counted.count == 1
+        assert len(counted) == 1
         first = watch.sample()
         pool.submit(2, wait_for_file, str(release))
-        assert counted.count == 2
+        assert len(counted) == 2
         second = watch.sample()
-        assert counted.count == 2
+        assert len(counted) == 2
         assert first is not None and second is not None
         assert (first.spawned_workers, second.spawned_workers) == (1, 2)
         assert pool.in_flight == 2
@@ -644,11 +631,11 @@ def test_a_process_pool_sees_each_worker_at_the_submission_that_starts_it(
         release.touch()
         pool.close()
 
-    assert counted.count == 2
+    assert len(counted) == 2
 
 
 def test_a_process_pool_fed_one_call_at_a_time_walks_once(
-    walks: Callable[[], tuple[MemoryWatch, _Walks]],
+    walks: Callable[[], tuple[MemoryWatch, list[int]]],
 ) -> None:
     watch, counted = walks()
     pool = _process_pool(watch)
@@ -660,14 +647,14 @@ def test_a_process_pool_fed_one_call_at_a_time_walks_once(
     finally:
         pool.close()
 
-    assert counted.count == 1
+    assert len(counted) == 1
 
 
 @pytest.mark.parametrize(
     ("workers", "mode"), [(2, "thread"), (1, "process")], ids=["threads", "one-worker"]
 )
 def test_a_pool_without_process_workers_walks_nothing_on_submission(
-    walks: Callable[[], tuple[MemoryWatch, _Walks]], workers: int, mode: ParallelMode
+    walks: Callable[[], tuple[MemoryWatch, list[int]]], workers: int, mode: ParallelMode
 ) -> None:
     watch, counted = walks()
     pool = _process_pool(watch, workers=workers, mode=mode)
@@ -675,16 +662,7 @@ def test_a_pool_without_process_workers_walks_nothing_on_submission(
         pool.submit(tag, double, tag)
     pool.finish()
 
-    assert counted.count == 0
-
-
-def _ended(pid: int) -> bool:
-    import psutil
-
-    try:
-        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return True
+    assert len(counted) == 0
 
 
 def _reaped(pid: int) -> bool:
@@ -702,7 +680,7 @@ def record_pid_then_sleep_until_the_other_worker_ends(
     while time.monotonic() < deadline:
         other = Path(other_pid_file)
         if other.exists() and other.read_text().isdigit():
-            if _ended(int(other.read_text())):
+            if not process_alive(int(other.read_text())):
                 break
         time.sleep(0.05)
     return 1

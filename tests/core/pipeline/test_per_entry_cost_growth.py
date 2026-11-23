@@ -46,6 +46,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from tests.helpers import (
     add_tracks_variant_in_bulk,
+    count_process_tree_walks,
     count_property_reads,
     make_dataset,
     record_path_calls,
@@ -483,26 +484,11 @@ def membership_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     return stepped
 
 
-def _count_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Record a 1 for each ``psutil.Process.children`` call in this process."""
-    import psutil
-
-    walks: list[int] = []
-    children = psutil.Process.children
-
-    def counting(self: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
-        walks.append(1)
-        return children(self, recursive=recursive)
-
-    monkeypatch.setattr(psutil.Process, "children", counting)
-    return walks
-
-
 def test_a_feature_run_walks_the_process_tree_a_bounded_number_of_times(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, membership_clock: _Clock
 ) -> None:
     dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
-    walks = _count_walks(monkeypatch)
+    walks = count_process_tree_walks(monkeypatch)
     started = membership_clock.now
 
     _speed(dataset)
@@ -520,7 +506,7 @@ def test_a_process_run_walks_the_process_tree_once_more_for_each_worker(
     admission_margin: float,
 ) -> None:
     dataset = _bulk_dataset(tmp_path, FOOTER_ENTRIES)
-    walks = _count_walks(monkeypatch)
+    walks = count_process_tree_walks(monkeypatch)
     started = membership_clock.now
 
     result = run_feature(

@@ -393,16 +393,17 @@ are in `graph/CLAUDE.md`.
 - `MemoryWatch` keeps the processes below this one and walks the tree
   (`children(recursive=True)`) to find them: in `begin()`, when a read finds the last walk
   `ESTIMATE_SAMPLE_INTERVAL_SECONDS` old, and after an `EntryPool` process submission when
-  the calls not yet done (counted before the submit, plus one) outnumber the live workers
-  the watch knows. A failed walk keeps the members. `sample()` and `cpu_seconds()` read
-  the known members between walks, so a process that joined between walks, a feature's
-  own subprocess, is missing for at most an interval. A member's CPU counts from the walk
-  that first finds it, and a reaped direct child's base is subtracted, because the reaped
-  children's time already holds its whole CPU. `cpu_seconds()` reads this process's own
-  time under the membership lock after the leaves, so a reaped direct member's time is in
-  that read. A grandchild that its parent reaps leaves the figure at its reap, and its
-  whole CPU returns when that parent is reaped. A per-entry path makes no `children()`
-  call
+  the calls not yet done (counted before the submit, plus one) outnumber the workers the
+  watch has found since the pool was made. A failed walk keeps the members. `sample()` and
+  `cpu_seconds()` read the known members between walks, so a process that joined between
+  walks, a feature's own subprocess, is missing for at most an interval. A member's CPU
+  counts from the walk that first finds it, and a reaped direct child's base is
+  subtracted, because the reaped children's time already holds its whole CPU.
+  `cpu_seconds()` reads this process's own time under the membership lock after the
+  leaves, so a reaped direct member's time is in that read. A grandchild that its parent
+  reaps leaves the figure at its reap, and its whole CPU returns when that parent is
+  reaped. A run's walks are bounded by its wall time over the interval, plus one per
+  process worker, whatever its entry count
   (`tests/core/pipeline/test_per_entry_cost_growth.py`).
 
 ## Reading a run

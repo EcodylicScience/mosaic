@@ -641,6 +641,34 @@ def test_a_member_that_cannot_be_read_keeps_its_last_cpu(
 
 
 @pytest.mark.usefixtures("own_cpu")
+def test_a_read_overtaken_by_a_later_one_never_moves_a_members_cpu_back(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    root = _Process(GIB)
+    member = _Process(GIB)
+    member.cpu = 5.0
+    watch = _sighted(monkeypatch, clock, root, member)
+    reads: list[float] = []
+
+    def overtaken(_process: object) -> float:
+        """The first read waits while a whole read of a later value goes by."""
+        reads.append(1.0)
+        if len(reads) > 1:
+            times = member.cpu_times()
+            return times.user + times.system
+        member.cpu = 9.0
+        _ = watch.cpu_seconds()
+        return 7.0
+
+    monkeypatch.setattr(memory_watch, "_process_cpu_seconds", overtaken)
+
+    _ = watch.cpu_seconds()
+
+    member.read_error = _AccessDenied
+    assert watch.cpu_seconds() == pytest.approx(4.0)
+
+
+@pytest.mark.usefixtures("own_cpu")
 def test_a_grandchild_that_leaves_takes_its_share_out(
     monkeypatch: pytest.MonkeyPatch, clock: _Clock
 ) -> None:

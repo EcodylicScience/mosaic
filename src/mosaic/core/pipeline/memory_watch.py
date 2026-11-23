@@ -446,7 +446,7 @@ class MemoryWatch:
             for process, cpu in read.items():
                 member = self._members.get(process)
                 if member is not None:
-                    member.cpu_last = cpu
+                    member.cpu_last = max(member.cpu_last, cpu)
             members = sum(
                 member.cpu_last - member.cpu_base for member in self._members.values()
             )

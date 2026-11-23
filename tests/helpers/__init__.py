@@ -81,7 +81,8 @@ What lives where:
 - ``processes`` contains a child program that appends to a file, a sleeper
   command, checks of whether a process stopped writing to it or exited, the line
   children of a test, a cancel fired once a condition is true, the timeout on every
-  wait for a child, a command run under it, and a line read from a child under it.
+  wait for a child, a command run under it, a line read from a child under it,
+  whether a process is running, and a count of the walks of the process tree.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` contains media variant files, their index rows and recorded
   recipes, and a count of the index reads that a variant's consumers make.
@@ -328,7 +329,9 @@ from tests.helpers.processes import (
     assert_process_exited,
     assert_stopped_writing,
     cancel_when,
+    count_process_tree_walks,
     exited_pid,
+    process_alive,
     read_line,
     run_child,
     wait_for,
@@ -868,6 +871,7 @@ __all__ = [
     "entry_error_lines",
     "entry_predictions",
     "entry_selection",
+    "count_process_tree_walks",
     "exited_pid",
     "extract_entry_camera",
     "fail_calms21_sequence",
@@ -977,6 +981,7 @@ __all__ = [
     "rewrite_as_older_prepared_index",
     "rewrite_index",
     "rule_reaching_op_params",
+    "process_alive",
     "read_line",
     "refuse_index",
     "run_child",

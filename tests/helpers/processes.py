@@ -10,6 +10,10 @@ test process is checked by its process id instead.
 token from another thread once a condition is true. :data:`SLEEPER_COMMAND` stands
 in for a long step.
 
+:func:`process_alive` tells whether a process is running, and
+:func:`count_process_tree_walks` counts the walks of the process tree that a test's
+code makes.
+
 :data:`CHILD_TIMEOUT_SECONDS` is the bound on every wait for a child process to
 finish, and :func:`run_child` runs a command under it. :func:`read_line` reads one
 line of a child's output under it. Every wait for a child takes a ``timeout``, this
@@ -149,6 +153,35 @@ def exited_pid() -> int:
     finished = subprocess.Popen([sys.executable, "-c", "pass"])
     _ = finished.wait(timeout=CHILD_TIMEOUT_SECONDS)
     return finished.pid
+
+
+def process_alive(pid: int) -> bool:
+    """Whether *pid* names a process that is running.
+
+    A zombie that nobody has joined is not running, and neither is a pid that no
+    process holds.
+    """
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def count_process_tree_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record a 1 for each ``psutil.Process.children`` call in this process, from now on."""
+    import psutil
+
+    walks: list[int] = []
+    children = psutil.Process.children
+
+    def counting(self: psutil.Process, recursive: bool = False) -> list[psutil.Process]:
+        walks.append(1)
+        return children(self, recursive=recursive)
+
+    monkeypatch.setattr(psutil.Process, "children", counting)
+    return walks
 
 
 def wait_for(
