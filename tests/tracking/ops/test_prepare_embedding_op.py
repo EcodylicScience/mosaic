@@ -59,6 +59,7 @@ from tests.helpers import (
     StubSavedLabels,
     install_fake_sleap,
     install_fake_tool_python,
+    logged_events,
     make_dataset,
     read_stub_labels,
     stub_media_dataset,
@@ -632,13 +633,13 @@ def test_the_row_records_each_predictions_file_read(world: World) -> None:
 def test_a_finished_run_reports_its_entries_before_its_end(world: World) -> None:
     _ = _prepare(world, execution_id="exec-prepare")
 
-    lines = run_log_path(world.ds.base_dir, "exec-prepare").read_text().splitlines()
-    events = [json.loads(line)["ev"] for line in lines]
+    events = _run_log_events(world.ds, "exec-prepare")
     assert events[-1] == "finished"
     written = [
-        json.loads(line)["entries_written"]
-        for line in lines
-        if json.loads(line)["ev"] == "entries_written"
+        record["entries_written"]
+        for record in logged_events(
+            world.ds.base_dir, "exec-prepare", "entries_written"
+        )
     ]
     assert written == [3]
 

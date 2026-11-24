@@ -16,7 +16,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.entry_pool import EntryFailure
 from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run import (
@@ -33,6 +32,7 @@ from tests.helpers import (
     entry_error_lines,
     latest_snapshot,
     make_dataset,
+    written_by_worker,
 )
 
 
@@ -279,9 +279,7 @@ def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
         {},
         task,
     )
-    if isinstance(outcome, EntryFailure):
-        outcome.reraise()
-    return pd.read_parquet(task.meta.out_path)
+    return written_by_worker(task, outcome)
 
 
 def test_process_apply_worker_closes_its_own_instance_once(

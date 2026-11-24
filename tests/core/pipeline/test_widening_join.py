@@ -20,8 +20,12 @@ from mosaic.core.pipeline.loading import MultiInputAlignmentError
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
 from mosaic.core.pipeline.feature_levels import EmitsLevel
-from mosaic.runlog import run_log_path
-from tests.helpers import add_track_sequences, make_dataset, result_outputs
+from tests.helpers import (
+    add_track_sequences,
+    entry_error_lines,
+    make_dataset,
+    result_outputs,
+)
 
 _EMPTY = "empty"
 
@@ -197,11 +201,7 @@ def test_an_entry_without_pair_rows_is_an_entry_error(tmp_path: Path) -> None:
     )
 
     assert result.failed_entries == (make_entry_key("g", _EMPTY),)
-    errors = [
-        line
-        for line in run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-        if '"entry_error"' in line
-    ]
+    errors = entry_error_lines(ds, execution_id)
     assert len(errors) == 1
     assert "PairRowsMissing" in errors[0]
 

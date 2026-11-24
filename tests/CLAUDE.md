@@ -44,6 +44,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_graph_imports.py`: `core.pipeline.graph` importing the feature library or a
   submodule at import, an exported name that does not resolve, or a module other
   than `resolve` importing `FEATURES`.
+- `test_entry_task_imports.py`: `core/pipeline/entry_task.py` naming `run`, `job`,
+  `mosaic.runlog`, `entry_claim` or an index module in its own imports.
 - `test_status_imports.py`: the import or a call of a status reader, a request
   lister or the entry-error report, or the import of the cancel module, loading
   pandas, cv2, av or the feature library, or `import mosaic.runlog` or

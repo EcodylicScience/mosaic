@@ -40,7 +40,12 @@ from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.memory_watch import NonreclaimablePeak
 from mosaic.core.pipeline.writers import FeatureOutput, write_output
 from mosaic.core.timebase import IrregularNotice, uniform_grid_rate
-from tests.helpers import ParallelFeature, dropped_frame_tracks
+from tests.helpers import (
+    ParallelFeature,
+    dropped_frame_tracks,
+    report_of,
+    wrapped_write,
+)
 
 
 class _NotesUnevenTime(ParallelFeature):
@@ -92,11 +97,6 @@ def _frames(count: int) -> pd.DataFrame:
     return pd.DataFrame({"frame": range(count), "value": range(count), "sequence": "s"})
 
 
-def _report(outcome: EntryReport | EntryFailure) -> EntryReport:
-    assert isinstance(outcome, EntryReport), outcome
-    return outcome
-
-
 def _failure(outcome: EntryReport | EntryFailure) -> EntryFailure:
     assert isinstance(outcome, EntryFailure), outcome
     return outcome
@@ -128,7 +128,7 @@ def test_a_task_writes_the_bytes_the_writer_writes_and_reports_them(
     expected = FeatureMeta(group="g", sequence="s", out_path=tmp_path / "x.parquet")
     _ = write_output(expected, task.table)
 
-    report = _report(run_entry(_NotesUnevenTime(), task, None))
+    report = report_of(run_entry(_NotesUnevenTime(), task, None))
 
     assert task.meta.out_path.read_bytes() == expected.out_path.read_bytes()
     assert report.rows == len(task.table)
@@ -144,7 +144,7 @@ def test_a_task_under_overlap_writes_the_rows_its_selector_keeps(
     table = _frames(10)
     selector = CoreSelector(order_col="frame", first=3, last=6, entry_key="g__s")
 
-    report = _report(
+    report = report_of(
         run_entry(ParallelFeature(), _task(run_root, table, selector=selector), None)
     )
 
@@ -163,7 +163,7 @@ def test_a_task_of_no_output_writes_an_empty_table_of_no_bytes(
 
     monkeypatch.setattr(entry_task, "apply_noting_irregular_time", no_output)
 
-    report = _report(run_entry(ParallelFeature(), _task(run_root), None))
+    report = report_of(run_entry(ParallelFeature(), _task(run_root), None))
 
     assert (report.rows, report.output_bytes) == (0, 0)
     assert pd.read_parquet(run_root / "g__s.parquet").empty
@@ -183,7 +183,7 @@ def test_after_apply_runs_once_between_apply_and_the_write(run_root: Path) -> No
     def after_apply() -> None:
         calls.append(bool(applied) and not task.meta.out_path.exists())
 
-    _ = _report(run_entry(_Marks(), task, after_apply))
+    _ = report_of(run_entry(_Marks(), task, after_apply))
 
     assert calls == [True]
     assert task.meta.out_path.exists()
@@ -193,13 +193,9 @@ def test_after_apply_runs_once_between_apply_and_the_write(run_root: Path) -> No
 def test_the_seconds_after_apply_cover_a_slow_write(
     run_root: Path, monkeypatch: pytest.MonkeyPatch, runner: str
 ) -> None:
-    written = entry_task.write_output
-
-    def slow_write(meta: FeatureMeta, output: FeatureOutput, **kwargs: bool) -> int:
-        time.sleep(0.3)
-        return written(meta, output, **kwargs)
-
-    monkeypatch.setattr(entry_task, "write_output", slow_write)
+    monkeypatch.setattr(
+        entry_task, "write_output", wrapped_write(lambda _meta: time.sleep(0.3))
+    )
     task = _task(run_root)
 
     outcome = (
@@ -208,7 +204,7 @@ def test_the_seconds_after_apply_cover_a_slow_write(
         else run_entry_in_process(ParallelFeature(), task)
     )
 
-    assert _report(outcome).seconds_after_apply >= 0.3
+    assert report_of(outcome).seconds_after_apply >= 0.3
 
 
 # --- entry errors raise ----------------------------------------------------------------
@@ -235,7 +231,7 @@ def test_an_entry_error_raises_and_writes_nothing(
 
 
 def test_an_arena_count_of_one_lets_the_entry_through(run_root: Path) -> None:
-    _ = _report(run_entry(ParallelFeature(), _task(run_root, arena_count=1), None))
+    _ = report_of(run_entry(ParallelFeature(), _task(run_root, arena_count=1), None))
 
 
 def test_a_notice_that_does_not_pickle_raises_before_the_write(
@@ -322,7 +318,7 @@ def test_a_failed_release_after_the_rename_keeps_the_report_and_the_output(
     monkeypatch.setattr(pa, "default_memory_pool", _RefusesToRelease)
     task = _task(run_root)
 
-    report = _report(run_entry(ParallelFeature(), task, None))
+    report = report_of(run_entry(ParallelFeature(), task, None))
 
     assert report.rows == len(task.table)
     assert task.meta.out_path.exists()
@@ -368,7 +364,7 @@ def test_a_process_worker_measures_its_base_less_the_table_and_its_peak_after_th
         _sampler(seen, task.meta.out_path, 9_000),
     )
 
-    worker = _report(run_entry_in_process(ParallelFeature(), task)).worker
+    worker = report_of(run_entry_in_process(ParallelFeature(), task)).worker
 
     assert worker is not None
     assert worker.base_nonreclaimable_bytes == 5_000
@@ -386,7 +382,7 @@ def test_a_process_worker_without_the_figure_measures_neither(
         entry_task, "peak_nonreclaimable_while", _sampler([], task.meta.out_path, None)
     )
 
-    worker = _report(run_entry_in_process(ParallelFeature(), task)).worker
+    worker = report_of(run_entry_in_process(ParallelFeature(), task)).worker
 
     assert worker is not None
     assert worker.base_nonreclaimable_bytes is None
@@ -404,7 +400,7 @@ def test_a_process_workers_seconds_after_apply_run_to_its_return(
         _sampler([], task.meta.out_path, 1, exit_seconds=0.3),
     )
 
-    report = _report(run_entry_in_process(ParallelFeature(), task))
+    report = report_of(run_entry_in_process(ParallelFeature(), task))
 
     assert report.seconds_after_apply >= 0.3
 
@@ -428,7 +424,7 @@ def test_a_failed_measure_after_the_write_keeps_the_report_without_a_worker(
             _sampler([], task.meta.out_path, 1, exit_raises=True),
         )
 
-    report = _report(run_entry_in_process(ParallelFeature(), task))
+    report = report_of(run_entry_in_process(ParallelFeature(), task))
 
     assert report.worker is None
     assert report.rows == len(task.table)
@@ -457,7 +453,7 @@ def test_a_task_survives_pickle(run_root: Path) -> None:
 
 
 def test_a_report_survives_pickle(run_root: Path) -> None:
-    report = _report(run_entry_in_process(_NotesUnevenTime(), _task(run_root)))
+    report = report_of(run_entry_in_process(_NotesUnevenTime(), _task(run_root)))
     assert report.notices
     assert isinstance(report.worker, WorkerMeasure)
 

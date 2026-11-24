@@ -8,6 +8,28 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature run's workers write each entry's output
+
+No run id or output moves. A feature run's workers write each entry's output
+themselves, in every mode, and the run records the output's row once the worker
+reports it written. In process mode the output no longer returns to the run's
+process, which cuts the data sent back from each worker per entry from the
+output's size to a short report: in the step-cost bench, from 2,449,668 bytes
+to 334 bytes. An error writing an output still fails the run.
+
+An output can now be on disk without an index row when the run's process is
+killed (SIGKILL or the out-of-memory killer) after a worker wrote it, when a
+second interrupt leaves thread workers, or process workers interrupted through
+the parent alone, running, or when a process worker is killed or interrupted by
+a signal to the process group after writing it. A rerun serves such an output
+without computing it again when nothing records what it was made from. A
+process worker killed while it writes (by the out-of-memory killer or a SIGTERM
+to the process group) leaves a hidden temporary file in the run's directory,
+which no reader takes as output.
+
+A process entry's worker peak and growth now include its write, and the run's
+memory sample after a process entry no longer holds its output.
+
 ## Unreleased: a feature run that stops early records the entries in flight
 
 No run id or output moves. A feature run that stops early, on a cancel, an

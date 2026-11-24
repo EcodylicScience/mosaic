@@ -56,6 +56,7 @@ from mosaic.runlog import (
 )
 from tests.helpers import (
     add_tracks_variant,
+    logged_events,
     make_dataset,
     raise_high_water_mark_once_applied,
 )
@@ -151,16 +152,11 @@ def seven(tmp_path: Path) -> Dataset:
     return dataset
 
 
-def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
-    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-    return [record for record in map(json.loads, lines) if record["ev"] == kind]
-
-
 def _computed(ds: Dataset, execution_id: str) -> list[str]:
     """The entries an attempt computed, by key, in the order they ended."""
     return [
         str(event["key"])
-        for event in _events(ds, execution_id, "entry_end")
+        for event in logged_events(ds.base_dir, execution_id, "entry_end")
         if "wall_seconds" in event
     ]
 
@@ -192,14 +188,14 @@ def test_a_probe_computes_the_largest_entries_alone_then_in_a_pair(
     assert outcome.execution_id == "PROBEATTEMPT"
     assert outcome.entries_asked == (("", "seq_e"), ("", "seq_d"), ("", "seq_c"))
     assert sorted(_computed(five, "PROBEATTEMPT")) == ["seq_c", "seq_d", "seq_e"]
-    (probe,) = _events(five, "PROBEATTEMPT", "probe")
+    (probe,) = logged_events(five.base_dir, "PROBEATTEMPT", "probe")
     assert probe["kind"] == "probe"
     assert probe["step"] == "speed"
     assert probe["request_id"] == request.request_id
     assert probe["entries"] == ["seq_e", "seq_d", "seq_c"]
     in_flight = [
         event["in_flight"]
-        for event in _events(five, "PROBEATTEMPT", "entry_end")
+        for event in logged_events(five.base_dir, "PROBEATTEMPT", "entry_end")
         if "in_flight" in event
     ]
     assert in_flight == [1, 2, 2]
@@ -440,7 +436,7 @@ def _ends(ds: Dataset, execution_id: str) -> list[dict[str, object]]:
     """The measured ``entry_end`` events of an attempt, in the order they ended."""
     return [
         event
-        for event in _events(ds, execution_id, "entry_end")
+        for event in logged_events(ds.base_dir, execution_id, "entry_end")
         if "wall_seconds" in event
     ]
 
@@ -473,7 +469,7 @@ def test_a_probe_of_five_measures_both_modes(
     assert sorted(str(event["key"]) for event in ends) == sorted(ROWS)
     assert [event["in_flight"] for event in ends] == [1, 2, 2, 2, 2]
     assert [event["mode"] for event in ends] == ["thread"] * 3 + ["process"] * 2
-    (probe,) = _events(five, "PROBEATTEMPT", "probe")
+    (probe,) = logged_events(five.base_dir, "PROBEATTEMPT", "probe")
     assert probe["entries"] == list(BY_SIZE)
     assert {str(event["key"]) for event in ends[3:]} == set(BY_SIZE[-2:])
     cost = read_run_cost(run_log_dir(five.base_dir), "PROBEATTEMPT")
@@ -494,12 +490,12 @@ def test_a_probe_of_five_measures_both_modes(
     )
     assert not any(level.rebuilt for level in cost.levels)
     assert sorted(point.mode for point in cost.peak_points) == ["process", "thread"]
-    assert len(_events(five, "PROBEATTEMPT", "started")) == 1
+    assert len(logged_events(five.base_dir, "PROBEATTEMPT", "started")) == 1
     snapshot = read_run(run_log_dir(five.base_dir), "PROBEATTEMPT")
     assert snapshot is not None
     assert snapshot["entries_written"] == 5
     assert snapshot["progress_total"] == 5
-    resources = _events(five, "PROBEATTEMPT", "resources")
+    resources = logged_events(five.base_dir, "PROBEATTEMPT", "resources")
     process_reports = [r for r in resources if r["parallel_mode"] == "process"]
     thread_reports = [r for r in resources if r["parallel_mode"] == "thread"]
     process_apply = float(str(process_reports[-1]["apply_wall_seconds"]))
@@ -552,7 +548,7 @@ def test_a_probe_of_five_over_a_feature_that_is_not_process_capable_computes_thr
     assert outcome.entries_asked == tuple(("", sequence) for sequence in BY_SIZE[:3])
     assert [event["in_flight"] for event in _ends(five, "PROBEATTEMPT")] == [1, 2, 2]
     assert {event["mode"] for event in _ends(five, "PROBEATTEMPT")} == {"thread"}
-    (probe,) = _events(five, "PROBEATTEMPT", "probe")
+    (probe,) = logged_events(five.base_dir, "PROBEATTEMPT", "probe")
     assert probe["entries"] == list(BY_SIZE[:3])
 
 
@@ -725,7 +721,7 @@ def test_a_named_subset_runs_its_entries_with_the_callers_workers(
     assert sorted(_computed(five, "NAMEDATTEMPT")) == ["seq_a", "seq_c"]
     assert seen["parallel_workers"] == 3
     assert seen["measure_worker_base"] is False
-    (probe,) = _events(five, "NAMEDATTEMPT", "probe")
+    (probe,) = logged_events(five.base_dir, "NAMEDATTEMPT", "probe")
     assert probe["kind"] == "named"
     snapshot = read_run(run_log_dir(five.base_dir), "NAMEDATTEMPT")
     assert snapshot is not None

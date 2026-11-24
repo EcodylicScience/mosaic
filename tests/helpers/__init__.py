@@ -93,6 +93,9 @@ What lives where:
   the payloads that reach each op's validators, a params model narrowed the way
   a consumer narrows it, and the fields a consumer owns for an op kind.
 - ``runlog`` -- an attempt's recorded run-log events.
+- ``entry_outcomes`` -- an entry task's outcome as a report or a raised error, and
+  the output a worker wrote for a task.
+- ``entry_writes`` -- the write of an entry task, wrapped to fault it or hold it.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
@@ -228,6 +231,8 @@ from tests.helpers.dropped_frames import (
     dropped_frame_tracks,
     mean_rate,
 )
+from tests.helpers.entry_outcomes import report_of, written_by_worker
+from tests.helpers.entry_writes import WriteOutput, wrapped_write
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
     CI_LIGHTNING_ACTION_MODULES,
@@ -412,6 +417,7 @@ from tests.helpers.runlog import (
     entry_error_lines,
     latest_events,
     latest_snapshot,
+    logged_events,
     record_open_attempt,
     write_reader_params,
 )
@@ -886,6 +892,10 @@ __all__ = [
     "dotted_values",
     "entry_clips",
     "entry_error_lines",
+    "report_of",
+    "written_by_worker",
+    "WriteOutput",
+    "wrapped_write",
     "entry_predictions",
     "entry_selection",
     "count_process_tree_walks",
@@ -928,6 +938,7 @@ __all__ = [
     "load_results_after_each_failed_write",
     "latest_events",
     "latest_snapshot",
+    "logged_events",
     "make_dataset",
     "make_pair_df",
     "make_sequence_df",

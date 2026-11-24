@@ -53,7 +53,12 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
-from tests.helpers import MockDataset, add_track_sequences, make_dataset
+from tests.helpers import (
+    MockDataset,
+    add_track_sequences,
+    logged_events,
+    make_dataset,
+)
 
 
 # --- Minimal feature ---
@@ -1090,11 +1095,6 @@ class _Recorder:
         self.calls.append((index, total, key))
 
 
-def _entry_ends(base: Path, execution_id: str) -> list[dict[str, object]]:
-    lines = run_log_path(base, execution_id).read_text().splitlines()
-    return [r for r in map(json.loads, lines) if r["ev"] == "entry_end"]
-
-
 def test_entry_ended_writes_the_measure_once_with_no_callback(
     tmp_path: Path,
 ) -> None:
@@ -1103,7 +1103,7 @@ def test_entry_ended_writes_the_measure_once_with_no_callback(
         ctx.set_total(1)
         ctx.entry_ended(1, 1, "g__a", _MEASURE)
 
-    (event,) = _entry_ends(ds.base_dir, ctx.execution_id)
+    (event,) = logged_events(ds.base_dir, ctx.execution_id, "entry_end")
     assert (event["index"], event["total"], event["key"]) == (1, 1, "g__a")
     assert (event["wall_seconds"], event["in_flight"]) == (2.5, 2)
     assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 1, 1)
@@ -1118,7 +1118,7 @@ def test_entry_ended_writes_the_measure_once_beside_an_injected_callback(
         ctx.set_total(1)
         ctx.entry_ended(1, 1, "g__a", _MEASURE)
 
-    (event,) = _entry_ends(ds.base_dir, ctx.execution_id)
+    (event,) = logged_events(ds.base_dir, ctx.execution_id, "entry_end")
     assert event["cpu_seconds"] == 3.0
     assert recorder.calls == [(1, 1, "g__a")]
 
@@ -1140,7 +1140,7 @@ def test_entry_ended_writes_the_measure_once_beside_a_composite_with_the_run_log
         )
         ctx.entry_ended(1, 1, "g__a", _MEASURE)
 
-    (event,) = _entry_ends(ds.base_dir, execution_id)
+    (event,) = logged_events(ds.base_dir, execution_id, "entry_end")
     assert event["input_rows"] == 40
     assert recorder.calls == [(1, 1, "g__a")]
 
@@ -1161,7 +1161,7 @@ def test_entry_ended_writes_the_run_log_entry_once_when_the_run_log_is_the_callb
         )
         ctx.entry_ended(1, 1, "g__a", None)
 
-    (event,) = _entry_ends(ds.base_dir, execution_id)
+    (event,) = logged_events(ds.base_dir, execution_id, "entry_end")
     assert "wall_seconds" not in event
 
 
@@ -1210,7 +1210,6 @@ def test_a_phase_is_written_once_beside_a_composite_with_the_run_log(
         )
         ctx.phase("fit", "3 entries")
 
-    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-    phases = [r for r in map(json.loads, lines) if r["ev"] == "phase"]
+    phases = logged_events(ds.base_dir, execution_id, "phase")
     assert [(r["phase"], r["message"]) for r in phases] == [("fit", "3 entries")]
     assert recorder.phases == [("fit", "3 entries")]

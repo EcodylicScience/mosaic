@@ -32,8 +32,22 @@ def latest_snapshot(ds: Dataset) -> RunLogSnapshot:
 
 def latest_events(ds: Dataset, ev: str) -> list[dict[str, object]]:
     """Return every *ev* event of the attempt in *ds* that logged last, in order."""
-    lines = _latest_log(ds).read_text().splitlines()
-    events = [_EVENT.validate_json(line) for line in lines]
+    return _events_in(_latest_log(ds), ev)
+
+
+def logged_events(
+    base_dir: Path, execution_id: str, ev: str
+) -> list[dict[str, object]]:
+    """Return every *ev* event that attempt *execution_id* logged, in order.
+
+    *base_dir* is the base directory of the dataset whose run-logs hold it.
+    """
+    return _events_in(run_log_path(base_dir, execution_id), ev)
+
+
+def _events_in(log: Path, ev: str) -> list[dict[str, object]]:
+    """Return every *ev* event of the run-log *log*, in order."""
+    events = [_EVENT.validate_json(line) for line in log.read_text().splitlines()]
     return [event for event in events if event.get("ev") == ev]
 
 

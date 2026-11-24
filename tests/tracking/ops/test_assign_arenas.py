@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,7 @@ from mosaic.core.pipeline.arena_assignment import (
     assign_arenas,
 )
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.run_log import read_runs, run_log_dir, run_log_path
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
@@ -28,7 +27,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope
-from tests.helpers import MediaClip, make_dataset, write_media_index
+from tests.helpers import MediaClip, logged_events, make_dataset, write_media_index
 
 XS = (0, 506, 1012)
 YS = (0, 170, 346, 524, 702, 878, 1068)
@@ -232,9 +231,7 @@ def _run_events(ds: Dataset, event: str) -> list[dict[str, object]]:
         read_runs(run_log_dir(ds.base_dir), kind="assign-arenas"),
         key=lambda run: run["started_at"],
     )
-    lines = run_log_path(ds.base_dir, latest["execution_id"]).read_text().splitlines()
-    records = [json.loads(line) for line in lines]
-    return [record for record in records if record["ev"] == event]
+    return logged_events(ds.base_dir, latest["execution_id"], event)
 
 
 def _assigned_rows(ds: Dataset) -> pd.DataFrame:

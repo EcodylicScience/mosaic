@@ -58,7 +58,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.runlog import run_log_path
-from tests.helpers import add_track_sequences, make_dataset
+from tests.helpers import add_track_sequences, entry_error_lines, make_dataset
 
 # --- resolving references ---------------------------------------------------------
 
@@ -681,11 +681,7 @@ def test_run_feature_fails_the_entry_that_lacks_a_column(tmp_path: Path) -> None
     result = run_feature(ds, _ReadsTwoColumns(), execution_id=execution_id)
 
     assert result.failed_entries == (make_entry_key("g", "lacks"),)
-    errors = [
-        line
-        for line in run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-        if '"entry_error"' in line
-    ]
+    errors = entry_error_lines(ds, execution_id)
     assert len(errors) == 1
     assert "MissingInputColumns" in errors[0]
     assert "lacks 'feat_b' or 'feat_c'" in errors[0]

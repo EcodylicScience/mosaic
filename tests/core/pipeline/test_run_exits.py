@@ -10,14 +10,20 @@ exit's settle releases them, and end the loop while they are held: from the load
 ``seq_d``, from the drain before its submission, or from ``apply`` itself. A serial
 run holds nothing, and ends the loop at the load of ``seq_d``. A worker that dies
 ends the loop at the submission of ``seq_d`` or ends the settle, and a second
-interrupt abandons the settle. A SIGTERM or SIGINT sent to the process group of a
-child running the run ends the loop at the load of ``seq_d``.
+interrupt abandons the settle. A worker killed in its write leaves its temporary
+file, and one killed after its rename an output without a row. A SIGTERM or SIGINT
+sent to the process group of a child running the run ends the loop at the load of
+``seq_d``, and a SIGKILL of the child alone ends its process workers with it.
+
+The run's own threads alone write the index and the run-log, and a pool's threads
+do not.
 """
 
 from __future__ import annotations
 
 import errno
 import json
+from contextlib import suppress
 import os
 import signal
 import sys
@@ -33,6 +39,7 @@ import psutil
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import parse_entry_key
 from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import run as run_module
@@ -49,6 +56,7 @@ from mosaic.core.pipeline.index import (
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.index_lock import IndexLockTimeout
 from mosaic.core.pipeline.job import Cancelled, CancelToken, install_signal_handler
+from mosaic.core.pipeline.markers import ATOMIC_TEMP_PREFIX, ATOMIC_TEMP_SUFFIX
 from mosaic.core.pipeline.loading import ColumnProjection
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.memory_watch import MemoryWatch
@@ -62,17 +70,20 @@ from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Result
 from mosaic.core.pipeline.writers import FeatureOutput, write_parquet_atomic
-from mosaic.runlog import read_run, run_log_dir, run_log_path
+from mosaic.runlog import JsonlRunLog, read_run, run_log_dir
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
     HoldsUntilReleased,
     SignalledGroup,
     add_tracks_variant,
+    logged_events,
     make_dataset,
+    observed,
     process_alive,
     signal_group_when,
     wait_for,
+    wrapped_write,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -348,26 +359,12 @@ def _fail_writes(
     The write runs in the entry's worker, so the fault reaches a thread worker and
     not a process worker.
     """
-    real = entry_task_module.write_output
 
-    def write_output(
-        meta: FeatureMeta, df_feat: FeatureOutput, *, create_parent: bool = True
-    ) -> int:
+    def before(meta: FeatureMeta) -> None:
         if fails(meta.sequence):
             raise error
-        return real(meta, df_feat, create_parent=create_parent)
 
-    monkeypatch.setattr(entry_task_module, "write_output", write_output)
-
-
-def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
-    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-    return [record for record in map(json.loads, lines) if record["ev"] == kind]
-
-
-def _sequence_of(key: str) -> str:
-    (sequence,) = [name for name in _SEQUENCES if key.endswith(name)]
-    return sequence
+    monkeypatch.setattr(entry_task_module, "write_output", wrapped_write(before))
 
 
 def _indexed(ds: Dataset, run_id: str) -> pd.DataFrame:
@@ -387,24 +384,68 @@ def _check_exit(
     rows: frozenset[str],
     mode: Mode,
     unrecorded: frozenset[str] = frozenset(),
+    temporary: frozenset[str] = frozenset(),
     rerun: HoldsUntilReleased | None = None,
     options: RunOptions = RunOptions(),
 ) -> None:
     """Check what a run left once an exception ended it, then rerun it.
 
     The run-log holds *status*, the entry errors of *failed* and one count of the
-    entries written, equal to the rows of the run. Every output under the run root
-    has a row but those of *unrecorded*, whose rows the run could not append, every
-    row's output exists, and no temporary file is left. A rerun of
-    *rerun*, a feature that holds nothing, with *options* and the same run id
-    computes exactly the sequences without an output.
+    entries written, equal to the rows of the run. :func:`_check_disk_and_rerun`
+    checks the outputs, the rows and the rerun.
     """
     snapshot = read_run(run_log_dir(exits.ds.base_dir), execution_id)
     assert snapshot is not None
     assert snapshot["status"] == status
-    errors = _events(exits.ds, execution_id, "entry_error")
-    assert sorted(_sequence_of(str(error["key"])) for error in errors) == sorted(failed)
-    run_id = snapshot["run_id"]
+    errors = logged_events(exits.ds.base_dir, execution_id, "entry_error")
+    keys = (str(error["key"]) for error in errors)
+    assert sorted(parse_entry_key(key)[1] for key in keys) == sorted(failed)
+    written = logged_events(exits.ds.base_dir, execution_id, "entries_written")
+    assert [event["entries_written"] for event in written] == [len(rows)]
+    _check_disk_and_rerun(
+        exits,
+        execution_id,
+        snapshot["run_id"],
+        rows=rows,
+        mode=mode,
+        unrecorded=unrecorded,
+        temporary=temporary,
+        rerun=rerun,
+        options=options,
+    )
+
+
+def _temporary_sequence(path: Path) -> str:
+    """The sequence whose output the temporary file *path* of ``atomic_write`` was for.
+
+    The file is named ``.<entry key>-<random>.tmp``.
+    """
+    name = path.name.removeprefix(ATOMIC_TEMP_PREFIX).removesuffix(ATOMIC_TEMP_SUFFIX)
+    return parse_entry_key(name.rsplit("-", 1)[0])[1]
+
+
+def _check_disk_and_rerun(
+    exits: Exits,
+    execution_id: str,
+    run_id: str,
+    *,
+    rows: frozenset[str],
+    mode: Mode,
+    unrecorded: frozenset[str] = frozenset(),
+    temporary: frozenset[str] = frozenset(),
+    rerun: HoldsUntilReleased | None = None,
+    options: RunOptions = RunOptions(),
+) -> None:
+    """Check the outputs and rows that the run *execution_id* left, then rerun it.
+
+    The index holds the rows of *rows*. Every output under the run root has a row
+    but those of *unrecorded*, whose rows the run could not append, and every row's
+    output exists. Each sequence of *temporary*, whose worker died in its write,
+    left exactly one hidden temporary file, which no ``*.parquet`` filter takes, and
+    no other temporary file is left. A rerun of *rerun*, a feature that holds
+    nothing, with *options* and the same run id computes exactly the sequences
+    without an output.
+    """
     assert run_id
     index = _indexed(exits.ds, run_id)
     assert sorted(index["sequence"]) == sorted(rows)
@@ -416,9 +457,9 @@ def _check_exit(
     on_disk = {path.resolve() for path in run_root.glob("*.parquet")}
     assert {path for path in on_disk if path.stem not in unrecorded} == recorded
     assert {path.stem for path in on_disk} >= unrecorded
-    assert list(run_root.rglob(".*.tmp")) == []
-    written = _events(exits.ds, execution_id, "entries_written")
-    assert [event["entries_written"] for event in written] == [len(rows)]
+    left = list(run_root.rglob(".*.tmp"))
+    assert sorted(map(_temporary_sequence, left)) == sorted(temporary)
+    assert not any(path.match("*.parquet") for path in left)
 
     for mark in exits.marks.glob("applied-*"):
         mark.unlink()
@@ -602,7 +643,7 @@ def test_a_trim_error_ends_the_run_with_the_outputs_in_flight_recorded(
     )
 
     def trim(df: FeatureOutput, selector: CoreSelector) -> FeatureOutput:
-        if _sequence_of(selector.entry_key) == "seq_a":
+        if parse_entry_key(selector.entry_key)[1] == "seq_a":
             message = "the overlap could not be trimmed"
             raise ValueError(message)
         return real_trim(df, selector)
@@ -926,6 +967,67 @@ def test_a_worker_death_during_the_settle_ends_it_with_the_results_handed_back(
     assert exits.settles == [True]
 
 
+class KillsInTheWriteOfSeqC(HoldsUntilReleased):
+    """Ends ``seq_c``'s worker in its write, once ``seq_a`` and ``seq_b`` are computed.
+
+    The worker dies after the temporary file is written and before its rename.
+    """
+
+    fault = "kill-in-write"
+    fault_on = ("seq_c",)
+    kill_once_computed = ("seq_a", "seq_b")
+
+
+class KillsAfterTheRenameOfSeqC(KillsInTheWriteOfSeqC):
+    """Ends ``seq_c``'s worker once its write has returned."""
+
+    fault = "kill-after-rename"
+
+
+@pytest.mark.parametrize(
+    ("feature", "unrecorded", "temporary"),
+    [
+        (KillsInTheWriteOfSeqC(), frozenset[str](), frozenset({"seq_c"})),
+        (KillsAfterTheRenameOfSeqC(), frozenset({"seq_c"}), frozenset[str]()),
+    ],
+    ids=["in-the-write", "after-the-rename"],
+)
+def test_a_worker_killed_in_its_write_leaves_a_temporary_file_or_an_output_without_a_row(
+    exits: Exits,
+    monkeypatch: pytest.MonkeyPatch,
+    feature: HoldsUntilReleased,
+    unrecorded: frozenset[str],
+    temporary: frozenset[str],
+) -> None:
+    # Four workers, so seq_d's submission finds a free slot and meets the broken
+    # pool, with seq_a and seq_b computed and not yet handed back. A worker killed
+    # before its rename leaves seq_c's temporary file and no output, and one killed
+    # after it seq_c's output, which the rerun serves.
+    options = RunOptions(workers=4)
+    _wrap_pools(monkeypatch, exits.marks)
+
+    with pytest.MonkeyPatch.context() as faults:
+        _on_load_of_seq_d(
+            faults, exits, "process", _once_the_workers_are_gone, holding=False
+        )
+        with pytest.raises(WorkerProcessDied):
+            _ = exits.run(feature, "process", "TESTEXITKILLEDWRITING", options)
+
+    assert (exits.marks / "killed").exists()
+    _check_exit(
+        exits,
+        "TESTEXITKILLEDWRITING",
+        status="failed",
+        failed=set(),
+        rows=frozenset({"seq_a", "seq_b"}),
+        mode="process",
+        unrecorded=unrecorded,
+        temporary=temporary,
+        options=options,
+    )
+    assert exits.settles == [True]
+
+
 _SECOND_INTERRUPT = "a second interrupt"
 
 
@@ -1081,7 +1183,7 @@ def _waiting_for_the_interrupt(exits: Exits) -> Callable[[Load], pd.DataFrame | 
 
 
 def run_signalled(arguments: Sequence[str]) -> None:
-    """Run :class:`HoldsBC` in a child process until a signal to its group ends it.
+    """Run :class:`HoldsBC` in a child process until a signal to it or its group ends it.
 
     *arguments* are the dataset's manifest, the mode, the :data:`Handler` and the
     execution id. The pools mark their computed calls and their settles release the
@@ -1125,11 +1227,14 @@ def _signal_held_child(
     handler: Handler,
     signum: signal.Signals,
     execution_id: str,
+    *,
+    child_only: bool = False,
 ) -> SignalledGroup:
     """Run :func:`run_signalled` in its own process group, and signal the group.
 
     The signal goes out once ``seq_b`` and ``seq_c`` are held, ``seq_a`` is
-    computed and the load of ``seq_d`` waits.
+    computed and the load of ``seq_d`` waits. With *child_only* it goes to the
+    child's process alone.
     """
     return signal_group_when(
         [
@@ -1150,6 +1255,7 @@ def _signal_held_child(
         extra_env={HOLD_DIRECTORY_VARIABLE: str(exits.marks)},
         errors=exits.marks.parent / f"{execution_id}.stderr",
         waiting="the child held seq_b and seq_c with seq_a computed",
+        child_only=child_only,
     )
 
 
@@ -1213,6 +1319,98 @@ def test_an_interrupt_of_the_group_ends_a_process_mode_run_and_its_workers(
     )
 
 
+_WORKERS_GONE_AFTER_THE_PARENT_SECONDS = 2.0
+"""How long a process worker may outlive the process of its run once SIGKILL ends it."""
+
+
+def test_a_sigkill_of_the_runs_process_ends_its_process_workers(
+    exits: Exits,
+) -> None:
+    # seq_a's worker wrote its output, and its result waits to be drained at the
+    # submission of seq_d, whose load waits until the kill. No row is flushed
+    # before then, so seq_a's output is left without a row. seq_b and seq_c are
+    # held in apply and write nothing.
+    child = _signal_held_child(
+        exits,
+        "process",
+        "default-handler",
+        signal.SIGKILL,
+        "TESTEXITPARENTKILLED",
+        child_only=True,
+    )
+    try:
+        assert child.status == -signal.SIGKILL, child.errors
+        workers = [int((exits.marks / sequence).read_text()) for sequence in _HELD]
+        wait_for(
+            lambda: not any(process_alive(worker) for worker in workers),
+            _WORKERS_GONE_AFTER_THE_PARENT_SECONDS,
+            "a held worker outlived the process of its run",
+        )
+        (exits.marks / "release").touch()
+        snapshot = read_run(run_log_dir(exits.ds.base_dir), "TESTEXITPARENTKILLED")
+        assert snapshot is not None
+        # A killed run writes no terminal status and no count of the entries
+        # written, so only its outputs, its rows and the rerun are checked.
+        _check_disk_and_rerun(
+            exits,
+            "TESTEXITPARENTKILLED",
+            snapshot["run_id"],
+            rows=frozenset(),
+            unrecorded=frozenset({"seq_a"}),
+            mode="process",
+        )
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+
+
+# --- Who writes the index and the run-log ---------------------------------------
+
+
+def _record_writer_threads(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
+    """Record the thread of each write of an index or the run-log, by the method called.
+
+    The methods are the append of rows under an index's lock, the mark of a
+    finished run and the run-log's append of one line.
+    """
+    threads: dict[str, list[str]] = {}
+    for owner, name in (
+        (IndexCSV, "_append_locked"),
+        (IndexCSV, "mark_finished"),
+        (JsonlRunLog, "_append"),
+    ):
+        calls = threads.setdefault(name, [])
+        real: Callable[..., object] = getattr(owner, name)
+        monkeypatch.setattr(owner, name, observed(real, _thread_noted(calls)))
+    return threads
+
+
+def _thread_noted(threads: list[str]) -> Callable[..., None]:
+    """A watcher that appends the name of the thread that calls it to *threads*."""
+
+    def note(*_args: object, **_kwargs: object) -> None:
+        threads.append(threading.current_thread().name)
+
+    return note
+
+
+def test_no_thread_of_the_pool_writes_the_index_or_the_run_log(
+    exits: Exits, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    threads = _record_writer_threads(monkeypatch)
+
+    result = exits.run(HoldsUntilReleased(), "thread", "TESTEXITWRITERS")
+
+    assert result.run_id is not None
+    assert sorted(_indexed(exits.ds, result.run_id)["sequence"]) == list(_SEQUENCES)
+    assert all(threads.values()), threads
+    from_the_pool = {
+        name: [thread for thread in names if thread.startswith("ThreadPoolExecutor")]
+        for name, names in threads.items()
+    }
+    assert from_the_pool == {name: [] for name in threads}
+
+
 # --- What is not an exit, and exits with nothing in flight ----------------------
 
 
@@ -1223,9 +1421,9 @@ def test_an_apply_error_is_an_entry_error_and_not_an_exit(
     result = exits.run(LosesSeqB(), mode, "TESTEXITLOST")
 
     assert exits.settles == []
-    assert [_sequence_of(key) for key in result.failed_entries] == ["seq_b"]
-    errors = _events(exits.ds, "TESTEXITLOST", "entry_error")
-    assert [_sequence_of(str(error["key"])) for error in errors] == ["seq_b"]
+    assert [parse_entry_key(key)[1] for key in result.failed_entries] == ["seq_b"]
+    errors = logged_events(exits.ds.base_dir, "TESTEXITLOST", "entry_error")
+    assert [parse_entry_key(str(error["key"]))[1] for error in errors] == ["seq_b"]
     assert result.run_id is not None
     index = _indexed(exits.ds, result.run_id)
     assert sorted(index["sequence"]) == ["seq_a", "seq_c", "seq_d"]

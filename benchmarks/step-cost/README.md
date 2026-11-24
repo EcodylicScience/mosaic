@@ -163,18 +163,19 @@ no `children` frame above 3.8%, the least share that the sampler reports.
 ### Workers write, before and after
 
 Each entry's worker writes its output and sends the parent a report in place of
-the output frame. Measured before (`2c40cfa6`) and after this change, back to
-back on one machine over one `WORK` path, 160 entries, 8 workers: a Linux 6.17
-workstation with an Intel i7-14700 (8 performance cores with two threads each
-and 12 efficiency cores, 20 cores in all) and 31 GB, about 535 processes on the
-host. Each run used a container of the mosaic agent image built from the base
-commit, with the tree under test first on the import path, pinned to 10
-efficiency cores, which share no hyperthreads (`--cpuset-cpus 16-25`). The host
-was otherwise idle. Its load average was 0.02 at the start of the before run
-and 1.98 at the start of the after run, which followed the before run directly.
-The table gives that pair. A second pair of the `cold` and `pipes` sections
-over the same base, started at load averages of 0.46 and 4.33 (the latter again
-from the run before it), gave the figures in brackets.
+the output frame. Measured before (at `2c40cfa6`) and after (at the commit that
+adds this section), back to back on one machine over one `WORK` path, 160
+entries, 8 workers: a Linux 6.17 workstation with an Intel i7-14700 (8
+performance cores with two threads each and 12 efficiency cores, 20 cores in
+all) and 31 GB, about 535 processes on the host. Each run used a container of
+the mosaic agent image built from `2c40cfa6`, with the tree under test first on
+the import path, pinned to 10 efficiency cores, which share no hyperthreads
+(`--cpuset-cpus 16-25`). The host was otherwise idle. Its load average was 0.02
+at the start of the before run and 1.98 at the start of the after run, which
+followed the before run directly. The table gives that pair. A second pair of
+the `cold` and `pipes` sections over the same two commits, started at load
+averages of 0.46 and 4.33 (the latter again from the run before it), gave the
+figures in brackets.
 
 | Figure                                                | Before        | After         |
 | ----------------------------------------------------- | ------------- | ------------- |
@@ -221,11 +222,11 @@ and lists no frame below 4.4%.
 Against the bench's targets: process workers now average above 60% CPU. The
 parent stays above 15 ms per entry, at 22.8 ms in thread mode and 38.9 ms in
 process mode. Thread 8 runs 1.26 times as fast as serial, short of twice.
-Outputs and index rows are unchanged against the base.
+Outputs and index rows are unchanged against `2c40cfa6`.
 
 The `fingerprint-*.txt` files of the nine bench datasets are byte-identical
 before and after. So are the fingerprints of the 18 datasets that
 `tests/core/pipeline/test_output_byte_identity.py` leaves under a fixed
-`--basetemp` (six cases, each in serial, thread 3 and process 3), run at the
-base and at the change back to back on a second Linux machine: 237 lines, every
-one equal.
+`--basetemp` (six cases, each in serial, thread 3 and process 3), run at
+`2c40cfa6` and at the commit that adds this section back to back on a second
+Linux machine: 237 lines, every one equal.

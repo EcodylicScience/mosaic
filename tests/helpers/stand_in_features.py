@@ -17,8 +17,9 @@ and records the file of each entry it is handed, for the tests of labels that a 
 dataset holds. :class:`HoldsOnSequences` stops in the entries it names until it is
 killed, for the tests of a cancel that reaches a run's workers.
 :class:`HoldsUntilReleased` stops in the entries it names until the test releases them,
-and can make the write or the trim of an entry fail in the worker process that computes
-it, for the tests of how a run ends with entries in flight.
+and can make the write or the trim of an entry fail, slow or end in the worker process
+that computes it, for the tests of how a run ends with entries in flight and of what it
+measures.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import os
 import signal
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Collection, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +43,7 @@ from pydantic import Field
 from mosaic.core.entry import parse_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import Params
-from mosaic.core.pipeline import entry_task
+from mosaic.core.pipeline import entry_task, writers
 from mosaic.core.pipeline._utils import FeatureMeta, atomic_write
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -54,6 +55,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.writers import FeatureOutput
+from tests.helpers.entry_writes import wrapped_write
 
 
 class _P(Params):
@@ -109,6 +111,12 @@ class PlainFeature(CropLike):
     consumed_roots: tuple[str, ...] = ()
 
 
+def _lose_the_named(df: pd.DataFrame, lost: Collection[str]) -> None:
+    """Raise the error of a lost entry when *df* is an entry of a sequence of *lost*."""
+    if not df.empty and str(df["sequence"].iloc[0]) in lost:
+        raise RuntimeError("a lost entry")
+
+
 class LossyFeature(PlainFeature):
     """A scope-free per-entry feature that fails on the sequences it is told to.
 
@@ -123,8 +131,7 @@ class LossyFeature(PlainFeature):
         self.fail_on = frozenset(fail_on)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not df.empty and str(df["sequence"].iloc[0]) in self.fail_on:
-            raise RuntimeError("a lost entry")
+        _lose_the_named(df, self.fail_on)
         return df
 
 
@@ -139,9 +146,11 @@ class ParallelFeature(PlainFeature):
     """A per-entry feature that may compute several entries at once.
 
     A subclass that names sequences in ``kill_on`` ends the process computing one
-    of them with SIGKILL, as a host does a process it runs out of memory for. The
-    names are a class attribute because a process worker rebuilds the feature from
-    its class and parameters, and an instance attribute would not reach it.
+    of them with SIGKILL, as a host does a process it runs out of memory for, and
+    one that names sequences in ``fail_on`` loses their entries as
+    :class:`LossyFeature` does. The names are class attributes because a process
+    worker rebuilds the feature from its class and parameters, and an instance
+    attribute would not reach it.
     """
 
     name = "prov-parallel"
@@ -149,10 +158,12 @@ class ParallelFeature(PlainFeature):
     accepts_overlap = False
     emits: EmitsLevel = "as-input"
     kill_on: tuple[str, ...] = ()
+    fail_on: tuple[str, ...] = ()
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if not df.empty and str(df["sequence"].iloc[0]) in self.kill_on:
             os.kill(os.getpid(), signal.SIGKILL)
+        _lose_the_named(df, self.fail_on)
         return df
 
 
@@ -184,40 +195,71 @@ class HoldsOnSequences(ParallelFeature):
 
 _RELEASE_POLL_SECONDS = 0.02
 
-type InWorkerFault = Literal["full-disk", "trim"]
+type InWorkerFault = Literal[
+    "full-disk", "trim", "slow-write", "kill-in-write", "kill-after-rename"
+]
 """A fault :class:`HoldsUntilReleased` installs in the worker process it runs in.
 
 ``full-disk`` makes the write of an entry raise ``OSError``, as a full disk does,
 and ``trim`` makes the trim of an overlapped entry raise ``ValueError``.
+``slow-write`` waits ``write_seconds`` before the write of an entry.
+``kill-in-write`` ends the worker with SIGKILL once the write of an entry has filled
+its temporary file and before the rename, and ``kill-after-rename`` once the write
+has returned. Each kill first waits for the ``computed-<sequence>`` mark of every
+sequence of ``kill_once_computed``, and touches ``killed``, in the hold directory.
 """
 
 _INSTALLED_FAULTS: set[InWorkerFault] = set()
 """The faults installed in this process, each once."""
 
 
-def _install_fault(fault: InWorkerFault, sequences: frozenset[str]) -> None:
-    """Make *fault* fail the entries of *sequences* in this process, once per process.
+def _await_files(paths: Collection[Path], timed_out: str) -> None:
+    """Return once every file of *paths* exists.
 
-    The fault replaces a module global of ``entry_task``, which the entry task looks
-    up at the call, so it takes effect for the write or the trim of the entry being
-    applied.
+    Raises:
+        TimeoutError: After ``_HOLD_SECONDS`` with a file missing, with the
+            message *timed_out*.
+    """
+    deadline = time.monotonic() + _HOLD_SECONDS
+    while not all(path.exists() for path in paths):
+        if time.monotonic() >= deadline:
+            raise TimeoutError(timed_out)
+        time.sleep(_RELEASE_POLL_SECONDS)
+
+
+def _kill_this_worker(marks: Path) -> None:
+    """Touch ``killed`` in *marks*, then end this process with SIGKILL."""
+    (marks / "killed").touch()
+    os.kill(os.getpid(), signal.SIGKILL)
+
+
+def _install_fault(
+    fault: InWorkerFault,
+    sequences: frozenset[str],
+    *,
+    write_seconds: float,
+    once_computed: tuple[str, ...],
+) -> None:
+    """Make *fault* reach the entries of *sequences* in this process, once per process.
+
+    The fault replaces a module global of ``entry_task`` or ``writers``, which the
+    entry task and ``write_parquet_atomic`` look up at the call, so it takes effect
+    for the write or the trim of the entry being applied.
     """
     if fault in _INSTALLED_FAULTS:
         return
     _INSTALLED_FAULTS.add(fault)
-    if fault == "full-disk":
-        real_write = entry_task.write_output
+    if fault in ("full-disk", "slow-write"):
 
-        def write_output(
-            meta: FeatureMeta, df_feat: FeatureOutput, *, create_parent: bool = True
-        ) -> int:
+        def before(meta: FeatureMeta) -> None:
             if meta.sequence in sequences:
-                message = "no space left on device"
-                raise OSError(message)
-            return real_write(meta, df_feat, create_parent=create_parent)
+                if fault == "full-disk":
+                    message = "no space left on device"
+                    raise OSError(message)
+                time.sleep(write_seconds)
 
-        entry_task.write_output = write_output
-    else:
+        entry_task.write_output = wrapped_write(before)
+    elif fault == "trim":
         real_trim = entry_task.trim_feature_output
 
         def trim_feature_output(
@@ -229,6 +271,36 @@ def _install_fault(fault: InWorkerFault, sequences: frozenset[str]) -> None:
             return real_trim(df, selector)
 
         entry_task.trim_feature_output = trim_feature_output
+    else:
+        real_atomic_write = writers.atomic_write
+        in_write = fault == "kill-in-write"
+
+        def atomic_write(
+            final_path: Path,
+            write_fn: Callable[[Path], object],
+            *,
+            create_parent: bool = True,
+        ) -> None:
+            if parse_entry_key(final_path.stem)[1] not in sequences:
+                real_atomic_write(final_path, write_fn, create_parent=create_parent)
+                return
+            marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
+            computed = [marks / f"computed-{name}" for name in once_computed]
+            _await_files(computed, f"the run never computed {', '.join(once_computed)}")
+
+            def write_then_die(temp: Path) -> None:
+                _ = write_fn(temp)
+                _kill_this_worker(marks)
+
+            if in_write:
+                real_atomic_write(
+                    final_path, write_then_die, create_parent=create_parent
+                )
+            else:
+                real_atomic_write(final_path, write_fn, create_parent=create_parent)
+                _kill_this_worker(marks)
+
+        writers.atomic_write = atomic_write
 
 
 class HoldsUntilReleased(ParallelFeature):
@@ -243,36 +315,38 @@ class HoldsUntilReleased(ParallelFeature):
     are a class attribute for the reason ``kill_on`` is.
 
     A subclass that names a ``fault`` makes the write or the trim of the entries
-    of ``fault_on`` fail in the worker process that computes them, where a test's
-    monkeypatch does not reach. Its ``apply`` installs the fault once per process,
-    and raises outside a spawned worker, so the fault never reaches the test's own
-    process.
+    of ``fault_on`` fail, slow or end in the worker process that computes them,
+    where a test's monkeypatch does not reach. ``write_seconds`` is the wait of
+    ``slow-write``, and ``kill_once_computed`` the sequences whose computed marks a
+    kill waits for. Its ``apply`` installs the fault once per process, and raises
+    outside a spawned worker, so the fault never reaches the test's own process.
     """
 
     name = "prov-parallel-released"
     hold_on: tuple[str, ...] = ()
     fault: InWorkerFault | None = None
     fault_on: tuple[str, ...] = ()
+    write_seconds: float = 0.0
+    kill_once_computed: tuple[str, ...] = ()
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.fault is not None:
             if multiprocessing.parent_process() is None:
                 message = f"the fault {self.fault} runs only in a spawned worker"
                 raise RuntimeError(message)
-            _install_fault(self.fault, frozenset(self.fault_on))
+            _install_fault(
+                self.fault,
+                frozenset(self.fault_on),
+                write_seconds=self.write_seconds,
+                once_computed=self.kill_once_computed,
+            )
         sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
         marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
         (marks / f"applied-{sequence}").touch()
         if sequence in self.hold_on:
             process = str(os.getpid())
             atomic_write(marks / sequence, lambda temp: temp.write_text(process))
-            release = marks / "release"
-            deadline = time.monotonic() + _HOLD_SECONDS
-            while not release.exists():
-                if time.monotonic() >= deadline:
-                    message = f"the test never released {sequence}"
-                    raise TimeoutError(message)
-                time.sleep(_RELEASE_POLL_SECONDS)
+            _await_files([marks / "release"], f"the test never released {sequence}")
         return super().apply(df)
 
 

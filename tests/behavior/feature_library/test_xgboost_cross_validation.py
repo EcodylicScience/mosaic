@@ -40,14 +40,13 @@ from mosaic.behavior.feature_library.classifier_common import (
 from mosaic.behavior.feature_library.helpers import cv_fold_assignment
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
 from mosaic.core.pipeline._utils import FeatureMeta
-from mosaic.core.pipeline.entry_pool import EntryFailure
 from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
 from mosaic.core.pipeline.writers import write_output
 from mosaic.core.pipeline.types import InputStream, Result
-from tests.helpers import run_id_digest
+from tests.helpers import run_id_digest, written_by_worker
 
 Entry = tuple[str, str]
 SIGNAL = 3.0
@@ -256,9 +255,7 @@ def scored_in_a_worker(
         {},
         task,
     )
-    if isinstance(outcome, EntryFailure):
-        outcome.reraise()
-    return pd.read_parquet(task.meta.out_path)
+    return written_by_worker(task, outcome)
 
 
 def written_back(frame: pd.DataFrame, path: Path) -> pd.DataFrame:

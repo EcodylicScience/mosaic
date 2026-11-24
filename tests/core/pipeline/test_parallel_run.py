@@ -8,7 +8,6 @@ run resumes, and says what to change.
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import sys
@@ -20,6 +19,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import parse_entry_key
 from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import manifest as manifest_module
@@ -38,17 +38,20 @@ from mosaic.core.pipeline.parallelism import (
     MemoryFloorReached,
     WorkerProcessDied,
 )
+from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.run import run_feature
 from mosaic.run_cost import read_run_cost
-from mosaic.runlog import parse_instant, read_run, run_log_dir, run_log_path
+from mosaic.runlog import parse_instant, read_run, run_log_dir
 from tests.helpers import (
     CLOCK_TICK_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
     HoldsOnSequences,
     ParallelFeature,
     add_tracks_variant,
+    logged_events,
     make_dataset,
     signal_group_when,
+    wrapped_write,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -161,7 +164,7 @@ def _assert_cpu_holds_after(ds: Dataset, execution_id: str, instant: float) -> N
     *instant* is a ``time.time()`` reading. The reports after it read a membership
     whose workers were killed, and are not compared with each other.
     """
-    events = _events(ds, execution_id, "resources")
+    events = logged_events(ds.base_dir, execution_id, "resources")
     earlier: list[float] = []
     for event in events:
         written = parse_instant(str(event["t"]))
@@ -462,12 +465,12 @@ def test_the_pool_is_shut_down_when_the_run_fails_for_another_reason(
             shutdowns.append(cancel_futures)
             super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    def full_disk(*_args: object, **_kwargs: object) -> int:
+    def full_disk(_meta: FeatureMeta) -> None:
         msg = "No space left on device"
         raise OSError(msg)
 
     monkeypatch.setattr(entry_pool, "ThreadPoolExecutor", _Recording)
-    monkeypatch.setattr(entry_task_module, "write_output", full_disk)
+    monkeypatch.setattr(entry_task_module, "write_output", wrapped_write(full_disk))
 
     with pytest.raises(OSError, match="No space left"):
         _ = run_feature(
@@ -518,24 +521,13 @@ def test_the_cpu_figure_does_not_fall_across_a_dead_worker(
 _GIB = 1024**3
 
 
-def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
-    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-    return [record for record in map(json.loads, lines) if record["ev"] == kind]
-
-
-def _sequence_of(record: dict[str, object]) -> str:
-    key = str(record["key"])
-    (sequence,) = [name for name in _SEQUENCES if key.endswith(name)]
-    return sequence
-
-
 def _in_flight(ds: Dataset, execution_id: str) -> dict[str, int]:
     """The most entries in flight beside each entry, by sequence."""
     found: dict[str, int] = {}
-    for end in _events(ds, execution_id, "entry_end"):
+    for end in logged_events(ds.base_dir, execution_id, "entry_end"):
         count = end["in_flight"]
         assert isinstance(count, int)
-        found[_sequence_of(end)] = count
+        found[parse_entry_key(str(end["key"]))[1]] = count
     return found
 
 
@@ -622,7 +614,7 @@ def test_with_a_margin_the_first_entry_runs_alone_and_the_largest_starts_first(
     assert result.entries_written == len(_SEQUENCES)
     assert loads == ["seq_b", "seq_c", "seq_a"]
     assert _in_flight(ds, "TESTGATEORDER")["seq_b"] == 1
-    resources = _events(ds, "TESTGATEORDER", "resources")[-1]
+    resources = logged_events(ds.base_dir, "TESTGATEORDER", "resources")[-1]
     assert resources["admission_margin"] == 1.5
 
 
@@ -661,7 +653,9 @@ def test_an_entry_predicted_over_the_budget_beside_another_waits_for_it(
 
     assert result.entries_written == len(_SEQUENCES)
     assert _in_flight(ds, "TESTGATEWAITS") == dict.fromkeys(_SEQUENCES, 1)
-    waits = _events(ds, "TESTGATEWAITS", "resources")[-1]["admission_waits"]
+    waits = logged_events(ds.base_dir, "TESTGATEWAITS", "resources")[-1][
+        "admission_waits"
+    ]
     assert isinstance(waits, int)
     assert waits >= 2
 
@@ -733,7 +727,7 @@ def test_an_entry_predicted_over_the_limit_fails_the_run_resumably(
     assert again.entries_written == len(_SEQUENCES)
     computed = [
         end
-        for end in _events(ds, "TESTGATERESUME", "entry_end")
+        for end in logged_events(ds.base_dir, "TESTGATERESUME", "entry_end")
         if "wall_seconds" in end
     ]
     assert len(computed) == len(_SEQUENCES) - 1

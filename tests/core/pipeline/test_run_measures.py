@@ -65,12 +65,17 @@ from mosaic.runlog import (
     sweep_levels,
 )
 from tests.helpers import (
+    HOLD_DIRECTORY_VARIABLE,
     FitControl,
     FittingFeature,
+    HoldsUntilReleased,
     ParallelFeature,
     add_tracks_variant,
+    logged_events,
     make_dataset,
+    report_of,
     run_fresh,
+    wrapped_write,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -92,17 +97,8 @@ def _dataset(tmp_path: Path, name: str = "ds") -> Dataset:
     return ds
 
 
-def _events_at(base_dir: Path, execution_id: str, kind: str) -> list[dict[str, object]]:
-    lines = run_log_path(base_dir, execution_id).read_text().splitlines()
-    return [record for record in map(json.loads, lines) if record["ev"] == kind]
-
-
-def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
-    return _events_at(ds.base_dir, execution_id, kind)
-
-
 def _last_resources(ds: Dataset, execution_id: str) -> dict[str, object]:
-    return _events(ds, execution_id, "resources")[-1]
+    return logged_events(ds.base_dir, execution_id, "resources")[-1]
 
 
 def _number(record: dict[str, object], key: str) -> float:
@@ -155,7 +151,7 @@ def test_every_computed_entry_records_its_cost(
         execution_id=execution_id,
     )
 
-    ends = _events(ds, execution_id, "entry_end")
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
     assert len(ends) == len(_SEQUENCES)
     for end in ends:
         assert all(field in end for field in _MEASURE_FIELDS)
@@ -175,7 +171,7 @@ def test_a_cache_hit_records_no_cost(tmp_path: Path) -> None:
 
     _ = run_feature(ds, ParallelFeature(), execution_id="TESTMEASUREHIT")
 
-    ends = _events(ds, "TESTMEASUREHIT", "entry_end")
+    ends = logged_events(ds.base_dir, "TESTMEASUREHIT", "entry_end")
     assert len(ends) == len(_SEQUENCES)
     assert all("wall_seconds" not in end for end in ends)
 
@@ -211,7 +207,7 @@ def test_progress_and_the_heartbeat_reach_the_log_and_an_injected_callback(
     )
 
     assert [(done, total) for done, total, _key in calls] == [(1, 3), (2, 3), (3, 3)]
-    ends = _events(ds, "TESTPROG", "entry_end")
+    ends = logged_events(ds.base_dir, "TESTPROG", "entry_end")
     assert [end["key"] for end in ends] == [key for _d, _t, key in calls]
     snapshot = read_run(run_log_dir(ds.base_dir), "TESTPROG")
     assert snapshot is not None
@@ -434,7 +430,7 @@ def test_an_entry_that_never_reaches_apply_leaves_the_record(
 
     (record,) = recorded_in_flight
     assert record.count() == 0
-    ends = _events(ds, "TESTSKIPPED", "entry_end")
+    ends = logged_events(ds.base_dir, "TESTSKIPPED", "entry_end")
     assert [int(_number(end, "in_flight")) for end in ends] == [1, 1]
 
 
@@ -459,7 +455,7 @@ def test_an_entry_failing_its_column_check_leaves_the_record(
     assert len(result.failed_entries) == 1
     (record,) = recorded_in_flight
     assert record.count() == 0
-    ends = _events(ds, "TESTCOLUMNS", "entry_end")
+    ends = logged_events(ds.base_dir, "TESTCOLUMNS", "entry_end")
     assert [int(_number(end, "in_flight")) for end in ends] == [1, 1]
 
 
@@ -492,6 +488,58 @@ def test_an_apply_that_raises_leaves_the_record(
     assert record.count() == 0
 
 
+_SLOW_WRITE_SECONDS = 1.0
+"""How long the write of each entry is slowed in the tests of ``apply_seconds``."""
+
+
+class _WritesSlowly(HoldsUntilReleased):
+    """Waits :data:`_SLOW_WRITE_SECONDS` before the write of each entry, in its worker."""
+
+    fault = "slow-write"
+    fault_on = _SEQUENCES
+    write_seconds = _SLOW_WRITE_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("workers", "mode"),
+    [(1, "thread"), (2, "thread"), (2, "process")],
+    ids=["serial", "thread", "process"],
+)
+def test_the_apply_seconds_of_an_entry_leave_out_its_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int, mode: str
+) -> None:
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    monkeypatch.setenv(HOLD_DIRECTORY_VARIABLE, str(marks))
+    in_processes = mode == "process"
+    if not in_processes:
+        monkeypatch.setattr(
+            entry_task_module,
+            "write_output",
+            wrapped_write(lambda _meta: time.sleep(_SLOW_WRITE_SECONDS)),
+        )
+    execution_id = f"TESTAPPLYNOWRITE{workers}{mode.upper()}"
+
+    _ = run_feature(
+        ds,
+        _WritesSlowly() if in_processes else HoldsUntilReleased(),
+        parallel_workers=workers,
+        parallel_mode=mode,
+        execution_id=execution_id,
+    )
+
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
+    assert [end["mode"] for end in ends] == [mode] * len(_SEQUENCES)
+    for end in ends:
+        apply_seconds = _number(end, "apply_seconds")
+        assert _number(end, "wall_seconds") - apply_seconds >= _SLOW_WRITE_SECONDS
+        # The first entry of a process worker also holds the worker's start and
+        # the feature's build, so only the other modes bound the apply.
+        if not in_processes:
+            assert apply_seconds < 0.5
+
+
 # --- the fit ------------------------------------------------------------------
 
 
@@ -505,7 +553,8 @@ def test_a_fit_records_its_cost_and_what_it_was_offered(tmp_path: Path) -> None:
     assert _number(report, "fit_peak_rss_bytes") > 0
     assert _number(report, "fit_entries") == len(_SEQUENCES)
     rows = sum(
-        _number(end, "input_rows") for end in _events(ds, "TESTFIT", "entry_end")
+        _number(end, "input_rows")
+        for end in logged_events(ds.base_dir, "TESTFIT", "entry_end")
     )
     assert _number(report, "fit_input_rows") == rows
 
@@ -530,7 +579,11 @@ def test_a_fit_in_progress_writes_its_resources(tmp_path: Path) -> None:
         deadline = time.monotonic() + 15
         written: list[dict[str, object]] = []
         while not written and time.monotonic() < deadline:
-            written = _events(ds, "TESTFITHELD", "resources") if path.exists() else []
+            written = (
+                logged_events(ds.base_dir, "TESTFITHELD", "resources")
+                if path.exists()
+                else []
+            )
             time.sleep(0.1)
         assert written, "no resources event was written while the fit ran"
         assert _number(written[-1], "fit_peak_rss_bytes") > 0
@@ -592,13 +645,6 @@ def _task(run_root: Path, table: pd.DataFrame) -> EntryTask:
     return EntryTask(meta=build_feature_meta("", "seq_a", run_root), table=table)
 
 
-def _worker_of(outcome: EntryReport | EntryFailure) -> WorkerMeasure | None:
-    """The worker's measure of a report, raising the error of a failure."""
-    if isinstance(outcome, EntryFailure):
-        outcome.reraise()
-    return outcome.worker
-
-
 def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
 
@@ -606,7 +652,7 @@ def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> No
         ds, ParallelFeature(), execution_id="TESTWORKERBASE", measure_worker_base=True
     )
 
-    *_, frozen, measured = _events(ds, "TESTWORKERBASE", "resources")
+    *_, frozen, measured = logged_events(ds.base_dir, "TESTWORKERBASE", "resources")
     assert _number(frozen, "worker_base_rss_bytes") == 0
     assert _number(measured, "worker_base_rss_bytes") > 0
     assert _number(measured, "cpu_seconds") == _number(frozen, "cpu_seconds")
@@ -658,7 +704,7 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
             paths,
             lookups,
         ).result()
-        measure = _worker_of(
+        measure = report_of(
             pool.submit(
                 run_module.process_apply_worker,
                 module,
@@ -670,7 +716,7 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
                 lookups,
                 _task(tmp_path, table),
             ).result()
-        )
+        ).worker
 
     assert measure is not None
     assert empty.rss_bytes > 0
@@ -837,10 +883,10 @@ def _learn_per_row(tmp_path: Path, mode: str) -> tuple[dict[str, object], int, i
     printed = run_fresh(_LEARN_PER_ROW, args=args, env=env)
 
     base_dir = tmp_path / "ds"
-    ends = _events_at(base_dir, "TESTPERROW", "entry_end")
+    ends = logged_events(base_dir, "TESTPERROW", "entry_end")
     rows = max(int(_number(end, "input_rows")) for end in ends)
     most_live = int(printed.splitlines()[-1])
-    return _events_at(base_dir, "TESTPERROW", "resources")[-1], rows, most_live
+    return logged_events(base_dir, "TESTPERROW", "resources")[-1], rows, most_live
 
 
 def test_a_thread_run_learns_what_its_entries_cost_per_row(tmp_path: Path) -> None:
@@ -927,7 +973,7 @@ def test_each_entry_records_its_covariates_and_mode(
         execution_id=execution_id,
     )
 
-    ends = _events(ds, execution_id, "entry_end")
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
     assert len(ends) == len(_SEQUENCES)
     for end in ends:
         sequence = str(end["key"]).rsplit("__", 1)[-1]
@@ -972,7 +1018,7 @@ def test_the_final_resources_levels_match_the_written_entries(
     )
 
     assert len(result.failed_entries) == 1
-    ends = _events(ds, execution_id, "entry_end")
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
     assert len(ends) == len(_SEQUENCES) - 1
     levels = _written_levels(ds, execution_id)
     counts = [level.in_flight for level in levels]
@@ -981,7 +1027,7 @@ def test_the_final_resources_levels_match_the_written_entries(
     assert sum(level.rows for level in levels) == pytest.approx(
         sum(_number(end, "input_rows") for end in ends)
     )
-    flights = _events(ds, execution_id, "entry_end")
+    flights = logged_events(ds.base_dir, execution_id, "entry_end")
     spent = sum(level.seconds for level in levels)
     assert spent >= max(_number(end, "wall_seconds") for end in flights)
     assert spent <= sum(_number(end, "wall_seconds") for end in flights)
@@ -1001,7 +1047,7 @@ def test_the_final_resources_levels_are_those_an_old_log_rebuilds(
         execution_id="TESTLEVELSREBUILT",
     )
 
-    ends = _events(ds, "TESTLEVELSREBUILT", "entry_end")
+    ends = logged_events(ds.base_dir, "TESTLEVELSREBUILT", "entry_end")
     spans = [
         FlightSpan(
             start=_stamp(end) - _number(end, "wall_seconds"),
@@ -1486,7 +1532,7 @@ def _non_reclaimable_growth(
         ds_manifest_path,
         tracklets,
     )
-    measure = _worker_of(outcome)
+    measure = report_of(outcome).worker
     assert measure is not None
     measure = dataclasses.replace(
         measure, base_nonreclaimable_bytes=base, peak_nonreclaimable_bytes=peak
@@ -1497,7 +1543,7 @@ def _non_reclaimable_growth(
 def _grown_ends(ds: Dataset, execution_id: str) -> list[tuple[int, object]]:
     return [
         (int(_number(end, "in_flight")), end.get("peak_grown_bytes"))
-        for end in _events(ds, execution_id, "entry_end")
+        for end in logged_events(ds.base_dir, execution_id, "entry_end")
     ]
 
 
@@ -1773,7 +1819,7 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
     table = pd.DataFrame({"sequence": ["seq_a"] * 100, "value": range(100)})
     handed = int(table.memory_usage(deep=True).sum())
 
-    measure = _worker_of(
+    measure = report_of(
         run_module.process_apply_worker(
             type(feature).__module__,
             type(feature).__name__,
@@ -1784,7 +1830,7 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
             {},
             _task(tmp_path, table),
         )
-    )
+    ).worker
 
     assert _SAMPLING["during_apply"]
     assert isinstance(measure, WorkerMeasure)
@@ -1805,7 +1851,7 @@ def test_a_process_worker_without_the_figure_leaves_both_none(
     feature = ParallelFeature()
     table = pd.DataFrame({"sequence": ["seq_a"] * 10})
 
-    measure = _worker_of(
+    measure = report_of(
         run_module.process_apply_worker(
             type(feature).__module__,
             type(feature).__name__,
@@ -1816,7 +1862,7 @@ def test_a_process_worker_without_the_figure_leaves_both_none(
             {},
             _task(tmp_path, table),
         )
-    )
+    ).worker
 
     assert isinstance(measure, WorkerMeasure)
     assert measure.base_nonreclaimable_bytes is None

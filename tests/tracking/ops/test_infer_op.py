@@ -6,7 +6,6 @@ completion marker, and the claim that keeps two executions off one entry.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeAlias
@@ -24,12 +23,13 @@ from mosaic.tracking.ops.infer import (
     infer_run_id,
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
-from mosaic.core.pipeline.run_log import read_runs, run_log_dir, run_log_path
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.tracking import resolve_model
 
 from tests.helpers import (
     install_fake_point_inference,
     install_fake_pose_inference,
+    logged_events,
     stub_media_dataset,
 )
 
@@ -386,8 +386,9 @@ def test_an_entry_held_by_another_execution_is_skipped(
     # The skipped entry counts on the context's heartbeat, whose first call is
     # written. Without it, vid2's heartbeat would be the first one.
     latest = max(read_runs(run_log_dir(ds.base_dir)), key=lambda s: s["started_at"])
-    lines = run_log_path(ds.base_dir, latest["execution_id"]).read_text().splitlines()
-    records = [json.loads(line) for line in lines]
-    heartbeats = [(r["done"], r["total"]) for r in records if r["ev"] == "heartbeat"]
+    heartbeats = [
+        (r["done"], r["total"])
+        for r in logged_events(ds.base_dir, latest["execution_id"], "heartbeat")
+    ]
     assert heartbeats == [(1, 2)]
     assert (latest["progress_done"], latest["progress_total"]) == (2, 2)

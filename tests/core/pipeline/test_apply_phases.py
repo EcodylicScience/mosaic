@@ -7,7 +7,6 @@ own levels and peak and writes its own final ``resources`` event.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -18,10 +17,11 @@ from pydantic import TypeAdapter
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.run import ApplyPhase, run_feature
-from mosaic.runlog import read_run, run_log_dir, run_log_path
+from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     ParallelFeature,
     add_tracks_variant,
+    logged_events,
     make_dataset,
     raise_high_water_mark_once_applied,
 )
@@ -42,11 +42,6 @@ def _dataset(tmp_path: Path) -> Dataset:
     return ds
 
 
-def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
-    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
-    return [record for record in map(json.loads, lines) if record["ev"] == kind]
-
-
 _LEVELS = TypeAdapter(list[dict[str, float]])
 
 
@@ -59,7 +54,7 @@ def _input_rows(ds: Dataset, execution_id: str) -> dict[str, float]:
     """The input rows of each computed entry, by key."""
     return {
         str(event["key"]): float(str(event["input_rows"]))
-        for event in _events(ds, execution_id, "entry_end")
+        for event in logged_events(ds.base_dir, execution_id, "entry_end")
         if "input_rows" in event
     }
 
@@ -90,12 +85,12 @@ def test_each_phase_writes_its_own_final_resources_in_one_attempt(
 
     assert result.entries_written == 4
     assert result.failed_entries == ()
-    assert len(_events(ds, "PHASED", "started")) == 1
+    assert len(logged_events(ds.base_dir, "PHASED", "started")) == 1
     snapshot = read_run(run_log_dir(ds.base_dir), "PHASED")
     assert snapshot is not None
     assert snapshot["progress_total"] == 4
     assert snapshot["entries_written"] == 4
-    reports = _events(ds, "PHASED", "resources")
+    reports = logged_events(ds.base_dir, "PHASED", "resources")
     first = [report for report in reports if report["workers"] == 1][-1]
     last = reports[-1]
     assert last["workers"] == 3
@@ -120,7 +115,7 @@ def test_phases_that_run_alike_are_one_phase(tmp_path: Path) -> None:
         execution_id="ALIKE",
     )
 
-    reports = _events(ds, "ALIKE", "resources")
+    reports = logged_events(ds.base_dir, "ALIKE", "resources")
     levels = _levels(reports[-1])
     assert [level["in_flight"] for level in levels] == [1]
     assert levels[0]["rows"] == pytest.approx(sum(_input_rows(ds, "ALIKE").values()))
@@ -159,8 +154,8 @@ def test_a_cache_hit_is_one_claim_of_the_whole_attempt(tmp_path: Path) -> None:
 
     assert first.cache_hit is False
     assert second.cache_hit is True
-    assert len(_events(ds, "FIRST", "cache_hit")) == 0
-    assert len(_events(ds, "SECOND", "cache_hit")) == 1
+    assert len(logged_events(ds.base_dir, "FIRST", "cache_hit")) == 0
+    assert len(logged_events(ds.base_dir, "SECOND", "cache_hit")) == 1
 
     run_root = (
         ds.get_root("features") / "prov-parallel__from__tracks" / str(first.run_id)
@@ -169,7 +164,7 @@ def test_a_cache_hit_is_one_claim_of_the_whole_attempt(tmp_path: Path) -> None:
     third = run_feature(ds, ParallelFeature(), phases=phases, execution_id="THIRD")
 
     assert third.cache_hit is False
-    assert len(_events(ds, "THIRD", "cache_hit")) == 0
+    assert len(logged_events(ds.base_dir, "THIRD", "cache_hit")) == 0
     assert third.entries_written == 4
 
 
@@ -197,7 +192,7 @@ def test_each_phase_reports_the_apply_time_of_its_own_entries(
         execution_id="SPANS",
     )
 
-    reports = _events(ds, "SPANS", "resources")
+    reports = logged_events(ds.base_dir, "SPANS", "resources")
     first = [report for report in reports if report["workers"] == 1][-1]
     last = reports[-1]
     assert last["workers"] == 3
@@ -226,7 +221,7 @@ def test_a_later_phase_never_lowers_the_attempts_peak_memory(
         execution_id="PEAKS",
     )
 
-    reports = _events(ds, "PEAKS", "resources")
+    reports = logged_events(ds.base_dir, "PEAKS", "resources")
     peaks = [int(str(report["peak_rss_bytes"])) for report in reports]
     assert reports[-1]["parallel_mode"] == "process"
     assert max(peaks) >= high_water

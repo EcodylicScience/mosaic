@@ -34,13 +34,12 @@ from mosaic.behavior.feature_library.orientation_relative import (
     OrientationRelativeFeature,
     _ordered_pairs,  # pyright: ignore[reportPrivateUsage]
 )
-from mosaic.core.pipeline.entry_pool import EntryFailure
 from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.track_library.calms21 import calms21_to_trex_df
-from tests.helpers import write_calms21_npy
+from tests.helpers import write_calms21_npy, written_by_worker
 
 N_KEYPOINTS = 7
 
@@ -1003,9 +1002,7 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
             task,
         ).result(timeout=120)
 
-    if isinstance(outcome, EntryFailure):
-        outcome.reraise()
-    result = pd.read_parquet(task.meta.out_path)
+    result = written_by_worker(task, outcome)
     in_process = OrientationRelativeFeature(params={"nearest_k": 4})
     assert in_process.load_state(tmp_path, {}, {"scale": lookup})
     _same(result, in_process.apply(table))
