@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -35,7 +36,12 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import fit_scope as fit_scope_module
-from mosaic.core.pipeline.fit_scope import read_fit_state_digest
+from mosaic.core.pipeline.fit_scope import (
+    FitEntryInputs,
+    FitScope,
+    read_fit_state_digest,
+    write_fit_scope,
+)
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
     DriftReads,
@@ -806,6 +812,32 @@ def _drifted(
     return drifted_entries(ds, result.feature, result.run_id, params)
 
 
+def _record_fit_inputs(
+    ds: Dataset, result: Result, cells: dict[tuple[str, str], EntryCells]
+) -> None:
+    """Give *result*'s run a ``fit_scope.json`` recording *cells* as the fit's inputs.
+
+    The record holds no state digest, so the run's own fit-state part stays
+    blank on both sides and only the recorded inputs can drift.
+    """
+    assert result.run_id is not None
+    write_fit_scope(
+        feature_run_root(ds, result.feature, result.run_id),
+        FitScope(
+            scope_dependent=False,
+            entries=None,
+            tracks_variants=None,
+            labels_variants=None,
+            fitted_at="",
+            identity_scheme="",
+            inputs=tuple(
+                FitEntryInputs(group=group, sequence=sequence, cells=entry_cells)
+                for (group, sequence), entry_cells in sorted(cells.items())
+            ),
+        ),
+    )
+
+
 class TestDriftedEntries:
     """The planner reports the entries ``run_feature`` would recompute."""
 
@@ -954,6 +986,61 @@ class TestDriftedEntries:
 
         assert _drifted(ds, upstream) == (("", "seq_a"), ("", "seq_b"))
         assert _drifted(ds, upstream, with_params=False) == (("", "seq_a"),)
+
+    def test_a_run_whose_fit_drifted_reports_every_entry_of_its_rows(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        now = current_entry_cells(
+            DriftReads(ds), _params_of(ds, applied), [("", "seq_a"), ("", "seq_b")]
+        )[0]
+        _record_fit_inputs(ds, applied, now)
+        assert _drifted(ds, applied) == ()
+
+        stale = {**now, ("", "seq_a"): replace(now[("", "seq_a")], tracks="stale")}
+        _record_fit_inputs(ds, applied, stale)
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_training_entry_the_inputs_lost_makes_every_entry_of_the_rows_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        now = current_entry_cells(
+            DriftReads(ds), _params_of(ds, applied), [("", "seq_a"), ("", "seq_b")]
+        )[0]
+        _record_fit_inputs(
+            ds,
+            applied,
+            {**now, ("", "seq_c"): EntryCells(roots="", tracks="x", inputs="")},
+        )
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_record_without_the_inputs_of_the_fit_leaves_the_rows_alone(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        assert applied.run_id is not None
+        write_fit_scope(
+            feature_run_root(ds, applied.feature, applied.run_id),
+            FitScope(
+                scope_dependent=False,
+                entries=None,
+                tracks_variants=None,
+                labels_variants=None,
+                fitted_at="",
+                identity_scheme="",
+            ),
+        )
+
+        assert _drifted(ds, applied) == ()
 
 
 SEQ_A = ("", "seq_a")

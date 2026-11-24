@@ -48,6 +48,7 @@ from ..artifact_kinds import (
     is_artifact_kind,
     is_artifact_status,
 )
+from ..index import FitDrift
 from .params import ParamsState, RunParams
 
 __all__ = [
@@ -359,6 +360,12 @@ class ArtifactRecord[KeyT]:
 
     Complete and loadable, but superseded. Reported rather than refused: a
     drifted run is exactly what a comparison across revisions needs.
+    """
+    refit: FitDrift | None = None
+    """What changed under the run's fit, set when the fit's inputs have drifted.
+
+    The run's rows then read as drifted whole, because a fit written again
+    recomputes every entry it is asked for.
     """
     identity_scheme: str = ""
     started_at: str = ""

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
@@ -825,6 +825,7 @@ def drifted_entries(
     run_id: str,
     run_params: RunParams | None,
     reads: DriftReads | None = None,
+    fit_drifted: bool | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Entries whose sources have moved since this run recorded what it consumed.
 
@@ -864,6 +865,11 @@ def drifted_entries(
     records the stacking, while counting only the entries every input holds
     would hide the real drift of a stacked run that nothing then recomputes.
 
+    **A drifted fit reports every entry its rows hold.** A run whose fit has
+    drifted (:func:`fit_drift`) is fitted again, which recomputes every entry
+    it is asked for, so the comparison above is skipped and each entry of its
+    rows is reported, whether or not its inputs still resolve it.
+
     **Both sides are recorded values.** A value recomputed from the present
     would always agree with itself. Reading recorded values also keeps a status
     display free of any filesystem measurement.
@@ -882,6 +888,8 @@ def drifted_entries(
             variants. ``None`` compares the declared roots alone.
         reads: The index reads shared with other calls, or ``None`` to read
             them for this call alone.
+        fit_drifted: Whether the run's fit has drifted, for a caller that
+            measured it with :func:`fit_drift`, or ``None`` to measure it here.
 
     Returns:
         The drifted entries, sorted.
@@ -893,6 +901,11 @@ def drifted_entries(
     entries = sorted(set(recorded_roots) | set(recorded_reads))
     if not entries:
         return ()
+    if fit_drifted is None:
+        fit = fit_drift(ds, feature_name, run_id, run_params, shared)
+        fit_drifted = fit is not None and fit.drifted
+    if fit_drifted:
+        return tuple(entries)
     declared = tuple(run_params.scope.consumed_roots) if run_params else ()
     cells_now, held = current_entry_cells(
         shared,
@@ -1204,13 +1217,57 @@ def fit_drift(
     )
 
 
+def refit_sample(drift: FitDrift, *, sample: int = 5) -> tuple[str, ...]:
+    """The entries of *drift* a summary names: up to *sample*, moved before dropped.
+
+    Each is named by :func:`~mosaic.core.entry.entry_token` and each group is
+    sorted.
+    """
+    entries = [*sorted(drift.moved), *sorted(drift.dropped)]
+    return tuple(
+        entry_token(group, sequence) for group, sequence in entries[: max(sample, 0)]
+    )
+
+
+def describe_refit(
+    moved: int, dropped: int, refitted: Iterable[str], named: Sequence[str]
+) -> str:
+    """One line saying what changed under a fit, from its counts and its sample.
+
+    ``<moved> moved, <dropped> gone, fitted again: <fields>``, a zero count and
+    an empty field list left out, then the entries *named* in parentheses with
+    the count of those left out.
+
+    Args:
+        moved: How many recorded entries moved.
+        dropped: How many training entries the inputs no longer hold.
+        refitted: The params fields whose fit was fitted again.
+        named: The entries to name, as :func:`refit_sample` lists them.
+
+    Returns:
+        The summary, and ``""`` when nothing changed.
+    """
+    parts: list[str] = []
+    if moved:
+        parts.append(f"{moved} moved")
+    if dropped:
+        parts.append(f"{dropped} gone")
+    fields = sorted(refitted)
+    if fields:
+        parts.append(f"fitted again: {', '.join(fields)}")
+    summary = ", ".join(parts)
+    if not named:
+        return summary
+    rest = moved + dropped - len(named)
+    listed = ", ".join(named) + (f" and {rest} more" if rest else "")
+    return f"{summary} ({listed})"
+
+
 def refit_summary(drift: FitDrift, *, sample: int = 5) -> str:
     """One line saying what changed under a fit.
 
-    ``<moved> moved, <dropped> gone, fitted again: <fields>``, a zero count and
-    an empty field list left out, then up to *sample* entries in parentheses,
-    moved before dropped and each sorted, with the count of those left out.
-    Each entry is named by :func:`~mosaic.core.entry.entry_token`.
+    :func:`describe_refit` over the counts of *drift* and up to *sample* of its
+    entries.
 
     Args:
         drift: The fit's drift.
@@ -1219,23 +1276,12 @@ def refit_summary(drift: FitDrift, *, sample: int = 5) -> str:
     Returns:
         The summary, and ``""`` for a drift that names nothing.
     """
-    parts: list[str] = []
-    if drift.moved:
-        parts.append(f"{len(drift.moved)} moved")
-    if drift.dropped:
-        parts.append(f"{len(drift.dropped)} gone")
-    if drift.refitted:
-        parts.append(f"fitted again: {', '.join(sorted(drift.refitted))}")
-    summary = ", ".join(parts)
-    entries = [*sorted(drift.moved), *sorted(drift.dropped)]
-    named = [
-        entry_token(group, sequence) for group, sequence in entries[: max(sample, 0)]
-    ]
-    if not named:
-        return summary
-    rest = len(entries) - len(named)
-    listed = ", ".join(named) + (f" and {rest} more" if rest else "")
-    return f"{summary} ({listed})"
+    return describe_refit(
+        len(drift.moved),
+        len(drift.dropped),
+        drift.refitted,
+        refit_sample(drift, sample=sample),
+    )
 
 
 # Item 6.1: reconciled through the shared registry, beside the tracker

@@ -9,8 +9,10 @@ A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet. A
 read that needs a finished fitting request joins ``CLI_READS_OF_A_FIT``. A read
 that needs a finished fit and apply of a definition joins
-``CLI_READS_OF_A_DEFINITION_FIT``. A read that names entries from the media index
-also joins ``MEDIA_READS``.
+``CLI_READS_OF_A_DEFINITION_FIT``. A read over a dataset whose fit drifted joins
+``CLI_READS_OF_A_DRIFTED_FIT`` or ``LIBRARY_READS_OF_A_DRIFTED_FIT``, and
+``READS_OF_A_DRIFTED_BUILT_IN_FIT`` when it needs a built-in feature. A read that
+names entries from the media index also joins ``MEDIA_READS``.
 ``reprobe-media`` needs indexed videos and ``media probe`` a store, and each has a
 test of its own. ``pipeline catalog``, ``catalog_index``, ``describe_step_type`` and
 ``step_type_detail`` take no dataset and are not listed.
@@ -18,8 +20,8 @@ test of its own. ``pipeline catalog``, ``catalog_index``, ``describe_step_type``
 The ``populated`` dataset holds a definition whose top level writes a canary file.
 A read runs nothing except ``pipeline verify``, which imports the pinned definition of
 a step it refits. Each other case therefore also asserts that the canary was not
-written. The reads of ``CLI_READS_OF_A_DEFINITION_FIT`` also assert that no definition
-module was imported.
+written. The reads of ``CLI_READS_OF_A_DEFINITION_FIT`` and of a drifted fit also
+assert that no definition module was imported.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
 from mosaic.core.entry import make_entry_key
+from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.spec import call_tool
 from mosaic.core.pipeline.definitions.define import define_feature
 from mosaic.core.pipeline.definitions.scope import clear_definition_caches
 from mosaic.core.pipeline.definitions.store import definition_module_name
@@ -64,7 +68,9 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     run_status_wire,
 )
+from mosaic.core.pipeline.index import DriftReads, drifted_entries, fit_drift
 from mosaic.core.pipeline.inventory import FeatureRunRef
+from mosaic.core.pipeline.inventory.params import read_linked_run_params
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
@@ -91,6 +97,7 @@ from tests.helpers import (
     CANARY_VARIABLE,
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
+    TEMPLATES_RECIPE,
     APPLYING_NAME,
     APPLYING_STORAGE,
     APPLYING_SOURCE,
@@ -101,6 +108,7 @@ from tests.helpers import (
     calms21_dataset,
     classifier_recipe,
     defined_dataset,
+    drifted_templates,
     speed_recipe,
     speed_recipe_stepping,
     tag_table,
@@ -114,9 +122,12 @@ from tests.helpers import (
     invoke_ok,
     make_dataset,
     record_entry_predictions,
+    reconvert_entry,
     record_entry_selection,
     record_score_run,
     register_trained_model,
+    RecordingStarter,
+    templates_pipeline,
     track_table,
     tree_snapshot,
     video_store_maker,
@@ -456,6 +467,103 @@ def definition_fit(
     )
 
 
+@dataclass(frozen=True)
+class DriftedFit:
+    """A dataset holding a fit whose inputs changed since it was fitted."""
+
+    dataset: Dataset
+    recipe_path: Path
+    request_id: str
+    fit_step: str
+    """The id of the recipe step that holds the fit."""
+    storage: str
+    run_id: str
+    canary: Path | None = None
+    """The file the fit's definition writes when it is imported."""
+
+    @property
+    def root(self) -> Path:
+        return self.dataset.base_dir
+
+    @property
+    def ref(self) -> str:
+        """The fit's artifact reference."""
+        return f"feature/{self.storage}/{self.run_id}"
+
+    def reopened(self) -> Dataset:
+        """The dataset opened the way a reader opens it."""
+        return open_dataset(self.dataset.manifest_path, ensure_roots=False)
+
+
+def _drifted_fit(
+    dataset: Dataset,
+    recipe_path: Path,
+    fit_step: str,
+    *,
+    storage_prefix: str,
+    canary: Path | None = None,
+) -> DriftedFit:
+    """The fit of *fit_step* of the recipe at *recipe_path*, which *dataset* ran."""
+    from mosaic.core.pipeline.inventory import inventory
+
+    recipe = Recipe.model_validate_json(recipe_path.read_text(encoding="utf-8"))
+    ran = [
+        listed
+        for listed in list_requests(dataset.base_dir).items
+        if listed.step_count == len(recipe.steps)
+    ]
+    assert len(ran) == 1
+    fit = next(
+        record
+        for record in inventory(dataset).records
+        if record.name.startswith(storage_prefix)
+    )
+    _strip_to_content(dataset.base_dir)
+    return DriftedFit(
+        dataset=dataset,
+        recipe_path=recipe_path,
+        request_id=ran[0].request_id,
+        fit_step=fit_step,
+        storage=fit.name,
+        run_id=fit.run_id,
+        canary=canary,
+    )
+
+
+def _drifted_built_in_fit(tmp_path: Path) -> DriftedFit:
+    """The templates fit of ``extract-templates``, fitted before ``seq_a`` changed."""
+    dataset = drifted_templates(tmp_path / "drifted", variant=VARIANT)
+    path = tmp_path / "templates.recipe.json"
+    _ = path.write_text(json.dumps(TEMPLATES_RECIPE), encoding="utf-8")
+    return _drifted_fit(dataset, path, "templates", storage_prefix="extract-templates")
+
+
+def _drifted_definition_fit(tmp_path: Path, canary: Path) -> DriftedFit:
+    """The fit of a definition, fitted before ``seq_a`` changed."""
+    dataset = make_dataset(tmp_path / "drifted")
+    add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = define_feature(dataset, APPLYING_NAME, CANARY_PREFIX + APPLYING_SOURCE)
+    path = _recipe_file_of(
+        tmp_path / "fit.recipe.json", [_definition_fit_step("fit", {})]
+    )
+    _ = run_pipeline(dataset, Recipe.model_validate_json(path.read_text("utf-8")))
+    reconvert_entry(dataset, ("", "seq_a"), composition="converted-again")
+    canary.unlink()
+    return _drifted_fit(dataset, path, "fit", storage_prefix="def.", canary=canary)
+
+
+@pytest.fixture(params=["built-in", "definition"])
+def drifted(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> DriftedFit:
+    """A fit of a built-in feature and a fit of a definition, each due a refit."""
+    if request.param == "built-in":
+        return _drifted_built_in_fit(tmp_path)
+    canary = tmp_path / "canary.jsonl"
+    monkeypatch.setenv(CANARY_VARIABLE, str(canary))
+    return _drifted_definition_fit(tmp_path, canary)
+
+
 def _other_recipe_file(fixture: ReadDataset) -> Path:
     """A recipe other than the one the fixture ran, which can retire it."""
     path = fixture.recipe_path.parent / "other.recipe.json"
@@ -749,6 +857,115 @@ CLI_READS_OF_A_DEFINITION_FIT: dict[str, DefinitionFitArguments] = {
 """Each read's arguments over a finished fit and apply, without ``--manifest`` and ``--json``."""
 
 
+type DriftedArguments = Callable[[DriftedFit], list[str]]
+
+CLI_READS_OF_A_DRIFTED_FIT: dict[str, DriftedArguments] = {
+    "inventory": lambda _: ["inventory"],
+    "inventory show": lambda f: ["inventory", "show", f.ref],
+    "pipeline plan": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+    ],
+    "pipeline plan --refit": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--refit",
+        f.fit_step,
+    ],
+    "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
+}
+"""Each read's arguments over a dataset whose fit drifted, without ``--manifest`` and ``--json``."""
+
+type DriftedRead = Callable[[DriftedFit], object]
+
+
+def _drift_of(fit: DriftedFit) -> object:
+    """What ``fit_drift`` reports for the fit, which has drifted."""
+    dataset = fit.reopened()
+    params = read_linked_run_params(dataset, fit.storage, fit.run_id).params
+    drift = fit_drift(dataset, fit.storage, fit.run_id, params, DriftReads(dataset))
+    assert drift is not None
+    assert drift.drifted
+    return drift
+
+
+def _drifted_entries_of(fit: DriftedFit) -> object:
+    """The entries ``drifted_entries`` reports for the fit's run."""
+    dataset = fit.reopened()
+    params = read_linked_run_params(dataset, fit.storage, fit.run_id).params
+    return drifted_entries(dataset, fit.storage, fit.run_id, params)
+
+
+def _plan_of(fit: DriftedFit, *, refit: list[str]) -> object:
+    """The plan of the fit's recipe, with the steps asked to fit again."""
+    recipe = Recipe.model_validate_json(fit.recipe_path.read_text(encoding="utf-8"))
+    return plan_pipeline(fit.reopened(), recipe, refit=refit)
+
+
+def _inventory_wire_of(fit: DriftedFit) -> object:
+    """The listing of every artifact, and the fit in depth."""
+    from mosaic.core.pipeline.inventory import inventory, inventory_wire
+
+    dataset = fit.reopened()
+    found = inventory(dataset)
+    listed = inventory_wire(dataset, found)
+    _ = inventory_wire(dataset, found, ref=fit.ref)
+    return listed
+
+
+LIBRARY_READS_OF_A_DRIFTED_FIT: dict[str, DriftedRead] = {
+    "drifted_entries": _drifted_entries_of,
+    "fit_drift": _drift_of,
+    "inventory_wire": _inventory_wire_of,
+    "plan_pipeline": lambda f: _plan_of(f, refit=[]),
+    "plan_pipeline of a refit": lambda f: _plan_of(f, refit=[f.fit_step]),
+}
+"""Each library read over a drifted fit."""
+
+
+def _verify_drifted(fit: DriftedFit) -> object:
+    """``pipeline verify`` of the fit's recipe, which skips the fit due a refit."""
+    command = [
+        "pipeline",
+        "verify",
+        "--recipe",
+        f"@{fit.recipe_path}",
+        "--manifest",
+        str(fit.dataset.manifest_path),
+        "--json",
+    ]
+    result = CliRunner().invoke(app, command)
+    assert result.exit_code == 1, result.stderr
+    steps = {step["step"]: step for step in json.loads(result.stdout)["steps"]}
+    assert steps[fit.fit_step]["status"] == "skipped"
+    assert "inputs that have changed" in steps[fit.fit_step]["reason"]
+    return steps
+
+
+def _plan_recipe_of(fit: DriftedFit) -> object:
+    """The ``plan_recipe`` tool over the templates recipe."""
+    uuid = fit.dataset.manifest.uuid
+    assert uuid is not None
+    backend = LocalBackend(
+        [fit.dataset.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    return call_tool(
+        backend, "plan_recipe", {"dataset": uuid, "recipe": TEMPLATES_RECIPE}
+    )
+
+
+READS_OF_A_DRIFTED_BUILT_IN_FIT: dict[str, DriftedRead] = {
+    "Pipeline.load": lambda f: templates_pipeline().load(f.reopened()),
+    "Pipeline.status": lambda f: templates_pipeline().status(f.reopened()),
+    "plan_recipe": _plan_recipe_of,
+}
+"""The reads of a drifted ``extract-templates`` fit that need the built-in features."""
+
+
 CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset(
     {"pipeline verify", "pipeline verify --tag"}
 )
@@ -796,25 +1013,81 @@ def test_a_read_of_a_fit_writes_nothing(fitted: FitDataset, verb: str) -> None:
 def test_a_read_of_a_fit_and_apply_imports_no_definition_and_writes_nothing(
     definition_fit: DefinitionFitDataset, verb: str
 ) -> None:
-    root = definition_fit.dataset.base_dir
-    manifest = str(definition_fit.dataset.manifest_path)
+    command = [
+        *CLI_READS_OF_A_DEFINITION_FIT[verb](definition_fit),
+        "--manifest",
+        str(definition_fit.dataset.manifest_path),
+        "--json",
+    ]
+    outputs: list[str] = []
+
+    _read_without_importing_a_definition(
+        definition_fit, lambda: outputs.append(invoke_ok(command).stdout)
+    )
+
+    json.loads(outputs[0])
+
+
+def _read_without_importing_a_definition(
+    fit: DriftedFit | DefinitionFitDataset, read: Callable[[], object]
+) -> None:
+    """Run *read*, which left the dataset as it found it and imported no definition."""
+    root = fit.dataset.base_dir
     forget_imported_definitions()
     clear_definition_caches()
     before = tree_snapshot(root)
 
-    result = invoke_ok(
-        [
-            *CLI_READS_OF_A_DEFINITION_FIT[verb](definition_fit),
-            "--manifest",
-            manifest,
-            "--json",
-        ]
-    )
+    _ = read()
 
-    json.loads(result.stdout)
     assert_tree_unchanged(root, before)
     assert imported_definitions() == []
-    assert not definition_fit.canary.exists()
+    if fit.canary is not None:
+        assert not fit.canary.exists()
+
+
+@pytest.mark.parametrize("verb", sorted(CLI_READS_OF_A_DRIFTED_FIT))
+def test_a_cli_read_of_a_drifted_fit_imports_no_definition_and_writes_nothing(
+    drifted: DriftedFit, verb: str
+) -> None:
+    command = [
+        *CLI_READS_OF_A_DRIFTED_FIT[verb](drifted),
+        "--manifest",
+        str(drifted.dataset.manifest_path),
+        "--json",
+    ]
+    outputs: list[str] = []
+
+    _read_without_importing_a_definition(
+        drifted, lambda: outputs.append(invoke_ok(command).stdout)
+    )
+
+    json.loads(outputs[0])
+
+
+@pytest.mark.parametrize("read", sorted(LIBRARY_READS_OF_A_DRIFTED_FIT))
+def test_a_library_read_of_a_drifted_fit_imports_no_definition_and_writes_nothing(
+    drifted: DriftedFit, read: str
+) -> None:
+    _read_without_importing_a_definition(
+        drifted, lambda: LIBRARY_READS_OF_A_DRIFTED_FIT[read](drifted)
+    )
+
+
+def test_verifying_a_drifted_fit_skips_it_and_imports_no_definition(
+    drifted: DriftedFit,
+) -> None:
+    _read_without_importing_a_definition(drifted, lambda: _verify_drifted(drifted))
+
+
+@pytest.mark.parametrize("read", sorted(READS_OF_A_DRIFTED_BUILT_IN_FIT))
+def test_a_read_of_a_drifted_built_in_fit_writes_nothing(
+    tmp_path: Path, read: str
+) -> None:
+    fit = _drifted_built_in_fit(tmp_path)
+
+    _read_without_importing_a_definition(
+        fit, lambda: READS_OF_A_DRIFTED_BUILT_IN_FIT[read](fit)
+    )
 
 
 MEDIA_READS: dict[str, Callable[[ReadDataset], object]] = {

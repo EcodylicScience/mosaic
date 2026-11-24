@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend, _scores_against_labels  # pyright: ignore[reportPrivateUsage]
+from mosaic.agent.mcp.outputs import PlanPage
 from mosaic.agent.mcp.spec import (
     MAX_RESULT_CHARS,
     PLAN_RETIRABLE_SAMPLE,
@@ -36,7 +37,6 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     LARGE_SCOPE_ENTRIES,
     OpenDuplicate,
-    PlanWire,
     Recipe,
     Request,
     read_recipe,
@@ -124,7 +124,7 @@ def _submit(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=recipe,
         entries=entries,
@@ -236,7 +236,7 @@ def test_a_submission_without_a_fingerprint_plans_inline_and_still_asks(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,
         entries=ENTRIES,
@@ -472,7 +472,7 @@ def test_a_whole_dataset_submission_asks_nothing_and_its_plan_cautions_it(
     backend: LocalBackend, dataset: Dataset, starter: RecordingStarter
 ) -> None:
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     submitted = _submit(backend, dataset, SPEED_RECIPE)
@@ -495,7 +495,7 @@ def test_a_step_asked_for_more_than_a_hundred_entries_is_cautioned_and_submits_u
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(large),
         recipe=SPEED_RECIPE,
         entries=entries,
@@ -587,7 +587,7 @@ def test_a_bound_submission_is_the_bound_plan_it_was_reviewed_as(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=CHAIN_RECIPE,
         bind=bind,
@@ -646,7 +646,7 @@ def test_a_plan_that_changed_since_it_was_reviewed_refuses_the_submission(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,
     )
@@ -788,11 +788,11 @@ def _cleaning(
     )
 
 
-def _cleanup_plan(backend: LocalBackend, dataset: Dataset) -> PlanWire:
+def _cleanup_plan(backend: LocalBackend, dataset: Dataset) -> PlanPage:
     return _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_STEP_2,
         cleanup="superseded",
@@ -854,7 +854,7 @@ def test_submit_with_cleanup_needs_the_cleanup_fingerprint(
     _ = run_speed(dataset, 1)
     backend = _cleaning(dataset, starter, allowed=True)
     plain = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_STEP_2
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_STEP_2
     )
 
     refused = _submit_cleanup(backend, dataset, plain.fingerprint, confirm=True)
@@ -1080,7 +1080,7 @@ def test_the_plan_reports_the_limits_the_machine_and_the_workers_of_a_step(
     )
 
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     assert plan.parallel is not None
@@ -1101,7 +1101,7 @@ def test_the_plan_reports_a_default_count_no_larger_than_the_processors(
     backend = _parallel(dataset, starter, max_workers=8)
 
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     assert plan.parallel is not None
@@ -1116,14 +1116,14 @@ def test_the_plan_fingerprint_does_not_depend_on_the_limits(
     plain = _call(
         LocalBackend([dataset.manifest_path], warm=False),
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,
     )
     limited = _call(
         _parallel(dataset, starter, max_workers=4),
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,
     )
@@ -1136,11 +1136,11 @@ def test_the_plan_fingerprint_does_not_depend_on_the_limits(
 
 def _retiring(
     backend: LocalBackend, dataset: Dataset, digest: str, **arguments: object
-) -> PlanWire:
+) -> PlanPage:
     return _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_STEP_2,
         cleanup="superseded",
@@ -1157,7 +1157,7 @@ def test_plan_recipe_lists_the_recipes_that_can_be_retired(
 
     plan = _cleanup_plan(backend, dataset)
     plain = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_STEP_2
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_STEP_2
     )
 
     [row] = plan.retirable

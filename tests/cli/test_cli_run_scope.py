@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -630,6 +631,18 @@ def test_an_op_run_accepts_overwrite_and_recomputes(scoped: Dataset) -> None:
 # --- what is refused -----------------------------------------------------------
 
 
+def test_an_op_run_refuses_refit(scoped: Dataset) -> None:
+    """``--refit`` fits a feature step again, and an op that ran would drop it."""
+    result = _regrid(scoped, "--entries", "A:one", "--refit")
+
+    assert result.exit_code == 1
+    assert "--refit fits a feature step again" in result.output
+    assert "--kind" in result.output
+    assert _regridded(scoped) == []
+    logs = run_log_dir(scoped.base_dir)
+    assert not logs.exists() or not any(logs.iterdir())
+
+
 def test_entries_beside_groups_is_refused_naming_both_forms(scoped: Dataset) -> None:
     """One selector, two ways of writing it, and the message names both."""
     result = _regrid(scoped, "--entries", "A:one", "--groups", "A")
@@ -1078,6 +1091,55 @@ def test_a_probe_refuses_the_flags_it_sets_itself(
     assert result.exit_code == 2
     assert named in result.output
     assert read_run(run_log_dir(scoped.base_dir), SUBSET_ID) is None
+
+
+@pytest.mark.parametrize("flags", [["--probe", "2"], ["--step-entries", "A:one"]])
+def test_a_subset_refuses_refit(scoped: Dataset, flags: list[str]) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped, request.request_id, *flags, "--execution-id", SUBSET_ID, "--refit"
+    )
+
+    assert result.exit_code == 2
+    assert "--refit" in result.output
+    assert read_run(run_log_dir(scoped.base_dir), SUBSET_ID) is None
+
+
+def test_refit_reaches_the_feature_run(
+    scoped: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[object] = []
+
+    def run_feature(ds: Dataset, feature: Feature, **kwargs: object) -> _ReportedRun:
+        seen.append(kwargs.get("refit"))
+        return _ReportedRun()
+
+    monkeypatch.setattr(run_module, "run_feature", run_feature)
+
+    asked = _feature_run(scoped, "--refit")
+    plain = _feature_run(scoped)
+
+    assert asked.exit_code == 0, asked.output
+    assert plain.exit_code == 0, plain.output
+    assert seen == [True, False]
+
+
+def test_refit_runs_a_requests_complete_step_again(
+    scoped: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline.graph import step as step_module
+
+    spy = Mock(wraps=step_module.run_feature)
+    monkeypatch.setattr(step_module, "run_feature", spy)
+    request = _speed_request(scoped)
+    first = _step(scoped, request.request_id)
+
+    result = _step(scoped, request.request_id, "--refit")
+
+    assert first.exit_code == 0, first.output
+    assert result.exit_code == 0, result.output
+    assert [call.kwargs.get("refit") for call in spy.call_args_list] == [False, True]
 
 
 @pytest.mark.parametrize("count", ["0", "6"])

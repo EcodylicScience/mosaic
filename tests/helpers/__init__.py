@@ -127,8 +127,9 @@ What lives where:
   through ``model``, a refit of it over moved tracks, an entry converted again
   from changed sources, the reasons a run printed
   for the entries it did not serve, a column of a run's index rows, the
-  fit-state digest each row of an apply records, and the entries a plan reports
-  as drifted.
+  fit-state digest each row of an apply records, the entries a plan reports
+  as drifted, a templates recipe and a notebook pipeline of it, and a dataset
+  whose templates fit is due a refit.
 - ``feature_definitions``: the sources of feature definitions, a dataset with
   tracks that defines them, an instance of the applying definition for a ``model``
   mapping, and the distance from the origin of each row of an entry's tracks.
@@ -369,7 +370,9 @@ from tests.helpers.model_state import (
     KMEANS,
     KMeansChain,
     KMeansFit,
+    TEMPLATES_RECIPE,
     drifted,
+    drifted_templates,
     index_cells,
     kmeans_apply,
     kmeans_apply_feature,
@@ -381,6 +384,8 @@ from tests.helpers.model_state import (
     refit_kmeans,
     refusals,
     run_step,
+    templates_pipeline,
+    templates_recipe,
 )
 from tests.helpers.models import (
     register_sleap_model,
@@ -935,7 +940,9 @@ __all__ = [
     "KMEANS",
     "KMeansChain",
     "KMeansFit",
+    "TEMPLATES_RECIPE",
     "drifted",
+    "drifted_templates",
     "index_cells",
     "kmeans_apply",
     "kmeans_apply_feature",
@@ -947,6 +954,8 @@ __all__ = [
     "refit_kmeans",
     "refusals",
     "run_step",
+    "templates_pipeline",
+    "templates_recipe",
     "missing_ffmpeg_tools",
     "modules_loaded_by",
     "named_recipe",

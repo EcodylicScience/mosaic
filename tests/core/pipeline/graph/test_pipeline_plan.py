@@ -34,6 +34,7 @@ import mosaic.tracking.trex.dataset_runs as trex_runs
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
+    BoundRef,
     CoverageShort,
     DepsIncomplete,
     DepsIncompleteWire,
@@ -45,12 +46,17 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     RecipeInvalid,
     RecipeRefused,
+    Request,
+    asked_of,
     build_step_feature,
+    execute_step,
+    load_request,
     plan_fingerprint,
     plan_pipeline,
     plan_wire,
     recipe_digest,
     requests_matching,
+    requests_root,
     resolved_columns,
     run_pipeline,
     submit_request,
@@ -62,9 +68,12 @@ from mosaic.core.pipeline.definitions.store import (
     DefinitionModelRefused,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.fit_scope import read_fit_scope
 from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.graph.plan import ConversionAdds, GrowthNote
 from mosaic.core.pipeline.inventory.cache import InventoryCache
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.inventory.wire import RefitWire
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
 from mosaic.core.pipeline.pipeline import FeatureStep, Pipeline
@@ -80,6 +89,7 @@ from tests.helpers import (
     APPLYING_STORAGE,
     APPLYING_SOURCE,
     SPEED_RECIPE,
+    TEMPLATES_RECIPE,
     add_raw_track_files,
     calms21_dataset,
     FakeTrex,
@@ -91,7 +101,9 @@ from tests.helpers import (
     assert_tree_unchanged,
     clip_facts,
     convert_tracks_from_raw,
+    copy_of,
     defined_dataset,
+    drifted_templates,
     definitions_forgotten,
     finish_media_variant,
     install_fake_trex,
@@ -101,6 +113,7 @@ from tests.helpers import (
     scope_over,
     speed_recipe,
     speed_recipe_stepping,
+    templates_recipe,
     tree_snapshot,
     write_driver_lease,
     write_media_index,
@@ -1991,3 +2004,404 @@ def test_entries_a_run_covered_and_the_dataset_dropped_are_not_counted(
         f"step 'speed' reads run {earlier}, which covers 2 entries. The plan "
         f"covers 4. The 2 entries added since join it. {GROWTH_ADVICE}"
     )
+
+
+# --- a fit whose inputs changed -------------------------------------------------
+
+SEQ_A = ("", "seq_a")
+SEQ_B = ("", "seq_b")
+
+
+def test_a_plan_fits_a_drifted_fit_again_over_its_whole_target(
+    tmp_path: Path,
+) -> None:
+    dataset = drifted_templates(tmp_path / "fitted", variant=VARIANT)
+
+    plan = plan_pipeline(dataset, templates_recipe())
+
+    templates = plan.step("templates")
+    assert templates.refit == RefitWire(
+        moved=1, dropped=0, sample=("seq_a",), refitted=(), link_id="", asked=False
+    )
+    assert templates.status == "complete-but-drifted"
+    assert templates.drift_work == (SEQ_A, SEQ_B)
+    assert asked_of(templates, plan) == (SEQ_A, SEQ_B)
+    assert plan.step("speed").refit is None
+    wires = {step.step: step for step in plan_wire(plan).steps}
+    assert wires["templates"].refit == templates.refit
+    assert wires["speed"].refit is None
+
+
+def test_a_plan_of_fits_whose_inputs_did_not_change_names_no_refit(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+
+    plan = plan_pipeline(tracked, templates_recipe())
+
+    assert [step.refit for step in plan.steps] == [None, None]
+    assert plan.step("templates").is_complete
+
+
+@pytest.mark.parametrize("held", ["pin", "bind"])
+def test_a_pinned_or_bound_fit_names_its_refit_and_computes_nothing(
+    tmp_path: Path, held: str
+) -> None:
+    dataset = drifted_templates(tmp_path / "fitted", variant=VARIANT)
+    fitted = plan_pipeline(dataset, templates_recipe()).step("templates")
+    assert fitted.run_id is not None
+
+    plan = (
+        plan_pipeline(dataset, templates_recipe(), pins={"templates": fitted.run_id})
+        if held == "pin"
+        else plan_pipeline(
+            dataset,
+            templates_recipe(),
+            bind={
+                "templates": BoundRef(feature=fitted.storage_name, run_id=fitted.run_id)
+            },
+        )
+    )
+
+    templates = plan.step("templates")
+    assert plan.problems == ()
+    assert templates.refit == RefitWire(
+        moved=1, dropped=0, sample=("seq_a",), refitted=(), link_id="", asked=False
+    )
+    assert templates.is_complete
+    assert templates.drift_work == ()
+
+
+def test_a_plan_in_a_linked_copy_names_the_refit_with_the_link(
+    tmp_path: Path,
+) -> None:
+    source = drifted_templates(tmp_path / "source", variant=VARIANT)
+    copy = copy_of(source, tmp_path / "copy")
+
+    plan = plan_pipeline(copy, templates_recipe())
+
+    assert plan.problems == ()
+    assert plan.step("templates").refit == RefitWire(
+        moved=1,
+        dropped=0,
+        sample=("seq_a",),
+        refitted=(),
+        link_id=f"source-{source.uuid}",
+        asked=False,
+    )
+    assert plan.step("templates").drift_work == (SEQ_A, SEQ_B)
+
+
+def test_the_cli_plan_names_each_refit_below_its_table(tmp_path: Path) -> None:
+    source = drifted_templates(tmp_path / "source", variant=VARIANT)
+    copy = copy_of(source, tmp_path / "copy")
+    recipe = tmp_path / "fit.json"
+    _ = recipe.write_text(json.dumps(TEMPLATES_RECIPE))
+
+    own, linked = (
+        CliRunner().invoke(
+            app,
+            ["pipeline", "plan", "-m", str(dataset.manifest_path), "-r", f"@{recipe}"],
+        )
+        for dataset in (source, copy)
+    )
+
+    assert own.exit_code == 0, own.output
+    assert "refit: step 'templates': 1 moved (seq_a)" in own.stderr
+    assert "refit: step 'speed'" not in own.stderr
+    assert linked.exit_code == 0, linked.output
+    assert (
+        f"refit: step 'templates': 1 moved (seq_a), fitted in link source-{source.uuid}"
+    ) in linked.stderr
+
+
+# --- a refit a request asks for ------------------------------------------------
+
+ASKED = RefitWire(moved=0, dropped=0, sample=(), refitted=(), link_id="", asked=True)
+
+KMEANS_STEP: Document = {
+    "id": "kmeans",
+    "type": "feature",
+    "feature": "global-kmeans",
+    "inputs": [{"step": "speed"}],
+    "params": {"templates": {"step": "templates"}, "k": 1, "n_init": 1},
+}
+
+
+def _with_steps(*steps: Document) -> Recipe:
+    """The templates recipe with *steps* after its own."""
+    steps_of = TEMPLATES_RECIPE["steps"]
+    assert isinstance(steps_of, list)
+    return Recipe.model_validate({**TEMPLATES_RECIPE, "steps": [*steps_of, *steps]})
+
+
+def test_a_refit_a_request_asks_for_names_the_step_asked_and_not_complete(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    unasked = plan_pipeline(tracked, templates_recipe())
+
+    plan = plan_pipeline(tracked, templates_recipe(), refit=["templates"])
+
+    templates = plan.step("templates")
+    assert unasked.step("templates").is_complete
+    assert templates.refit == ASKED
+    assert not templates.is_complete
+    assert asked_of(templates, plan) == (SEQ_A, SEQ_B)
+    assert plan.step("speed").refit is None
+    assert plan.step("speed").is_complete
+    assert plan.refit == frozenset({"templates"})
+    assert unasked.refit == frozenset()
+    assert plan.problems == ()
+    wires = {step.step: step for step in plan_wire(plan).steps}
+    assert wires["templates"].refit == ASKED
+    assert plan_fingerprint(plan) != plan_fingerprint(unasked)
+    request = Request(request_id="", recipe_digest="", refit=["templates"])
+    from_request = plan_pipeline(tracked, templates_recipe(), request=request)
+    assert from_request.step("templates").refit == ASKED
+    assert plan_fingerprint(from_request) == plan_fingerprint(plan)
+
+
+def test_an_asked_refit_of_a_drifted_fit_keeps_what_changed_under_it(
+    tmp_path: Path,
+) -> None:
+    dataset = drifted_templates(tmp_path / "fitted", variant=VARIANT)
+
+    plan = plan_pipeline(dataset, templates_recipe(), refit=["templates"])
+
+    assert plan.step("templates").refit == RefitWire(
+        moved=1, dropped=0, sample=("seq_a",), refitted=(), link_id="", asked=True
+    )
+
+
+def test_an_asked_refit_of_a_scope_free_fit_asks_for_its_whole_target(
+    tracked: Dataset,
+) -> None:
+    recipe = _with_steps(KMEANS_STEP)
+    _ = run_pipeline(tracked, recipe, step_scopes={"kmeans": Scope(entries=[SEQ_A])})
+    unasked = plan_pipeline(tracked, recipe)
+    assert asked_of(unasked.step("kmeans"), unasked) == (SEQ_B,)
+
+    plan = plan_pipeline(tracked, recipe, refit=["kmeans"])
+
+    kmeans = plan.step("kmeans")
+    assert kmeans.run_id == unasked.step("kmeans").run_id
+    assert kmeans.refit == ASKED
+    assert asked_of(kmeans, plan) == (SEQ_A, SEQ_B)
+
+
+def test_the_fingerprint_names_the_asked_refits_only_when_there_are_any(
+    tracked: Dataset,
+) -> None:
+    plan = plan_pipeline(tracked, templates_recipe(), refit=["templates"])
+    unasked = plan_pipeline(tracked, templates_recipe())
+
+    assert plan.step("templates").refit == ASKED
+    assert plan_fingerprint(replace(plan, refit=frozenset())) != plan_fingerprint(plan)
+    assert plan_fingerprint(replace(unasked, refit=frozenset())) == plan_fingerprint(
+        unasked
+    )
+
+
+def test_a_refit_of_a_step_that_cannot_fit_again_is_a_plan_problem(
+    tracked: Dataset,
+) -> None:
+    recipe = _with_steps(
+        {
+            "id": "regrid",
+            "type": "op",
+            "kind": "resample-tracks",
+            "params": {"target_fps": 15.0},
+        },
+        {
+            "id": "fit",
+            "type": "feature",
+            "feature": "arhmm",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_states": 2, "n_iter": 2},
+        },
+        {
+            "id": "apply",
+            "type": "feature",
+            "feature": "arhmm",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_states": 2, "n_iter": 2, "model": {"step": "fit"}},
+        },
+    )
+
+    plan = plan_pipeline(
+        tracked,
+        recipe,
+        refit=["nope", "regrid", "speed", "apply", "fit", "templates"],
+        refuse=False,
+    )
+
+    refused = [(found.step, found.where) for found in plan.problems]
+    assert sorted(refused) == [
+        ("", "refit"),
+        ("apply", "refit"),
+        ("regrid", "refit"),
+        ("speed", "refit"),
+    ]
+    messages = {found.step: found.message for found in plan.problems}
+    assert messages[""] == "refit 'nope' names no step of the recipe"
+    assert "op step" in messages["regrid"]
+    assert "fits nothing" in messages["speed"]
+    assert "fits nothing" in messages["apply"]
+    assert [plan.step(step_id).refit for step_id in ("speed", "apply")] == [None, None]
+    assert plan.step("fit").refit == ASKED
+    with pytest.raises(RecipeRefused):
+        _ = plan_pipeline(tracked, recipe, refit=["speed"])
+
+
+@pytest.mark.parametrize("held", ["pin", "bind"])
+def test_a_refit_of_a_pinned_or_bound_step_is_a_plan_problem(
+    tracked: Dataset, held: str
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    fitted = plan_pipeline(tracked, templates_recipe()).step("templates")
+    assert fitted.run_id is not None
+    asked = ["templates"]
+    plan = (
+        plan_pipeline(
+            tracked,
+            templates_recipe(),
+            refit=asked,
+            refuse=False,
+            pins={"templates": fitted.run_id},
+        )
+        if held == "pin"
+        else plan_pipeline(
+            tracked,
+            templates_recipe(),
+            refit=asked,
+            refuse=False,
+            bind={
+                "templates": BoundRef(feature=fitted.storage_name, run_id=fitted.run_id)
+            },
+        )
+    )
+
+    assert [(found.step, found.where) for found in plan.problems] == [
+        ("templates", "refit")
+    ]
+    assert "serves" in plan.problems[0].message
+    assert plan.step("templates").refit is None
+    assert plan.step("templates").is_complete
+
+
+def test_a_request_file_holds_a_refit_only_when_one_is_asked(
+    tracked: Dataset,
+) -> None:
+    plain = submit_request(tracked, templates_recipe())
+    asked = submit_request(tracked, templates_recipe(), refit=["templates"])
+
+    assert "refit" not in json.loads(plain.request_path.read_text())
+    assert load_request(tracked.base_dir, plain.request.request_id) == plain.request
+    assert json.loads(asked.request_path.read_text())["refit"] == ["templates"]
+    assert load_request(tracked.base_dir, asked.request.request_id) == asked.request
+    assert asked.plan.step("templates").refit == ASKED
+
+
+def test_a_refit_its_request_has_made_is_planned_as_the_dataset_holds_it(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    request = submit_request(tracked, templates_recipe(), refit=["templates"]).request
+    _ = execute_step(tracked, request, "speed")
+    planned = plan_pipeline(tracked, templates_recipe(), request=request)
+    assert planned.step("templates").refit == ASKED
+
+    _ = execute_step(tracked, request, "templates", refit=True)
+
+    templates = plan_pipeline(tracked, templates_recipe(), request=request).step(
+        "templates"
+    )
+    assert templates.run_id is not None
+    record = read_fit_scope(
+        feature_run_root(tracked, templates.storage_name, templates.run_id)
+    )
+    assert record is not None
+    assert record.execution_id == request.execution_of("templates")
+    assert templates.refit is None
+    assert templates.is_complete
+
+
+def test_the_cli_plan_asks_a_refit_and_names_it_below_its_table(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    recipe = tmp_path / "fit.json"
+    _ = recipe.write_text(json.dumps(TEMPLATES_RECIPE))
+    argv = ["pipeline", "plan", "-m", str(tracked.manifest_path), "-r", f"@{recipe}"]
+
+    result = CliRunner().invoke(app, [*argv, "--refit", "templates", "--json"])
+    shown = CliRunner().invoke(app, [*argv, "--refit", "templates"])
+
+    assert result.exit_code == 0, result.output
+    steps = {step["step"]: step for step in json.loads(result.stdout)["steps"]}
+    assert steps["templates"]["refit"]["asked"] is True
+    assert steps["speed"]["refit"] is None
+    assert shown.exit_code == 0, shown.output
+    assert "refit: step 'templates': on request" in shown.stderr
+    assert "refit: step 'speed'" not in shown.stderr
+
+
+def test_the_cli_run_asks_a_refit_on_the_request_it_submits(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    recipe = tmp_path / "fit.json"
+    _ = recipe.write_text(json.dumps(TEMPLATES_RECIPE))
+    manifest = str(tracked.manifest_path)
+
+    result = CliRunner().invoke(
+        app,
+        ["pipeline", "run", "-m", manifest, "-r", f"@{recipe}", "--refit", "templates"],
+    )
+
+    assert result.exit_code == 0, result.output
+    (request,) = (
+        load_request(tracked.base_dir, path.stem)
+        for path in requests_root(tracked.base_dir).glob("*.json")
+        if load_request(tracked.base_dir, path.stem).refit
+    )
+    assert request.refit == ["templates"]
+    templates = plan_pipeline(tracked, templates_recipe()).step("templates")
+    assert templates.run_id is not None
+    record = read_fit_scope(
+        feature_run_root(tracked, templates.storage_name, templates.run_id)
+    )
+    assert record is not None
+    assert record.execution_id == request.execution_of("templates")
+    refused = CliRunner().invoke(
+        app,
+        ["pipeline", "run", "-m", manifest, "--request", request.request_id]
+        + ["--refit", "templates"],
+    )
+    assert refused.exit_code != 0
+    assert "--refit" in refused.output
+
+
+def test_the_cli_submit_records_the_refit_its_plan_was_reviewed_with(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    _ = run_pipeline(tracked, templates_recipe())
+    recipe = tmp_path / "fit.json"
+    _ = recipe.write_text(json.dumps(TEMPLATES_RECIPE))
+    argv = ["-m", str(tracked.manifest_path), "-r", f"@{recipe}"]
+    planned = CliRunner().invoke(
+        app, ["pipeline", "plan", *argv, "--refit", "templates", "--json"]
+    )
+    assert planned.exit_code == 0, planned.output
+    expect = ["--expect-plan", json.loads(planned.stdout)["fingerprint"], "--json"]
+
+    unasked = CliRunner().invoke(app, ["pipeline", "submit", *argv, *expect])
+    submitted = CliRunner().invoke(
+        app, ["pipeline", "submit", *argv, "--refit", "templates", *expect]
+    )
+
+    assert unasked.exit_code != 0
+    assert submitted.exit_code == 0, submitted.output
+    request_id = json.loads(submitted.stdout)["request_id"]
+    assert load_request(tracked.base_dir, request_id).refit == ["templates"]

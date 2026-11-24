@@ -14,9 +14,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.behavior.feature_library import SpeedAngvel, TrajectorySmooth
+from mosaic.behavior.feature_library import (
+    ExtractTemplates,
+    SpeedAngvel,
+    TrajectorySmooth,
+)
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline import FeatureStep, Pipeline
+from mosaic.core.pipeline import CallbackStep, FeatureStep, Pipeline
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
     feature_index,
@@ -24,13 +28,17 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.types import InputStream
 from mosaic.core.scope import Scope
 from tests.helpers import (
     add_track_sequences,
+    add_tracks_variant,
     convert_tracks_from_raw,
     converted_source,
     copy_of,
     make_dataset,
+    reconvert_entry,
+    templates_pipeline,
 )
 
 
@@ -331,3 +339,142 @@ def test_pipeline_load_still_loads_a_drifted_run(
     )
     status = pipe.status(ds)
     assert list(status["drift"]) == [1]
+
+
+TEMPLATES_VARIANT = "convert-trex.0.2-1111111111"
+
+
+def _fitted_templates(tmp_path: Path) -> Dataset:
+    """A dataset whose templates were fitted over ``seq_a`` and ``seq_b``."""
+    ds = make_dataset(tmp_path)
+    add_tracks_variant(ds, TEMPLATES_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    templates_pipeline().run(ds)
+    return ds
+
+
+def _drifted_templates(tmp_path: Path) -> Dataset:
+    """A dataset whose templates were fitted before ``seq_a`` changed.
+
+    The speed step is computed again over the new table, so the speed rows the
+    fit read have moved, and the fit is due again.
+    """
+    ds = _fitted_templates(tmp_path)
+    reconvert_entry(ds, ("", "seq_a"), composition="converted-again")
+    speed = Pipeline()
+    speed.add(FeatureStep("speed", SpeedAngvel, {}))
+    speed.run(ds)
+    return ds
+
+
+@pytest.fixture
+def fits(monkeypatch: pytest.MonkeyPatch) -> list[None]:
+    """One item for each fit of ``extract-templates`` in the test."""
+    fitted: list[None] = []
+    original = ExtractTemplates.fit
+
+    def counting(self: ExtractTemplates, inputs: InputStream) -> None:
+        fitted.append(None)
+        original(self, inputs)
+
+    monkeypatch.setattr(ExtractTemplates, "fit", counting)
+    return fitted
+
+
+def test_pipeline_status_names_the_refit_of_a_drifted_fit(tmp_path: Path) -> None:
+    ds = _drifted_templates(tmp_path)
+
+    status = templates_pipeline().status(ds)
+
+    assert list(status["step"]) == ["speed", "templates"]
+    assert list(status["refit"]) == ["", "1 moved (seq_a)"]
+    assert list(status["drift"]) == ["", 2]
+
+
+def test_pipeline_status_names_no_refit_for_a_fit_that_did_not_drift(
+    tmp_path: Path,
+) -> None:
+    ds = _fitted_templates(tmp_path)
+
+    status = templates_pipeline().status(ds)
+
+    assert list(status["refit"]) == ["", ""]
+
+
+def test_pipeline_load_prints_the_refit_of_a_drifted_fit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _drifted_templates(tmp_path)
+    _ = capsys.readouterr()
+
+    results = templates_pipeline().load(ds)
+
+    assert set(results) == {"speed", "templates"}
+    assert "  Refit: templates (1 moved (seq_a))" in capsys.readouterr().out
+
+
+def test_pipeline_load_prints_no_refit_for_a_fit_that_did_not_drift(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _fitted_templates(tmp_path)
+    _ = capsys.readouterr()
+
+    _ = templates_pipeline().load(ds)
+
+    assert "Refit" not in capsys.readouterr().out
+
+
+def test_pipeline_run_serves_a_fit_it_is_not_asked_to_fit_again(
+    tmp_path: Path, fits: list[None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _fitted_templates(tmp_path)
+    assert len(fits) == 1
+    _ = capsys.readouterr()
+
+    templates_pipeline().run(ds)
+
+    assert len(fits) == 1
+    assert capsys.readouterr().out.count("(cached)") == 2
+
+
+def test_pipeline_run_fits_a_named_step_again_and_serves_the_rest(
+    tmp_path: Path, fits: list[None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _fitted_templates(tmp_path)
+    _ = capsys.readouterr()
+
+    results = templates_pipeline().run(ds, refit=("templates",))
+
+    assert len(fits) == 2
+    out = capsys.readouterr().out
+    assert out.count("(cached)") == 1
+    assert "[speed]" in out
+    assert "(cached)" in next(line for line in out.splitlines() if "[speed]" in line)
+    assert results["templates"].run_id is not None
+
+
+def test_pipeline_run_refuses_a_refit_that_names_no_feature_step(
+    tmp_path: Path, fits: list[None]
+) -> None:
+    ds = _fitted_templates(tmp_path)
+    pipe = templates_pipeline()
+    pipe.add(CallbackStep("note", lambda _ds, _results: None, ["templates"]))
+
+    with pytest.raises(ValueError, match="refit.*'nope'.*Available"):
+        _ = pipe.run(ds, refit=("templates", "nope"))
+    with pytest.raises(ValueError, match="refit.*'note'"):
+        _ = pipe.run(ds, refit=("note",))
+
+    assert len(fits) == 1
+
+
+def test_a_step_holding_refit_in_its_run_kwargs_fits_on_every_run(
+    tmp_path: Path, fits: list[None]
+) -> None:
+    ds = _fitted_templates(tmp_path)
+    pipe = templates_pipeline({"refit": True})
+
+    _ = pipe.run(ds)
+    assert len(fits) == 2
+
+    _ = pipe.run(ds)
+    assert len(fits) == 3

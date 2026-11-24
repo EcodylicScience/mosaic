@@ -11,7 +11,9 @@ from mosaic.core.pipeline.graph import (
     Attachment,
     CatalogIndexEntry,
     InputCandidate,
-    PlanWire,
+    PlanFields,
+    PlannedStepFields,
+    PlannedStepWire,
     StepTypeDetail,
     StillNeeded,
     ValidationReport,
@@ -20,7 +22,7 @@ from mosaic.core.strict_model import StrictModel
 
 from .spec import StepTypeDetailLevel, SuggestMode
 
-__all__ = ["PatchedRecipe", "PlanPage", "StepSuggestions", "StepTypes"]
+__all__ = ["PatchedRecipe", "PlanPage", "PlanPageStep", "StepSuggestions", "StepTypes"]
 
 
 class StepTypes(StrictModel):
@@ -86,7 +88,29 @@ class StepSuggestions(StrictModel):
     refused: int
 
 
-class PlanPage(PlanWire):
+class PlanPageStep(PlannedStepFields):
+    """One step of a plan page, its refit named in one line.
+
+    Attributes:
+        refit: What changed under the step's fit since it was fitted, and the
+            link that holds the fit when one does, ``None`` while the inputs of
+            its fit are unchanged.
+    """
+
+    refit: str | None = None
+
+    @classmethod
+    def of(cls, step: PlannedStepWire) -> PlanPageStep:
+        """Return *step* with its refit in the words of ``RefitWire.note``."""
+        return cls.model_validate(
+            {
+                **step.model_dump(exclude={"refit"}),
+                "refit": None if step.refit is None else step.refit.note(),
+            }
+        )
+
+
+class PlanPage(PlanFields[PlanPageStep]):
     """A window of a plan's steps, or all of them when the call set no limit.
 
     Every page carries the whole plan's ``recipe_digest``, ``fingerprint``,

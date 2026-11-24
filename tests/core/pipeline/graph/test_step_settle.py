@@ -25,6 +25,7 @@ from mosaic.core.pipeline.graph import (
     load_recipe_for_request,
     request_rollup,
     request_status_wire,
+    run_pipeline,
     submit_request,
 )
 from mosaic.core.pipeline.graph import step as step_module
@@ -346,6 +347,30 @@ def test_settle_only_with_overwrite_raises_before_anything_is_written(
         _ = execute_step(tracked, request, "speed", settle_only=True, overwrite=True)
 
     assert_tree_unchanged(tracked.base_dir, before)
+
+
+def test_settle_only_with_refit_raises_before_anything_is_written(
+    tracked: Dataset,
+) -> None:
+    request = submit_request(tracked, chain_recipe()).request
+    before = tree_snapshot(tracked.base_dir)
+
+    with pytest.raises(ValueError, match="refit"):
+        _ = execute_step(tracked, request, "speed", settle_only=True, refit=True)
+
+    assert_tree_unchanged(tracked.base_dir, before)
+
+
+def test_a_settle_of_a_step_its_request_fits_again_declines_as_would_compute(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, chain_recipe())
+    request = submit_request(tracked, chain_recipe(), refit=["templates"]).request
+    _ = execute_step(tracked, request, "speed")
+
+    declined = _declined(tracked, request, "templates")
+
+    assert declined.reason == "would_compute"
 
 
 def test_settle_only_under_another_execution_id_raises_before_anything_is_written(

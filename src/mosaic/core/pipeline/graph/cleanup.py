@@ -253,6 +253,7 @@ def plan_with_cleanup(
     tracks_run_id: str | None = None,
     tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
+    refit: Iterable[str] | None = None,
     applies_request_id: str | None = None,
 ) -> Plan:
     """Plan *recipe*, and report its superseded runs when *cleanup* is given.
@@ -283,6 +284,7 @@ def plan_with_cleanup(
         tracks_run_id: As for :func:`~.plan.plan_pipeline`.
         tag_revision: As for :func:`~.plan.plan_pipeline`.
         pins: As for :func:`~.plan.plan_pipeline`.
+        refit: As for :func:`~.plan.plan_pipeline`.
         applies_request_id: As for :func:`~.plan.plan_pipeline`.
 
     Returns:
@@ -318,6 +320,7 @@ def plan_with_cleanup(
         tracks_run_id=tracks_run_id,
         tag_revision=tag_revision,
         pins=pins,
+        refit=refit,
         applies_request_id=applies_request_id,
     )
     if cleanup is None:

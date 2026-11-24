@@ -181,6 +181,12 @@ class StepOutcome:
         return self.planned_run_id is not None and self.planned_run_id != self.run_id
 
 
+type SubsetRefusedCause = Literal[
+    "op_step", "stand_in", "refit", "scope_dependent", "outside_target"
+]
+"""Why a subset of a step is refused (``subset_refused``), as its ``cause``."""
+
+
 type SettleDeclineReason = Literal["would_compute", "refused"]
 """Why a settle-only attempt records nothing.
 
@@ -224,6 +230,7 @@ def execute_step(
     *,
     execution_id: str = "",
     overwrite: bool = False,
+    refit: bool = False,
     store: FailureStore | None = None,
     inventory: InventoryCache | None = None,
     catalog: DeclarationCatalog | None = None,
@@ -242,6 +249,14 @@ def execute_step(
         step_id: Which step to run.
         execution_id: This attempt's id. Empty takes the one the request assigned.
         overwrite: Recompute even where a cached run exists.
+        refit: Fit a fitting step again under its run id, even where its run
+            is complete, and compute the entries it is asked for from the new
+            fit (``run_feature``). A step that applies a model computes as
+            without it, and a bound or pinned step is served. A step that
+            ``request.refit`` names runs with it whatever its caller passes,
+            so a driver that builds its own command line fits it too. A
+            settle given it raises, and a settle of a named step that has
+            not fitted again under this attempt is declined.
         store: Where failures are recorded. A dataset-backed one is built when
             none is given.
         inventory: A held inventory, revalidated on every planning call.
@@ -294,8 +309,8 @@ def execute_step(
     Raises:
         ValueError: *subset* is given and the attempt is the one the request
             assigned the step, or *settle_only* is given with a *subset*, with
-            *overwrite*, or with an *execution_id* other than the one the request
-            assigned the step. Nothing is recorded.
+            *overwrite*, with *refit*, or with an *execution_id* other than the
+            one the request assigned the step. Nothing is recorded.
         SettleDeclined: *settle_only* is given and the step is not bound or
             complete (``would_compute``), or an ordinary attempt would refuse it
             (``refused``, naming the refusal). Nothing is recorded.
@@ -303,7 +318,8 @@ def execute_step(
             the record is written. Nothing is recorded.
         StepRefused: The step declined to run, naming why. Its ``error_json`` has
             already been written to this attempt's run-log. A subset of a
-            ``scope_dependent``, op, bound or pinned step, or one naming an entry
+            ``scope_dependent``, op, bound or pinned step, of a step the request
+            asks to fit again (``Request.refit``), or one naming an entry
             outside the step's target, is refused as ``subset_refused``. A
             :class:`~.step_preflight.RecipeRefusedAtStep` is this dataset refusing the
             step as a plan of the recipe reports it; a problem at another step
@@ -318,8 +334,12 @@ def execute_step(
                 request,
                 attempt=attempt,
                 overwrite=overwrite,
+                refit=refit,
                 subset=subset,
             )
+        # After the settle check, which refuses only a refit its caller asked
+        # for. A settle of a step the request names is declined by its plan.
+        refit = refit or step_id in request.refit
         if subset is not None and attempt == request.execution_of(step_id):
             # Refused before anything is written: that run-log is the step's status,
             # and a subset recorded there would read as the step having ended.
@@ -335,6 +355,7 @@ def execute_step(
                 step_id,
                 attempt=attempt,
                 overwrite=overwrite,
+                refit=refit,
                 store=failures,
                 inventory=inventory,
                 catalog=catalog,
@@ -367,19 +388,25 @@ def _check_settle_arguments(
     *,
     attempt: str,
     overwrite: bool,
+    refit: bool,
     subset: StepSubset | None,
 ) -> None:
     """Refuse the arguments that a settle-only attempt cannot honor.
 
     Raises:
-        ValueError: A subset or overwrite is asked for, or the attempt is not the
-            one the request assigned the step.
+        ValueError: A subset, overwrite or refit is asked for, or the attempt is
+            not the one the request assigned the step.
     """
     if subset is not None:
         raise ValueError(f"a settle of step {step_id!r} runs no {subset.kind} subset")
     if overwrite:
         raise ValueError(
             f"a settle of step {step_id!r} does not overwrite: it records a step "
+            f"that needs no work"
+        )
+    if refit:
+        raise ValueError(
+            f"a settle of step {step_id!r} does not refit: it records a step "
             f"that needs no work"
         )
     own = request.execution_of(step_id)
@@ -397,6 +424,7 @@ def _execute(
     *,
     attempt: str,
     overwrite: bool,
+    refit: bool,
     store: FailureStore,
     inventory: InventoryCache | None,
     catalog: DeclarationCatalog | None,
@@ -423,6 +451,7 @@ def _execute(
             step_id,
             attempt=attempt,
             overwrite=overwrite,
+            refit=refit,
             store=store,
             inventory=inventory,
             catalog=catalog,
@@ -462,6 +491,7 @@ def _execute(
         tag_revision=ready.plan.tags_read,
         attempt=attempt,
         overwrite=overwrite,
+        refit=refit,
         store=store,
         owner=owner,
         cancel_token=cancel_token,
@@ -527,6 +557,7 @@ def _before_run(
     *,
     attempt: str,
     overwrite: bool,
+    refit: bool,
     store: FailureStore,
     inventory: InventoryCache | None,
     catalog: DeclarationCatalog | None,
@@ -592,11 +623,11 @@ def _before_run(
         if settle_only and cancel_token is not None:
             cancel_token.raise_if_cancelled()
         return _bound(ds, planned, attempt=attempt, owner=owner)
-    # A pinned step serves its run and computes nothing, under overwrite too:
-    # recomputing it would fit over this request's entries under the pin's name.
-    # A feature step with drift work runs, and ``run_feature`` recomputes its
-    # drifted entries and serves the rest.
-    if planned.is_complete and (not overwrite or step_id in request.pins):
+    # A pinned step serves its run and computes nothing, under overwrite or
+    # refit too: recomputing it would fit over this request's entries under the
+    # pin's name. A feature step with drift work runs, and ``run_feature``
+    # recomputes its drifted entries and serves the rest.
+    if planned.is_complete and (not (overwrite or refit) or step_id in request.pins):
         if settle_only and cancel_token is not None:
             cancel_token.raise_if_cancelled()
         return _cached(ds, planned, attempt=attempt, owner=owner, probe=marker)
@@ -682,12 +713,14 @@ def _refuse_subset(
 
     Raises:
         StepRefused: ``subset_refused``, with the ``cause``: ``op_step``,
-            ``stand_in`` for a bound or pinned step, ``scope_dependent``, or
-            ``outside_target`` for a named entry the step's target lacks.
+            ``stand_in`` for a bound or pinned step, ``refit`` for a step the
+            request asks to fit again, ``scope_dependent``, or ``outside_target``
+            for a named entry the step's target lacks.
     """
     step_id = planned.step_id
     kind = subset.kind
     detail: dict[str, JsonValue] = {}
+    cause: SubsetRefusedCause
     if planned.kind == "op":
         cause = "op_step"
         message = f"Step {step_id!r} is an op, which computes its scope whole"
@@ -696,6 +729,12 @@ def _refuse_subset(
         message = (
             f"Step {step_id!r} serves the run that request {request.request_id!r} "
             f"binds or pins it to, and computes nothing"
+        )
+    elif step_id in request.refit:
+        cause = "refit"
+        message = (
+            f"Step {step_id!r} is fitted again by request {request.request_id!r}, "
+            f"which fits it over its whole attempt. Run the step's own attempt"
         )
     elif planned.scope_dependent:
         cause = "scope_dependent"
@@ -948,6 +987,7 @@ def _run(
     tag_revision: LabelRevisionRef | None,
     attempt: str,
     overwrite: bool,
+    refit: bool,
     store: FailureStore,
     owner: str,
     cancel_token: CancelToken | None,
@@ -1030,6 +1070,7 @@ def _run(
             scope=Scope(entries=sorted(asked)) if asked else None,
             asks_every_entry=asks_every_entry,
             overwrite=overwrite,
+            refit=refit,
             tracks_run_id=spec.tracks_run_id,
             tag_revision=tag_revision,
             labels_run_id=spec.labels_run_id,

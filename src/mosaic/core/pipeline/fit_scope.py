@@ -77,6 +77,7 @@ __all__ = [
     "LinkedFitDrifted",
     "derive_fit_scope",
     "fit_and_apply_scopes",
+    "fitted_by",
     "fit_inputs_digest",
     "fit_references",
     "list_run_root",
@@ -892,6 +893,15 @@ def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
         inputs=inputs,
         execution_id=str(raw.get("execution_id", "")),
     )
+
+
+def fitted_by(run_root: Path, execution_id: str) -> bool:
+    """Whether the fit record in *run_root* names the attempt *execution_id*.
+
+    A record that cannot be read names no attempt.
+    """
+    record = read_fit_scope(run_root)
+    return record is not None and record.execution_id == execution_id
 
 
 def _strings(value: object) -> tuple[str, ...] | None:

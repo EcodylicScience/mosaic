@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,12 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import serialize as serialize_module
+from mosaic.core.pipeline.graph.digest import document_digest
 from mosaic.core.pipeline.graph import (
     CleanupPolicy,
     PlanChanged,
     Recipe,
+    asked_of,
     plan_fingerprint,
     plan_pipeline,
     plan_wire,
@@ -39,6 +42,7 @@ from tests.helpers import (
     SPEED_RECIPE,
     add_tracks_variant,
     convert_tracks_from_raw,
+    drifted_templates,
     invoke_json,
     make_dataset,
     run_fresh,
@@ -46,6 +50,7 @@ from tests.helpers import (
     speed_heading_recipe,
     speed_recipe,
     speed_recipe_stepping,
+    templates_recipe,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -428,3 +433,40 @@ def test_a_request_variant_enters_the_fingerprint(tracked: Dataset) -> None:
     assert named.tracks_run_id == VARIANT
     assert named.run_ids == unnamed.run_ids
     assert plan_fingerprint(named) != plan_fingerprint(unnamed)
+
+
+def test_a_refit_enters_the_fingerprint(tmp_path: Path) -> None:
+    """A plan reviewed before its fit drifted reads stale once a refit is due."""
+    dataset = drifted_templates(tmp_path / "fitted", variant=VARIANT)
+    plan = plan_pipeline(dataset, templates_recipe())
+    unnamed = replace(
+        plan, steps=tuple(replace(step, refit=None) for step in plan.steps)
+    )
+
+    assert plan.step("templates").refit is not None
+    assert plan_fingerprint(plan) != plan_fingerprint(unnamed)
+
+
+def test_a_plan_without_a_refit_keeps_its_fingerprint(tracked: Dataset) -> None:
+    """Each step of a plan without a refit fingerprints the fields it did."""
+    _ = run_pipeline(tracked, templates_recipe())
+    plan = plan_pipeline(tracked, templates_recipe())
+    steps: list[JsonValue] = [
+        {
+            "step": planned.step_id,
+            "run_id": planned.run_id,
+            "status": planned.status,
+            "finished": planned.finished,
+            "covers_all": planned.coverage.covers_all,
+            "covered": len(planned.coverage.covered),
+            "target": len(planned.coverage.target),
+            "drift": len(planned.drift),
+            "asked": [list(entry) for entry in asked_of(planned, plan)],
+        }
+        for planned in sorted(plan.steps, key=lambda step: step.step_id)
+    ]
+
+    assert [planned.refit for planned in plan.steps] == [None, None]
+    assert plan_fingerprint(plan) == document_digest(
+        {"dataset": plan.dataset_uuid, "recipe": plan.recipe_digest, "steps": steps}
+    )

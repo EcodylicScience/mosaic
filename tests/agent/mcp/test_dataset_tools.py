@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.outputs import PlanPage
 from mosaic.agent.mcp.spec import (
     MAX_RESULT_CHARS,
     DatasetChange,
@@ -43,7 +44,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import TracksScanSource
 from mosaic.core.pipeline.cancel import read_request
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import PlanWire, submit_request
+from mosaic.core.pipeline.graph import submit_request
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.run_summary import RunSummaryWire
 from mosaic.core.regions import CircleShape, RectShape, Roi
@@ -171,7 +172,7 @@ def test_scanning_a_declared_source_leaves_a_convert_step_to_do_and_a_plan_reach
     described = _tool(backend, DatasetSummary, "describe_dataset", dataset=uuid)
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -788,7 +789,7 @@ def test_a_plan_over_a_dataset_with_no_tracks_says_to_convert_first(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -823,7 +824,7 @@ def test_a_rescan_that_adds_raw_files_is_counted_by_the_whole_dataset_caution(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -853,7 +854,7 @@ def test_two_converting_steps_are_named_in_turn_and_a_shared_entry_counts_once(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -885,7 +886,7 @@ def test_a_step_converting_only_unnamed_files_says_so_and_adds_no_entry_count(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -914,7 +915,7 @@ def test_the_unnamed_file_clause_follows_the_step_it_applies_to(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -947,7 +948,7 @@ def test_two_steps_converting_only_unnamed_files_are_joined_with_and(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -979,7 +980,7 @@ def test_a_dataset_with_nothing_to_convert_keeps_the_plain_caution(
 
     plan = _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=uuid,
         recipe={
@@ -1595,10 +1596,10 @@ def _pairs(entries: list[Entry]) -> list[list[str]]:
     return [list(entry) for entry in entries]
 
 
-def _plan(backend: LocalBackend, dataset: Dataset, **arguments: object) -> PlanWire:
+def _plan(backend: LocalBackend, dataset: Dataset, **arguments: object) -> PlanPage:
     return _tool(
         backend,
-        PlanWire,
+        PlanPage,
         "plan_recipe",
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,

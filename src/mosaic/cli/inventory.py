@@ -204,7 +204,10 @@ def show_artifact(
     if as_json:
         emit_json(wire.model_dump(mode="json"))
         return
-    render_json_block(wire.artifacts[0].model_dump(mode="json"))
+    artifact = wire.artifacts[0]
+    render_json_block(artifact.model_dump(mode="json"))
+    if artifact.refit is not None:
+        typer.echo(f"Refit: {artifact.refit.summary()}")
     _print_notes(wire)
 
 

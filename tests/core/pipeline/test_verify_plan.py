@@ -33,10 +33,17 @@ from mosaic.core.pipeline.verify import (
 from mosaic.core.pipeline.verify import _Found, _walk  # pyright: ignore[reportPrivateUsage]
 from tests.helpers import (
     assert_tree_unchanged,
+    add_tracks_variant,
     calms21_dataset,
+    drifted_templates,
+    make_dataset,
     scored_classifier_recipe,
+    templates_recipe,
     tree_snapshot,
 )
+
+VARIANT = "convert-trex.0.2-1111111111"
+"""The tracks variant the refit fixtures' tables are of."""
 
 ENTRIES = {"train": {"a": {"s1": 90, "s2": 90, "s3": 90}}}
 
@@ -296,6 +303,60 @@ def test_a_drifted_fitting_step_is_still_verified(study: Dataset) -> None:
     report = verify_plan(study, plan)
 
     assert _verdict(report, "clf").status == "ok"
+
+
+REFIT_REASON = (
+    "its fit read inputs that have changed since, so a fit of the current inputs "
+    "is not comparable: run the step to fit it again"
+)
+
+
+def test_a_fit_whose_inputs_changed_since_it_ran_is_skipped_and_not_ok(
+    tmp_path: Path,
+) -> None:
+    ds = drifted_templates(tmp_path / "drifted", variant=VARIANT)
+    opened = open_dataset(ds.manifest_path, ensure_roots=False)
+    plan = plan_pipeline(opened, templates_recipe())
+    assert plan.step("templates").refit is not None
+
+    report = verify_plan(opened, plan)
+
+    templates = _verdict(report, "templates")
+    assert (templates.status, templates.reason) == ("skipped", REFIT_REASON)
+    assert report.unfinished == 1
+    assert report.verified == 0
+    assert not report.ok
+
+
+def test_a_fit_the_request_asks_to_fit_again_is_skipped_and_not_ok(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "fitted")
+    add_tracks_variant(ds, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(ds, templates_recipe())
+    opened = open_dataset(ds.manifest_path, ensure_roots=False)
+    plan = plan_pipeline(opened, templates_recipe(), refit=["templates"])
+
+    report = verify_plan(opened, plan)
+
+    templates = _verdict(report, "templates")
+    assert (templates.status, templates.reason) == ("skipped", REFIT_REASON)
+    assert report.unfinished == 1
+    assert not report.ok
+
+
+def test_a_fit_with_unchanged_inputs_is_verified(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "fitted")
+    add_tracks_variant(ds, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(ds, templates_recipe())
+    opened = open_dataset(ds.manifest_path, ensure_roots=False)
+
+    report = verify_plan(opened, plan_pipeline(opened, templates_recipe()))
+
+    assert _verdict(report, "templates").status == "ok"
+    assert report.unfinished == 0
 
 
 def test_a_stored_output_that_was_changed_fails_and_names_the_entry(

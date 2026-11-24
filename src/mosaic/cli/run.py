@@ -151,6 +151,17 @@ def run_command(
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Recompute even if a cached run exists.")
     ] = False,
+    refit: Annotated[
+        bool,
+        typer.Option(
+            "--refit",
+            help=(
+                "Fit a fitting step again under its run id, then compute every "
+                "entry asked for from the new fit. A step that applies a model "
+                "ignores it. Not used with --probe or --step-entries."
+            ),
+        ),
+    ] = False,
     republish: Annotated[
         bool,
         typer.Option(
@@ -213,7 +224,10 @@ def run_command(
         execution_id=execution_id,
         parallel_named=parallel_named,
         overwrite=overwrite,
+        refit=refit,
     )
+    if kind is not None and refit:
+        fail("--refit fits a feature step again, so it is not used with --kind.")
     if kind is not None and parallel_named:
         fail(
             "--workers, --parallel-mode, --min-free-memory-fraction and "
@@ -307,6 +321,7 @@ def run_command(
                     step_id,
                     execution_id=exec_id,
                     overwrite=overwrite,
+                    refit=refit,
                     owner=owner,
                     cancel_token=token,
                     parallel=parallel,
@@ -345,6 +360,7 @@ def run_command(
                     feat,
                     scope=None if scope.is_unset else scope,
                     overwrite=overwrite,
+                    refit=refit,
                     tracks_run_id=tracks_run_id,
                     labels_run_id=labels_run_id,
                     tag_revision=None if tags is None else tags.ref,
@@ -466,6 +482,7 @@ def _step_subset(
     execution_id: str | None,
     parallel_named: bool,
     overwrite: bool,
+    refit: bool,
 ) -> StepSubset | None:
     """Return the subset that ``--probe`` or ``--step-entries`` names, or fail.
 
@@ -476,6 +493,7 @@ def _step_subset(
         execution_id: The ``--execution-id`` value.
         parallel_named: Whether any parallel flag was given.
         overwrite: The ``--overwrite`` value.
+        refit: The ``--refit`` value.
 
     Returns:
         The subset, ``None`` when neither flag is given.
@@ -485,6 +503,12 @@ def _step_subset(
     if probe is not None and step_entries is not None:
         fail("--probe and --step-entries name two subsets; give one.", code=2)
     flag = "--probe" if probe is not None else "--step-entries"
+    if refit:
+        fail(
+            f"--refit fits the step again over its whole attempt, so it is not "
+            f"used with {flag}, which computes some of the step's entries.",
+            code=2,
+        )
     if graph_request is None:
         fail(
             f"{flag} runs some entries of a step, with --graph-request and --step.",

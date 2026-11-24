@@ -14,7 +14,14 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.inventory import ARTIFACT_KINDS, InventoryWire
 from mosaic.core.selections import save_selection
-from tests.helpers import invoke_ok
+from tests.helpers import (
+    add_tracks_variant,
+    invoke_ok,
+    kmeans_fit,
+    make_dataset,
+    reconvert_entry,
+    run_step,
+)
 
 runner = CliRunner()
 
@@ -122,6 +129,40 @@ def test_show_reports_one_artifact_in_depth(scenario_dataset: Dataset) -> None:
     assert artifact.ref == ref
     assert artifact.detail is not None
     assert artifact.detail.rows == 2
+
+
+def _fitted_dataset(base: Path, *, converted_again: bool) -> tuple[Dataset, str]:
+    """A k-means fit over two tables, and the ref of its templates run.
+
+    With *converted_again*, one entry's table is converted again and the run
+    that feeds the fit computes it again, so the fit read inputs that moved.
+    """
+    ds = make_dataset(base)
+    variant = "convert-trex.0.2-1111111111"
+    add_tracks_variant(ds, variant, "seq_a", "seq_b", std_format="mosaic_v1")
+    runs = kmeans_fit(ds)
+    if converted_again:
+        reconvert_entry(ds, ("", "seq_a"), composition="converted-again")
+        _ = run_step(ds, "speed-angvel", None, {})
+    return ds, f"feature/{runs.templates.feature}/{runs.templates.run_id}"
+
+
+def test_show_prints_the_refit_of_a_fit_whose_inputs_changed(tmp_path: Path) -> None:
+    ds, ref = _fitted_dataset(tmp_path / "moved", converted_again=True)
+
+    result = invoke_ok(["inventory", "show", ref, "--manifest", str(ds.manifest_path)])
+
+    assert "Refit: 1 moved (seq_a)" in result.stdout
+
+
+def test_show_prints_no_refit_for_a_fit_whose_inputs_are_unchanged(
+    tmp_path: Path,
+) -> None:
+    ds, ref = _fitted_dataset(tmp_path / "steady", converted_again=False)
+
+    result = invoke_ok(["inventory", "show", ref, "--manifest", str(ds.manifest_path)])
+
+    assert "Refit" not in result.stdout
 
 
 def test_show_takes_a_ref_from_the_plain_listing(scenario_dataset: Dataset) -> None:

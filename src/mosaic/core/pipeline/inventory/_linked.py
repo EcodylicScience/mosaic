@@ -16,6 +16,7 @@ from .model import AnyRecord, Coverage, merged_coverage, reclassify
 
 if TYPE_CHECKING:
     from mosaic.core.entry import Entry
+    from mosaic.core.pipeline.index import FitDrift
 
     from .model import ArtifactRef
     from .params import RunParamsRead
@@ -46,12 +47,16 @@ class Remeasure:
             rows takes.
         drift: Its drifted entries over the reading dataset, or ``None`` for the
             union of the parts'.
+        refit: What changed under its fit over the reading dataset, taken with
+            ``drift``: where ``drift`` is ``None`` the first part's is kept,
+            and otherwise this replaces it, ``None`` included.
         params: Its run parameters as the reading dataset reads them, or
             ``None`` for the parameters of the record kept.
     """
 
     target: frozenset[object] | None = None
     drift: tuple[Entry, ...] | None = None
+    refit: FitDrift | None = None
     params: RunParamsRead | None = None
 
 
@@ -189,6 +194,11 @@ def merged_record(
         orphan_files=frozenset(orphan_files - rows),
         unfinished_rows=frozenset(rows - finished_keys),
         drift=tuple(sorted(drift)) if measured.drift is None else measured.drift,
+        refit=(
+            next((r.refit for r in records if r.refit is not None), None)
+            if measured.drift is None
+            else measured.refit
+        ),
         started_at=next(
             (record.started_at for record in records if record.started_at), ""
         ),

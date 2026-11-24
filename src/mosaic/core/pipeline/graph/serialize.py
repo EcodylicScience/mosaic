@@ -456,7 +456,11 @@ def plan_fingerprint(plan: Plan) -> str:
     step's entries, when the counts above cannot tell two narrowings apart.
     The request's tracks variant enters it only when there is one, for the
     same reason, and so do the request's pins, as sorted pairs of step id and
-    pinned run id.
+    pinned run id. A step whose fit is due a refit adds what changed under it.
+    A plan reviewed before its fit drifted then reads stale, and a plan without
+    a refit keeps the fingerprint it had. The steps the request asks to fit
+    again enter it as sorted ids when there are any, and a plan reviewed without
+    them reads stale.
 
     A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
     policy and the runs it may remove, so a submission removes only the runs
@@ -485,6 +489,9 @@ def plan_fingerprint(plan: Plan) -> str:
             [step_id, plan.step(step_id).run_id or ""]
             for step_id in sorted(plan.pinned)
         ]
+    if plan.refit:
+        asked: list[JsonValue] = [*sorted(plan.refit)]
+        document["refit"] = asked
     if plan.cleanup is not None:
         cleanup_document = cleanup_fingerprint_parts(
             plan.cleanup.policy, plan.cleanup.removable
@@ -536,7 +543,7 @@ def _scope_document(scope: Scope) -> JsonValue:
 
 def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:
     coverage = planned.coverage
-    return {
+    document: dict[str, JsonValue] = {
         "step": planned.step_id,
         "run_id": planned.run_id,
         "status": planned.status,
@@ -547,6 +554,17 @@ def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:
         "drift": len(planned.drift),
         "asked": [[group, sequence] for group, sequence in asked_of(planned, plan)],
     }
+    refit = planned.refit
+    if refit is not None:
+        document["refit"] = {
+            "moved": refit.moved,
+            "dropped": refit.dropped,
+            "sample": list(refit.sample),
+            "refitted": list(refit.refitted),
+            "link_id": refit.link_id,
+            "asked": refit.asked,
+        }
+    return document
 
 
 def _step_wire(
@@ -584,6 +602,7 @@ def _step_wire(
             default_parallel, parallelizable=planned.parallelizable
         ).workers,
         pairs=planned.pairs,
+        refit=planned.refit,
     )
 
 

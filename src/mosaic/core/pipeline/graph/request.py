@@ -248,6 +248,7 @@ def planning_request(
     tracks_run_id: str | None = None,
     tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
+    refit: Iterable[str] = (),
     applied: AppliedFit | None = None,
 ) -> Request:
     """The request that a submission of *recipe* plans with, before it has ids.
@@ -257,9 +258,9 @@ def planning_request(
     ones each step makes. Its ``request_id`` is empty and it assigns no
     execution id. Given *applied*, it records the request applied, and the
     pins, the tracks variant and the locked steps derived from it, in place of
-    *pins* and *tracks_run_id*. *tag_revision* is recorded as given, so a caller
-    passes the reference that :func:`~mosaic.core.pipeline.tag_reads.resolve_tag_ref`
-    resolved.
+    *pins* and *tracks_run_id*. *refit* is recorded sorted, each step once.
+    *tag_revision* is recorded as given, so a caller passes the reference that
+    :func:`~mosaic.core.pipeline.tag_reads.resolve_tag_ref` resolved.
 
     Raises:
         ValueError: A choice the request refuses, such as a step both bound
@@ -277,6 +278,7 @@ def planning_request(
         tracks_run_id=tracks_run_id,
         tag_revision=tag_revision,
         pins=dict(pins or {}),
+        refit=sorted(set(refit)),
         applies_request_id=None if applied is None else applied.request_id,
         locked=[] if applied is None else list(applied.locked),
     )
@@ -303,6 +305,7 @@ def submit_request(
     tracks_run_id: str | None = None,
     tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
+    refit: Iterable[str] = (),
     applies_request_id: str | None = None,
     revalidate: bool = True,
     reviewed: ReviewedPlan | None = None,
@@ -378,6 +381,11 @@ def submit_request(
         pins: The finished run each pinned step serves, keyed by step id,
             recorded on the request. A pinned step is not executed, and the
             steps below it derive their identity from its run.
+        refit: The steps to fit again under their run ids, recorded on the
+            request. Each attempt of a named step fits it once and loads that
+            fit on a retry (:func:`~.step.execute_step`). A name that is not a
+            feature step that fits, or that names a bound or pinned step, is a
+            problem of the plan (:func:`~.plan.plan_pipeline`).
         applies_request_id: The finished request whose fit this submission
             applies (:func:`~.apply.derive_applied_fit`). The request records
             it, and the pins, the tracks variant and the locked steps derived
@@ -470,6 +478,7 @@ def submit_request(
             tracks_run_id=tracks_run_id,
             tag_revision=pinned_tags or tag_revision,
             pins=pins,
+            refit=refit,
             applied=applied,
         )
         narrowing = planning.scope

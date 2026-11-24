@@ -34,20 +34,30 @@ from mosaic.core.pipeline.graph import (
     StepStillRunning,
     driver_lease_path,
     execute_step,
+    plan_pipeline,
     read_driver_lease,
     record_step_ended,
     request_rollup,
     request_status_wire,
+    run_pipeline,
     run_request,
     save_request,
     start_detached_driver,
     step_argv,
     submit_request,
 )
+from mosaic.core.pipeline.entry_claim import RunRootHeld
+from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME, read_fit_scope
 from mosaic.core.pipeline.graph import run as graph_run
+from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.parallelism import ParallelSettings
-from mosaic.core.pipeline.markers import process_running
+from mosaic.core.pipeline.markers import (
+    clear_inflight,
+    new_inflight,
+    process_running,
+    write_inflight,
+)
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
@@ -716,3 +726,68 @@ def test_a_resume_refused_by_a_step_of_unknown_liveness_says_how_to_close_it(
     assert raised.value.liveness == "unknown"
     assert f"--request {submitted.request_id} --assume-exited" in str(raised.value)
     assert "submit the recipe again" in str(raised.value)
+
+
+# --- a refit the request asks for -----------------------------------------------
+
+
+def _templates_root(ds: Dataset, request: Request) -> Path:
+    """The run root of the request's templates step."""
+    templates = plan_pipeline(ds, chain_recipe(), request=request).step("templates")
+    assert templates.run_id is not None
+    return feature_run_root(ds, templates.storage_name, templates.run_id)
+
+
+def test_a_driven_refit_fits_once_and_its_retry_after_a_held_root_loads_it(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, chain_recipe())
+    request = submit_request(tracked, chain_recipe(), refit=["templates"]).request
+    root = _templates_root(tracked, request)
+    first = read_fit_scope(root)
+    assert first is not None
+    assert first.execution_id != request.execution_of("templates")
+
+    done = run_request(tracked, request)
+
+    assert (done.status, done.ran) == ("finished", ("speed", "templates"))
+    fitted = read_fit_scope(root)
+    assert fitted is not None
+    assert fitted.execution_id == request.execution_of("templates")
+    record = (root / FIT_SCOPE_NAME).read_bytes()
+    peer = new_inflight(
+        execution_id="SOMEONE-ELSE",
+        host=socket.gethostname(),
+        pid=os.getpid(),
+        phase=None,
+        idle_seconds=3600.0,
+    )
+    write_inflight(root, peer)
+    with pytest.raises(RunRootHeld):
+        _ = execute_step(tracked, request, "templates", refit=True)
+    clear_inflight(root)
+
+    retried = execute_step(tracked, request, "templates", refit=True)
+
+    assert retried.execution_id == request.execution_of("templates")
+    assert (root / FIT_SCOPE_NAME).read_bytes() == record
+
+
+def test_an_attempt_fits_a_step_its_request_names_without_being_told(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, chain_recipe())
+    request = submit_request(tracked, chain_recipe(), refit=["templates"]).request
+    root = _templates_root(tracked, request)
+    _ = execute_step(tracked, request, "speed")
+
+    _ = execute_step(tracked, request, "templates")
+
+    fitted = read_fit_scope(root)
+    assert fitted is not None
+    assert fitted.execution_id == request.execution_of("templates")
+    templates = plan_pipeline(tracked, chain_recipe(), request=request).step(
+        "templates"
+    )
+    assert not templates.refit_asked
+    assert templates.is_complete

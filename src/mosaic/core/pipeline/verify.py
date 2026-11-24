@@ -133,6 +133,12 @@ _MAX_LISTED: Final = 8
 _MAX_DEPTH: Final = 6
 """How deep the comparison of a saved model bundle follows nested objects."""
 
+_REFIT_REASON: Final = (
+    "its fit read inputs that have changed since, so a fit of the current inputs "
+    "is not comparable: run the step to fit it again"
+)
+"""Why a step due a refit, or asked for one, is not fitted here."""
+
 Status = Literal["ok", "differs", "error", "skipped"]
 
 
@@ -238,15 +244,16 @@ class VerifyReport(StrictModel):
 
     Attributes:
         ok: Whether at least one step was verified, every verified step is within
-            its tolerance, none raised and no step lacked a complete run to
-            compare. A report that compared nothing is not ok.
+            its tolerance, none raised and no step lacked a complete run or was
+            due a refit. A report that compared nothing is not ok.
         atol: The tolerance a tolerant feature was held to.
         n_threads: The thread count a feature with an ``n_threads`` param was fitted
             with.
         verified: How many steps were compared with their stored runs.
         steps: One verdict per step of the plan, in order.
         unfinished: How many steps that fit or score had no complete run to
-            compare. Each is ``skipped`` in ``steps``, and any makes ``ok`` false.
+            compare, or were due a refit. Each is ``skipped`` in ``steps``, and
+            any makes ``ok`` false.
     """
 
     ok: bool
@@ -1162,7 +1169,9 @@ def verify_plan(
     Args:
         ds: The dataset, opened read-only. Nothing is written under it.
         plan: The plan of the request, as ``plan_pipeline`` resolves it. A step
-            is verified when its run is complete.
+            is verified when its run is complete and its fit is not due a refit,
+            since a fit of the current inputs is not comparable with one of
+            older inputs.
         atol: The difference accepted from a tolerant feature, whose fit moves with
             the thread count or the device. Every other feature must match
             exactly.
@@ -1232,6 +1241,10 @@ def verify_plan(
                         }
                     )
                 )
+                continue
+            if planned.refit is not None:
+                unfinished += 1
+                verdicts.append(skipped.model_copy(update={"reason": _REFIT_REASON}))
                 continue
             work = root / planned.step_id
             check = _verify_scores if evaluation and not planned.fits else _verify_fit

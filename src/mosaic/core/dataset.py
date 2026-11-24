@@ -12825,6 +12825,7 @@ class Dataset:
         scope: Scope | None = None,
         tracks_run_id: str | None = None,
         labels_run_id: str | None = None,
+        refit: bool = False,
         execution_id: str | None = None,
         owner: str = "",
         track: bool = True,
@@ -12873,6 +12874,8 @@ class Dataset:
                 skipping them (default validator fully reads the parquet; a
                 feature may override via ``check_output``). When False
                 (default), a cache hit only requires the output to exist.
+            refit: Fit the run again under its run id, whatever its fit
+                record says. See :func:`~mosaic.core.pipeline.run.run_feature`.
             execution_id: Reuse an externally minted ULID attempt id.
             owner: Free-form attribution recorded on the attempt's run-log.
             track: Record this attempt (status/progress/heartbeat) into an
@@ -12915,6 +12918,7 @@ class Dataset:
             check_output=check_output,
             tracks_run_id=tracks_run_id,
             labels_run_id=labels_run_id,
+            refit=refit,
             execution_id=execution_id,
             owner=owner,
             track=track,

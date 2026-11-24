@@ -41,7 +41,7 @@ from mosaic.core.scope import Scope
 from mosaic.core.spaces import TrackSpace
 
 from ..column_contract import PairRead
-from ..inventory.wire import CoverageWire
+from ..inventory.wire import CoverageWire, RefitWire
 from ..ops import ScopeTakes
 from ..feature_levels import EmitsLevel
 from .compatibility import Declaration, Reach
@@ -73,7 +73,9 @@ __all__ = [
     "NotRetiredRecipeWire",
     "ParallelWire",
     "ParamRow",
+    "PlanFields",
     "PlanWire",
+    "PlannedStepFields",
     "PlannedStepWire",
     "Problem",
     "ProvidedColumns",
@@ -782,8 +784,11 @@ class RetirementPlanWire(GraphModel):
     runs: tuple[SupersededRunWire, ...] = ()
 
 
-class PlannedStepWire(GraphModel):
-    """One step of a plan, as an editor renders it.
+class PlannedStepFields(GraphModel):
+    """One step of a plan, less how it names a refit.
+
+    :class:`PlannedStepWire` names it as a :class:`RefitWire`, and a page
+    that carries one line per refit declares its own field.
 
     Attributes:
         step: The step's id in the recipe.
@@ -842,6 +847,17 @@ class PlannedStepWire(GraphModel):
     pairs: PairRead | None = None
 
 
+class PlannedStepWire(PlannedStepFields):
+    """One step of a plan, as an editor renders it.
+
+    Attributes:
+        refit: What changed under the step's fit since it was fitted, ``None``
+            while the inputs of its fit are unchanged.
+    """
+
+    refit: RefitWire | None = None
+
+
 class ParallelWire(GraphModel):
     """What a submission may ask for in parallelism, and the machine it runs on.
 
@@ -871,8 +887,8 @@ class ParallelWire(GraphModel):
     memory_available_bytes: int
 
 
-class PlanWire(GraphModel):
-    """What a recipe would do to one dataset, bounded in size.
+class PlanFields[StepT: PlannedStepFields](GraphModel):
+    """What a recipe would do to one dataset, bounded in size, over steps of *StepT*.
 
     Attributes:
         recipe_digest: What names the recipe.
@@ -914,7 +930,7 @@ class PlanWire(GraphModel):
     fingerprint: str
     scope_size: int
     complete: bool
-    steps: tuple[PlannedStepWire, ...]
+    steps: tuple[StepT, ...]
     problems: tuple[Problem, ...]
     cautions: tuple[Problem, ...] = ()
     open_requests: tuple[RequestSummaryWire, ...] = ()
@@ -923,3 +939,7 @@ class PlanWire(GraphModel):
     retirable_omitted: int = 0
     parallel: ParallelWire | None = None
     locked_steps: tuple[str, ...] = ()
+
+
+class PlanWire(PlanFields[PlannedStepWire]):
+    """What a recipe would do to one dataset, bounded in size."""

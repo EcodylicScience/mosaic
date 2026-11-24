@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 from mosaic.agent.mcp.local import POLL_AFTER_MIN_SECONDS, LocalBackend
-from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
+from mosaic.agent.mcp.outputs import PlanPage, StepSuggestions, StepTypes
 from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
     LISTING_MISSING_SAMPLE,
@@ -47,7 +47,6 @@ from mosaic.core.pipeline.graph import (
     QUARANTINE_AFTER,
     CoverageShortfall,
     FileFailureStore,
-    PlanWire,
     RequestStatusWire,
     Recipe,
     ValidationReport,
@@ -750,7 +749,7 @@ def test_validate_plan_and_a_cli_file_name_one_digest(
 
     valid = _call(backend, "validate_recipe", ValidationReport, recipe=as_sent)
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=as_sent
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=as_sent
     )
 
     assert valid.digest == plan.recipe_digest == submitted.request.recipe_digest
@@ -791,7 +790,7 @@ def test_a_plan_names_its_fingerprint_and_a_malformed_recipe_is_invalid(
     backend: LocalBackend, dataset: Dataset
 ) -> None:
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
     malformed = _refusal(
         backend, "plan_recipe", dataset=_uuid(dataset), recipe={"steps": "none"}
@@ -822,7 +821,7 @@ def test_a_plan_lists_the_media_that_awaits_an_analysis_transcode(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(awaiting),
         recipe={"steps": [tracker]},
     )
@@ -853,7 +852,7 @@ def test_a_tracker_sweep_plans_and_submits_on_a_dataset_of_two_variants(
     recipe = {"schema_version": 1, "steps": [_tracker(10), _tracker(20)]}
 
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=recipe
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=recipe
     )
     submitted = _call(
         backend,
@@ -879,7 +878,7 @@ def test_a_submission_hands_the_starter_the_servers_card_limit(
         [dataset.manifest_path], warm=False, start_driver=starter, gpu_cards=limit
     )
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     submitted = _call(
@@ -906,7 +905,7 @@ def test_a_submitted_drifted_step_counts_as_to_compute(tmp_path: Path) -> None:
         [dataset.manifest_path], warm=False, start_driver=RecordingStarter()
     )
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     submitted = _call(
@@ -931,7 +930,7 @@ def test_discover_keeps_the_card_limit(dataset: Dataset, tmp_path: Path) -> None
         tmp_path, warm=False, start_driver=starter, gpu_cards=("1",)
     )
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     _ = _call(
@@ -955,7 +954,7 @@ def test_plan_recipe_lists_an_unpinned_reader_of_two_variants_as_a_problem(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(dataset),
         recipe=SPEED_RECIPE,
     )
@@ -976,7 +975,7 @@ def test_plan_and_submit_take_a_tracks_variant(dataset: Dataset) -> None:
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPEED_RECIPE,
         tracks_run_id="trex.0.1-2222222222",
@@ -1015,7 +1014,7 @@ def test_a_cleaning_submission_plans_both_times_over_the_tracks_variant(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPEED_RECIPE,
         cleanup="superseded",
@@ -1054,7 +1053,7 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=CHAIN_RECIPE,
         entries=ENTRIES,
@@ -1143,7 +1142,7 @@ def test_a_submission_with_workers_runs_them_and_reports_the_memory_used(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=CHAIN_RECIPE,
         entries=ENTRIES,
@@ -1207,7 +1206,7 @@ def test_plan_and_submit_a_recipe_whose_first_step_converts(tmp_path: Path) -> N
     }
     entries = [["train", "s1"]]
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=uuid, recipe=recipe, entries=entries
+        backend, "plan_recipe", PlanPage, dataset=uuid, recipe=recipe, entries=entries
     )
     assert [(step.step, step.run_id is not None) for step in plan.steps] == [
         ("tracks", True),
@@ -1300,11 +1299,11 @@ def test_plan_recipe_step_entries_fingerprint_matches_submit(split: Dataset) -> 
         "entries": {"groups": ["train", "test"]},
         "step_entries": {"templates": {"groups": ["train"]}},
     }
-    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    plan = _call(backend, "plan_recipe", PlanPage, **arguments)
     other = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         **{**arguments, "step_entries": {"templates": {"groups": ["test"]}}},
     )
 
@@ -1333,7 +1332,7 @@ def test_plan_recipe_of_a_parent_narrowed_by_many_entries_stays_within_the_resul
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(split),
         recipe=SPLIT_RECIPE,
         step_entries={"speed": padded},
@@ -1357,7 +1356,7 @@ def test_submit_pipeline_records_step_scopes(split: Dataset) -> None:
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPLIT_RECIPE,
         entries={"groups": ["train", "test"]},
@@ -1412,7 +1411,7 @@ def test_submit_takes_pins_and_an_apply(split: Dataset) -> None:
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         **over_test,
         applies_request_id=named,
     )
@@ -1476,7 +1475,7 @@ def test_a_cleaning_apply_plans_both_times_with_the_apply(split: Dataset) -> Non
         "cleanup": "superseded",
         "applies_request_id": named,
     }
-    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    plan = _call(backend, "plan_recipe", PlanPage, **arguments)
 
     submitted = _call(
         backend,
@@ -1502,7 +1501,7 @@ def test_empty_pins_beside_an_apply_are_no_pins(split: Dataset) -> None:
         "applies_request_id": named,
         "pins": {},
     }
-    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    plan = _call(backend, "plan_recipe", PlanPage, **arguments)
 
     submitted = _call(
         backend,
@@ -1598,7 +1597,7 @@ def tagged(split: Dataset) -> Dataset:
     return split
 
 
-def _run_ids(plan: PlanWire) -> dict[str, str | None]:
+def _run_ids(plan: PlanPage) -> dict[str, str | None]:
     return {step.step: step.run_id for step in plan.steps}
 
 
@@ -1613,7 +1612,7 @@ def test_plan_recipe_by_tag_plans_the_run_ids_of_the_same_entries_and_the_submis
     by_tag = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPLIT_RECIPE,
         entries=BY_SITE,
@@ -1621,7 +1620,7 @@ def test_plan_recipe_by_tag_plans_the_run_ids_of_the_same_entries_and_the_submis
     by_name = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPLIT_RECIPE,
         entries=SITE_A,
@@ -1651,7 +1650,7 @@ def test_submit_pipeline_by_tag_records_the_entries_and_the_revision_it_read(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=uuid,
         recipe=SPLIT_RECIPE,
         entries=BY_SITE,
@@ -1687,14 +1686,14 @@ def test_a_step_narrowed_by_tag_is_planned_and_submitted_over_those_entries(
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         **arguments,
         step_entries={"templates": BY_SITE},
     )
     by_name = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         **arguments,
         step_entries={"templates": SITE_A},
     )
@@ -1723,7 +1722,7 @@ def test_a_plan_without_a_tag_selection_reads_no_tag_table(split: Dataset) -> No
     plan = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         dataset=_uuid(split),
         recipe=SPLIT_RECIPE,
         entries={"groups": ["train"]},
@@ -1931,7 +1930,7 @@ def test_a_dead_request_reads_alike_in_status_activity_and_plan(
         backend, "list_activity", ActivityPage, dataset=_uuid(dataset), view="requests"
     )
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(dataset), recipe=SPEED_RECIPE
     )
 
     assert status.verdict == "orphaned"
@@ -2852,7 +2851,7 @@ def test_a_plan_names_three_missing_entries_per_step(tmp_path: Path) -> None:
     backend = LocalBackend([ds.manifest_path], warm=False)
 
     plan = _call(
-        backend, "plan_recipe", PlanWire, dataset=_uuid(ds), recipe=SPEED_RECIPE
+        backend, "plan_recipe", PlanPage, dataset=_uuid(ds), recipe=SPEED_RECIPE
     )
 
     [step] = plan.steps

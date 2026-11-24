@@ -8,6 +8,7 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.graph import Recipe, run_pipeline
-from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.index import FitDrift, feature_run_root
 from mosaic.core.pipeline.inventory import (
     Coverage,
     FeatureRunRef,
@@ -33,8 +34,9 @@ from mosaic.core.pipeline.inventory import (
 )
 from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.label_series import label_series_records
-from mosaic.core.pipeline.inventory.model import InventoryScope
+from mosaic.core.pipeline.inventory.model import AnyRecord, InventoryScope
 from mosaic.core.pipeline.inventory.params import read_linked_run_params
+from mosaic.core.pipeline.inventory.wire import ArtifactWire, RefitWire
 from mosaic.core.pipeline.inventory.scan import (
     entries_held,
     entry_universe,
@@ -45,6 +47,8 @@ from mosaic.core.pipeline.inventory.scan import (
 )
 from mosaic.core.pipeline import parquet_reader
 from mosaic.core.pipeline.parquet_reader import ParquetFooterMemo
+from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from tests.helpers import (
     CONVERTED_ENTRIES,
@@ -54,14 +58,23 @@ from tests.helpers import (
     converted_source,
     copy_of,
     labelled_source,
+    FitControl,
+    KMeansFit,
     LossyFeature,
     ScopedFeature,
+    ScopedFittingFeature,
     add_feature_run,
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
+    kmeans_fit,
     make_dataset,
+    model_reference,
+    move_tracks,
     raw_source,
+    reconvert_entry,
+    result_run_root,
+    run_step,
     record_path_calls,
     run_fresh,
     track_table,
@@ -1234,3 +1247,159 @@ def test_an_own_labels_row_whose_file_is_missing_counts_its_entry_absent(
     assert record.coverage.target == frozenset(SOURCE_ENTRIES)
     assert record.coverage.covered == frozenset({second})
     assert record.status != "complete"
+
+
+# --- a fit whose inputs changed ----------------------------------------------
+
+FIT_VARIANT = "convert-trex.0.2-1111111111"
+SEQ_A = ("", "seq_a")
+SEQ_B = ("", "seq_b")
+
+
+def _fitted(base: Path) -> tuple[Dataset, KMeansFit]:
+    """Two tracks tables of one variant and the k-means fit over them."""
+    ds = make_dataset(base)
+    add_tracks_variant(ds, FIT_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    return ds, kmeans_fit(ds)
+
+
+def _speed_again(ds: Dataset) -> None:
+    """Run ``speed-angvel`` again under its run id."""
+    _ = run_step(ds, "speed-angvel", None, {})
+
+
+def _record_of(ds: Dataset, result: Result[str]) -> AnyRecord:
+    """The feature record *ds*'s inventory holds of *result*'s run."""
+    assert result.run_id is not None
+    found = inventory(ds, kinds=["feature"]).record(
+        FeatureRunRef(name=result.feature, run_id=result.run_id)
+    )
+    assert found is not None
+    return found
+
+
+def _wire_of(ds: Dataset, result: Result[str]) -> ArtifactWire:
+    """The wire of *result*'s run, as ``mosaic inventory --json`` lists it."""
+    found = inventory(ds, kinds=["feature"])
+    wire = inventory_wire(ds, found, kinds=["feature"])
+    [artifact] = [item for item in wire.artifacts if item.run_id == result.run_id]
+    return artifact
+
+
+def test_a_fit_whose_entry_was_converted_again_names_the_refit(tmp_path: Path) -> None:
+    ds, runs = _fitted(tmp_path / "fitted")
+    reconvert_entry(ds, SEQ_A, composition="converted-again")
+    _speed_again(ds)
+
+    record = _record_of(ds, runs.templates)
+
+    assert record.refit == FitDrift(
+        link_id="", recorded=True, moved=(SEQ_A,), dropped=(), refitted=()
+    )
+    assert record.status == "complete-but-drifted"
+    assert record.drift == (SEQ_A, SEQ_B)
+    assert _wire_of(ds, runs.templates).refit == RefitWire(
+        moved=1,
+        dropped=0,
+        sample=("seq_a",),
+        refitted=(),
+        link_id="",
+        asked=False,
+    )
+
+
+def test_a_fit_whose_templates_were_fitted_again_names_the_field(
+    tmp_path: Path,
+) -> None:
+    ds, runs = _fitted(tmp_path / "fitted")
+    move_tracks(ds, FIT_VARIANT, ("seq_a", "seq_b"))
+    _speed_again(ds)
+    shutil.rmtree(result_run_root(ds, runs.templates))
+    _ = run_step(
+        ds,
+        "extract-templates",
+        [model_reference(runs.speed)],
+        {"n_templates": 20},
+    )
+
+    record = _record_of(ds, runs.fit)
+
+    assert record.refit == FitDrift(
+        link_id="", recorded=True, moved=(), dropped=(), refitted=("templates",)
+    )
+    assert record.status == "complete-but-drifted"
+    assert _wire_of(ds, runs.fit).refit == RefitWire(
+        moved=0, dropped=0, sample=(), refitted=("templates",), link_id="", asked=False
+    )
+
+
+def test_a_fit_whose_inputs_did_not_change_names_no_refit(tmp_path: Path) -> None:
+    ds, runs = _fitted(tmp_path / "fitted")
+
+    for result in (runs.speed, runs.templates, runs.fit):
+        record = _record_of(ds, result)
+        assert record.refit is None
+        assert record.status == "complete"
+        assert _wire_of(ds, result).refit is None
+
+
+def test_a_linked_fit_names_the_link_that_holds_its_record(tmp_path: Path) -> None:
+    source, runs = _fitted(tmp_path / "source")
+    reconvert_entry(source, SEQ_A, composition="converted-again")
+    _speed_again(source)
+    copy = copy_of(source, tmp_path / "copy")
+    link_id = f"source-{source.uuid}"
+
+    record = _record_of(copy, runs.templates)
+
+    assert record.refit == FitDrift(
+        link_id=link_id, recorded=True, moved=(SEQ_A,), dropped=(), refitted=()
+    )
+    assert record.status == "complete-but-drifted"
+    assert _wire_of(copy, runs.templates).refit == RefitWire(
+        moved=1, dropped=0, sample=("seq_a",), refitted=(), link_id=link_id, asked=False
+    )
+    own = _record_of(source, runs.templates).refit
+    assert own is not None
+    assert own.link_id == ""
+
+
+def _convert_seq_a_again(ds: Dataset, composition: str) -> None:
+    """Write the table of ``seq_a`` again under the variant, recording *composition*."""
+    add_tracks_table(
+        ds,
+        FIT_VARIANT,
+        track_table("", "seq_a"),
+        std_format="mosaic_v1",
+        consumed_composition=composition,
+    )
+
+
+def test_a_fit_run_the_copy_holds_names_the_refit_measured_over_the_copy(
+    tmp_path: Path,
+) -> None:
+    source, _ = _fitted(tmp_path / "source")
+    scope = Scope(entries=[SEQ_A, SEQ_B])
+    fit = run_feature(
+        source, ScopedFittingFeature(FitControl()), scope=scope, track=False
+    )
+    copy = copy_of(source, tmp_path / "copy")
+    _convert_seq_a_again(copy, "first-again")
+    own = run_feature(
+        copy,
+        ScopedFittingFeature(FitControl()),
+        scope=scope,
+        refit=True,
+        track=False,
+    )
+    assert own.run_id == fit.run_id
+    _convert_seq_a_again(copy, "second-again")
+
+    record = _record_of(copy, fit)
+
+    assert record.run_root == result_run_root(copy, fit)
+    assert record.refit == FitDrift(
+        link_id="", recorded=True, moved=(SEQ_A,), dropped=(), refitted=()
+    )
+    assert record.status == "complete-but-drifted"
+    assert _record_of(source, fit).refit is None

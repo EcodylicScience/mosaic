@@ -79,6 +79,7 @@ from ..convert_ops import (
 from ..manifest import tracks_table_columns
 from ..tracks_index import AmbiguousTracksVariant, rows_without_tracklets
 from ..inventory.cache import InventoryCache
+from ..inventory.wire import RefitWire, asked_refit, refit_wire
 from ..inventory.model import (
     ArtifactRef,
     ArtifactStatus,
@@ -98,7 +99,8 @@ from ..inventory.model import (
     reclassify,
 )
 from ..artifact_kinds import LINKED_KIND
-from ..index import feature_run_roots
+from ..fit_scope import fitted_by
+from ..index import FitDrift, feature_run_root, feature_run_roots
 from ..inventory.scan import (
     inventory as scan_inventory,
     reportable_universe,
@@ -388,6 +390,13 @@ class PlannedStep:
             what a single-artifact kind -- a trained model, a media derivative --
             says instead, because those are not addressed by entry.
         drift: Entries whose recorded sources have moved underneath the run.
+        refit: What changed under the step's fit since it was fitted, ``None``
+            while the inputs of its fit are unchanged and no request asks for a
+            refit. A step reading ``complete-but-drifted`` for it fits again over
+            its whole target. A pinned or bound step names it and keeps serving
+            its run. A step the request asks to fit again (``Request.refit``)
+            names it ``asked``, is not complete and is asked for its whole
+            target, until its run records a fit by the request's attempt.
         status: Derived from coverage and consistency, never stored anywhere,
             or :data:`~.model.BOUND_STATUS` for a step the request binds to a run.
         finished: Whether the artifact records having finished. Beside the status
@@ -432,6 +441,7 @@ class PlannedStep:
         default_factory=lambda: Coverage[Entry](frozenset(), frozenset())
     )
     drift: tuple[Entry, ...] = ()
+    refit: RefitWire | None = None
     status: StepStatus = "absent"
     finished: bool = False
     reason: Reason | None = None
@@ -452,9 +462,18 @@ class PlannedStep:
         return _drift_work(self.kind, self.status, self.drift, self.coverage.target)
 
     @property
+    def refit_asked(self) -> bool:
+        """Whether the request asks this step to fit again and it has not yet."""
+        return self.refit is not None and self.refit.asked
+
+    @property
     def is_complete(self) -> bool:
         """Is there nothing left for this step to compute?"""
-        return self.status in COMPLETE_STATUSES and not self.drift_work
+        return (
+            self.status in COMPLETE_STATUSES
+            and not self.drift_work
+            and not self.refit_asked
+        )
 
     @property
     def has_complete_run(self) -> bool:
@@ -549,6 +568,9 @@ class Plan:
             (``Request.pins``). They are not executed, and each reads complete
             over any scope when its run has finished. The fingerprint covers
             each with its run id when there are any.
+        refit: The ids of the steps a request asks to fit again
+            (``Request.refit``), as it names them. The fingerprint covers them
+            when there are any.
         request_scope: The selector the plan was asked for, ``None`` for none.
             Kept for :func:`~.heldout.deferred_fit_cautions`, which cannot read
             groups out of a scope that selects no entries yet. Not part of the
@@ -600,6 +622,7 @@ class Plan:
     reach_cautions: tuple[Problem, ...] = ()
     bound: frozenset[str] = frozenset()
     pinned: frozenset[str] = frozenset()
+    refit: frozenset[str] = frozenset()
     request_scope: Scope | None = None
     tracks_run_id: str | None = None
     locked: tuple[str, ...] = ()
@@ -844,6 +867,7 @@ def plan_pipeline(
     tracks_run_id: str | None = None,
     tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
+    refit: Iterable[str] | None = None,
     applies_request_id: str | None = None,
     ignore_unavailable: bool = False,
     revalidate: bool = True,
@@ -915,6 +939,13 @@ def plan_pipeline(
             of its step, the step reads complete over any scope when its run
             has finished, and the steps below it derive their identity from
             the run.
+        refit: The steps to fit again under their run ids, by step id. ``None``
+            falls back to the request's. Each feature step it names that fits,
+            and that neither *bind* nor *pins* names, is asked for its whole
+            target and is not complete, until its run records a fit by the
+            attempt the request assigns it. A name that is not a feature step
+            of the recipe, a step that fits nothing (as one given a ``model``
+            applies it) and a bound or pinned step are problems at ``refit``.
         applies_request_id: The finished request whose fit this plan applies.
             Its pins, its tracks variant and its locked steps are derived from
             that request (:func:`~.apply.derive_applied_fit`). ``None`` takes
@@ -1011,6 +1042,10 @@ def plan_pipeline(
             locked = tuple(request.locked) if request is not None else ()
         if pins is None:
             pins = request.pins if request is not None else {}
+        if refit is None:
+            refit = request.refit if request is not None else ()
+        asked = frozenset(refit)
+        executions = request.step_executions if request is not None else {}
         # A bound or pinned step is not executed: it reads no tracks and fits
         # nothing.
         exempt = frozenset(bind) | frozenset(pins)
@@ -1092,6 +1127,19 @@ def plan_pipeline(
                 pair_read=pair_reads.get(step.id),
                 tags=tags,
             )
+            if (
+                isinstance(step, FeatureStepSpec)
+                and step.id in asked
+                and step.id not in exempt
+            ):
+                step_plan = _with_asked_refit(
+                    ds,
+                    step,
+                    step_plan,
+                    catalog=catalog,
+                    target=step_entries,
+                    execution_id=executions.get(step.id, ""),
+                )
             if isinstance(step, FeatureStepSpec):
                 findings.problems.extend(_shared_run_problems(recipe, step, resolved))
                 for found in _definition_model_run_problems(
@@ -1205,6 +1253,11 @@ def plan_pipeline(
             )
         )
         problems.extend(_bind_problems(ds, recipe, planned, bind))
+        problems.extend(
+            _refit_problems(
+                recipe, planned, asked, catalog=catalog, bind=bind, pins=pins
+            )
+        )
         unreachable = _link_unreachable_problems(ds, steps)
         refused_for_links = {found.step for found in unreachable}
         problems.extend(unreachable)
@@ -1238,6 +1291,7 @@ def plan_pipeline(
             reach_cautions=reached.cautions,
             bound=frozenset(bind),
             pinned=frozenset(step_id for step_id in pins if step_id in planned),
+            refit=asked,
             request_scope=narrowing,
             tracks_run_id=tracks_run_id,
             locked=locked,
@@ -1435,6 +1489,7 @@ def _plan_step(
         coverage=view.coverage,
         status=view.status,
         drift=view.drift,
+        refit=view.refit_wire,
         finished=view.finished,
         reason=_reason_for(base, parents, planned, view, kind=base.kind),
         pairs=pair_read,
@@ -1479,6 +1534,7 @@ def _bound_step(
         artifact=pinned,
         coverage=view.coverage,
         drift=view.drift,
+        refit=view.refit_wire,
         status=BOUND_STATUS,
         finished=view.finished,
     )
@@ -1533,6 +1589,105 @@ def _bind_problems(
                 f"which this dataset does not hold"
             )
             found.append(Problem(step_id, where, message))
+    return found
+
+
+def _fits_again(
+    step: FeatureStepSpec, planned: PlannedStep, catalog: DeclarationCatalog
+) -> bool:
+    """Whether *step* records the inputs of its fit, which a refit needs.
+
+    Read off the built feature, as ``records_fit_inputs`` reads it, and off the
+    class and the step's params (:func:`~.resolve.declared_fit`) for a step whose
+    identity is unresolved, which a feature that could not be built leaves.
+    """
+    if planned.run_id is not None:
+        return planned.fits or planned.scope_dependent
+    fits, scope_dependent = declared_fit(
+        step.feature, step.params, catalog[step.feature]
+    )
+    return fits or scope_dependent
+
+
+def _with_asked_refit(
+    ds: Dataset,
+    step: FeatureStepSpec,
+    planned: PlannedStep,
+    *,
+    catalog: DeclarationCatalog,
+    target: frozenset[Entry],
+    execution_id: str,
+) -> PlannedStep:
+    """*planned* as a request asking it to fit again plans it.
+
+    The step names its refit ``asked`` and is asked for its whole *target*: every
+    entry is computed from the new fit. A step that fits nothing is
+    left as it is, and :func:`_refit_problems` refuses it. So is a step whose run
+    records a fit by *execution_id*, the attempt the request assigns it: the
+    refit is made, and the step reads as the dataset holds it. A retry of that
+    attempt then loads the fit, and the steps below it read it complete.
+    """
+    if not _fits_again(step, planned, catalog):
+        return planned
+    if (
+        execution_id
+        and planned.run_id is not None
+        and fitted_by(
+            feature_run_root(ds, planned.storage_name, planned.run_id), execution_id
+        )
+    ):
+        return planned
+    return replace(
+        planned,
+        refit=asked_refit(planned.refit),
+        spec=replace(planned.spec, entries=_named(sorted(target))),
+    )
+
+
+def _refit_problems(
+    recipe: Recipe,
+    planned: Mapping[str, PlannedStep],
+    asked: frozenset[str],
+    *,
+    catalog: DeclarationCatalog,
+    bind: Mapping[str, BoundRef],
+    pins: Mapping[str, str],
+) -> list[Problem]:
+    """What is wrong with the steps a request asks to fit again, at ``refit``.
+
+    Each must be a feature step of the recipe that fits. A name that is no step
+    is a problem of the graph, its name quoted in the message, as a bind's is. A
+    bound or pinned step serves its run and fits nothing.
+    """
+    found: list[Problem] = []
+    steps = {step.id: step for step in recipe.steps}
+    for step_id in sorted(asked):
+        step = steps.get(step_id)
+        if step is None:
+            message = f"refit {step_id!r} names no step of the recipe"
+            found.append(Problem("", "refit", message))
+            continue
+        if isinstance(step, OpStepSpec):
+            message = (
+                f"{step.kind} is an op step, and only a feature step that fits "
+                f"can be fitted again"
+            )
+        elif step_id in bind or step_id in pins:
+            held, field_name = (
+                ("binds", "bind") if step_id in bind else ("pins", "pins")
+            )
+            message = (
+                f"the request {held} this step to a run, which the step serves "
+                f"without fitting. Leave it out of refit or out of {field_name}"
+            )
+        elif not _fits_again(step, planned[step_id], catalog):
+            message = (
+                f"{step.feature} fits nothing here, as a step given a model "
+                f"applies it, and cannot be fitted again"
+            )
+        else:
+            continue
+        found.append(Problem(step_id, "refit", message))
     return found
 
 
@@ -1640,6 +1795,7 @@ def _pinned_view(
         status="complete",
         drift=record.drift,
         finished=True,
+        refit=record.refit,
     )
 
 
@@ -3026,6 +3182,15 @@ class ArtifactView:
     Filled for a feature run and a tracks variant, and empty for every other
     kind.
     """
+    refit: FitDrift | None = None
+    """What changed under the run's fit, ``None`` while the inputs of its fit
+    are unchanged, and for every kind but a feature run.
+    """
+
+    @property
+    def refit_wire(self) -> RefitWire | None:
+        """:attr:`refit` as a plan names it, which no request asked for."""
+        return None if self.refit is None else refit_wire(self.refit, asked=False)
 
     @property
     def held(self) -> int:
@@ -3116,6 +3281,7 @@ def coverage_against(
         drift=record.drift,
         finished=bool(record.finished_at),
         linked_only=linked_only,
+        refit=record.refit,
     )
 
 

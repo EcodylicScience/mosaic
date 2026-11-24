@@ -24,7 +24,9 @@ from mosaic.core.pipeline.dataset_indexes import feature_storages, label_kinds
 from mosaic.core.pipeline.identity_scheme import read_identity_scheme
 from mosaic.core.pipeline.index import (
     DriftReads,
+    FitDrift,
     drifted_entries,
+    fit_drift,
     feature_index,
     feature_index_path,
     feature_run_root,
@@ -443,6 +445,18 @@ def _drift_reads(ds: Dataset, reader: IndexReader) -> DriftReads:
     )
 
 
+def _drifted_fit(
+    ds: Dataset,
+    name: str,
+    run_id: str,
+    params: RunParams | None,
+    drift_reads: DriftReads,
+) -> FitDrift | None:
+    """What changed under the fit of a run, or ``None`` when its fit has not drifted."""
+    drift = fit_drift(ds, name, run_id, params, drift_reads)
+    return drift if drift is not None and drift.drifted else None
+
+
 def _feature_runs(
     ds: Dataset,
     reader: IndexReader,
@@ -470,7 +484,15 @@ def _feature_runs(
                 covers_all=on_disk.covers_all,
             )
             started, finished_at, finished = finish_state(run_rows)
-            drift = drifted_entries(ds, name, run_id, read.params, drift_reads)
+            refit = _drifted_fit(ds, name, run_id, read.params, drift_reads)
+            drift = drifted_entries(
+                ds,
+                name,
+                run_id,
+                read.params,
+                drift_reads,
+                fit_drifted=refit is not None,
+            )
             records.append(
                 ArtifactRecord[Entry](
                     ref=FeatureRunRef(name=name, run_id=run_id),
@@ -486,6 +508,7 @@ def _feature_runs(
                     orphan_rows=_orphan_rows(coverage, rows, files),
                     orphan_files=files - rows,
                     drift=drift,
+                    refit=refit,
                     identity_scheme=read_identity_scheme(run_root),
                     started_at=started,
                     finished_at=finished_at,
@@ -917,14 +940,22 @@ def _merged_feature_records(
             remeasure = Remeasure(
                 target=feature_run_target(target, first.params, rows),
                 drift=first.drift,
+                refit=first.refit,
             )
         else:
             read = read_run_params(params_root)
+            refit = _drifted_fit(ds, first.name, first.run_id, read.params, drift_reads)
             remeasure = Remeasure(
                 target=feature_run_target(target, read.params, rows),
                 drift=drifted_entries(
-                    ds, first.name, first.run_id, read.params, drift_reads
+                    ds,
+                    first.name,
+                    first.run_id,
+                    read.params,
+                    drift_reads,
+                    fit_drifted=refit is not None,
                 ),
+                refit=refit,
                 params=read,
             )
         records.append(

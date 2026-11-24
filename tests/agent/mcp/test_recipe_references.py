@@ -12,12 +12,11 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
-from mosaic.agent.mcp.outputs import PatchedRecipe, StepSuggestions
+from mosaic.agent.mcp.outputs import PatchedRecipe, PlanPage, StepSuggestions
 from mosaic.agent.mcp.spec import MAX_PATCH_OPS, SubmittedPipeline, call_tool
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
-    PlanWire,
     ValidationReport,
     load_request,
     recipe_path,
@@ -215,12 +214,12 @@ def test_a_plan_by_digest_is_the_plan_of_the_document_and_its_call_is_small(
         "step_entries": {"templates_4": TRAIN, "templates_6": TRAIN},
     }
 
-    referenced = _call(backend, "plan_recipe", PlanWire, **by_reference)
-    sent = _call(backend, "plan_recipe", PlanWire, **{**by_reference, "recipe": RECIPE})
+    referenced = _call(backend, "plan_recipe", PlanPage, **by_reference)
+    sent = _call(backend, "plan_recipe", PlanPage, **{**by_reference, "recipe": RECIPE})
     named = _call(
         backend,
         "plan_recipe",
-        PlanWire,
+        PlanPage,
         **{**by_reference, "recipe": {"saved": "split"}},
     )
 
@@ -234,7 +233,7 @@ def test_planning_an_inline_recipe_saves_nothing(
 ) -> None:
     pipelines = split.base_dir / ".mosaic" / "pipelines"
 
-    plan = _call(backend, "plan_recipe", PlanWire, dataset=_uuid(split), recipe=RECIPE)
+    plan = _call(backend, "plan_recipe", PlanPage, dataset=_uuid(split), recipe=RECIPE)
 
     assert not pipelines.exists() or not list(pipelines.rglob("*"))
     assert not recipe_path(split.base_dir, plan.recipe_digest).exists()
@@ -262,7 +261,7 @@ def test_a_patched_recipe_is_submitted_by_its_digest(
         "recipe": {"digest": patched.digest},
         "step_entries": {"templates_4": TRAIN, "templates_6": TRAIN},
     }
-    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    plan = _call(backend, "plan_recipe", PlanPage, **arguments)
 
     submitted = _call(
         backend,
@@ -304,7 +303,7 @@ def test_a_recipe_file_is_submitted_in_one_call_and_an_edit_after_does_not_chang
         "recipe": {"path": "split.json"},
         "step_entries": {"templates_4": TRAIN, "templates_6": TRAIN},
     }
-    sent = _call(backend, "plan_recipe", PlanWire, **{**arguments, "recipe": RECIPE})
+    sent = _call(backend, "plan_recipe", PlanPage, **{**arguments, "recipe": RECIPE})
 
     submitted = _call(backend, "submit_pipeline", SubmittedPipeline, **arguments)
     edited = {
@@ -313,7 +312,7 @@ def test_a_recipe_file_is_submitted_in_one_call_and_an_edit_after_does_not_chang
         "steps": [{"id": "speed", "type": "feature", "feature": "speed-angvel"}],
     }
     _ = (recipes / "split.json").write_text(json.dumps(edited), encoding="utf-8")
-    replanned = _call(backend, "plan_recipe", PlanWire, **arguments)
+    replanned = _call(backend, "plan_recipe", PlanPage, **arguments)
 
     assert submitted.recipe_digest == sent.recipe_digest
     assert submitted.plan_fingerprint == sent.fingerprint
@@ -524,7 +523,7 @@ def test_the_library_scope_forms_and_the_bare_list_are_accepted(
         "entries": entries,
         "step_entries": {"templates_4": step_entries},
     }
-    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    plan = _call(backend, "plan_recipe", PlanPage, **arguments)
 
     submitted = _call(
         backend,

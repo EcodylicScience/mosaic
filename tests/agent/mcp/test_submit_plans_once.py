@@ -16,12 +16,12 @@ import pytest
 
 import mosaic.core.pipeline.graph as graph_package
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.outputs import PlanPage
 from mosaic.agent.mcp.spec import DatasetChange, SubmittedPipeline, call_tool
 from mosaic.core.pipeline.cancel import read_request
 from mosaic.core.pipeline.definitions.scope import clear_definition_caches
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import PlanWire
 from tests.helpers import (
     MINIMAL_NAME,
     MINIMAL_SOURCE,
@@ -83,7 +83,7 @@ def _fingerprint(
     plan = call_tool(
         backend, "plan_recipe", {"dataset": dataset.manifest.uuid, "recipe": recipe}
     )
-    assert isinstance(plan, PlanWire), plan
+    assert isinstance(plan, PlanPage), plan
     return plan.fingerprint
 
 
@@ -194,7 +194,7 @@ def test_a_moved_current_between_plan_and_submit_keeps_the_planned_digest(
         "plan_recipe",
         {"dataset": defined.manifest.uuid, "recipe": DEFINITION_RECIPE},
     )
-    assert isinstance(planned, PlanWire), planned
+    assert isinstance(planned, PlanPage), planned
     first = hashlib.sha256(MINIMAL_SOURCE.encode("utf-8")).hexdigest()
     edited: list[str] = []
 
@@ -243,7 +243,7 @@ def test_a_moved_current_after_the_plan_refuses_its_fingerprint(
         "plan_recipe",
         {"dataset": defined.manifest.uuid, "recipe": DEFINITION_RECIPE},
     )
-    assert isinstance(planned, PlanWire), planned
+    assert isinstance(planned, PlanPage), planned
     _ = _define_edit(defined)
 
     refused = call_tool(

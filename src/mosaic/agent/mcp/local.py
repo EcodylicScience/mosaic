@@ -1930,7 +1930,7 @@ def _plan_page(wire: PlanWire, limit: int | None, cursor: str | None) -> PlanPag
         ToolFailure: *cursor* names no step of this plan, or was written for a
             plan with another fingerprint.
     """
-    from .outputs import PlanPage
+    from .outputs import PlanPage, PlanPageStep
 
     start = 0
     if cursor is not None:
@@ -1947,7 +1947,7 @@ def _plan_page(wire: PlanWire, limit: int | None, cursor: str | None) -> PlanPag
         fingerprint=wire.fingerprint,
         scope_size=wire.scope_size,
         complete=wire.complete,
-        steps=wire.steps[start:stop],
+        steps=tuple(PlanPageStep.of(step) for step in wire.steps[start:stop]),
         problems=wire.problems if first else (),
         cautions=wire.cautions if first else (),
         open_requests=wire.open_requests if first else (),

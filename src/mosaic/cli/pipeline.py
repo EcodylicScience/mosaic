@@ -208,6 +208,21 @@ PinOption = Annotated[
     ),
 ]
 
+RefitOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--refit",
+        metavar="STEP",
+        help=(
+            "Fit this feature step again under its run id, though its inputs "
+            "did not change (repeatable). Each entry it is asked for is then "
+            "computed from the new fit. Not for a step that applies a model, "
+            "or one given --pin. Recorded on the request a submission makes: "
+            "give it to the plan and again to the submission."
+        ),
+    ),
+]
+
 AppliesRequestOption = Annotated[
     str | None,
     typer.Option(
@@ -435,6 +450,7 @@ def plan_command(
     assume_added: AssumeAddedOption = None,
     tracks_run_id: TracksRunIdOption = None,
     pin: PinOption = None,
+    refit: RefitOption = None,
     applies_request: AppliesRequestOption = None,
     as_json: JsonOption = False,
 ) -> None:
@@ -449,6 +465,7 @@ def plan_command(
     tracks read, which an entry of two variants requires. ``--pin`` serves a
     fitted step from a finished run, and ``--applies-request`` reuses the fit of
     a finished request; the steps it locks are listed with the plan.
+    ``--refit`` fits a step again over its whole target, named below the table.
     ``--step-scope`` narrows one step, as a train/test split narrows the fit
     to the training groups and the scoring to the test groups. ``--tag
     NAME=VALUE`` selects the entries holding a sequence tag, from the latest
@@ -494,6 +511,7 @@ def plan_command(
                     tracks_run_id=tracks_run_id,
                     tag_revision=tag_revision,
                     pins=pins or None,
+                    refit=refit or (),
                     applies_request_id=applies_request_id,
                 )
         except RecipeRefused as refusal:
@@ -887,6 +905,7 @@ def run_command(
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
     pin: PinOption = None,
+    refit: RefitOption = None,
     applies_request: AppliesRequestOption = None,
     expect_plan: Annotated[
         str | None,
@@ -934,6 +953,9 @@ def run_command(
     latest revision of the dataset's tag table. The request records those
     entries and the revision read.
 
+    ``--refit STEP`` fits a feature step again under its run id, once, and
+    computes each of its entries from the new fit. The request records it.
+
     ``--workers`` computes several entries of each parallelizable step at once.
     It belongs to the machine and changes neither a run's identity nor its
     outputs, so ``--request`` accepts it where it rejects the options above.
@@ -972,14 +994,15 @@ def run_command(
             or retire
             or tracks_run_id is not None
             or pin
+            or refit
             or applies_request is not None
             or expect_plan is not None
         ):
             fail(
                 "--entry, --group, --tag, --step-scope, --allow-partial, --owner, "
-                "--cleanup, --retire, --tracks-run-id, --pin, --applies-request "
-                "and --expect-plan are recorded on a request at submit, and are "
-                "not used with --request."
+                "--cleanup, --retire, --tracks-run-id, --pin, --refit, "
+                "--applies-request and --expect-plan are recorded on a request at "
+                "submit, and are not used with --request."
             )
         _run_request(
             manifest,
@@ -1030,6 +1053,7 @@ def run_command(
                     tracks_run_id=tracks_run_id,
                     tag_revision=tag_revision,
                     pins=pins or None,
+                    refit=refit or (),
                     applies_request_id=applies_request_id,
                 )
                 submitted = recorded.request
@@ -1271,6 +1295,7 @@ def submit_command(
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
     pin: PinOption = None,
+    refit: RefitOption = None,
     applies_request: AppliesRequestOption = None,
     as_json: JsonOption = False,
 ) -> None:
@@ -1287,7 +1312,9 @@ def submit_command(
 
     ``--pin STEP=RUN_ID`` serves a fitted step from a finished run, and
     ``--applies-request RID`` reuses the fit of a finished request over other
-    entries. The request records the pins and the apply.
+    entries. The request records the pins and the apply. ``--refit STEP``
+    fits a feature step again under its run id, once, and the request records
+    it: give it to the plan whose fingerprint ``--expect-plan`` names.
 
     ``--tag NAME=VALUE`` submits over the entries holding a sequence tag, from
     the latest revision of the dataset's tag table. The request records those
@@ -1330,6 +1357,7 @@ def submit_command(
                 tracks_run_id=tracks_run_id,
                 tag_revision=tag_revision,
                 pins=pins or None,
+                refit=refit or (),
                 applies_request_id=applies_request_id,
             )
     except ClassifiedError as error:
@@ -1760,8 +1788,9 @@ def _emit_plan(
     """Render a plan as its fingerprint and a table, or as the JSON an API serves.
 
     Each of the plan's cautions, those *extra_cautions* add and of *open_requests*
-    is noted below the table, followed by the *retirable* recipes of a plan asked
-    for a cleanup.
+    is noted below the table, and so is each step's narrowing and the refit of
+    each step whose fit is due one, followed by the *retirable* recipes of a plan
+    asked for a cleanup.
     """
     from mosaic.core.pipeline.graph import plan_wire
 
@@ -1804,6 +1833,8 @@ def _emit_plan(
                 f"note: step {planned.step_id!r} is narrowed to {selector}, "
                 f"{len(planned.coverage.target)} of {len(plan.scope)} entries"
             )
+        if planned.refit is not None:
+            log(f"refit: step {planned.step_id!r}: {planned.refit.note()}")
     if wire.cleanup is not None:
         superseded = [run for step in wire.steps for run in step.superseded]
         if superseded:

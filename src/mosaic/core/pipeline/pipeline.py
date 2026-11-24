@@ -14,7 +14,7 @@ Example
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, cast
@@ -29,12 +29,15 @@ from .storage_names import derive_storage_name
 from .parquet_reader import ParquetFooterMemo
 from .inventory.scan import entry_universe, narrow_target, run_coverage
 from .index import (
+    DriftReads,
     drifted_entries,
     feature_index,
     feature_index_path,
     feature_run_root,
     feature_run_roots,
+    fit_drift,
     list_feature_runs,
+    refit_summary,
 )
 from .inventory.params import read_linked_run_params
 from .resolve import resolve_references
@@ -186,12 +189,31 @@ def _step_scope(kwargs: Mapping[str, object]) -> Scope:
     )
 
 
-def _drifted(
-    dataset: Dataset, storage: str, run_id: str
-) -> tuple[tuple[str, str], ...]:
-    """The entries of a run whose sources moved, over every channel it recorded."""
+@dataclass(frozen=True)
+class _RunDrift:
+    """What moved under a run since it was written.
+
+    Attributes:
+        entries: The entries whose sources moved, over every channel the run
+            recorded. A fit that is due a refit moves every entry.
+        refit: What changed under the run's fit, ``""`` for a run whose fit
+            read nothing that has changed and for a run with no fit.
+    """
+
+    entries: tuple[tuple[str, str], ...]
+    refit: str
+
+
+def _run_drift(dataset: Dataset, storage: str, run_id: str) -> _RunDrift:
+    """What moved under a run, read once for its entries and its fit."""
     params = read_linked_run_params(dataset, storage, run_id).params
-    return drifted_entries(dataset, storage, run_id, params)
+    reads = DriftReads(dataset)
+    fit = fit_drift(dataset, storage, run_id, params, reads)
+    due = fit is not None and fit.drifted
+    return _RunDrift(
+        entries=drifted_entries(dataset, storage, run_id, params, reads, due),
+        refit=refit_summary(fit) if fit is not None and due else "",
+    )
 
 
 def _frame_bound(x: object) -> int | None:
@@ -508,6 +530,7 @@ class Pipeline:
                         "runs": "-",
                         "cached": "-" if not info["stale"] else "stale",
                         "drift": "-",
+                        "refit": "-",
                         "modified": "-",
                     }
                 )
@@ -554,9 +577,9 @@ class Pipeline:
             # entries' sources moved. A drifted run is complete and loadable,
             # and `run` recomputes the drifted entries.
             drift = (
-                _drifted(dataset, info["storage_name"], expected)
+                _run_drift(dataset, info["storage_name"], expected)
                 if (expected := str(info["expected_run_id"]))
-                else ()
+                else _RunDrift(entries=(), refit="")
             )
             row: dict[str, object] = {
                 "step": step.name,
@@ -565,7 +588,8 @@ class Pipeline:
                 "n_seq": n_seq,
                 "runs": n_runs,
                 "cached": cached_display,
-                "drift": len(drift) or "",
+                "drift": len(drift.entries) or "",
+                "refit": drift.refit,
                 "modified": modified,
             }
             if "error" in info:
@@ -581,6 +605,7 @@ class Pipeline:
         loaded: list[str] = []
         missing: list[tuple[str, str]] = []
         drifted: list[tuple[str, int]] = []
+        refits: list[tuple[str, str]] = []
 
         for info in resolved:
             step = info["step"]
@@ -597,11 +622,13 @@ class Pipeline:
                 # its run_id still describes: superseded is not invalid, and
                 # loading it keeps a comparison across source revisions
                 # possible. `run` recomputes the drifted entries.
-                moved = _drifted(
+                moved = _run_drift(
                     dataset, info["storage_name"], str(info["expected_run_id"])
                 )
-                if moved:
-                    drifted.append((step.name, len(moved)))
+                if moved.entries:
+                    drifted.append((step.name, len(moved.entries)))
+                if moved.refit:
+                    refits.append((loaded[-1], moved.refit))
             else:
                 reason = "stale (upstream changed)" if info["stale"] else "not cached"
                 missing.append((step.name, reason))
@@ -617,19 +644,36 @@ class Pipeline:
                 f"{name} ({count} sequence(s))" for name, count in drifted
             )
             print(f"  Drift: source has moved under {moved_by_step}")
+        for name, summary in refits:
+            print(f"  Refit: {name} ({summary})")
         return self.results
 
     def run(
         self,
         dataset: Dataset,
         force_from: str | None = None,
+        refit: Iterable[str] = (),
     ) -> dict[str, Result]:
         """Execute the pipeline, skipping steps with cached results.
+
+        A fit whose inputs changed since it was fitted is fitted again without
+        being asked. A step whose ``run_kwargs`` hold ``refit=True`` is run and
+        fitted again on every call.
 
         Parameters
         ----------
         force_from : str, optional
             Step name from which to force overwrite (and all downstream).
+        refit : iterable of str, optional
+            Names of feature steps to run and fit again under their run ids
+            rather than serve from the cache. A step that fits nothing runs
+            as it would unasked.
+
+        Raises
+        ------
+        ValueError
+            *force_from* is not a step, or a name in *refit* is not a feature
+            step.
         """
         resolved = self._resolve_step_cache(dataset)
         cached_map: dict[str, dict] = {
@@ -643,6 +687,15 @@ class Pipeline:
             if force_from not in known:
                 msg = f"force_from={force_from!r} is not a known step. Available: {sorted(known)}"
                 raise ValueError(msg)
+
+        refit_names = set(refit)
+        feature_steps = {s.name for s in self.steps if isinstance(s, FeatureStep)}
+        if not refit_names <= feature_steps:
+            msg = (
+                f"refit={sorted(refit_names - feature_steps)!r} is not a feature "
+                f"step. Available: {sorted(feature_steps)}"
+            )
+            raise ValueError(msg)
 
         self.results = {}
         force_set: set[str] = self._downstream_of(force_from) if force_from else set()
@@ -658,10 +711,14 @@ class Pipeline:
 
             # Served only when complete, drift-free and reading nothing that
             # ran in this call. Otherwise ``run_feature`` recomputes the moved
-            # entries and serves the rest.
+            # entries and serves the rest. A step asked to fit again is run.
             info = cached_map.get(step.name, {})
+            kwargs = {**self.default_run_kwargs, **step.run_kwargs}
+            if step.name in refit_names:
+                kwargs["refit"] = True
             if (
                 step.name not in force_set
+                and not ("refit" in kwargs and kwargs["refit"])
                 and info.get("cached")
                 and not ran.intersection(step.input_names)
             ):
@@ -670,7 +727,7 @@ class Pipeline:
                     run_id=info["expected_run_id"],
                 )
                 run_id = cached.run_id or ""
-                if not _drifted(dataset, cached.feature, run_id):
+                if not _run_drift(dataset, cached.feature, run_id).entries:
                     self.results[step.name] = cached
                     name = step.feature_cls.__name__
                     print(f"  [{step.name}] {name} -> {run_id} (cached)")
@@ -684,7 +741,6 @@ class Pipeline:
                 input_items = ("tracks",)
 
             feature = build_step_feature(step, input_items)
-            kwargs = {**self.default_run_kwargs, **step.run_kwargs}
             if step.name in force_set:
                 kwargs["overwrite"] = True
 

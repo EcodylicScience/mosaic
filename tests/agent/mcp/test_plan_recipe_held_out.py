@@ -11,11 +11,11 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.outputs import PlanPage
 from mosaic.agent.mcp.spec import call_tool
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import PlanWire
 from tests.helpers import RecordingStarter, calms21_dataset
 
 RECIPE: dict[str, JsonValue] = {
@@ -60,13 +60,13 @@ def backend(dataset: Dataset) -> LocalBackend:
     )
 
 
-def _plan(backend: LocalBackend, dataset: Dataset, **arguments: object) -> PlanWire:
+def _plan(backend: LocalBackend, dataset: Dataset, **arguments: object) -> PlanPage:
     answered = call_tool(
         backend,
         "plan_recipe",
         {"dataset": dataset.manifest.uuid, "recipe": RECIPE, **arguments},
     )
-    assert isinstance(answered, PlanWire), answered
+    assert isinstance(answered, PlanPage), answered
     return answered
 
 

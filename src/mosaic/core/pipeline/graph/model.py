@@ -683,6 +683,15 @@ class Request(GraphModel):
     request without one reads in an older mosaic.
     """
 
+    refit: list[str] = Field(default_factory=list)
+    """The steps to fit again under their run ids, by step id.
+
+    A refit is the intent of one submission, and the recipe holds no such key. Each
+    named step is a feature step that fits, neither bound nor pinned, and fits once
+    under the execution id the request assigns it. Left out of the request file
+    when empty, and a request without one then reads in an older mosaic.
+    """
+
     definitions: dict[str, str] = Field(default_factory=dict)
     """The full digest that each bare ``def:<name>`` step was planned at, by name.
 
@@ -779,6 +788,12 @@ class Request(GraphModel):
                     f"step {step_id!r} is both bound and pinned. A bind replaces "
                     f"the step's inputs and a pin keeps them; give it one of the two"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _refit_names_steps(self) -> Self:
+        if any(not step_id.strip() for step_id in self.refit):
+            raise ValueError("refit holds an empty step id")
         return self
 
     def step_scope(self, step_id: str) -> Scope | None:

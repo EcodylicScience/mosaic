@@ -81,6 +81,7 @@ from tests.helpers import (
     drifted,
     index_cells,
     kmeans_apply,
+    kmeans_apply_feature,
     kmeans_fit,
     kmeans_fit_and_apply,
     make_dataset,
@@ -1628,8 +1629,10 @@ def _labels_of(ds: Dataset, entry: Entry) -> Path:
     return ds.resolve_path(str(path))
 
 
-def _run_over(ds: Dataset, spec: StepSpec, scope: Scope) -> Result[str]:
-    """Run the feature step *spec* over *scope*."""
+def _run_over(
+    ds: Dataset, spec: StepSpec, scope: Scope, *, refit: bool = False
+) -> Result[str]:
+    """Run the feature step *spec* over *scope*, fitting it again when *refit*."""
     from mosaic.core.pipeline.graph.resolve import build_step_feature
 
     return run_feature(
@@ -1639,6 +1642,7 @@ def _run_over(ds: Dataset, spec: StepSpec, scope: Scope) -> Result[str]:
         tracks_run_id=spec.tracks_run_id,
         labels_run_id=spec.labels_run_id,
         track=False,
+        refit=refit,
     )
 
 
@@ -1785,3 +1789,160 @@ def test_a_tuning_asked_for_the_test_entries_fits_again_over_its_fold_entries(
     assert now.execution_id != was.execution_id
     assert _recorded_entries(now) == list(TRAIN_ENTRIES)
     assert "t1" in model_cells(ds, tune)
+
+
+# --- fitting again on request --------------------------------------------------
+
+
+UNRECORDED: Final = "records no inputs of its fit"
+"""The words of the line a run prints when its fit records no inputs."""
+
+
+def _unrecorded_line(feature: str, run_id: str | None) -> str:
+    """The line a run of *feature* prints when the fit of *run_id* records no inputs."""
+    return (
+        f"[feature:{feature}] run {run_id} records no inputs of its fit, so a change "
+        "to them goes undetected: run the step with --refit to fit it again and "
+        "record them"
+    )
+
+
+def _forget_inputs(root: Path, *, whole: bool) -> None:
+    """Leave the fit in *root* as one saved before its record: no record, or no inputs."""
+    record = root / FIT_SCOPE_NAME
+    if whole:
+        record.unlink()
+        return
+    document = json.loads(record.read_text(encoding="utf-8"))
+    del document["fit_inputs"]
+    _ = record.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _scoped_fit(
+    ds: Dataset,
+    control: FitControl,
+    *,
+    overwrite: bool = False,
+    refit: bool = False,
+    execution_id: str | None = None,
+) -> Result[str]:
+    """Run :class:`ScopedFittingFeature` over *ds*."""
+    return run_feature(
+        ds,
+        ScopedFittingFeature(control),
+        overwrite=overwrite,
+        refit=refit,
+        execution_id=execution_id,
+        track=False,
+    )
+
+
+@pytest.mark.parametrize("whole", [False, True], ids=["no_inputs", "no_record"])
+def test_a_fit_saved_before_its_record_is_served_with_a_warning_until_it_is_refit(
+    tracked: Dataset, capsys: pytest.CaptureFixture[str], whole: bool
+) -> None:
+    control = FitControl()
+    first = _scoped_fit(tracked, control)
+    _forget_inputs(result_run_root(tracked, first), whole=whole)
+    line = _unrecorded_line(ScopedFittingFeature.name, first.run_id)
+    _ = capsys.readouterr()
+
+    served = _scoped_fit(tracked, control)
+
+    assert control.fits == 1
+    assert served.run_id == first.run_id
+    err = capsys.readouterr().err
+    assert line in err
+    assert err.count(UNRECORDED) == 1
+
+    overwritten = _scoped_fit(tracked, control, overwrite=True)
+
+    assert control.fits == 1
+    assert overwritten.run_id == first.run_id
+    assert capsys.readouterr().err.count(UNRECORDED) == 1
+
+    refitted = _scoped_fit(tracked, control, refit=True)
+
+    assert control.fits == 2
+    assert refitted.run_id == first.run_id
+    assert UNRECORDED not in capsys.readouterr().err
+    now = _record(tracked, refitted)
+    assert now.execution_id == refitted.execution_id
+    assert now.inputs == _cells_now(tracked, refitted, BOTH)
+
+    _ = _scoped_fit(tracked, control)
+
+    assert control.fits == 2
+    assert UNRECORDED not in capsys.readouterr().err
+
+
+def test_a_refit_asked_again_under_the_execution_id_that_refit_loads_its_fit(
+    tracked: Dataset,
+) -> None:
+    control = FitControl()
+    first = _scoped_fit(tracked, control)
+    refitted = _scoped_fit(tracked, control, refit=True, execution_id=EXECUTION)
+    assert control.fits == 2
+    record = _record_bytes(tracked, refitted)
+
+    again = _scoped_fit(tracked, control, refit=True, execution_id=EXECUTION)
+
+    assert control.fits == 2
+    assert again.run_id == first.run_id
+    assert again.cache_hit
+    assert _record_bytes(tracked, again) == record
+
+    _ = _scoped_fit(tracked, control, refit=True)
+
+    assert control.fits == 3
+
+
+def test_a_refit_of_a_kmeans_apply_loads_and_fits_nothing_and_warns_nothing(
+    tracked: Dataset,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+    fits = _spy_kmeans_fits(monkeypatch)
+    _ = capsys.readouterr()
+
+    applied = run_feature(
+        tracked,
+        kmeans_apply_feature(chain),
+        parallel_workers=WORKERS,
+        parallel_mode=MODE,
+        track=False,
+        refit=True,
+    )
+
+    assert fits == []
+    assert applied.run_id == chain.apply.run_id
+    assert applied.cache_hit
+    err = capsys.readouterr().err
+    assert UNRECORDED not in err
+    assert AGAIN not in err
+
+
+def test_a_refit_asked_over_the_test_entries_fits_over_the_recorded_training_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline.graph import plan_pipeline
+
+    ds, recipe, classifier = _trained_classifier(tmp_path / "ds")
+    was = _record(ds, classifier)
+    spec = (
+        plan_pipeline(ds, recipe, step_scopes=_classifier_scopes(TEST))
+        .step("classifier")
+        .spec
+    )
+    fits = _spy_classifier_fits(monkeypatch)
+
+    refitted = _run_over(ds, spec, TEST, refit=True)
+
+    assert refitted.run_id == classifier.run_id
+    assert fits == [list(TRAIN_ENTRIES)]
+    now = _record(ds, classifier)
+    assert now.execution_id == refitted.execution_id
+    assert now.execution_id != was.execution_id
+    assert _recorded_entries(now) == list(TRAIN_ENTRIES)
+    assert now.inputs == _cells_now(ds, classifier, TRAIN_ENTRIES)

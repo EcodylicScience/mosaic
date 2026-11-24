@@ -33,6 +33,7 @@ from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
+from mosaic.core.pipeline.index import FitDrift, describe_refit, refit_sample
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel
 
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MISSING_SAMPLE_WIRE",
+    "REFIT_ASKED",
     "ArtifactDetailWire",
     "ArtifactNotFound",
     "ArtifactWire",
@@ -80,12 +82,18 @@ __all__ = [
     "InventoryQueryInvalid",
     "InventoryWire",
     "KeySampleWire",
+    "RefitWire",
     "ResolvedWire",
+    "asked_refit",
     "coverage_wire",
     "inventory_wire",
     "key_sample",
     "ref_address",
+    "refit_wire",
 ]
+
+REFIT_ASKED: Final = "on request"
+"""How a refit that a request asked for is named, before what changed under it."""
 
 MISSING_SAMPLE_WIRE: Final = 20
 """How many keys a sample lists before its count stands in for the rest.
@@ -251,6 +259,75 @@ class ArtifactDetailWire(StrictModel):
     extra: dict[str, KeySampleWire]
 
 
+class RefitWire(StrictModel):
+    """What changed under a fit that is to be fitted again.
+
+    Attributes:
+        moved: How many recorded entries have moved cells.
+        dropped: How many training entries the run's inputs no longer hold.
+        sample: Up to five of those entries as ``group:sequence``, moved before
+            dropped, each sorted.
+        refitted: The params fields whose fit was fitted again, sorted.
+        link_id: The link of the dataset that holds the fit's record, ``""``
+            for the reading dataset.
+        asked: Whether a request asked for the refit, as against the fit's
+            inputs having changed.
+    """
+
+    moved: int
+    dropped: int
+    sample: tuple[str, ...]
+    refitted: tuple[str, ...]
+    link_id: str
+    asked: bool
+
+    def summary(self) -> str:
+        """The line :func:`~mosaic.core.pipeline.index.refit_summary` prints.
+
+        A refit a request asked for leads with :data:`REFIT_ASKED`, and is that
+        alone when nothing changed under the fit.
+        """
+        changed = describe_refit(self.moved, self.dropped, self.refitted, self.sample)
+        if not self.asked:
+            return changed
+        return f"{REFIT_ASKED}, {changed}" if changed else REFIT_ASKED
+
+    def note(self) -> str:
+        """:meth:`summary`, followed by the link that holds the fit when one does."""
+        summary = self.summary()
+        return f"{summary}, fitted in link {self.link_id}" if self.link_id else summary
+
+
+def asked_refit(refit: RefitWire | None) -> RefitWire:
+    """Return *refit* as a request asking for it names it.
+
+    Args:
+        refit: What changed under the fit, ``None`` while nothing did.
+    """
+    if refit is None:
+        return RefitWire(
+            moved=0, dropped=0, sample=(), refitted=(), link_id="", asked=True
+        )
+    return refit.model_copy(update={"asked": True})
+
+
+def refit_wire(drift: FitDrift, *, asked: bool) -> RefitWire:
+    """Return *drift* as a :class:`RefitWire`.
+
+    Args:
+        drift: What changed under the fit.
+        asked: Whether a request asked for the refit.
+    """
+    return RefitWire(
+        moved=len(drift.moved),
+        dropped=len(drift.dropped),
+        sample=refit_sample(drift),
+        refitted=tuple(sorted(drift.refitted)),
+        link_id=drift.link_id,
+        asked=asked,
+    )
+
+
 class ArtifactWire(StrictModel):
     """One artifact of a dataset, its status and its coverage.
 
@@ -262,6 +339,8 @@ class ArtifactWire(StrictModel):
             the entries asked for.
         coverage: Which of its target keys it holds.
         drift: How many entries' recorded sources have moved.
+        refit: What changed under the run's fit, ``None`` for a run whose fit
+            read nothing that has changed and for a run with no fit.
         params_state: Whether its ``params.json`` was read, never written, or
             unreadable. ``absent`` for a kind that records none.
         params: A feature run's recorded ``_params``, else ``None``. ``None``
@@ -290,6 +369,7 @@ class ArtifactWire(StrictModel):
     status: ArtifactStatus
     coverage: CoverageWire
     drift: int
+    refit: RefitWire | None = None
     params_state: ParamsState
     params: dict[str, JsonValue] | None
     tracks_variants: tuple[str, ...] | None
@@ -432,6 +512,11 @@ class _Matched:
             status=self.status,
             coverage=coverage_wire(self.coverage, sample=missing_sample),
             drift=len(record.drift),
+            refit=(
+                refit_wire(record.refit, asked=False)
+                if record.refit is not None
+                else None
+            ),
             params_state=record.params_state,
             params=(
                 JSON_OBJECT.validate_python(params.params)

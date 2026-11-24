@@ -4,13 +4,15 @@ The k-means chain is the built-in clustering: ``speed-angvel`` over the tracks,
 ``extract-templates`` over it, ``global-kmeans`` fitted on those templates, and
 a second ``global-kmeans`` step that applies the fit through ``model``. The fit
 is scope-free and seeded: fitting the same templates again saves the same
-state, and fitting other templates saves another.
+state, and fitting other templates saves another. The templates recipe fits
+``extract-templates`` over ``speed-angvel`` as a recipe's steps.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
+from pathlib import Path
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -19,22 +21,29 @@ import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.fit_scope import read_fit_state_digest
+from mosaic.core.pipeline import FeatureStep, Pipeline
+from mosaic.core.pipeline.graph import Recipe, run_pipeline
 from mosaic.core.pipeline.index import drifted_entries, feature_index_path
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import Feature, Result
+from tests.helpers.datasets import make_dataset
+from tests.helpers.recipes import speed_recipe
 from tests.helpers.results import model_reference, result_run_root
-from tests.helpers.tracks import add_tracks_table
+from tests.helpers.tracks import add_tracks_table, add_tracks_variant
 
 __all__ = [
     "FITTED_AGAIN",
     "KMEANS",
     "KMeansChain",
     "KMeansFit",
+    "TEMPLATES_RECIPE",
     "drifted",
+    "drifted_templates",
     "index_cells",
     "kmeans_apply",
     "kmeans_apply_feature",
@@ -46,6 +55,8 @@ __all__ = [
     "refit_kmeans",
     "refusals",
     "run_step",
+    "templates_pipeline",
+    "templates_recipe",
 ]
 
 FITTED_AGAIN: Final = "a fit it reads was fitted again"
@@ -53,6 +64,27 @@ FITTED_AGAIN: Final = "a fit it reads was fitted again"
 
 KMEANS: Final[dict[str, object]] = {"k": 1, "n_init": 1}
 """The clustering params of the ``global-kmeans`` fit and of its apply."""
+
+TEMPLATES_RECIPE: Final[dict[str, JsonValue]] = {
+    "schema_version": 1,
+    "name": "templates",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_templates": 20},
+        },
+    ],
+}
+"""``speed-angvel`` and ``extract-templates`` fitted over it, as a recipe document."""
 
 _REFUSAL: Final = re.compile(
     r"^\[feature:(?P<name>[^\]]*)\] cannot serve cached output for "
@@ -281,3 +313,46 @@ def drifted(ds: Dataset, result: Result[str]) -> tuple[tuple[str, str], ...]:
     assert result.run_id is not None
     params = read_run_params(result_run_root(ds, result)).params
     return drifted_entries(ds, result.feature, result.run_id, params)
+
+
+def templates_recipe() -> Recipe:
+    """The templates recipe, parsed."""
+    return Recipe.model_validate(TEMPLATES_RECIPE)
+
+
+def templates_pipeline(templates_kwargs: dict[str, object] | None = None) -> Pipeline:
+    """``speed-angvel`` with the ``extract-templates`` fit over it, as a notebook pipeline.
+
+    Args:
+        templates_kwargs: Keyword arguments of the templates step.
+    """
+    from mosaic.behavior.feature_library import ExtractTemplates, SpeedAngvel
+
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {}))
+    pipe.add(
+        FeatureStep(
+            "templates",
+            ExtractTemplates,
+            {"n_templates": 20},
+            ["speed"],
+            templates_kwargs or {},
+        )
+    )
+    return pipe
+
+
+def drifted_templates(base: Path, *, variant: str) -> Dataset:
+    """A dataset at *base* whose templates were fitted before ``seq_a`` changed.
+
+    The templates recipe runs over the tables ``seq_a`` and ``seq_b`` of the
+    tracks variant *variant*. ``seq_a`` is then converted again and the speed
+    step computed again over its new table. The speed rows the fit read have
+    moved, and the templates are due a refit.
+    """
+    ds = make_dataset(base)
+    add_tracks_variant(ds, variant, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(ds, templates_recipe())
+    reconvert_entry(ds, ("", "seq_a"), composition="converted-again")
+    _ = run_pipeline(ds, speed_recipe())
+    return ds

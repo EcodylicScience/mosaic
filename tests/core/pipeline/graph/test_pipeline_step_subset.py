@@ -792,6 +792,15 @@ def test_a_scope_dependent_step_is_refused(five: Dataset) -> None:
     )
 
 
+def test_a_step_the_request_fits_again_is_refused(five: Dataset) -> None:
+    _ = run_pipeline(five, _recipe(SPEED, TEMPLATES))
+    request = submit_request(
+        five, _recipe(SPEED, TEMPLATES), refit=["templates"]
+    ).request
+
+    assert _refused_cause(five, request, "templates", ProbeSubset(count=2)) == "refit"
+
+
 def test_an_op_step_is_refused(five: Dataset) -> None:
     request = submit_request(five, _recipe(REGRID)).request
 

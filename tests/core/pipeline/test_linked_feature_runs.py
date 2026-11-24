@@ -39,7 +39,9 @@ from mosaic.core.pipeline.graph.score import run_group_scores
 from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.fit_scope import (
     FitScope,
+    FitStateUnreadable,
     LinkedFitDrifted,
+    read_fit_scope,
     read_fit_state_digest,
     read_run_fit_scope,
     write_fit_scope,
@@ -932,6 +934,53 @@ def test_a_drifted_fit_the_source_holds_is_refused_in_the_copy(
         assert not copy_features.exists()
     else:
         assert_tree_unchanged(copy_features, copy_before)
+
+
+def test_a_refit_in_the_copy_fits_into_its_own_run_root_and_leaves_the_source(
+    tmp_path: Path, fit_spy: list[int]
+) -> None:
+    source = _tracked_source(tmp_path / "source")
+    computed = run_feature(source, _ScopedCentering())
+    copy = copy_of(source, tmp_path / "copy")
+    table = track_table("", "s1", n_rows=40, n_ids=2)
+    add_tracks_table(
+        copy, VARIANT, table, consumed_composition="changed", std_format="mosaic_v1"
+    )
+    source_before = tree_snapshot(source.base_dir)
+
+    result = run_feature(copy, _ScopedCentering(), track=False, refit=True)
+
+    assert result.run_id == computed.run_id
+    assert fit_spy == [1, 1]
+    own_root = feature_run_root(copy, result.feature, str(result.run_id))
+    assert (own_root / CenteringFeature.state_file).is_file()
+    record = read_fit_scope(own_root, strict=True)
+    assert record is not None
+    assert record.execution_id == result.execution_id
+    assert _link_rows(copy, result) == {"s1": "", "s2": ""}
+    assert_tree_unchanged(source.base_dir, source_before)
+
+
+def test_an_unreadable_record_under_the_link_does_not_stop_a_refit_in_the_copy(
+    tmp_path: Path, fit_spy: list[int]
+) -> None:
+    source = _tracked_source(tmp_path / "source")
+    computed = run_feature(source, _ScopedCentering())
+    run_id = str(computed.run_id)
+    source_root = feature_run_root(source, computed.feature, run_id)
+    _ = (source_root / "fit_scope.json").write_text("{not json", encoding="utf-8")
+    copy = copy_of(source, tmp_path / "copy")
+
+    with pytest.raises(FitStateUnreadable):
+        _ = run_feature(copy, _ScopedCentering(), track=False)
+
+    result = run_feature(copy, _ScopedCentering(), track=False, refit=True)
+
+    assert result.run_id == computed.run_id
+    assert fit_spy == [1, 1]
+    record = read_fit_scope(feature_run_root(copy, result.feature, run_id), strict=True)
+    assert record is not None
+    assert record.execution_id == result.execution_id
 
 
 def _copy_adding(source: Dataset, directory: Path, *sequences: str) -> Dataset:

@@ -157,6 +157,7 @@ from .fit_scope import (
     derive_fit_scope,
     fit_inputs_digest,
     fit_references,
+    fitted_by,
     list_run_root,
     read_fit_scope,
     read_fit_state_digest,
@@ -1862,6 +1863,12 @@ def _load_run_state(
     root's fit record is read before the offer: the digest returned is then
     that of the state loaded, also when a peer fits the run again meanwhile.
 
+    A state loaded for a feature whose fit records its inputs
+    (:func:`~.fit_scope.records_fit_inputs`), from a root whose record holds
+    none or which holds no record, is served, and the run prints one line
+    saying that a change to its inputs goes undetected until it is fitted
+    again.
+
     Returns:
         The root whose load returned ``True`` and the ``state_digest`` of its
         ``fit_scope.json``, ``None`` for a root without one. ``None`` when no
@@ -1873,6 +1880,15 @@ def _load_run_state(
     for root in feature_run_roots(ds, storage, run_id):
         record = read_fit_scope(root, strict=True)
         if feature.load_state(root, artifact_paths, dependency_lookups):
+            if records_fit_inputs(feature) and (
+                record is None or record.inputs is None
+            ):
+                print(
+                    f"[feature:{feature.name}] run {run_id} records no inputs of its "
+                    "fit, so a change to them goes undetected: run the step with "
+                    "--refit to fit it again and record them",
+                    file=sys.stderr,
+                )
             return root, None if record is None else record.state_digest
     return None
 
@@ -2599,6 +2615,7 @@ def run_feature(
     probe: ProbeRecord | None = None,
     phases: Sequence[ApplyPhase] | None = None,
     tag_revision: LabelRevisionRef | None = None,
+    refit: bool = False,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -2701,6 +2718,17 @@ def run_feature(
         key ``dataset``. ``None``, and a reference without a revision, read the
         latest indexed revision, resolved once before the run id is computed. A
         feature that reads no tags ignores it.
+    refit : bool, default False
+        Fit the run again under its run id, whatever its fit record says, and
+        compute every entry the invocation asks for from the new fit. No record
+        is read before the fit, so a record that cannot be read, or a fit a
+        linked dataset holds, is fitted again into this dataset's own run root.
+        A fit pinned to its training set is fitted over its training entries,
+        whatever the scope. A run whose own record already names
+        *execution_id* loads that fit instead, so the attempts of one request
+        fit once. A feature that applies a model ignores it. Unlike
+        *overwrite*, which recomputes the entries from the stored fit, it
+        enters neither the run id nor ``params.json``.
     overlap_frames : int, default 0
         Load this many frames of context from the sequences on either side, so a
         feature computing across frames -- a rolling window, a backward
@@ -2819,6 +2847,7 @@ def run_feature(
                         admission_margin=admission_margin,
                         phases=phases,
                         tag_revision=tag_revision,
+                        refit=refit,
                     )
             finally:
                 try:
@@ -2852,13 +2881,15 @@ def _run_feature_impl(
     admission_margin: float = 0.0,
     phases: Sequence[ApplyPhase] | None = None,
     tag_revision: LabelRevisionRef | None = None,
+    refit: bool = False,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
     ``ctx`` owns the attempt lifecycle (status/progress/cancel via its append-only
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
-    outputs on disk -- the permanent source of truth. A fit run again for changed
-    inputs offers ``load_state`` the empty directory of *scratch*.
+    outputs on disk -- the permanent source of truth. A fit run again, for
+    changed inputs or on request (*refit*), offers ``load_state`` the empty
+    directory of *scratch*.
     """
     # The frame-only-merge escape, for the one feature that declares it.
     cross_join = feature.name in CROSS_JOIN_FEATURES
@@ -3011,9 +3042,18 @@ def _run_feature_impl(
     ctx.tracks_variant(resolved.tracks_variants)
 
     # The inputs the fit recorded, compared before the run root is made, so a
-    # refusal writes nothing. A fit whose inputs changed is fitted again.
-    drift = _check_fit_inputs(ds, feature, storage_feature_name, run_id, fit_states_now)
-    refit = drift is not None and drift.drifted
+    # refusal writes nothing. A fit whose inputs changed is fitted again. A refit
+    # asked for reads no record, so an unreadable one or a drifted fit that a
+    # link holds is fitted again, and a feature that applies a model ignores it.
+    asked_refit = refit and records_fit_inputs(feature)
+    drift = (
+        None
+        if asked_refit
+        else _check_fit_inputs(
+            ds, feature, storage_feature_name, run_id, fit_states_now
+        )
+    )
+    fit_again = asked_refit or (drift is not None and drift.drifted)
 
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
@@ -3128,7 +3168,7 @@ def _run_feature_impl(
     # the one each process worker loads again. A fit run again loads nothing.
     loaded = (
         None
-        if refit
+        if fit_again
         else _load_run_state(
             feature,
             ds,
@@ -3334,7 +3374,9 @@ def _run_feature_impl(
         # finished since the first load is used rather than fitted again. The claim
         # is released before apply, which runs concurrently across scopes. A fit
         # run again checks its inputs again under the claim: a record a peer wrote
-        # meanwhile no longer drifts, and its state is loaded.
+        # meanwhile no longer drifts, and its state is loaded. A refit asked for
+        # loads the fit when the record names this attempt, so a retry under the
+        # execution id of a request's step fits once.
         if not state_ready:
             ctx.check_cancel()
             kind = f"feature:{feature.name}"
@@ -3342,7 +3384,9 @@ def _run_feature_impl(
             with held_run_root(
                 ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
             ) as marker:
-                if refit:
+                if asked_refit:
+                    fit_again = not fitted_by(run_root, ctx.execution_id)
+                elif fit_again:
                     drift = _check_fit_inputs(
                         ds,
                         feature,
@@ -3351,8 +3395,8 @@ def _run_feature_impl(
                         fit_states_now,
                         announce=False,
                     )
-                    refit = drift is not None and drift.drifted
-                if refit:
+                    fit_again = drift is not None and drift.drifted
+                if fit_again:
                     _load_nothing_from(
                         feature,
                         scratch.path(),
@@ -3386,7 +3430,7 @@ def _run_feature_impl(
                     # entries its load reports, whatever the invocation asks for.
                     # Any other fit streams the invocation's manifest.
                     fit_manifest, fit_filters = manifest, filter_factory
-                    training = reported_fit_entries(feature) if refit else None
+                    training = reported_fit_entries(feature) if fit_again else None
                     if training is not None:
                         fit_manifest, fit_resolved = _input_manifest(
                             ds,
@@ -3403,7 +3447,7 @@ def _run_feature_impl(
                             time_window,
                         )
                     fit_detail = f"{len(fit_manifest)} entries"
-                    if refit and drift is not None:
+                    if fit_again and drift is not None:
                         fit_detail += (
                             ", fitted again since the inputs its fit read changed: "
                             f"{refit_summary(drift)}"
@@ -3432,7 +3476,7 @@ def _run_feature_impl(
                     finally:
                         _observe(watch.sample())
                         cost.end_fit(watch, time.monotonic() - fit_started)
-                    if refit:
+                    if fit_again:
                         _refuse_writes_into(feature, scratch.path(), run_id)
                     _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
                     before_save = list_run_root(run_root)

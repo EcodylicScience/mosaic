@@ -18,10 +18,10 @@ from typing import Final
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.outputs import PlanPage
 from mosaic.agent.mcp.spec import SubmittedPipeline, call_tool
 from mosaic.core.pipeline.definitions.scope import clear_definition_caches
 from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
-from mosaic.core.pipeline.graph import PlanWire
 from mosaic.core.pipeline.graph.status import RequestStatusWire
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory.params import read_run_params
@@ -97,7 +97,7 @@ def test_a_definition_runs_through_the_driver_in_process_workers(
         allow_feature_definitions=True,
     )
     planned = call_tool(backend, "plan_recipe", {"dataset": uuid, "recipe": RECIPE})
-    assert isinstance(planned, PlanWire), planned
+    assert isinstance(planned, PlanPage), planned
     (planned_step,) = planned.steps
 
     submitted = call_tool(
