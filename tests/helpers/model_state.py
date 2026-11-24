@@ -1,11 +1,11 @@
-"""The fit-state digest an apply records, and the runs that change it.
+"""The fit-state cell a row records, and the runs that change it.
 
 The k-means chain is the built-in clustering: ``speed-angvel`` over the tracks,
 ``extract-templates`` over it, ``global-kmeans`` fitted on those templates, and
 a second ``global-kmeans`` step that applies the fit through ``model``. The fit
 is scope-free and seeded: fitting the same templates again saves the same
-state, and fitting other templates saves another. The templates recipe fits
-``extract-templates`` over ``speed-angvel`` as a recipe's steps.
+state, and fitting other templates saves another. The templates recipe holds
+``speed-angvel`` and ``extract-templates`` as recipe steps.
 """
 
 from __future__ import annotations

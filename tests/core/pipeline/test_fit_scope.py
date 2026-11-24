@@ -1,10 +1,9 @@
-"""Item 5.3: what a run's state was fitted over, as distinct from applied to.
+"""What a run's state was fitted over, as distinct from applied to.
 
 The distinction only bites for a **params-level fitter** -- scope-free, so every
 apply scope resolves to one ``run_id`` and one run root. A ``scope_dependent``
 feature gets a different identifier for a different scope and therefore cannot
-reuse another scope's state at all, which is why item 5.3 calls itself narrower
-than it looks.
+reuse another scope's state at all.
 
 A params-level fitter trains on a pinned artifact, so its record is derived from
 that artifact's own record, never from the scope it was invoked over.
@@ -433,8 +432,8 @@ def test_a_run_that_predates_the_record_reads_as_unknown(tmp_path: Path) -> None
     """``None`` is unknown, never "fitted over nothing".
 
     Reading an absent record as an empty fit scope would report every run written
-    before item 5.3 as having trained on nothing -- a confident wrong answer where
-    an honest unknown was available.
+    before the record existed as having trained on nothing, a confident wrong
+    answer where an unknown was available.
     """
     assert read_fit_scope(tmp_path) is None
 

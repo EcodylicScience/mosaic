@@ -338,6 +338,13 @@ pipe.add(FeatureStep("metrics", FFGroupsMetrics, {}, ["smooth", "ff", "speed"]))
 `pipe.load(dataset)` populates results from cached runs without executing anything —
 which is how a notebook picks up where a previous session left off.
 
+`pipe.status(dataset)` has a `refit` column, empty unless a fit's inputs changed since
+it was fitted, and then naming what changed. `pipe.load` prints the same as a `Refit:`
+line. `pipe.run` fits such a step again without being asked. `pipe.run(dataset,
+refit=("classifier",))` fits the named feature steps again even when nothing changed,
+and a step whose `run_kwargs` contain `refit=True` fits again on every call. A step that
+applies a model ignores `refit`.
+
 Every method and signature is documented in the class's own docstrings; see
 [`core/pipeline/pipeline.py`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/pipeline/pipeline.py).
 

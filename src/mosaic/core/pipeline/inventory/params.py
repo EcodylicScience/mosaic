@@ -174,8 +174,8 @@ class RunParams(BaseModel):
     here unchanged.
 
     This is **provenance, never the digest**. Nothing on it is hashed, and
-    ``compute_run_id`` builds its own payload; reconstructing an identity from
-    these fields would be the second hash site rule P2e forbids.
+    ``compute_run_id`` builds its own payload and is the only hash site.
+    Reconstructing an identity from these fields would add a second.
     """
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)

@@ -116,7 +116,7 @@ def build_step_feature(
     The overrides are deep-copied because pydantic accepts an already-built
     model instance by reference, so a ``FeatureStep`` whose params dict holds a
     ``ParquetArtifact`` hands the *same object* to every feature built from it.
-    Since resolution pins references in place (item 1.1), sharing would let a
+    Since resolution pins references in place, sharing would let a
     ``status()`` call freeze an upstream choice into a ``run()`` that happens
     much later -- and let a second ``run()`` reuse the first one's pin instead
     of re-resolving. A step describes what to build; it must not accumulate

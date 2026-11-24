@@ -135,7 +135,7 @@ def _fitted_dataset(base: Path, *, converted_again: bool) -> tuple[Dataset, str]
     """A k-means fit over two tables, and the ref of its templates run.
 
     With *converted_again*, one entry's table is converted again and the run
-    that feeds the fit computes it again, so the fit read inputs that moved.
+    that feeds the fit computes it again. The fit then read inputs that moved.
     """
     ds = make_dataset(base)
     variant = "convert-trex.0.2-1111111111"

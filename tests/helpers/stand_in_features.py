@@ -1,7 +1,7 @@
 """Stand-in features that declare which source roots they consume.
 
 The provenance walk, delete sets, media rearrangement and source staleness are all
-decided by a feature's ``consumed_roots``, so their tests run a feature that does
+decided by a feature's ``consumed_roots``. Their tests run a feature that does
 nothing but declare one. :class:`LossyFeature` loses the entries it is told to and
 :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of how a run is
 measured against the entries it was asked for. :class:`PairClusterFeature` writes pair
@@ -322,7 +322,7 @@ class FittingFeature(PlainFeature):
 
 
 class ScopedFittingFeature(FittingFeature):
-    """A :class:`FittingFeature` over its scope, so its fit records its entries."""
+    """A :class:`FittingFeature` over its scope, recording its entries in its fit."""
 
     name = "prov-fitting-scoped"
     scope_dependent = True

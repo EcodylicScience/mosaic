@@ -1567,8 +1567,8 @@ class MediaIndexResult:
 
     Both are reported and neither aborts. By the time this runs the file is
     already in place, and refusing the write would leave the index describing a
-    file that no longer exists -- strictly worse. Blocking a *derivation* from a
-    changed source is item 6.2's job, and it fires from ``run_feature``.
+    file that no longer exists, a strictly worse state. ``run_feature`` blocks a
+    *derivation* from a changed source.
     """
 
     index_path: Path
@@ -4689,10 +4689,9 @@ class Dataset:
     def set_root(self, key: str, path: str | Path) -> None:
         """Set a named dataset root and create the directory if needed.
 
-        **A root must resolve inside the dataset** (item 9.1, implementing rule
-        P7). An outside root puts that root's ``index.csv`` outside the dataset
-        too, which is the scattering the rule removes: the dataset stops being
-        the thing you can copy, archive or sync.
+        **A root must resolve inside the dataset.** An outside root puts that
+        root's ``index.csv`` outside the dataset too. The dataset then stops
+        being the thing you can copy, archive or sync.
 
         Absolute *is* allowed, so long as it lands inside -- the rule is about
         where a root is, not how it is spelled, and the portability pass
@@ -4706,11 +4705,10 @@ class Dataset:
         than to shared membership, so the separation is load-bearing: pinning
         ``abs_path`` too would remove the mechanism, not tighten it.
 
-        Validated here rather than on read, the same boundary rule item 2.5
-        applies to entry names: a dataset that already holds an outside root
-        keeps resolving, so looking at a legacy dataset does not raise. What
-        refuses to act on one is the sweeper, which declines rather than
-        deleting.
+        Validated here rather than on read, the same boundary rule that applies
+        to entry names: a dataset that already holds an outside root keeps
+        resolving, and looking at a legacy dataset does not raise. The sweeper
+        refuses to act on one and declines instead of deleting.
 
         Args:
             key: Root name (e.g. ``"media_raw"``, ``"tracks"``).
@@ -4963,10 +4961,9 @@ class Dataset:
                 df.to_csv(idx_path, index=False)
             return total_changed
 
-        # One enumeration, shared with ``rewrite_index_paths`` (item 6.1). The
-        # hand-written copy this replaces had already drifted: it visited
-        # ``labels`` and ``features`` in bespoke blocks, appended each tracker
-        # root separately, and omitted the inference roots entirely.
+        # One enumeration, shared with ``rewrite_index_paths``. No pass visits
+        # ``labels`` and ``features`` in bespoke blocks, appends each tracker
+        # root separately, or omits the inference roots.
         for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
             count = _convert_index(index.path, index.path_columns)
             if count > 0:
@@ -5299,7 +5296,7 @@ class Dataset:
     ) -> dict[str, int]:
         """Reconcile every index in the dataset against the files on disk.
 
-        Item 6.1's reconciler, root-agnostic. Drops index rows whose ``abs_path``
+        Root-agnostic. Drops index rows whose ``abs_path``
         no longer resolves to an existing file and leaves every still-present row
         intact -- the same rule :meth:`reindex_features` applies to ``features/``
         alone, over every root that has an ``IndexCSV`` behind it: ``tracks``, and
@@ -5310,12 +5307,11 @@ class Dataset:
         :meth:`make_portable` is the pass that wants running. Never deletes
         anything but rows.
 
-        **Why the ``_tracking`` roots matter here.** Until this existed they were
-        reached by no reindex, prune or portability pass at all, so a tracker
-        working directory removed by hand left a row naming it forever. It is
-        also the half item 8.4's sweeper deliberately does not own: the sweeper
-        drops the rows *it* invalidates, and everything deleted by hand is this
-        pass's to repair.
+        **Why the ``_tracking`` roots matter here.** No other reindex, prune or
+        portability pass reaches them. A tracker working directory removed by
+        hand would leave a row naming it forever. This pass also repairs what
+        the tracker sweeper leaves: the sweeper drops only the rows *it*
+        invalidates, and everything deleted by hand is this pass's to repair.
 
         Args:
             root: Restrict to one root key. If None, every registered root is
@@ -5757,7 +5753,7 @@ class Dataset:
                 # Skip macOS resource forks (._* files)
                 if p.name.startswith("._"):
                     continue
-                # Never descend into `_tracking` (item 8.1). A tracker writes
+                # Never descend into `_tracking`. A tracker writes
                 # debug frames and re-encoded clips into its working directory,
                 # and this glob filters on extension alone -- so a generated
                 # `.mp4` would be indexed as *source* media, giving a derived
@@ -6035,11 +6031,11 @@ class Dataset:
             )
             # Where identity comes from when no track table names this file.
             #
-            # ``per_sequence`` reads it from the *directory*, which is item 9.2's
-            # declared layout: ``<media_raw>/<entry key>/*.mp4``, one level named
-            # by ``make_entry_key``. That is the layout the control plane already
-            # writes -- and until now nothing in mosaic could read it back, so a
-            # multi-clip sequence re-derived as one sequence per file.
+            # ``per_sequence`` reads it from the *directory*, the declared layout
+            # ``<media_raw>/<entry key>/*.mp4``, one level named by
+            # ``make_entry_key``. That is the layout the control plane writes,
+            # and without this read a multi-clip sequence would be derived as one
+            # sequence per file.
             #
             # ``stem`` stays the default, which grandfathers the flat layout
             # rather than migrating it. ``sequence_match_mode="prefix"`` exists
@@ -7242,10 +7238,10 @@ class Dataset:
         path recomputes from disk and both go through the same functions, so the
         two cannot diverge.
 
-        Skipped when the media root resolves to ``media`` -- a legacy dataset
-        with no ``media_raw``, where the index holds derivatives. A derivative is
-        named by its source's identity and has no composition of its own (rule
-        P6), so the honest answer there is no row at all.
+        Skipped when the media root resolves to ``media``, a legacy dataset
+        with no ``media_raw`` where the index holds derivatives. A derivative is
+        named by its source's identity and has no composition of its own. The
+        index holds no row for it.
 
         Called after the index write and outside its lock. See
         :mod:`mosaic.core.pipeline.sequence_index` for why that order cannot be
@@ -7309,11 +7305,11 @@ class Dataset:
     ) -> None:
         """Record what to call *(group, sequence)*. Touches no file but this one.
 
-        That is item 4.1's entire point: relabelling is metadata, so it must not
-        move a directory, rewrite an ``abs_path``, or change the token that every
-        filename and every index join key is built from. Passing ``""`` clears
-        the label and returns the sequence to being called by its token. The
-        sequence's ``derived_from`` lineage is kept.
+        Relabelling is metadata and must not move a directory, rewrite an
+        ``abs_path``, or change the token that every filename and every index
+        join key is built from. Passing ``""`` clears the label and returns the
+        sequence to being called by its token. The sequence's ``derived_from``
+        lineage is kept.
         """
         entry = (
             validate_entry_name(group, "group"),
@@ -7452,7 +7448,7 @@ class Dataset:
         execution_id: str = "",
         now: "datetime.datetime | None" = None,
     ) -> "SweepReport":
-        """Reclaim finished tracker intermediates under ``_tracking`` (item 8.4).
+        """Reclaim finished tracker intermediates under ``_tracking``.
 
         Dry-run unless *apply*. Walks ``<_tracking>/<tool>/<run_id>/<entry>/``,
         classifies each entry directory from its markers, its index row and its
@@ -7619,14 +7615,13 @@ class Dataset:
         return frozenset(pinned)
 
     def _promoted_from(self) -> set[str]:
-        """Producer runs a promoted correction has superseded (items 8.4 / 8.6).
+        """Producer runs a promoted correction has superseded.
 
-        Item 8.4 makes promotion the *primary* eviction signal and age the
-        fallback, for a reason worth keeping: once a corrected track set is in
-        ``tracks_raw``, the tracker output it was corrected from has served its
-        purpose and its retention window is beside the point. The link is
-        ``derived_from`` on the dataset-level ``sequences.csv`` -- the column item
-        4.1 declared and left unused for exactly this.
+        Promotion is the *primary* eviction signal and age the fallback, for a
+        reason worth keeping: once a corrected track set is in ``tracks_raw``,
+        the tracker output it was corrected from has served its purpose and its
+        retention window is beside the point. The link is ``derived_from`` on
+        the dataset-level ``sequences.csv``.
 
         An absent label file means nothing has been promoted, which is the
         ordinary state and not an error.
@@ -7747,7 +7742,7 @@ class Dataset:
     ) -> dict[str, UniformityVerdict]:
         """Which of a sequence's cameras a reader would refuse, under a proposed order.
 
-        Item 6.5's precheck. *order_by_name* is the arrangement to test, mapping
+        The precheck of a reorder. *order_by_name* is the arrangement to test, mapping
         a clip's basename to its position exactly as :class:`MediaIndexScope`
         carries it; ``None`` tests the order the index already holds. Run it
         against the arrangement a caller is *about* to commit, because a reorder
@@ -7805,8 +7800,8 @@ class Dataset:
         ``video_uuid`` is a term of the media composition and this is the one
         command that rewrites it. Left out, the single pass whose purpose is
         correcting identity would leave every composition it invalidated on disk
-        still claiming to be current -- and item 6.2 compares exactly those
-        values, so the staleness would be invisible rather than loud.
+        still claiming to be current, and ``run_feature`` compares exactly those
+        values. The staleness would be invisible.
 
         Sequential, never nested: the index is written and released inside
         :func:`~mosaic.core.media.reprobe.reprobe_media`, and the projection
@@ -9867,7 +9862,7 @@ class Dataset:
             Glob patterns to exclude
         compute_md5 : bool
             Checksum each source file. **Default True**, because the
-            ``tracks_raw`` composition hash (item 4.4) is over these checksums,
+            ``tracks_raw`` composition hash is over these checksums,
             so an off-by-default column leaves every sequence's composition
             unestablishable -- which is what it was for every dataset, since
             nothing in the toolkit ever passed True. A digest is carried forward
@@ -10843,7 +10838,7 @@ class Dataset:
         """Build a converter's typed params from user overrides.
 
         Two resolutions happen here, both *before* the values can be hashed,
-        which is the same rule item 1.1 established for upstream references:
+        which is the same rule that holds for upstream references:
 
         - ``fallback_fps`` is the dataset's ``fps_default``, for a converter that
           declares it, so the value recorded in identity is the one the dataset
@@ -12218,7 +12213,7 @@ class Dataset:
         atomic_savez(out_path, **payload)
 
         # Authored in place from an external table that is in no raw index -- the
-        # third label provenance (item 9.3): an empty run_id and no consumed
+        # third label provenance: an empty run_id and no consumed
         # source root, neither scored nor derived, laid out flat rather than under
         # a variant directory because there is no recipe to name.
         write_labels_row(

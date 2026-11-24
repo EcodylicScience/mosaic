@@ -817,7 +817,7 @@ def _record_fit_inputs(
 ) -> None:
     """Give *result*'s run a ``fit_scope.json`` recording *cells* as the fit's inputs.
 
-    The record holds no state digest, so the run's own fit-state part stays
+    The record holds no state digest. The run's own fit-state part stays
     blank on both sides and only the recorded inputs can drift.
     """
     assert result.run_id is not None

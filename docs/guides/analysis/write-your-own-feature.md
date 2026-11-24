@@ -277,11 +277,26 @@ A recipe fits in one step and names that step as `model` in another:
   reads the same inputs as its fit. A run that applies a model itself is refused with
   `is_apply`.
 - **`load_state` reads only the files `save_state` wrote.** Mosaic records a digest of
-  those files with the fit. A fit written again under the same run id recomputes the
-  entries of the apply, and a file that `fit` leaves in the run root is not covered.
+  those files with the fit, and each step records the digest of every fit its params
+  reference, such as `model`. A fit written again under the same run id recomputes the
+  entries of every step that reads it. A file that `fit` leaves in the run root is not
+  covered.
+- **`load_state` prepares a fit for an empty root.** A fit whose inputs changed is
+  fitted again under its run id, and `load_state` is then offered an empty directory.
+  Read what `fit` needs, such as templates or labels, and return `False`. A `load_state`
+  that returns `True` for an empty directory loads its state from elsewhere, and the run
+  raises `CannotFitAgain`.
+- **A `fit` that writes into its run root takes it from `bind_run_root`.** Define
+  `bind_run_root(self, run_root: Path)`. Mosaic calls it with the run's directory after
+  `load_state` returns `False`. A `fit` that writes into the directory `load_state` was
+  given raises `CannotFitAgain` when the run fits again.
 - **A fit over some entries sets `scope_dependent = True`.** Its run id then names the
   entries it fit on. Without it, a fit over a subset has the run id of a fit over every
-  entry, and whichever ran first is the fit both apply.
+  entry, and whichever ran first is the fit both apply. A definition that fits from its
+  stream declares `scope_dependent = True` to have its entries compared. A definition
+  that declares it with `fits = False`, as `evaluate-labels` does, is treated the same
+  way. Mosaic records the inputs of such a run, fits it again when they change and warns
+  when a run predates the record.
 - **A fit in a linked dataset** is read through the link, and an apply compares against
   it there.
 

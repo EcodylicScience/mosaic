@@ -259,7 +259,7 @@ def planning_request(
     execution id. Given *applied*, it records the request applied, and the
     pins, the tracks variant and the locked steps derived from it, in place of
     *pins* and *tracks_run_id*. *refit* is recorded sorted, each step once.
-    *tag_revision* is recorded as given, so a caller passes the reference that
+    *tag_revision* is recorded as given. A caller passes the reference that
     :func:`~mosaic.core.pipeline.tag_reads.resolve_tag_ref` resolved.
 
     Raises:

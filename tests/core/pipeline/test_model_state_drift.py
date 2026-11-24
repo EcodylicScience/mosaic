@@ -143,7 +143,7 @@ def _without_digest(record: dict[str, object]) -> str:
 def _blank_states_read(ds: Dataset, result: Result[str]) -> None:
     """Blank the digest of each fit that *result*'s fit read, in its record.
 
-    A record written before those digests holds none, so its fit reads as
+    A record written before those digests holds none. Its fit reads as
     unchanged whatever the fits it read record now.
     """
     root = result_run_root(ds, result)
@@ -432,7 +432,7 @@ def test_an_evaluation_records_its_label_map_and_its_own_state_and_recomputes_af
 
     again = _digest(ds, label_map)
     assert again != mapped
-    # The evaluation reads another map, so it scores again and computes s3.
+    # The evaluation reads another map, scores again and computes s3.
     assert refusals(err, "evaluate-labels") == {}
     scored = _digest(ds, score)
     assert model_cells(ds, score) == {"s3": f"_state={scored},label_map={again}"}

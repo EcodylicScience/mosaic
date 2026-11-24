@@ -28,7 +28,7 @@ are in `graph/CLAUDE.md`.
   `Dataset.lookup_order(kind)`. A site that writes, removes or reconciles stays on
   `feature_run_root`, `feature_index_path`, `read_tracks_index`, `tracks_table_path`,
   `frames_run_root`, `list_frame_runs`, `model_index_path`, `read_label_series` and
-  `read_labels_index`. A linked dataset is then never written
+  `read_labels_index`. A linked dataset is then not written
   (`tests/meta/test_link_reads.py` names both sets).
 - **A lookup passes `merge_linked_rows` the path columns it makes absolute.** A linked
   row's cell names a file of its own dataset, and an own cell stays as stored. The
@@ -242,29 +242,55 @@ are in `graph/CLAUDE.md`.
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
-- A step that applies a fit through `model` records the fit's state in
-  `consumed_model_state`. A fit writes `state_digest` into `fit_scope.json` right after
-  `save_state`: a blake2b over the files that `save_state` created or changed. The run
-  root is listed before and after it (`list_run_root`, which leaves out the engine's
-  files: the claim marker, the run's `params.json`, `.identity_scheme` and
-  `fit_scope.json`, and temporary files) and digested by `saved_state_digest`
-  (`fit_scope.py`). The run reads the fit's current digest once
-  (`_current_fit_states`), and `_servable` compares it with each cached row's cell. A
-  row records the digest of the state it read. A fit written again under its run id then
-  recomputes the entries. A row and a fit that both predate the digest are served, with
-  one warning. The cell is blank on a fit's rows, and the digest stays out of `run_id`.
-  The contract: an apply reads only the files `save_state` wrote, since a file that
-  `fit` leaves in the run root is outside the digest
+- A step that reads a fit records the fit's state in `consumed_model_state`. A fit
+  writes `state_digest` into `fit_scope.json` right after `save_state`: a blake2b over
+  the files that `save_state` created or changed. The run root is listed before and
+  after it (`list_run_root`, which leaves out the engine's files: the claim marker, the
+  run's `params.json`, `.identity_scheme` and `fit_scope.json`, and temporary files) and
+  digested by `saved_state_digest` (`fit_scope.py`). The cell has one part per fit
+  reference (`fit_references`, `fit_scope.py`: a `model`, `templates`, `label_map`,
+  `init_from` or `decision_threshold` field that names a pinned run, as an artifact
+  reference or a `DefinitionModel`), keyed by field, and a `_state` part for the state
+  the run loaded, when its root contains `fit_scope.json`. One part is a bare digest,
+  and several are sorted `field=digest` pairs (`fit_state_cell`, `index.py`). The run
+  reads each fit's current digest once (`_current_fit_states`) through `fit_state_root`,
+  and `_servable` compares the cell with each cached row's. A fit written again under
+  its run id then recomputes the rows of the fit and of every step that reads it. A row
+  and a fit that both predate the digest are served, with one warning. The digest stays
+  out of `run_id`. The contract: an apply reads only the files `save_state` wrote, since
+  a file that `fit` leaves in the run root is outside the digest
   (`tests/core/pipeline/test_model_state_drift.py`).
+- A fit run records its inputs, and a fit whose inputs changed is fitted again under its
+  run id. `fit_scope.json` records `fit_inputs`, the `group`, `sequence`, `roots`,
+  `tracks` and `inputs` cells of each entry the fit read (`current_entry_cells`,
+  `index.py`, the construction `drifted_entries` shares), the `state_digest` of each fit
+  it read on `via`, and the `execution_id` of the attempt that fitted. `params.json`
+  records `_fit_references`. None of them is hashed. `records_fit_inputs`
+  (`fit_scope.py`) is true for an instance whose `fits` or `scope_dependent` is true,
+  and only those runs are compared. A fit pinned by `fit_set_pinned_by` records the
+  entries its `fitted_entries` names, a scope-dependent run its resolved scope, and a
+  fit from its pinned artifacts alone none, since the digests on `via` record its
+  change. `fit_drift` (`index.py`) reports `moved` entries (a cell differs under
+  `cached_entry_disposition`), `dropped` training entries missing from the run's inputs,
+  for a fit pinned by `fit_set_pinned_by` only, and `refitted` fields (a fit it read has
+  a new digest). A cell blank on both sides is undetectable and not drift. A fit saved
+  without `fit_inputs` is served with one warning, and its plan step is not marked for a
+  refit. A read of the plan, the inventory or the status takes an unreadable record as
+  absent and a fit under an unreachable link as blank. The run reads strictly and raises
+  `FitStateUnreadable` or `LinkUnreachableError`
+  (`tests/core/pipeline/test_fit_input_drift.py`).
 - `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four channels,
   given the run's `RunParams`: the declared roots, the tracks cell and the upstreams'
-  roots cell, each built as `build_manifest` builds it, and for a run that records a
-  `model` the fit-state cell, against the digest `DriftReads.fit_state` reads once per
-  fit through `fit_state_root`. That digest is blank under an unreachable link, for an
+  roots cell, each built as `build_manifest` builds it, and for a run that reads a fit
+  the fit-state cell, against the digests `DriftReads.fit_state` reads once per fit
+  through `fit_state_root`. A digest is blank under an unreachable link, for an
   unreadable `fit_scope.json`, and for a pattern that matches more than one file of the
   fit's root (`AmbiguousArtifactFile`), since a status read does not raise. One known
-  side is drift, and the plan names every entry `run_feature` recomputes. The neighbors
-  cell stays `run_feature`'s (`TestDriftedEntries` in
+  side is drift, and the plan names every entry `run_feature` recomputes. A run whose
+  fit drifted (`fit_drift`) reports every entry of its rows as drifted, because a refit
+  recomputes every entry it is asked for. The inventory status, a plan's drift work and
+  `Pipeline.run` then treat the run as due without a second rule. The neighbors cell
+  stays `run_feature`'s (`TestDriftedEntries` in
   `tests/core/pipeline/test_tracks_source_staleness.py`). An entry the inputs no longer
   resolve, such as one dropped from the tracks index, is not drift: every input holds it
   for a run that intersects its inputs, and any input for a stacked run, as
@@ -333,6 +359,20 @@ are in `graph/CLAUDE.md`.
   refreshes the claim until the fit and its save end. A live holder refuses with
   `run_root_held`, which `execute_step` does not count as a step failure. Apply is
   unclaimed (`tests/core/pipeline/test_fit_claim.py`).
+- A fit runs again when its record drifts (`_check_fit_inputs`, before the run root
+  exists) or under `refit`, once per request: a `refit` loads the fit instead when the
+  record in the run root names the invocation's execution id, and a retry of a step then
+  fits once. A drift is checked again under the claim, and a record that no longer
+  drifts is loaded. A refit offers `load_state` an empty directory outside the dataset
+  (`_RefitScratch`, removed after the feature closes) and requires `False` from it. A
+  `True` raises `CannotFitAgain` with the cause `loads_elsewhere`, as does a `fit` that
+  writes into the directory (`wrote_outside_run_root`). The engine then binds the real
+  run root through `bind_run_root`, as it does for a first fit, and a fit pinned by
+  `fit_set_pinned_by` streams its training entries whatever the invocation asks for, and
+  any other fit streams the invocation's manifest. A drifted fit stored in a linked
+  dataset refuses with `linked_fit_drifted` (`LinkedFitDrifted`), and `refit` fits it
+  into the reading dataset (`tests/core/pipeline/test_fit_input_drift.py`). `overwrite`
+  does not fit. It recomputes outputs from the stored fit.
 
 ## Parallel runs
 
@@ -456,10 +496,14 @@ are in `graph/CLAUDE.md`.
   plans under a `load=False` definition scope and raises `load` around the check of a
   `def:` step alone, which loads the version its plan pins
   (`tests/core/pipeline/definitions/test_maintenance.py`).
+- A step due a refit is skipped (`PlannedStep.refit`) and counts as unfinished: a fit of
+  today's inputs differs from a fit of older inputs without failing to reproduce. A
+  fit that verification does run binds its scratch directory as the run root
+  (`bind_fit_root`).
 - A report that compared nothing is not `ok`. `ok` needs one verified step and no step
-  without a complete run. Values of different kinds are a mismatch, and a value the
-  walker cannot read or reach is named in the detail and never counted as compared
-  (`_Found.compared`, `unchecked`, `mismatch`).
+  without a complete run or due a refit. Values of different kinds are a mismatch, and a
+  value the walker cannot read or traverse is named in the detail and not counted as
+  compared (`_Found.compared`, `unchecked`, `mismatch`).
 - The fit's frames come from `fit_input_stream` (`run.py`), the one stream `run_feature`
   fits on. A change to what a fit reads changes both.
 - A feature is held to equality unless it has an `n_threads` param or a `device` other
@@ -528,6 +572,12 @@ are in `graph/CLAUDE.md`.
   `unavailable_kinds`.
 - `read_run_params` is the only reader of a feature run's `params.json`, and tells
   absent from unreadable (`tests/core/pipeline/inventory/test_run_params_reader.py`).
+- `ArtifactRecord.refit` is the `FitDrift` of a feature run whose fit is due a refit,
+  measured with the run's drift through one `DriftReads` per inventory read, and a
+  linked run's record names the link. `RefitWire` (`inventory/wire.py`) projects it for
+  the wire as counts, a sample of up to five entries, the fields fitted again, the link
+  and `asked`, and its `summary()` gives the line that each command prints
+  (`tests/core/pipeline/inventory/test_inventory_scan.py`).
 - A feature run's target comes from `feature_run_target` (`inventory/scan.py`): a
   run is measured over the entries its invocations asked for (`_scope.asked`) and
   its index rows. A scope-free run asked for every entry (`_scope.asked_all`) is

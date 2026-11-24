@@ -55,10 +55,23 @@ recipe of each input, not its content, so re-converting tracks from changed sour
 or re-transcoding media leaves every downstream identifier as it was. What each run read
 is recorded beside it and compared with the present. A feature run whose tracks, declared
 roots or upstream runs changed reads `complete-but-drifted`, and so does a run that
-applies a model fitted again under its run id. The next `run_feature`, `mosaic run` or
+reads a fit fitted again under its run id. The next `run_feature`, `mosaic run` or
 recipe rerun recomputes those entries and serves the rest. A tracker run over
 re-transcoded media reports `complete-but-drifted`. A feature run whose rows predate a
 recorded composition reads `complete-but-drifted` until its next run.
+
+A fit is compared the same way. It records the inputs it read: its training entries'
+tracks, declared roots and upstream runs, and the fits it read, such as its templates. A
+fit whose inputs changed is fitted again under its run id the next time it runs. Every
+step that applies it recomputes. That happens when a training entry is converted
+again from changed sources, a declared root or an upstream run moves under one, a
+training entry leaves the dataset, or a fit it reads is fitted again. `mosaic pipeline
+plan`, `mosaic inventory` and a notebook's `Pipeline.status()` name the refit before it
+runs, and the run prints a line when it starts fitting. A fit saved before mosaic
+recorded its inputs is served with one warning. `--refit` fits a step again on request,
+and `--overwrite` keeps its meaning: it recomputes the outputs from the stored fit and
+does not fit. A fit stored in a linked dataset is not fitted again from here unless
+asked. The run refuses and names the link, and `--refit` fits it into this dataset.
 
 ## A trained model can say what it saw
 

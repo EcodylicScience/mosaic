@@ -166,8 +166,7 @@ class FeatureIndexRow(RunIndexRowBase):
     # Reconstructed rows (Dataset.reindex_features) cannot know the historical
     # value and must leave it empty for the same reason.
     identity_scheme: str = ""
-    # What this entry was made from, recorded and never hashed -- item 5.1's
-    # features half, which item 4.4 makes computable.
+    # What this entry was made from, recorded and never hashed.
     #
     # ``consumed_roots`` is the feature's declaration (comma-joined, sorted);
     # ``consumed_composition`` is this entry's composition under those roots at
@@ -177,10 +176,9 @@ class FeatureIndexRow(RunIndexRowBase):
     # Recorded rather than hashed, and the distinction is the whole design. A
     # per-frame identifier names a directory holding *every* entry, so a
     # per-entry fact in it would rename the directory that holds another
-    # sequence's already-correct output (rule P2d). The composition each entry
-    # consumed belongs beside that entry's row, where item 6.2 can turn it into a
-    # per-entry delete set -- which is what H3 case 1 actually asks for: "tracks
-    # and features **go**", deleted, not re-identified.
+    # sequence's already-correct output. The composition each entry consumed
+    # belongs beside that entry's row, where the delete set can read it and
+    # delete that entry's tracks and features, not re-identify them.
     consumed_roots: str = ""
     consumed_composition: str = ""
     # The source composition of the *tracks* this entry read, copied from the tracks
@@ -205,11 +203,14 @@ class FeatureIndexRow(RunIndexRowBase):
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
     # ``overlap_frames=0``, and out of the run id, like the cells above.
     consumed_neighbors: str = ""
-    # The digest of the saved fit state that an apply row read, copied from the
-    # ``fit_scope.json`` of the run its ``model`` names. Blank on a row of a run
-    # that sets no ``model``, and on a row written before the column existed. A
-    # text cell and not a path, so ``merge_linked_rows`` leaves it as stored. Out
-    # of the run id, like the cells above.
+    # The fit states a row read, spelled by ``fit_state_cell``: one part per fit
+    # reference of its run, keyed by params field, holding the ``state_digest`` in
+    # that fit's ``fit_scope.json``, and a ``_state`` part holding the digest of
+    # the state the run itself loaded or saved when its run root has a fit
+    # record. A fit's own rows carry the ``_state`` part. Blank on a row that
+    # read no fit state, and on a row written before the column existed. A text
+    # cell and not a path, so ``merge_linked_rows`` leaves it as stored. Out of
+    # the run id, like the cells above.
     consumed_model_state: str = ""
 
 
@@ -558,7 +559,8 @@ class RecordedTracksReads:
     Attributes:
         composition: The entry's ``consumed_tracks_composition``.
         neighbors: Its ``consumed_neighbors``, empty without overlap.
-        model_state: Its ``consumed_model_state``, empty without a ``model``.
+        model_state: Its ``consumed_model_state``, empty for a row that read no
+            fit state.
         inputs: Its ``consumed_input_composition``, empty without a feature
             input whose upstream records a declared root.
     """
@@ -607,15 +609,16 @@ def recorded_consumption(
     One reader for the two callers that need it -- :func:`drifted_entries`, which
     compares the digest against the present, and ``run_feature``'s cache-hit
     pre-pass, which carries it forward rather than restamping a skipped entry.
-    Two loops over the same three cells would be two answers to item 6.2's walk,
-    which is the argument ``encode_entry_composition`` already makes one level
+    Two loops over the same three cells would be two answers to the delete set's
+    walk. ``encode_entry_composition`` already makes the same argument one level
     down.
 
     An **absent** entry is not one recording ``""``. The first has no row at all:
     an output on disk that nothing describes, whose provenance cannot be stated.
-    The second is a row written before item 5.1, or one whose root was not
-    establishable. Neither is evidence of change; both are item 6.2's to fail
-    closed on. Entries declaring no root are dropped here, having nothing to say.
+    The second is a row written before the column existed, or one whose root was
+    not establishable. Neither is evidence of change; both are for the delete set
+    to fail closed on. Entries declaring no root are dropped here, having nothing
+    to say.
     """
     return _consumption_of(_run_rows(ds, feature_name, run_id))
 
@@ -847,8 +850,8 @@ def drifted_entries(
     - its upstreams' roots and fit states: the row's
       ``consumed_input_composition`` against its feature inputs' parts
       (:func:`~.composition.input_part` of each upstream row's declared roots,
-      inputs cell and ``consumed_model_state``), joined the same way, so an
-      entry recomputes after a fit its upstream read was fitted again;
+      inputs cell and ``consumed_model_state``), joined the same way, which
+      recomputes an entry after a fit its upstream read was fitted again;
     - its fits: the row's ``consumed_model_state`` against the cell of
       :func:`fit_state_cell` over the digest each fit reference of the run
       records now (:meth:`DriftReads.fit_state`), and the run's own digest
@@ -863,11 +866,11 @@ def drifted_entries(
     any input holds. A ``params.json`` written before it recorded stacking
     counts an entry any input holds: a false drift there lasts one run, which
     records the stacking, while counting only the entries every input holds
-    would hide the real drift of a stacked run that nothing then recomputes.
+    misses the drift of a stacked run that nothing then recomputes.
 
     **A drifted fit reports every entry its rows hold.** A run whose fit has
     drifted (:func:`fit_drift`) is fitted again, which recomputes every entry
-    it is asked for, so the comparison above is skipped and each entry of its
+    it is asked for. The comparison above is skipped and each entry of its
     rows is reported, whether or not its inputs still resolve it.
 
     **Both sides are recorded values.** A value recomputed from the present
@@ -1284,6 +1287,6 @@ def refit_summary(drift: FitDrift, *, sample: int = 5) -> str:
     )
 
 
-# Item 6.1: reconciled through the shared registry, beside the tracker
-# indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
+# Registered with the shared registry beside the tracker indexes. One reconcile
+# pass then covers every root that has an ``IndexCSV`` behind it.
 register_reconcilable_index("features", feature_index)

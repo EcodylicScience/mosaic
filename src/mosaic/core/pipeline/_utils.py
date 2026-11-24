@@ -74,7 +74,7 @@ class ResolvedScope:
     minting several identifiers for one computation and leaving ``Pipeline.clean``
     to delete all but the one it predicted.
 
-    ``labels_variants`` is the exact label analog (item 9.3): which label recipes
+    ``labels_variants`` is the exact label analog: which label recipes
     produced the ``labels/<kind>/`` tables a run reads. It follows every rule
     ``tracks_variants`` does -- collected before the narrowing, sorted,
     deduplicated, empty when nothing said -- and enters the identifier through its
@@ -236,9 +236,9 @@ def _ready(obj: object, *, strict: bool) -> object:
         # NOT ordered. Sequence order is semantic wherever it is hashed today:
         # ``Inputs`` is a tuple whose order feeds both the digest and
         # ``storage_suffix()``, ``_frame_range`` is ``[start, end]``, and the
-        # per-camera composition planned for item 4.4 is mixed -- its outer list
-        # sorted, its inner uid list never. Sorting here would move identifiers
-        # and corrupt that composition.
+        # per-camera composition is mixed: its outer list is sorted and its
+        # inner uid list never is. Sorting here would move identifiers and
+        # corrupt that composition.
         return [_ready(v, strict=strict) for v in obj]
     if isinstance(obj, Path):
         return str(obj)

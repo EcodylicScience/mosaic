@@ -444,6 +444,18 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   including a model, change a parameter. Editing output files breaks the cache. To check
   that a stored result is the one its recipe produces, see `mosaic pipeline verify`
   below.
+- A fit step fits again under its run id when the inputs its fit read have changed: a
+  training entry converted again from changed sources, a declared root or an upstream
+  run moved under one, a training entry gone from the dataset, or a fit it reads fitted
+  again. The run prints a line to stderr when it starts, and the entries of the fit and
+  of each step that applies it recompute. A fit saved before mosaic recorded its inputs
+  is served with one warning, and `--refit` records them. `--refit` (`refit=True`,
+  `Pipeline.run(refit=("<step>",))`) fits a feature step again on request, once per
+  request, and `--overwrite` still loads the stored fit. A step that applies a model
+  ignores `--refit`. `mosaic run` refuses `--refit` with `--kind`, `--probe` or
+  `--step-entries`. A fit stored in a linked dataset, whose inputs changed here, is
+  refused as `linked_fit_drifted`. `--refit` fits it into this dataset. Fitting can take
+  hours (`kpms`, `vame`, `feral`). Ask the user before you pass `--refit`.
 - A tracks variant, op run or model is named `<kind>.<version>-<10 hex>`, such as
   `convert-trex_npz.0.3-6bb5efbf05`. That string is what `tracks_run_id=`, `media=`,
   `model=` and `data=` take.
@@ -537,6 +549,13 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   step unpinned), `pin_run_missing` (the step's storage holds no such run; check the run
   id) or `pin_run_unfinished` (finish the run or pin another). A step reading the
   pinned step through `inputs` is a problem at `inputs`; read the fit through `model`.
+- To fit a step again, add `--refit STEP` (repeatable) to `mosaic pipeline plan`,
+  `submit` and `run`. The request records it, and a run with `--request` refuses the
+  flag. Give the same flag to the plan and to the submission. The plan marks the step in
+  `refit` (`on request`, then what changed), reads it incomplete and asks for its whole
+  target. The plan refuses a pinned or bound step and any name that is not a fitting
+  feature step. `plan_recipe` also names a step whose fit is due a refit, with what
+  changed, in the step's `refit`, a line of text.
 - To apply a whole finished fit to other sequences, name its request instead of pinning
   by hand: `applies_request_id="<request id>"` on `submit_request` or `run_pipeline`,
   with the same recipe and a new scope (`--applies-request <request id>` on `mosaic
@@ -812,8 +831,12 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   output was written. Bring the linked dataset's disk or mount back, then rerun, which
   reuses a run that the link finished. `--allow-partial` does not answer it.
 - Reason `subset_refused`: a step refused a probe or a named subset of its entries,
-  with a `cause` of `scope_dependent`, `op_step`, `stand_in` or `outside_target`.
-  Run the step whole instead.
+  with a `cause` of `scope_dependent`, `op_step`, `stand_in`, `refit` or
+  `outside_target`. Run the step whole instead.
+- Reason `linked_fit_drifted`: a fit this step reads is stored in a linked dataset, and
+  the inputs it read have changed here (`detail` gives `link_id`, `moved`, `dropped` and
+  `refitted`). The run wrote to neither dataset. Ask the user whether to fit it again
+  into this dataset with `--refit`, or in the linked dataset.
 - Reason `gpu_card_not_leased`: a GPU step of a local request is given one card, and its
   `device` names another (`1`, `cuda:1`) or several (`0,1`). Set `device` to `0` or
   `cuda`, or leave it unset. `0` names the card the step was given. `--allow-partial`
@@ -841,14 +864,15 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   (repeatable) verifies only the steps named, and `--n-threads` (1 by default) bounds the
   threads of every BLAS and OpenMP library while a step is fitted. Propose it to
   the user to check a result reproduces, and run it only when they ask.
-- `mosaic inventory` reports what exists, with coverage and a status such as
-  `partial` or `complete-but-drifted`. `mosaic pipeline run` recomputes a drifted
-  feature step's moved entries and serves the rest. `mosaic runs` and `mosaic status`
+- `mosaic inventory` reports what exists, with coverage and a status such as `partial`
+  or `complete-but-drifted`. A fit whose inputs changed reads `complete-but-drifted`
+  over every entry of its run, and `inventory show` prints a `Refit:` line with what
+  changed. `mosaic pipeline run` recomputes a drifted feature step's moved entries and
+  serves the rest, and fits a drifted fit again. `mosaic runs` and `mosaic status`
   report attempts. A feature run is measured over the entries it was asked for, and
-  `complete` means it has all of them. A classifier applied through a step scope to
-  the test groups is complete when it has the test groups. A run invoked without a
-  scope was asked for every entry, and reads `partial` once the dataset gains a
-  sequence.
+  `complete` means it has all of them. A classifier applied through a step scope to the
+  test groups is complete when it has the test groups. A run invoked without a scope was
+  asked for every entry, and reads `partial` once the dataset gains a sequence.
 - Conversion is a recipe step: `convert-tracks` and `convert-labels` with
   `source_format`. Scan the sources first. A feature reads the converted tracks
   through `"tracks": {"step": <id>}` and the converted labels through
@@ -923,11 +947,12 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `sequence-classifier`, `lightning-action` or fitted-weight `probability-ensemble` step
   is the same run too: their `templates` run (or the members' folds) names the training
   set, so the wider request fits nothing again and computes only the new entries. Ask
-  the first request over a scope that holds the training entries. A fit does not move
-  when a training entry is converted again; only that entry's output is recomputed with
-  the stored model, so refit on purpose by changing a parameter. `fit_scope.json` lists
-  the entries of the templates run, not of the request. The score is not nested, and a
-  fold is whole sequences unless `cv_unit` is `block`
+  the first request over a scope that contains the training entries. A fit is fitted
+  again under its run id when a training entry is converted again from changed sources.
+  It fits over the training entries, whatever the request's scope, and the steps that
+  apply it recompute. Change a parameter to fit under a new run id. `fit_scope.json`
+  lists the entries of the templates run and leaves out the request's. The score is not
+  nested, and a fold is whole sequences unless `cv_unit` is `block`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-cross-validation/).
 - When several training sequences come from one animal, session or recording, set
   `cv_group_by` on `xgboost`, `sequence-classifier` or `lightning-action`: a mapping

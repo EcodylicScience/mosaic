@@ -106,9 +106,10 @@ own environments.
   protocol (`test_every_global_or_scope_dependent_feature_declares_fits`). `True` when
   the feature learns something from its inputs, whether its scope names its run
   (`extract-labeled-templates`, `arhmm`) or not (`xgboost`, the `global-*` fitters).
-  `evaluate-labels` depends on scope and learns nothing, so it declares `False`. A feature
-  that fits only without a `model` or with `weights="fit"` declares `True` on the class and
-  narrows `self.fits` in `__init__`, beside `self.scope_dependent` when that narrows too
+  `evaluate-labels` depends on scope and declares `False`, because it only scores. A
+  feature that fits only without a `model` or with `weights="fit"` declares `True` on
+  the class. It narrows `self.fits` in `__init__`, beside `self.scope_dependent` when
+  that narrows too
   (`test_a_feature_that_clears_scope_dependent_per_instance_clears_fits`). A
   `scope_dependent` fitter with a `model` param narrows `fits` and `scope_dependent`
   together (`arhmm`, `kpms`, `vame`, the identity models;
@@ -118,8 +119,12 @@ own environments.
   without `fits` cleared the held-out guard would refuse it. Such a feature's
   `load_state` raises `FileNotFoundError` for a `model` that did not resolve
   (`named_model_file` in `feature_library/named_model.py`), because a step that fitted
-  in its place would store a fit of this scope under the missing model's id. The catalog's
-  `Declaration.fits` and `StepTypeDetail.fits` carry the class value. It is not hashed.
+  in its place would store a fit of this scope under the missing model's id. A
+  scope-free fitter given a `model` narrows `fits` alone (`global-kmeans`,
+  `global-scaler`, `global-tsne`, `global-ward`, `xgboost`). Its apply is then not a fit
+  to the held-out guard, and the run skips the fit-input record and comparison. The
+  catalog's `Declaration.fits` and `StepTypeDetail.fits` report the class value. It is
+  not hashed.
 - **Every feature declares `follows_ids`**, a bool on the class itself outside the
   protocol (`test_every_feature_declares_whether_it_follows_ids`). `True` unless `apply`
   reads each row alone: a feature that differences, smooths, windows or groups by `id`
@@ -139,7 +144,24 @@ own environments.
   input's `cv_folds.parquet`). Their fit skips every other entry before it touches
   state, so a wider scope is the same run that applies the stored fit to the new
   entries. The first run must be asked for over a scope that holds the training entries,
-  and `refuse_entries_outside_scope` says so.
+  and `refuse_entries_outside_scope` says so. Each of the five reports the entries its
+  fit trains on in the instance attribute `fitted_entries` (`tuple[Entry, ...] | None`),
+  which its `load_state` sets when it returns `False`, and the engine records them as
+  the fit's training set (`reported_fit_entries`, `fit_scope.py`). `feral` reports its
+  train and test entries together, and a fit that reports `None` leaves its record
+  without entries (`test_a_fit_pinned_to_its_training_set_reports_the_entries_it_streams`).
+- **A `load_state` that returns `False` leaves its `run_root` alone.** It neither keeps
+  the directory for `fit` nor writes there. A fit run again is offered an empty
+  directory outside the dataset, and the engine raises `CannotFitAgain` when `fit`
+  writes into it. A feature that writes into its run root during `fit`, or keeps a log
+  there, takes the root from `bind_run_root(run_root)` (`BindsRunRoot`). The engine
+  calls it with the real run root right after `load_state` returns `False`, for a first
+  fit and a fit run again, and verification calls it with its scratch directory.
+  `feral`, `kpms` and `vame` implement it. A feature that resumes work from its run
+  root, such as a training checkpoint, takes `bind_fit_inputs(digest)` (`ResumesFits`)
+  and resumes only for the same inputs digest. `feral` writes
+  `training_checkpoint.inputs` beside its checkpoint. A `load_state` that returns `True`
+  for an empty directory loads its state from elsewhere and cannot be fitted again.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

@@ -1132,17 +1132,15 @@ def _resolve_feature(
 
     if run_id is None:
         # Unreachable from run_feature and from the chain runner: both call
-        # resolve.resolve_references first, so `item.run_id` arrives concrete
-        # (item 1.1). Kept for direct callers of build_manifest -- it is public
-        # API.
+        # resolve.resolve_references first, so `item.run_id` arrives concrete.
+        # Kept for direct callers of the public `build_manifest`.
         #
-        # **The leaf of the chain, not the newest run** (item 9.4). It used to be
-        # `latest_feature_run_root`, which sorts on the `finished_at` /
-        # `started_at` strings -- wall-clock ordering, and not reproducible
-        # across a synced dataset: two machines that ran the same work in a
-        # different order disagree about which table is current. The leaf is a
-        # property of the data instead, and two leaves refuse rather than
-        # tiebreak. A dataset with a single chain per feature is unaffected,
+        # **The leaf of the chain, not the newest run.** Sorting on the
+        # `finished_at` / `started_at` strings is wall-clock ordering, and not
+        # reproducible across a synced dataset: two machines that ran the same
+        # work in a different order disagree about which table is current. The
+        # leaf is a property of the data instead, and two leaves refuse rather
+        # than tiebreak. A dataset with a single chain per feature is unaffected,
         # which is every dataset that has only ever run one recipe.
         run_id = _leaf_run_of(ds, feature_name)
 

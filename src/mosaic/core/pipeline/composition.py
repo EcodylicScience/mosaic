@@ -1,9 +1,9 @@
 """What a sequence is made of, as one comparable value per source root.
 
-A recipe name cannot carry source content -- that is rule P2, and it is why
-``run_id`` names how an artifact was produced and never what it was produced
-from. Source content is tracked separately, and this is where it is turned into
-something comparable: a composition hash, per sequence, per source root.
+A recipe name cannot carry source content. ``run_id`` therefore names how an
+artifact was produced and never what it was produced from. Source content is
+tracked separately, and this is where it is turned into something comparable: a
+composition hash, per sequence, per source root.
 
 ``media_raw`` composes the ordered video uids of a sequence; ``tracks_raw`` the
 checksums of its raw track files. They are deliberately separate values rather
@@ -19,14 +19,14 @@ golden corpus pin these values as literals with no fixture, and what keeps the
 storage half (:mod:`mosaic.core.pipeline.sequence_index`) free of the hashing
 half -- the same split ``tracks_index`` and ``tracks_identity`` already have.
 
-**The ordering rule is mixed, and a naive reading of item 0.5 gets it wrong.**
+**The ordering rule is mixed, and a naive reading gets it wrong.**
 The outer list of ``(camera, uids)`` pairs is sorted, because two callers may
 hand the cameras over in either order and mean the same thing. The inner uid list
 is **never** sorted: it is ``video_order``, it is semantic, and sorting it would
 make two different arrangements of one sequence hash alike -- which is the exact
 change a composition exists to detect. ``identity_ready`` already preserves list
 order and sorts only sets, so the rule survives by construction; the comment
-there naming this item is the other half of the contract.
+there naming this rule is the other half of the contract.
 
 **Nothing here is ever a ``set``.** A set deduplicates at construction, before
 ``identity_ready`` ever sees it, so a set of uids would silently drop the second
@@ -328,13 +328,13 @@ def input_part(own: str, inherited: str, state: str) -> str:
     *inherited* its ``consumed_input_composition``, which carries what the
     upstream's own feature inputs recorded. A part with both halves and *state*
     blank is ``""``. A non-blank *state*, the upstream row's
-    ``consumed_model_state``, leads the part as ``f"{state}|{own}/{inherited}"``,
-    so a fit written again moves the part of every row that reads it.
+    ``consumed_model_state``, leads the part as ``f"{state}|{own}/{inherited}"``.
+    A fit written again therefore moves the part of every row that reads it.
 
-    The spelling is injective. *own* and *state* hold neither ``/`` nor ``|``,
-    so a part whose text before its first ``/`` holds a ``|`` carries a state
-    and one whose text before its first ``/`` holds none does not, whatever
-    ``/``, ``+`` or ``|`` *inherited* holds from deeper parts.
+    The spelling is injective. *own* and *state* hold neither ``/`` nor ``|``.
+    A part whose text before its first ``/`` holds a ``|`` carries a state, and
+    one whose text before its first ``/`` holds none does not, whatever ``/``,
+    ``+`` or ``|`` *inherited* holds from deeper parts.
 
     Args:
         own: The upstream row's ``consumed_composition``.

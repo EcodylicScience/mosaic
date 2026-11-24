@@ -293,8 +293,8 @@ def test_a_fit_pinned_to_its_training_set_reports_the_entries_it_streams(
 ) -> None:
     """``fitted_entries`` names every entry the fit streams, and ``load_state`` sets it.
 
-    A fit pinned outside its scope trains on entries the invocation does not name,
-    so the entries its fit reads are the ones that can drift. ``feral`` streams its
+    A fit pinned outside its scope trains on entries the invocation does not name.
+    The entries its fit reads are the ones that can drift. ``feral`` streams its
     train and test entries both, and reports both. ``load_state`` sets the
     attribute, ``None`` when it finds a fitted state to load.
     """

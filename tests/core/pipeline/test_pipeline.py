@@ -355,7 +355,7 @@ def _fitted_templates(tmp_path: Path) -> Dataset:
 def _drifted_templates(tmp_path: Path) -> Dataset:
     """A dataset whose templates were fitted before ``seq_a`` changed.
 
-    The speed step is computed again over the new table, so the speed rows the
+    The speed step is computed again over the new table. The speed rows the
     fit read have moved, and the fit is due again.
     """
     ds = _fitted_templates(tmp_path)

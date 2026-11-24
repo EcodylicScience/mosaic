@@ -147,7 +147,7 @@ def _keep_checkpoint_for(run_root: Path, digest: str | None) -> None:
 
     A checkpoint resumes when the file beside it names *digest*. Otherwise the
     checkpoint and that file are removed, in that order, and a file naming
-    *digest* is written, so no crash leaves an earlier checkpoint beside a file
+    *digest* is written. No crash leaves an earlier checkpoint beside a file
     naming the inputs now. Without a digest nothing is resumed or named.
 
     Args:

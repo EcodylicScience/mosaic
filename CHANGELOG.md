@@ -29,6 +29,54 @@ spends less fixed time on each entry. A subprocess that a feature starts is
 missing from the memory figures for up to half a second after it starts, and
 the CPU it uses before the run first sees it is not counted.
 
+## Unreleased: a fit whose inputs changed is fitted again
+
+No run id, golden file or feature `version` moves. The record, the digests and
+`_fit_references` are recorded and not hashed, and `FEATURE_IDENTITY_SCHEME` stays.
+
+A fit step whose inputs changed since it was fitted is fitted again under its run id the
+next time it runs: a training entry converted again from changed sources, a declared
+root or an upstream run moved under one, a training entry gone from the dataset, or a
+fit it reads fitted again. The entries of the fit and of every step that reads it
+recompute. `fit_scope.json` gains `fit_inputs` (the cells of each entry the fit read),
+`execution_id` (the attempt that fitted) and `via[].state_digest` (the digest of each
+fit it read), and `params.json` gains `_fit_references`. A fit saved without
+`fit_inputs` is served, with one warning that names `--refit`.
+
+`refit` (`--refit` on `mosaic run`, `mosaic pipeline plan`, `submit` and `run`,
+`Request.refit`, `Pipeline.run(refit=...)`) fits a step again on request, once per
+request, while `overwrite` keeps its meaning and does not fit. `mosaic run --refit` is
+refused with `--kind`, `--probe` and `--step-entries`. `execute_step` fits a step that
+the request names, whichever driver runs it, and `step_argv` omits the flag. A request
+file without `refit` reads as before, and `plan_fingerprint` adds the key only when a
+refit is due or asked.
+
+`consumed_model_state` records one part per fit a row reads (`model`, `templates`,
+`label_map`, `init_from`, `decision_threshold`) and a `_state` part for the state the
+run loaded. A bare digest for one part keeps the cell of an apply through `model` alone,
+and the other cells recompute once, as do the rows of a fit run. A feature input's part
+of `consumed_input_composition` includes the upstream row's `consumed_model_state`. A
+fit written again then recomputes the rows below it. `drifted_entries` reports every
+entry of a run whose fit drifted.
+
+A refit offers `load_state` an empty directory. It raises `CannotFitAgain` (a
+`conflict`, causes `loads_elsewhere` and `wrote_outside_run_root`) for a feature that
+loads its state from elsewhere or writes outside its run root. A feature that writes
+into its run root during `fit` takes the root from `bind_run_root(run_root)`, and
+`feral`, `kpms` and `vame` implement it. A feature that resumes a checkpoint takes
+`bind_fit_inputs(digest)`, and `feral` resumes only for the same inputs.
+`global-kmeans`, `global-scaler`, `global-tsne`, `global-ward` and `xgboost` clear
+`fits` when given a `model`, and the five features that declare `fit_set_pinned_by`
+report their training entries as `fitted_entries`.
+
+The plan wire (`PlannedStepWire.refit`) and the inventory wire (`ArtifactWire.refit`)
+gain a `RefitWire`, `mosaic inventory show` prints a `Refit:` line, `Pipeline.status`
+gains a `refit` column, and the MCP's `plan_recipe` steps include `refit` as one line of
+text. A fit stored in a linked dataset is not fitted again from the reading dataset. The
+run refuses with the new reason `linked_fit_drifted`, and `--refit` fits it into the
+reading dataset. `subset_refused` gains the cause `refit`. `mosaic pipeline verify`
+skips a step due a refit and counts it unfinished.
+
 ## Unreleased: a feature definition applies its fit through `model`
 
 No existing run id, sidecar or golden file moves. A definition that sets `fits = True`
@@ -50,17 +98,17 @@ through the link. While a link that provides features is unreachable, `missing`,
 
 A fit records a digest of the state its `save_state` wrote as the `state_digest` key of
 `fit_scope.json`, and each feature row that read a `model` records the digest it read in
-the new `consumed_model_state` column of the index. An apply of a fit written again
-under its run id recomputes its cached entries, and `mosaic inventory` and a plan name
-those entries as `complete-but-drifted`. An apply row and its fit from before the digest
-record none and are served, and the run warns that a fit written again under that run
-id goes undetected: remove the run and fit it again to record one. An old row against a
-fit that records a digest recomputes once. A `fit_scope.json` that is not a JSON object
-raises `FitStateUnreadable`, as does one whose `state_digest` is not a string
-(`error_kind` `conflict`, `detail` `feature` and `run_id`), before any entry runs. An
-apply reads from its fit's run root only the files `save_state` wrote. A toolkit from
-before the column drops it when it rewrites an index, and the next run recomputes those
-entries once.
+the new `consumed_model_state` column of the index, and a row that reads several fits
+records several parts, as the entry above says. An apply of a fit written again under
+its run id recomputes its cached entries, and `mosaic inventory` and a plan name those
+entries as `complete-but-drifted`. An apply row and its fit from before the digest
+record none and are served, and the run warns that a rewrite of the fit goes undetected:
+remove the run and fit it again to record one. An old row against a fit that records a
+digest recomputes once. A `fit_scope.json` raises `FitStateUnreadable` when it is not a
+JSON object or its `state_digest` is not a string (`error_kind` `conflict`, `detail`
+`feature` and `run_id`), before any entry runs. An apply reads from its fit's run root
+only the files `save_state` wrote. A toolkit from before the column drops it when it
+rewrites an index, and the next run recomputes those entries once.
 
 ## 0.26.0: linked datasets, indexing tables in place and copying a model run root
 

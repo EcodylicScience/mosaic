@@ -3,7 +3,7 @@
 The chain is the k-means fit, its apply through ``model``, a per-entry feature
 over the apply's output and a second one over that. A fit written again moves
 the apply's ``consumed_model_state``, which the feature reading the apply
-records in its inputs cell, and the one below it in its own, so each recomputes
+records in its inputs cell, and the one below it in its own. Each recomputes
 in turn.
 
 A fit records the cells of each entry it read, the attempt that fitted and the

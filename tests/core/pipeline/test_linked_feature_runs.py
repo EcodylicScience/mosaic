@@ -893,7 +893,7 @@ def test_an_entry_the_copy_converted_again_is_computed_into_its_own_tree(
 
 
 class _ScopedCentering(CenteringFeature):
-    """A :class:`CenteringFeature` over its scope, so its fit records its entries."""
+    """A :class:`CenteringFeature` over its scope, recording its entries in its fit."""
 
     name = "prov-centering-scoped"
     scope_dependent = True

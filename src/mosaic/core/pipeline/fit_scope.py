@@ -1,4 +1,4 @@
-"""Item 5.3: which sequences a run's state was *fitted* over.
+"""Which sequences a run's state was *fitted* over.
 
 An index row records that a sequence was **applied**. Nothing recorded which
 sequences the fit itself consumed, and for one shape of feature the two genuinely
@@ -18,8 +18,7 @@ This file is written only when ``fit()`` actually ran, so it stays what it says
 it is.
 
 **No index column, deliberately.** A fit-scope cell would hold the same value on
-every row of a run -- a per-run property duplicated per row, which is the shape
-item 4.4 rejects for compositions and rejects here for the same reason: no way to
+every row of a run. That per-run property, duplicated per row, gives no way to
 tell a stale copy from a current one. The pairing is already derivable, and
 :func:`fit_and_apply_scopes` is the one place that derives it.
 
@@ -298,7 +297,7 @@ type CannotFitAgainCause = Literal["loads_elsewhere", "wrote_outside_run_root"]
 """Why a run cannot fit again under its run id.
 
 - ``loads_elsewhere``: the feature's ``load_state`` found a state in an empty
-  directory, so it reads its state from somewhere other than the run root.
+  directory and reads its state from somewhere other than the run root.
 - ``wrote_outside_run_root``: the feature's ``fit`` wrote into the directory its
   ``load_state`` was offered rather than into the run root it was bound to.
 """
@@ -358,8 +357,8 @@ class LinkedFitDrifted(Refusal):
     """A fit a linked dataset holds, whose inputs changed in the reading dataset.
 
     Fitting it again here would write a new fit beside the link's, which no
-    linked dataset is written to hold, so the run is refused before its run
-    root exists.
+    linked dataset is written to hold. The run is refused before its run root
+    exists.
 
     Attributes:
         feature: The feature's name.
@@ -515,10 +514,10 @@ def derive_fit_scope(
 
     A scope-dependent feature fits from its own stream, so its record is the
     scope it resolved, and its ``via`` names the fits it pinned. A scope-free
-    fitter fits from the fits its params pin -- the scope it was invoked over
-    is only where it is *applied* -- so its record is the union of those fits'
-    own records. That is transitive: each upstream recorded its own fit scope
-    when it ran.
+    fitter fits from the fits its params pin. The scope it was invoked over
+    is only where it is *applied*. Its record is the union of those fits' own
+    records. That is transitive: each upstream recorded its own fit scope when
+    it ran.
 
     Args:
         ds: The dataset the run belongs to.
@@ -634,13 +633,13 @@ def write_fit_scope(run_root: Path, scope: FitScope) -> None:
     ``write_identity_scheme`` either -- that one is written on every invocation
     including a pure cache hit, and this must not be.
 
-    Overwriting is correct when it happens: a fit or a refit ran here, so the
-    state being described is being replaced too.
+    Overwriting is correct when it happens: a fit or a refit ran here and the
+    state being described is replaced too.
 
     *scope* comes from :func:`derive_fit_scope`. Its unknown sets are written as
     JSON ``null``. Its ``inputs`` are written under ``fit_inputs`` sorted by
     group and sequence, and left out when ``None``. ``via`` is written sorted by
-    field, so the file does not depend on the order of either.
+    field. The file does not depend on the order of either.
     """
     payload: dict[str, object] = {
         "scope_dependent": scope.scope_dependent,
@@ -793,12 +792,12 @@ def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
 
     ``None`` means **unknown**, not "fitted over nothing": it covers a run that
     predates this record and a feature that has no fit phase at all. A caller
-    must not read it as an empty fit scope -- that would report every run
-    written before item 5.3 as having trained on nothing.
+    must not read it as an empty fit scope, which would report every run
+    written before the record existed as having trained on nothing.
 
     A JSON ``null`` set reads as ``None`` (unknown). A record without a
     ``source`` key reads as ``source="legacy"``. A legacy scope-free record held
-    the scope it was *invoked* over, not what its artifacts held, so its
+    the scope it was *invoked* over, not what its artifacts held. Its
     entries and variants read as ``None``; a legacy scope-dependent record
     keeps them.
     A record without ``state_digest`` reads it as ``""``, and one whose

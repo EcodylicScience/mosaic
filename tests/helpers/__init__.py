@@ -124,12 +124,11 @@ What lives where:
 - ``state_writes``: the files a feature's ``save_state`` publishes and their order,
   and whether ``load_state`` finds a state after each publish fails.
 - ``model_state``: the k-means chain that fits ``global-kmeans`` and applies it
-  through ``model``, a refit of it over moved tracks, an entry converted again
-  from changed sources, the reasons a run printed
-  for the entries it did not serve, a column of a run's index rows, the
-  fit-state digest each row of an apply records, the entries a plan reports
-  as drifted, a templates recipe and a notebook pipeline of it, and a dataset
-  whose templates fit is due a refit.
+  through ``model``, a refit of it over moved tracks, an entry converted again from
+  changed sources, the reasons a run printed for the entries it did not serve, a column
+  of a run's index rows, the fit-state digest each row of an apply records, the entries
+  a plan reports as drifted, a templates recipe and a notebook pipeline of it, and a
+  dataset whose templates fit is due a refit.
 - ``feature_definitions``: the sources of feature definitions, a dataset with
   tracks that defines them, an instance of the applying definition for a ``model``
   mapping, and the distance from the origin of each row of an entry's tracks.

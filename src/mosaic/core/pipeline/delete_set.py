@@ -1,14 +1,13 @@
-"""The scoped delete set -- item 6.4, and what it refuses to touch.
+"""The scoped delete set, and what it refuses to touch.
 
-P4's override: a source change blocks while derivatives exist, and forcing it
-deletes the ones that became *wrong*. This computes that set from item 6.1's
-walk and applies it, dry-run first.
+A source change blocks while derivatives exist, and forcing it deletes the ones
+that became *wrong*. This computes that set from the walk of
+every index in the dataset and applies it, dry-run first.
 
-**Not built on ``Pipeline.clean``.** The item calls that "the right primitive",
-and against the code it is not: ``clean`` enumerates the steps of one ``Pipeline``
-object, so an artifact produced from a notebook, the CLI or a queue job is
-invisible to it -- exactly the set P4's placement clause exists to cover -- and it
-deletes whole run directories where this needs per ``(run_id, group, sequence)``.
+**Not built on ``Pipeline.clean``.** ``clean`` enumerates the steps of one
+``Pipeline`` object. An artifact produced from a notebook, the CLI or a queue
+job is invisible to it, and it deletes whole run directories where this needs
+per ``(run_id, group, sequence)``.
 What is worth keeping is its *safeguards*, and those are here: nothing outside
 the dataset's roots is ever unlinked, and every removal is checked against the
 set that was previewed.
@@ -19,16 +18,17 @@ because "would delete 0" reads as an invitation to pass ``apply`` when the truth
 may be "would delete 0, having refused 4".
 
 **What can never appear, and why it is structural.** Extracted frames and
-converted labels are P4 carve-outs. Neither is filtered out here: item 6.1's walk
-does not enumerate them at all, so there is no branch to forget. A frame set
-carrying annotations teaches a model what a subject looks like, which stays true
-across a rearrangement; converted labels are remapped rather than deleted, and
-until that remap exists a reorder over them is blocked at the gesture instead.
+converted labels are carved out of the set. Neither is filtered out here: the
+walk of every index does not enumerate them at all, leaving no branch to
+forget. A frame set carrying annotations teaches a model what a subject looks
+like, which stays true across a rearrangement; converted labels are remapped
+rather than deleted, and until that remap exists a reorder over them is blocked
+at the gesture instead.
 
 **A scope-dependent run is deleted whole or not at all.** Its state was fitted
 over a set of entries, so removing one output leaves the rest describing a fit
 that included it -- a directory whose contents come from two different fits, with
-nothing on disk saying so. Detected through the fit scope item 5.3 records, and
+nothing on disk saying so. Detected through the fit scope a run records, and
 declined rather than half-applied when the reached entries are only part of it.
 """
 

@@ -151,6 +151,16 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `refuse` says, so `submit_request` writes nothing, and its plan and fingerprint are
   those a step makes. `save_request` leaves `pins` out when empty, and the fingerprint
   covers them only when there are any (`test_pipeline_pins.py`).
+- `Request.refit` lists the feature steps to fit again under their run ids, by step id.
+  A refit belongs to one request and is named there alone. A `Problem` at `refit` marks
+  an unknown step id, a step that is not a feature step, a feature without recorded fit
+  inputs (`records_fit_inputs`), or a step the request pins or binds. The plan marks
+  each named step with a `RefitWire` whose `asked` is true, reads it incomplete, and
+  asks for its whole target. `save_request` leaves `refit` out when empty. The
+  fingerprint adds the sorted ids only when there are any, and adds a step's `refit` key
+  only for a step whose fit is due a refit or asked for one. A plan without a refit
+  keeps its fingerprint, and a plan reviewed before a fit drifted reads stale
+  (`test_pipeline_plan_fingerprint.py`, `test_pipeline_plan.py`).
 - A planned `def:` step's `StepSpec.feature` names the full digest of the version it
   resolved to (`resolve_step_spec`). `submit_request` records the digests of the bare
   `def:<name>` steps in `Request.definitions`, read off the plan it records and never
@@ -398,6 +408,11 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
 - `execute_step` (`step.py`) is the step body that `mosaic run --graph-request <rid>
   --step <id>` and `run_pipeline` (`run.py`) both call. Preflight, parent pinning and
   failure recording belong there and in no driver.
+- `execute_step` fits a step that `Request.refit` names, whichever driver runs it. A
+  driver builds its command line without the flag, and `step_argv` omits it. `mosaic run
+  --graph-request --step --refit` runs a complete step again. A bound or pinned step is
+  served instead. `mosaic run` refuses `--refit` with `--probe`, `--step-entries` and
+  `--kind`. `overwrite` does not fit (`test_pipeline_request_driver.py`).
 - A step re-plans its identity at its start. A `run_id` resolved at plan or submit
   time drives the preview, the estimate and the decision to enqueue. Execution and a
   downstream job's payload do not read it.
@@ -423,30 +438,31 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `--step-entries`) computes some of a step's entries under an execution id other than
   the step's own. That id is a `ValueError`, and a usage error in the CLI, before
   anything is recorded. After `_plan` and before the bound and cached answers it refuses
-  `subset_refused` with the `cause` `op_step`, `stand_in` (bound or pinned),
-  `scope_dependent` or `outside_target`. A probe takes this attempt's entries after
-  quarantine and backoff, the largest `count` (at most `MAX_PROBE_ENTRIES`, 5) by
-  `by_rows`. A feature that is not process-capable computes at most
-  `PROBE_THREAD_ENTRIES` (3), in `PROBE_WORKERS` threads behind the gate: one alone and
-  one pair, measuring one worker's base. A process-capable feature asked for 5 runs two
-  phases of one attempt (`phases` of `run_feature`): the largest 3 in threads, then the
-  last 2 as a pair of two worker processes at `admission_margin=0`, both through
-  `effective_parallel`. A probe of 4 or fewer runs threads only. The `probe` event lists
-  the entries largest first, so its last two tokens are the process pair. A phase writes
-  its own levels, peak and worker bases in its own final `resources` event, so the
-  attempt's thread levels and peak and its process ones read apart. The fit, the process
-  tree's memory and CPU and `admission_waits` span the attempt, and `peak_rss_bytes` never
-  falls below an earlier report's. `apply_wall_seconds` is the phase's own, so
-  `rows_per_second` is the process pair's rows over the pair's own apply time. The pair
-  starts together, with no gate and no first entry alone, but the second loads just
-  after the first, so the process phase reports a short level 1 beside level 2. On
-  a host of one processor both phases run one entry at a time in threads, which
-  `run_feature` takes as one phase, so the levels and the peak cover all five entries.
-  The worker-base measure is dropped when the process pair runs in processes, and kept
-  otherwise. A named subset takes the caller's settings. Both write a
-  `probe` event and count failures as any attempt does. Status reads only the step's own
-  attempt (`rollup._attempt`), whose run computes the remainder and serves the subset's
-  entries from the cache (`test_pipeline_step_subset.py`).
+  `subset_refused` with the `cause` `op_step`, `stand_in` (bound or pinned), `refit` (a
+  step `Request.refit` names, which fits over its whole attempt), `scope_dependent` or
+  `outside_target`. A probe takes this attempt's entries after quarantine and backoff,
+  the largest `count` (at most `MAX_PROBE_ENTRIES`, 5) by `by_rows`. A feature that is
+  not process-capable computes at most `PROBE_THREAD_ENTRIES` (3), in `PROBE_WORKERS`
+  threads behind the gate: one alone and one pair, measuring one worker's base. A
+  process-capable feature asked for 5 runs two phases of one attempt (`phases` of
+  `run_feature`): the largest 3 in threads, then the last 2 as a pair of two worker
+  processes at `admission_margin=0`, both through `effective_parallel`. A probe of 4 or
+  fewer runs threads only. The `probe` event lists the entries largest first. Its last
+  two tokens are the process pair. A phase writes its levels, peak and worker bases in
+  its final `resources` event. The attempt's thread levels and peak then read apart from
+  its process ones. The fit, the process tree's memory and CPU and `admission_waits`
+  span the attempt, and `peak_rss_bytes` does not fall below an earlier report's.
+  `apply_wall_seconds` is the phase's. `rows_per_second` is the process pair's rows over
+  the pair's apply time. The pair starts together, with no gate and no first entry
+  alone, but the second loads just after the first. The process phase then reports a
+  short level 1 beside level 2. On a host of one processor both phases run one entry at
+  a time in threads, which `run_feature` takes as one phase. The levels and the peak
+  then cover all five entries. The worker-base measure is dropped when the process pair
+  runs in processes, and kept otherwise. A named subset takes the caller's settings.
+  Both write a `probe` event and count failures as any attempt does. Status reads only
+  the attempt the request assigned the step (`rollup._attempt`), whose run computes the
+  remainder and serves the subset's entries from the cache
+  (`test_pipeline_step_subset.py`).
 - `step_input_size` (`input_size.py`) reports each entry's covariates and the step's
   `feature_version`, `emits`, `params_digest` and `params_default` beside its rows, for a
   step the plan refuses as well. The covariates come from `tracks_covariates`, which reads
@@ -460,11 +476,13 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   then run in this order: an op step, inputs not ready, entries to compute, an existing
   run-log of the step's execution id, the token again, then the attempt. The first four
   return `not_attempted` or `declined` before `execute_step` is called. A settle-only
-  attempt answers `_bound` or `_cached` and raises `SettleDeclined` otherwise.
-  `SettleDeclined` is not a `Refusal`: it is raised before any run-log opens, and every
-  `Refusal` of the attempt becomes one with reason `refused`. A settle calls neither
-  `preflight`, a run nor `run_feature`. A refusal, a decline and a cancel write nothing
-  (`tests/core/pipeline/graph/test_step_settle.py`).
+  attempt answers `_bound` or `_cached` and raises `SettleDeclined` otherwise. A step
+  that `Request.refit` names reads incomplete in its plan, and its settle declines
+  `would_compute`. A settle given `refit` raises `ValueError`, as one given `overwrite`
+  does. `SettleDeclined` is not a `Refusal`: it is raised before any run-log opens, and
+  every `Refusal` of the attempt becomes one with reason `refused`. A settle calls
+  neither `preflight`, a run nor `run_feature`. A refusal, a decline and a cancel leave
+  every file as it was (`tests/core/pipeline/graph/test_step_settle.py`).
 - A request is one-shot, and a driver does not drive one whose rollup has ended. A
   failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
   reads a failed request with an unstarted step `running` while its driver lease file

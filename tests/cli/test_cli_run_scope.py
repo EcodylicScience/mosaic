@@ -632,7 +632,7 @@ def test_an_op_run_accepts_overwrite_and_recomputes(scoped: Dataset) -> None:
 
 
 def test_an_op_run_refuses_refit(scoped: Dataset) -> None:
-    """``--refit`` fits a feature step again, and an op that ran would drop it."""
+    """``--refit`` fits a feature step again, which an op has no way to do."""
     result = _regrid(scoped, "--entries", "A:one", "--refit")
 
     assert result.exit_code == 1

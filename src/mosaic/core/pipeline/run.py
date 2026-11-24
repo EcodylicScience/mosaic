@@ -915,11 +915,10 @@ class MissingScopeDeclaration(AttributeError):
     it names the feature, which a bare ``AttributeError: 'EgocentricCrop' object
     has no attribute 'scope_dependent'`` does only by accident of the repr.
 
-    Deliberately *not* solved by a ``ClassVar`` default on the protocol. A
-    default would let the next feature ship with no declaration at all and
-    silently inherit ``False``, which is the wrong answer for any feature that
-    fits from its stream -- exactly the defect item 1.4 exists to fix. The
-    declaration is a decision each feature owes, so its absence is an error.
+    A ``ClassVar`` default on the protocol would not solve it. A default would
+    let the next feature ship with no declaration at all and inherit ``False``
+    without an error, the wrong answer for any feature that fits from its
+    stream. Each feature owes the declaration, and its absence is an error.
     """
 
 
@@ -928,9 +927,8 @@ class MissingConsumedRootsDeclaration(AttributeError):
 
     The same argument as :class:`MissingScopeDeclaration`, one field over. A
     default of ``()`` would let the next feature that opens video ship
-    undeclared and silently claim to read nothing -- and item 6.2's per-entry
-    delete set reads this declaration, so an empty one is a stale crop nothing
-    deletes.
+    undeclared and claim to read no root. The per-entry delete set reads this
+    declaration, and an empty one is a stale crop nothing deletes.
     """
 
 
@@ -1073,8 +1071,8 @@ def entry_composition(
     same thing to a reader: draw no conclusion.
 
     The encoding lives in :func:`encode_entry_composition` rather than here,
-    because item 5.1's tracks half writes the same cell on the tracks row and two
-    spellings of one answer would be two answers to item 6.2's walk.
+    because the tracks row writes the same cell and two spellings of one answer
+    would be two answers to the delete set's walk.
     """
     roots = sorted({root for root in feature.consumed_roots if root})
     recorded = {root: scope.composition_of(entry, root) for root in roots}
@@ -1484,7 +1482,7 @@ def compute_run_id(
         # for any caller that built a ResolvedScope by hand.
         hashable["_tracks"] = sorted(scope.tracks_variants)
     if scope.labels_variants:
-        # The label analog of `_tracks` (item 9.3): which label recipes produced
+        # The label analog of `_tracks`: which label recipes produced
         # the labels a run read. Same omit-when-absent rule, so a feature that
         # reads no labels -- almost all of them -- digests exactly as before and
         # the golden corpus moves only for the labels-consuming features.
@@ -1703,7 +1701,7 @@ def build_run_params_payload(
     with the upstream ids it now resolves to. Deliberately ``json_ready``, not
     ``identity_dump`` -- it keeps HASH_EXCLUDE fields and is never hashed.
 
-    ``_scope`` is an apply scope, not the fit scope (item 5.3), and it is written
+    ``_scope`` is an apply scope, not the fit scope, and it is written
     unconditionally. Its ``entries`` and ``compositions`` are this invocation's,
     so for a scope-free feature they are "whichever ran last". Its ``asked`` and
     ``asked_all`` accumulate across invocations: ``asked`` is the union of every
@@ -1925,8 +1923,8 @@ def _check_fit_inputs(
 ) -> FitDrift | None:
     """Compare the inputs the run's fit recorded with what the dataset holds now.
 
-    Runs before the run root is made, so a refusal writes nothing under any
-    dataset, and again under the claim of a fit. A feature for which
+    Runs before the run root is made and writes nothing under any dataset when
+    it refuses, and again under the claim of a fit. A feature for which
     :func:`~.fit_scope.records_fit_inputs` is false returns without a read.
 
     Args:
@@ -2013,7 +2011,7 @@ def _load_nothing_from(
     The load prepares what ``fit`` reads, and finds no state to return.
 
     Raises:
-        CannotFitAgain: The load found a state in the empty directory, so the
+        CannotFitAgain: The load found a state in the empty directory. The
             feature reads its state from elsewhere (``loads_elsewhere``).
     """
     if feature.load_state(scratch, artifact_paths, dependency_lookups):
@@ -2462,7 +2460,7 @@ class _CachedOutput:
         tracks_composition: The tracks composition its row recorded.
         input_composition: The upstream roots' composition its row recorded.
         neighbors: The neighbors its row recorded.
-        model_state: The fit-state digest of its model that its row recorded.
+        model_state: The fit-state cell its row recorded.
     """
 
     n_rows: int
@@ -2721,12 +2719,12 @@ def run_feature(
     refit : bool, default False
         Fit the run again under its run id, whatever its fit record says, and
         compute every entry the invocation asks for from the new fit. No record
-        is read before the fit, so a record that cannot be read, or a fit a
-        linked dataset holds, is fitted again into this dataset's own run root.
+        is read before the fit. An unreadable record, or a fit a linked dataset
+        holds, is therefore fitted again into this dataset's own run root.
         A fit pinned to its training set is fitted over its training entries,
         whatever the scope. A run whose own record already names
-        *execution_id* loads that fit instead, so the attempts of one request
-        fit once. A feature that applies a model ignores it. Unlike
+        *execution_id* loads that fit instead. The attempts of one request
+        therefore fit once. A feature that applies a model ignores it. Unlike
         *overwrite*, which recomputes the entries from the stored fit, it
         enters neither the run id nor ``params.json``.
     overlap_frames : int, default 0
@@ -2887,7 +2885,7 @@ def _run_feature_impl(
 
     ``ctx`` owns the attempt lifecycle (status/progress/cancel via its append-only
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
-    outputs on disk -- the permanent source of truth. A fit run again, for
+    outputs on disk, the permanent source of truth. A fit run again, for
     changed inputs or on request (*refit*), offers ``load_state`` the empty
     directory of *scratch*.
     """
@@ -2917,9 +2915,9 @@ def _run_feature_impl(
     # inputs resolve, the same answer an absent narrowing has always given here.
     selector = scope if scope is not None else Scope()
 
-    # An explicitly empty selector names no entry on every input, so the run
+    # An explicitly empty selector names no entry on every input, and the run
     # would compute nothing. A caller who names nothing almost certainly meant
-    # every sequence, so the entry point refuses it. A refit builds its own
+    # every sequence, and the entry point refuses it. A refit builds its own
     # selector over its training entries and is not checked here. An op
     # answers this question instead of refusing it, through
     # ``check_scope_takes``, which reads the selector rather than the
@@ -3041,10 +3039,10 @@ def _run_feature_impl(
     # ResolvedScope is empty and honestly records none.
     ctx.tracks_variant(resolved.tracks_variants)
 
-    # The inputs the fit recorded, compared before the run root is made, so a
+    # The inputs the fit recorded, compared before the run root is made, and a
     # refusal writes nothing. A fit whose inputs changed is fitted again. A refit
-    # asked for reads no record, so an unreadable one or a drifted fit that a
-    # link holds is fitted again, and a feature that applies a model ignores it.
+    # asked for reads no record, which fits again an unreadable one or a drifted
+    # fit that a link holds, and a feature that applies a model ignores it.
     asked_refit = refit and records_fit_inputs(feature)
     drift = (
         None
@@ -3375,8 +3373,8 @@ def _run_feature_impl(
         # is released before apply, which runs concurrently across scopes. A fit
         # run again checks its inputs again under the claim: a record a peer wrote
         # meanwhile no longer drifts, and its state is loaded. A refit asked for
-        # loads the fit when the record names this attempt, so a retry under the
-        # execution id of a request's step fits once.
+        # loads the fit when the record names this attempt. A retry under the
+        # execution id of a request's step therefore fits once.
         if not state_ready:
             ctx.check_cancel()
             kind = f"feature:{feature.name}"
@@ -3492,7 +3490,7 @@ def _run_feature_impl(
                     # every apply scope shares one run root -- fits from its pinned
                     # artifacts, not from this invocation's scope, so its record is
                     # derived from theirs. It also records the digest of the files
-                    # save_state wrote, which an apply through `model` compares,
+                    # save_state wrote, which a step reading this fit compares,
                     # the cells of the entries the fit read, the state of each
                     # fit it read and the attempt that fitted.
                     fit_scope = derive_fit_scope(
