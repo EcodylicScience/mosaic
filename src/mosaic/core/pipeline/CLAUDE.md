@@ -360,6 +360,25 @@ are in `graph/CLAUDE.md`.
 - Every exit of an entry lowers `EntriesInFlight`: an output written, a failure, a
   skip without a table, and missing pair rows. An exit that does not would stall the
   gate (`tests/core/pipeline/test_run_measures.py`).
+- Every exit of `run_feature`'s apply loop, a cancel, an interrupt or an error,
+  flushes the index rows, prints one stderr line when entries are in flight,
+  and settles the pool with `settle(results_only=True)`: a call that returns is
+  written and recorded, and a call that raises is not recorded. It flushes
+  again, records `entries_written` once, and raises the exception that ended
+  the loop. A failed flush and a settle that raises are each a note on the
+  exception raised. The errors raised while recording the outputs in flight,
+  which the settle dropped, are one note: `N of the outputs of the entries in
+  flight raised while being recorded, the first: <type>: <message>`. In a
+  notebook or the Python API, a second `KeyboardInterrupt` during the settle
+  abandons it and is raised instead, with the first exception as its context,
+  after the second flush has run. A feature run's pool (`hand_back_on_break`)
+  hands back every call finished before a break of a process pool, results
+  first, before it raises; a worker's `KeyboardInterrupt` is dropped. The ops'
+  pools (`EntryPool.for_settings`) do not hand back. A process worker that a
+  signal to the process group reaches, such as a terminal's Ctrl-C, a notebook's
+  interrupt in process mode or a group cancel, still loses its entry in
+  flight, whether the worker is killed or its call raises `KeyboardInterrupt`
+  (`tests/core/pipeline/test_run_exits.py`, `test_entry_pool.py`).
 - With several workers the gate (`admission_margin` above 0) and then the floor run in
   `before_load`, before the table is read, through `EntryPool.drain_one` and
   `wait_for_memory`, and `run_feature` builds its pool with `floor_at_submit=False` and

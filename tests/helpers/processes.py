@@ -10,6 +10,9 @@ test process is checked by its process id instead.
 token from another thread once a condition is true. :data:`SLEEPER_COMMAND` stands
 in for a long step.
 
+:func:`signal_group_when` runs a child in its own process group and signals the
+group once a condition is true.
+
 :func:`process_alive` tells whether a process is running, and
 :func:`count_process_tree_walks` counts the walks of the process tree that a test's
 code makes.
@@ -24,18 +27,22 @@ from __future__ import annotations
 
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+import mosaic
 from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.subprocess_util import LineChild
+from tests.helpers.paths import REPO_ROOT
 
 CHILD_TIMEOUT_SECONDS: Final[float] = 120.0
 """The longest a test waits for a child process to finish.
@@ -221,6 +228,99 @@ def cancel_when(
     thread = threading.Thread(target=cancel, daemon=True)
     thread.start()
     return thread
+
+
+@dataclass(frozen=True)
+class SignalledGroup:
+    """How a child that :func:`signal_group_when` signalled ended.
+
+    Attributes:
+        status: The child's exit status, negative for the signal that ended it.
+        signalled_at: The ``time.time()`` reading taken just before the signal.
+        seconds: From the signal to the child's exit.
+        errors: What the child wrote to standard error.
+    """
+
+    status: int
+    signalled_at: float
+    seconds: float
+    errors: str
+
+
+def signal_group_when(
+    argv: Sequence[str],
+    ready: Callable[[], bool],
+    signum: signal.Signals,
+    *,
+    extra_env: Mapping[str, str],
+    errors: Path,
+    waiting: str,
+) -> SignalledGroup:
+    """Run *argv* in its own process group, and signal the group once *ready* is true.
+
+    The child runs in the repository's root with this process's environment and
+    *extra_env*, and imports the ``mosaic`` that this process imported. Its
+    standard error goes to *errors*. The wait for *ready*, and then for the child to
+    exit, are each bounded by :data:`CHILD_TIMEOUT_SECONDS`, and the group is killed
+    on the way out while the child lives.
+
+    Args:
+        argv: The command of the child.
+        ready: True once the child is where the signal should find it.
+        signum: The signal sent to the group.
+        extra_env: Variables set in the child's environment.
+        errors: The file the child's standard error is written to.
+        waiting: What *ready* waits for, as a clause that follows "before" in a
+            failure's message.
+
+    Raises:
+        AssertionError: The child exited before *ready* was true, with its
+            standard error in the message, or *ready* stayed false, or the child
+            outlived the wait after the signal.
+    """
+    source = str(Path(mosaic.__file__).parent.parent)
+    inherited = os.environ.get("PYTHONPATH")
+    path = source if not inherited else os.pathsep.join([source, inherited])
+    environment = {**os.environ, **extra_env, "PYTHONPATH": path}
+    with errors.open("w") as stream:
+        child = subprocess.Popen(
+            list(argv),
+            env=environment,
+            cwd=REPO_ROOT,
+            stderr=stream,
+            start_new_session=True,
+        )
+
+        def ready_or_exited() -> bool:
+            if ready():
+                return True
+            status = child.poll()
+            if status is not None:
+                message = (
+                    f"the child exited with status {status} before {waiting}:\n"
+                    f"{errors.read_text()}"
+                )
+                raise AssertionError(message)
+            return False
+
+        try:
+            timed_out = f"{CHILD_TIMEOUT_SECONDS} s passed before {waiting}"
+            wait_for(ready_or_exited, CHILD_TIMEOUT_SECONDS, timed_out)
+            signalled_at = time.time()
+            signalled = time.monotonic()
+            os.killpg(child.pid, signum)
+            status = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+            seconds = time.monotonic() - signalled
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+    return SignalledGroup(
+        status=status,
+        signalled_at=signalled_at,
+        seconds=seconds,
+        errors=errors.read_text(),
+    )
 
 
 class LineChildren:

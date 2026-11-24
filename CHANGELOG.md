@@ -8,6 +8,18 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature run that stops early records the entries in flight
+
+No run id or output moves. A feature run that stops early, on a cancel, an
+interrupt or an error, now waits for the entries its workers are computing and
+records their outputs, so a rerun does not compute them again. Stopping takes
+as long as the slowest entry in flight, and a notebook interrupt in thread mode
+returns after them; in a notebook or the Python API, a second interrupt stops
+without them. A process worker that dies no longer drops the outputs of entries
+that finished just before it. Process workers that a signal to the process
+group reaches, such as a terminal's Ctrl-C, a notebook's interrupt in process
+mode or a group cancel, still lose their entries in flight.
+
 ## Unreleased: a run's CPU figures count a process from when the run first sees it
 
 No run id or output moves. A run's CPU figures count a process from the moment

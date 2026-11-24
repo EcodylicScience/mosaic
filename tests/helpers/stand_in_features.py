@@ -15,7 +15,8 @@ that computes several entries at once. :class:`LabelsClassifier` reads
 ground-truth labels and records the file of each entry it is handed, for the
 tests of labels that a linked dataset holds. :class:`HoldsOnSequences` stops in
 the entries it names until it is killed, for the tests of a cancel that reaches
-a run's workers.
+a run's workers. :class:`HoldsUntilReleased` stops in the entries it names until
+the test releases them, for the tests of how a run ends with entries in flight.
 """
 
 from __future__ import annotations
@@ -172,6 +173,41 @@ class HoldsOnSequences(ParallelFeature):
             (marks / sequence).touch()
             time.sleep(_HOLD_SECONDS)
         return df
+
+
+_RELEASE_POLL_SECONDS = 0.02
+
+
+class HoldsUntilReleased(ParallelFeature):
+    """Waits in each entry named in ``hold_on`` until the test releases it.
+
+    Each entry it applies leaves an empty file ``applied-<sequence>`` in the
+    directory that ``HOLD_DIRECTORY_VARIABLE`` names, so a test reads what a run
+    computed in any worker. On entering an entry named in ``hold_on`` it writes its
+    process id into a file named for the sequence there, then waits for a file
+    named ``release`` and returns once it exists. It fails after ``_HOLD_SECONDS``
+    without one. It holds in serial, thread and process mode alike, and the names
+    are a class attribute for the reason ``kill_on`` is.
+    """
+
+    name = "prov-parallel-released"
+    hold_on: tuple[str, ...] = ()
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
+        marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
+        (marks / f"applied-{sequence}").touch()
+        if sequence in self.hold_on:
+            process = str(os.getpid())
+            atomic_write(marks / sequence, lambda temp: temp.write_text(process))
+            release = marks / "release"
+            deadline = time.monotonic() + _HOLD_SECONDS
+            while not release.exists():
+                if time.monotonic() >= deadline:
+                    message = f"the test never released {sequence}"
+                    raise TimeoutError(message)
+                time.sleep(_RELEASE_POLL_SECONDS)
+        return super().apply(df)
 
 
 class PairClusterFeature(PlainFeature):

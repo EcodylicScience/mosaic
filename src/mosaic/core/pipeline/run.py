@@ -17,7 +17,7 @@ from collections.abc import (
     Sequence,
 )
 from pathlib import Path
-from typing import ClassVar, Final, TYPE_CHECKING, get_args
+from typing import ClassVar, Final, Literal, TYPE_CHECKING, get_args
 
 import numpy as np
 import pandas as pd
@@ -3171,14 +3171,29 @@ def _run_feature_impl(
                 _total_written += len(rows)
                 _pending_idx_rows.clear()
 
+        def _flush_noting(
+            flush: Literal["first", "second"], raised: BaseException
+        ) -> None:
+            """Flush the rows, and attach a failure to *raised* as a note naming *flush*."""
+            try:
+                _flush_idx()
+            except Exception as flush_error:
+                raised.add_note(
+                    f"The {flush} flush on the way out did not record the index rows "
+                    f"of the outputs written: {type(flush_error).__name__}: "
+                    f"{flush_error}"
+                )
+
         def _apply_entries(entries: Manifest, state: _PhaseState) -> _PhaseOutcome:
             """Apply the feature to *entries* and record each one's index row.
 
             Entries with a valid output on disk are recorded without loading their
             input. The rest are computed through a pool built from the settings of
-            *state*, and their measures go to *state*. Rows are flushed periodically,
-            and once more when the apply stops early. The pool is closed on every
-            exit after it is built, which writes the phase's final report.
+            *state*, and their measures go to *state*. Rows are flushed periodically.
+            When the apply stops early they are flushed, the entries in flight are
+            waited for and their outputs recorded, and they are flushed again. The pool
+            is closed on every exit after it is built, which writes the phase's final
+            report.
             """
             settings = state.settings
             # The growth each process worker measured of the entry it applied, held
@@ -3718,6 +3733,7 @@ def _run_feature_impl(
                     on_dispatch=_dispatched,
                     on_computed=_computed,
                     cancel_check=ctx.check_cancel,
+                    hand_back_on_break=True,
                 )
             )
 
@@ -3938,20 +3954,48 @@ def _run_feature_impl(
 
                 active.finish()
             except BaseException as stopped:
-                # Every exit flushes the rows of the outputs already written. A run that
-                # stops after writing 40 of 100 entries has 40 durable on disk, and "how
-                # far did it get" is the question an operator resubmits on. A failure of
-                # the flush is attached to the exception that ended the run, which is
-                # the one raised.
+                # Every exit flushes the rows of the outputs already written, waits for
+                # the entries in flight, records the outputs they write, and flushes
+                # again. A run that stops after writing 40 of 100 entries has 40 durable
+                # on disk, and "how far did it get" is the question an operator
+                # resubmits on. An entry in flight finishes its call whether or not the
+                # run waits, so the run waits and records it: a call that returns is
+                # written and gets its row, and a call that raises is not recorded,
+                # because the run's failure is the exception that ended it. A failed
+                # flush and a settle that raised are each a note on that exception,
+                # which is the one raised, and so is the count of the errors raised
+                # while recording the outputs in flight, which the settle dropped. A
+                # second interrupt during the settle abandons it and is raised instead,
+                # with the first exception as its context.
+                _flush_noting("first", stopped)
+                abandoned: BaseException | None = None
                 try:
-                    _flush_idx()
-                except Exception as flush_error:
+                    if active.in_flight:
+                        print(
+                            f"[feature:{feature.name}] stopping; the run waits for the "
+                            f"entries in flight ({active.in_flight})",
+                            file=sys.stderr,
+                        )
+                    dropped = active.settle(results_only=True)
+                    if dropped:
+                        first = dropped[0]
+                        stopped.add_note(
+                            f"{len(dropped)} of the outputs of the entries in flight "
+                            f"raised while being recorded, the first: "
+                            f"{type(first).__name__}: {first}"
+                        )
+                except Exception as settle_error:
                     stopped.add_note(
-                        f"The index rows of the outputs written were not recorded: "
-                        f"{type(flush_error).__name__}: {flush_error}"
+                        f"The settle of the entries in flight failed: "
+                        f"{type(settle_error).__name__}: {settle_error}"
                     )
-                # Recorded after the flush, the last moment the count is true.
+                except BaseException as interrupt:
+                    abandoned = interrupt
+                _flush_noting("second", stopped if abandoned is None else abandoned)
+                # Recorded after the last flush, the last moment the count is true.
                 ctx.entries_written(_total_written)
+                if abandoned is not None:
+                    raise abandoned
                 raise
             finally:
                 _close_phase(state, active)

@@ -11,9 +11,7 @@ from __future__ import annotations
 import json
 import os
 import signal
-import subprocess
 import sys
-import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,15 +41,13 @@ from mosaic.core.pipeline.run import run_feature
 from mosaic.run_cost import read_run_cost
 from mosaic.runlog import parse_instant, read_run, run_log_dir, run_log_path
 from tests.helpers import (
-    CHILD_TIMEOUT_SECONDS,
     CLOCK_TICK_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
-    REPO_ROOT,
     HoldsOnSequences,
     ParallelFeature,
     add_tracks_variant,
     make_dataset,
-    wait_for,
+    signal_group_when,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -216,25 +212,15 @@ def _cancel_held_child(
         The child's exit status and the ``time.time()`` reading taken just before
         the signal.
     """
-    child = subprocess.Popen(
+    child = signal_group_when(
         [sys.executable, "-c", _CANCELLED_CHILD, str(ds.manifest_path), execution_id],
-        env={**os.environ, HOLD_DIRECTORY_VARIABLE: str(marks)},
-        cwd=REPO_ROOT,
-        start_new_session=True,
+        lambda: (marks / "seq_b").exists() and (marks / "seq_c").exists(),
+        signal.SIGTERM,
+        extra_env={HOLD_DIRECTORY_VARIABLE: str(marks)},
+        errors=marks.parent / f"{execution_id}.stderr",
+        waiting="both workers began a held entry",
     )
-    try:
-        wait_for(
-            lambda: (marks / "seq_b").exists() and (marks / "seq_c").exists(),
-            CHILD_TIMEOUT_SECONDS,
-            "both workers never began a held entry",
-        )
-        signalled = time.time()
-        os.killpg(child.pid, signal.SIGTERM)
-        return child.wait(timeout=CHILD_TIMEOUT_SECONDS), signalled
-    finally:
-        if child.poll() is None:
-            os.killpg(child.pid, signal.SIGKILL)
-            _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+    return child.status, child.signalled_at
 
 
 def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
