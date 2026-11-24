@@ -39,9 +39,13 @@ from mosaic.behavior.feature_library.classifier_common import (
 )
 from mosaic.behavior.feature_library.helpers import cv_fold_assignment
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
+from mosaic.core.pipeline._utils import FeatureMeta
+from mosaic.core.pipeline.entry_pool import EntryFailure
+from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
-from mosaic.core.pipeline.run import process_apply_worker
+from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
+from mosaic.core.pipeline.writers import write_output
 from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import run_id_digest
 
@@ -235,6 +239,32 @@ def fits(monkeypatch: pytest.MonkeyPatch) -> list[FitCall]:
 
 def prob_columns(out: pd.DataFrame) -> list[str]:
     return [c for c in out.columns if c.startswith("prob_")]
+
+
+def scored_in_a_worker(
+    feature: XgboostFeature, run_root: Path, entry: tuple[str, str], frame: pd.DataFrame
+) -> pd.DataFrame:
+    """The output a process worker writes for *entry* from *run_root*, read back."""
+    task = EntryTask(meta=build_feature_meta(*entry, run_root), table=frame)
+    outcome = process_apply_worker(
+        feature.__module__,
+        type(feature).__name__,
+        feature.inputs.model_dump(),
+        feature.params.model_dump(),
+        str(run_root),
+        {},
+        {},
+        task,
+    )
+    if isinstance(outcome, EntryFailure):
+        outcome.reraise()
+    return pd.read_parquet(task.meta.out_path)
+
+
+def written_back(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
+    """*frame* after the write and read that a worker's output goes through."""
+    _ = write_output(FeatureMeta(group="", sequence="", out_path=path), frame)
+    return pd.read_parquet(path)
 
 
 def test_params_default_to_no_cross_validation_and_the_library_threads() -> None:
@@ -1045,18 +1075,10 @@ class TestBundle:
 
         for entry in (world.train[0], world.train[3], ("test", "z")):
             frame = world.frames[entry]
-            worker, _, _ = process_apply_worker(
-                feature.__module__,
-                type(feature).__name__,
-                feature.inputs.model_dump(),
-                feature.params.model_dump(),
-                str(tmp_path / "run"),
-                {},
-                {},
-                frame,
+            pd.testing.assert_frame_equal(
+                scored_in_a_worker(feature, tmp_path / "run", entry, frame),
+                written_back(feature.apply(frame), tmp_path / "reference.parquet"),
             )
-            assert worker is not None
-            pd.testing.assert_frame_equal(worker, feature.apply(frame))
 
     def test_the_bundle_holds_the_folds_beside_the_full_model(
         self, tmp_path: Path
@@ -1791,18 +1813,10 @@ class TestBlocks:
         for entry in (self.ONLY, ("test", "z")):
             frame = world.frames[entry]
             pd.testing.assert_frame_equal(again.apply(frame), feature.apply(frame))
-            worker, _, _ = process_apply_worker(
-                feature.__module__,
-                type(feature).__name__,
-                feature.inputs.model_dump(),
-                feature.params.model_dump(),
-                str(tmp_path / "run"),
-                {},
-                {},
-                frame,
+            pd.testing.assert_frame_equal(
+                scored_in_a_worker(feature, tmp_path / "run", entry, frame),
+                written_back(feature.apply(frame), tmp_path / "reference.parquet"),
             )
-            assert worker is not None
-            pd.testing.assert_frame_equal(worker, feature.apply(frame))
 
     def test_a_cached_model_of_the_other_unit_is_not_taken_for_this_one(
         self, tmp_path: Path

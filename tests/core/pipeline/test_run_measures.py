@@ -29,6 +29,7 @@ from mosaic.core.entry import Entry
 from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import memory_watch
 from mosaic.core.pipeline.memory_watch import MemorySample, MemoryWatch
+from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.column_contract import MissingInputColumns
 from mosaic.core.pipeline.loading import ColumnProjection, PairRowsMissing
@@ -40,13 +41,19 @@ from mosaic.core.pipeline.admission import (
     WorkerBase,
     WorkerMeasure,
 )
+from mosaic.core.pipeline.entry_pool import EntryFailure
+from mosaic.core.pipeline.entry_task import EntryReport, EntryTask
 from mosaic.core.pipeline.input_size import EntryCovariates, entry_covariates
 from mosaic.core.pipeline.params_facts import (
     params_equal_defaults,
     params_identity_digest,
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from mosaic.core.pipeline.run import ApplyOutcome, process_apply_worker, run_feature
+from mosaic.core.pipeline.run import (
+    build_feature_meta,
+    process_apply_worker,
+    run_feature,
+)
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.types import DependencyLookup
 from mosaic.runlog import (
@@ -445,7 +452,7 @@ def test_an_entry_failing_its_column_check_leaves_the_record(
         if len(calls) == 1:
             raise MissingInputColumns("prov-parallel", (), ("tracks",))
 
-    monkeypatch.setattr(run_module, "check_input_columns", fail_first)
+    monkeypatch.setattr(entry_task_module, "check_input_columns", fail_first)
 
     result = run_feature(ds, ParallelFeature(), execution_id="TESTCOLUMNS")
 
@@ -580,6 +587,18 @@ def test_a_high_water_mark_that_rises_during_the_fit_raises_its_peak(
 # --- a process worker's own memory --------------------------------------------
 
 
+def _task(run_root: Path, table: pd.DataFrame) -> EntryTask:
+    """The task of ``seq_a`` with *table*, writing its output under *run_root*."""
+    return EntryTask(meta=build_feature_meta("", "seq_a", run_root), table=table)
+
+
+def _worker_of(outcome: EntryReport | EntryFailure) -> WorkerMeasure | None:
+    """The worker's measure of a report, raising the error of a failure."""
+    if isinstance(outcome, EntryFailure):
+        outcome.reraise()
+    return outcome.worker
+
+
 def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
 
@@ -639,17 +658,19 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
             paths,
             lookups,
         ).result()
-        _, _, measure = pool.submit(
-            run_module.process_apply_worker,
-            module,
-            name,
-            inputs,
-            params,
-            str(tmp_path),
-            paths,
-            lookups,
-            table,
-        ).result()
+        measure = _worker_of(
+            pool.submit(
+                run_module.process_apply_worker,
+                module,
+                name,
+                inputs,
+                params,
+                str(tmp_path),
+                paths,
+                lookups,
+                _task(tmp_path, table),
+            ).result()
+        )
 
     assert measure is not None
     assert empty.rss_bytes > 0
@@ -1448,12 +1469,12 @@ def _non_reclaimable_growth(
     run_root_str: str,
     artifact_paths_str: dict[str, str],
     dependency_lookups: dict[str, DependencyLookup],
-    df: pd.DataFrame,
+    task: EntryTask,
     ds_manifest_path: str | None = None,
     tracklets: Mapping[Entry, bool | None] | None = None,
-) -> ApplyOutcome:
+) -> EntryReport | EntryFailure:
     """Apply as a process worker does, and report the given non-reclaimable pair."""
-    output, notices, measure = process_apply_worker(
+    outcome = process_apply_worker(
         module_name,
         class_name,
         inputs_dump,
@@ -1461,15 +1482,16 @@ def _non_reclaimable_growth(
         run_root_str,
         artifact_paths_str,
         dependency_lookups,
-        df,
+        task,
         ds_manifest_path,
         tracklets,
     )
+    measure = _worker_of(outcome)
     assert measure is not None
     measure = dataclasses.replace(
         measure, base_nonreclaimable_bytes=base, peak_nonreclaimable_bytes=peak
     )
-    return output, notices, measure
+    return dataclasses.replace(outcome, worker=measure)
 
 
 def _grown_ends(ds: Dataset, execution_id: str) -> list[tuple[int, object]]:
@@ -1733,7 +1755,9 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     reader = 5 * _GIB
-    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: reader)
+    monkeypatch.setattr(
+        entry_task_module, "process_nonreclaimable_bytes", lambda: reader
+    )
 
     @contextmanager
     def peak_while() -> Generator[memory_watch.NonreclaimablePeak]:
@@ -1743,21 +1767,23 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
         finally:
             _SAMPLING["active"] = False
 
-    monkeypatch.setattr(run_module, "peak_nonreclaimable_while", peak_while)
+    monkeypatch.setattr(entry_task_module, "peak_nonreclaimable_while", peak_while)
     _SAMPLING["during_apply"] = False
     feature = _SeesTheSampler()
     table = pd.DataFrame({"sequence": ["seq_a"] * 100, "value": range(100)})
     handed = int(table.memory_usage(deep=True).sum())
 
-    _, _, measure = run_module.process_apply_worker(
-        type(feature).__module__,
-        type(feature).__name__,
-        feature.inputs.model_dump(),
-        feature.params.model_dump(),
-        str(tmp_path),
-        {},
-        {},
-        table,
+    measure = _worker_of(
+        run_module.process_apply_worker(
+            type(feature).__module__,
+            type(feature).__name__,
+            feature.inputs.model_dump(),
+            feature.params.model_dump(),
+            str(tmp_path),
+            {},
+            {},
+            _task(tmp_path, table),
+        )
     )
 
     assert _SAMPLING["during_apply"]
@@ -1769,25 +1795,27 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
 def test_a_process_worker_without_the_figure_leaves_both_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: None)
+    monkeypatch.setattr(entry_task_module, "process_nonreclaimable_bytes", lambda: None)
 
     @contextmanager
     def peak_while() -> Generator[memory_watch.NonreclaimablePeak]:
         yield memory_watch.NonreclaimablePeak()
 
-    monkeypatch.setattr(run_module, "peak_nonreclaimable_while", peak_while)
+    monkeypatch.setattr(entry_task_module, "peak_nonreclaimable_while", peak_while)
     feature = ParallelFeature()
     table = pd.DataFrame({"sequence": ["seq_a"] * 10})
 
-    _, _, measure = run_module.process_apply_worker(
-        type(feature).__module__,
-        type(feature).__name__,
-        feature.inputs.model_dump(),
-        feature.params.model_dump(),
-        str(tmp_path),
-        {},
-        {},
-        table,
+    measure = _worker_of(
+        run_module.process_apply_worker(
+            type(feature).__module__,
+            type(feature).__name__,
+            feature.inputs.model_dump(),
+            feature.params.model_dump(),
+            str(tmp_path),
+            {},
+            {},
+            _task(tmp_path, table),
+        )
     )
 
     assert isinstance(measure, WorkerMeasure)

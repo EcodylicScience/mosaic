@@ -34,7 +34,9 @@ from mosaic.behavior.feature_library.orientation_relative import (
     OrientationRelativeFeature,
     _ordered_pairs,  # pyright: ignore[reportPrivateUsage]
 )
-from mosaic.core.pipeline.run import process_apply_worker
+from mosaic.core.pipeline.entry_pool import EntryFailure
+from mosaic.core.pipeline.entry_task import EntryTask
+from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.track_library.calms21 import calms21_to_trex_df
@@ -984,11 +986,12 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
     table = _drop_cells(_pose_table(n_frames=30, ids=(0, 1, 2)), 0.2)
     lookup = _scale_run(tmp_path, [9.0, 11.0])
     feature = OrientationRelativeFeature(params={"nearest_k": 4})
+    task = EntryTask(meta=build_feature_meta("", "s", tmp_path), table=table)
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=1, mp_context=multiprocessing.get_context("spawn")
     ) as pool:
-        result, _, _ = pool.submit(
+        outcome = pool.submit(
             process_apply_worker,
             feature.__module__,
             type(feature).__name__,
@@ -997,10 +1000,12 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
             str(tmp_path),
             {},
             {"scale": lookup},
-            table,
+            task,
         ).result(timeout=120)
 
-    assert result is not None
+    if isinstance(outcome, EntryFailure):
+        outcome.reraise()
+    result = pd.read_parquet(task.meta.out_path)
     in_process = OrientationRelativeFeature(params={"nearest_k": 4})
     assert in_process.load_state(tmp_path, {}, {"scale": lookup})
     _same(result, in_process.apply(table))

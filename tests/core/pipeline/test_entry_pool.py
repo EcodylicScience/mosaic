@@ -567,6 +567,62 @@ def test_a_failure_whose_error_cannot_be_pickled_keeps_its_type_and_message() ->
     assert str(crossed.error) == "_Unpicklable: one"
 
 
+def _unpicklable_failure(*, portable: bool) -> EntryFailure:
+    try:
+        raise _Unpicklable("one", "two")
+    except _Unpicklable as exc:
+        return EntryFailure.capture("key", exc, portable=portable)
+
+
+def test_a_failure_captured_as_raised_keeps_an_error_that_does_not_pickle() -> None:
+    kept = _unpicklable_failure(portable=False)
+
+    assert isinstance(kept.error, _Unpicklable)
+    assert kept.error.second == "two"
+
+
+def test_a_portable_failure_replaces_an_error_that_does_not_pickle() -> None:
+    kept = _unpicklable_failure(portable=False)
+
+    portable = kept.portable()
+    crossed = pickle.loads(pickle.dumps(portable))
+
+    assert type(portable.error) is RuntimeError
+    assert str(crossed.error) == "_Unpicklable: one"
+    assert (portable.key, portable.trace) == (kept.key, kept.trace)
+
+
+def test_a_default_capture_is_the_portable_capture() -> None:
+    default = _unpicklable_failure(portable=True)
+
+    assert type(default.error) is RuntimeError
+    assert str(default.error) == "_Unpicklable: one"
+    picklable = _captured()
+    assert picklable.portable() is picklable
+
+
+def _reraised_text(failure: EntryFailure) -> str:
+    with pytest.raises(ValueError) as raised:
+        failure.reraise()
+    return "".join(traceback.format_exception(raised.value))
+
+
+def test_a_local_failure_reraises_with_its_traceback_and_no_note() -> None:
+    text = _reraised_text(_captured())
+
+    assert "fail_on_three" in text
+    assert "Raised in a worker" not in text
+
+
+def test_a_failure_that_crossed_a_process_reraises_with_the_workers_traceback() -> None:
+    crossed = pickle.loads(pickle.dumps(_captured()))
+
+    text = _reraised_text(crossed)
+
+    assert "Raised in a worker" in text
+    assert "fail_on_three" in text
+
+
 def test_a_worker_process_opens_each_dataset_once(tmp_path: Path) -> None:
     from tests.helpers import make_dataset
 

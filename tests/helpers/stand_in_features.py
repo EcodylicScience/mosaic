@@ -17,12 +17,14 @@ and records the file of each entry it is handed, for the tests of labels that a 
 dataset holds. :class:`HoldsOnSequences` stops in the entries it names until it is
 killed, for the tests of a cancel that reaches a run's workers.
 :class:`HoldsUntilReleased` stops in the entries it names until the test releases them,
-for the tests of how a run ends with entries in flight.
+and can make the write or the trim of an entry fail in the worker process that computes
+it, for the tests of how a run ends with entries in flight.
 """
 
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import signal
 import threading
@@ -31,15 +33,17 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.entry import parse_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import Params
-from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline import entry_task
+from mosaic.core.pipeline._utils import FeatureMeta, atomic_write
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     GroundTruthLabelsSource,
@@ -48,6 +52,8 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.manifest import CoreSelector
+from mosaic.core.pipeline.writers import FeatureOutput
 
 
 class _P(Params):
@@ -178,6 +184,52 @@ class HoldsOnSequences(ParallelFeature):
 
 _RELEASE_POLL_SECONDS = 0.02
 
+type InWorkerFault = Literal["full-disk", "trim"]
+"""A fault :class:`HoldsUntilReleased` installs in the worker process it runs in.
+
+``full-disk`` makes the write of an entry raise ``OSError``, as a full disk does,
+and ``trim`` makes the trim of an overlapped entry raise ``ValueError``.
+"""
+
+_INSTALLED_FAULTS: set[InWorkerFault] = set()
+"""The faults installed in this process, each once."""
+
+
+def _install_fault(fault: InWorkerFault, sequences: frozenset[str]) -> None:
+    """Make *fault* fail the entries of *sequences* in this process, once per process.
+
+    The fault replaces a module global of ``entry_task``, which the entry task looks
+    up at the call, so it takes effect for the write or the trim of the entry being
+    applied.
+    """
+    if fault in _INSTALLED_FAULTS:
+        return
+    _INSTALLED_FAULTS.add(fault)
+    if fault == "full-disk":
+        real_write = entry_task.write_output
+
+        def write_output(
+            meta: FeatureMeta, df_feat: FeatureOutput, *, create_parent: bool = True
+        ) -> int:
+            if meta.sequence in sequences:
+                message = "no space left on device"
+                raise OSError(message)
+            return real_write(meta, df_feat, create_parent=create_parent)
+
+        entry_task.write_output = write_output
+    else:
+        real_trim = entry_task.trim_feature_output
+
+        def trim_feature_output(
+            df: FeatureOutput, selector: CoreSelector
+        ) -> FeatureOutput:
+            if parse_entry_key(selector.entry_key)[1] in sequences:
+                message = "the overlap could not be trimmed"
+                raise ValueError(message)
+            return real_trim(df, selector)
+
+        entry_task.trim_feature_output = trim_feature_output
+
 
 class HoldsUntilReleased(ParallelFeature):
     """Waits in each entry named in ``hold_on`` until the test releases it.
@@ -189,12 +241,25 @@ class HoldsUntilReleased(ParallelFeature):
     named ``release`` and returns once it exists. It fails after ``_HOLD_SECONDS``
     without one. It holds in serial, thread and process mode alike, and the names
     are a class attribute for the reason ``kill_on`` is.
+
+    A subclass that names a ``fault`` makes the write or the trim of the entries
+    of ``fault_on`` fail in the worker process that computes them, where a test's
+    monkeypatch does not reach. Its ``apply`` installs the fault once per process,
+    and raises outside a spawned worker, so the fault never reaches the test's own
+    process.
     """
 
     name = "prov-parallel-released"
     hold_on: tuple[str, ...] = ()
+    fault: InWorkerFault | None = None
+    fault_on: tuple[str, ...] = ()
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.fault is not None:
+            if multiprocessing.parent_process() is None:
+                message = f"the fault {self.fault} runs only in a spawned worker"
+                raise RuntimeError(message)
+            _install_fault(self.fault, frozenset(self.fault_on))
         sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
         marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
         (marks / f"applied-{sequence}").touch()

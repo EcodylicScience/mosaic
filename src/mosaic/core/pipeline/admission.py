@@ -91,13 +91,14 @@ class WorkerMeasure:
             memory a worker holds with no table, as the probe measures it.
         peak_before_rss_bytes: Its high-water resident memory at the same moment,
             which holds the peaks of the entries it applied before.
-        peak_rss_bytes: Its high-water resident memory after ``apply``.
+        peak_rss_bytes: Its high-water resident memory after it wrote the entry's
+            output.
         base_nonreclaimable_bytes: Its anonymous and shared resident memory at the
             same moment as ``base_rss_bytes``, less the table, ``None`` where it
             could not be read.
         peak_nonreclaimable_bytes: The largest anonymous and shared resident memory
-            its sampler read from before ``apply`` to after it, ``None`` where none
-            could be read.
+            its sampler read from before ``apply`` to after it wrote the entry's
+            output, ``None`` where none could be read.
     """
 
     base_rss_bytes: int

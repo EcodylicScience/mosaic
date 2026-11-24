@@ -100,7 +100,9 @@ def read_parquet_table_columns(path: Path, columns: list[str]) -> pd.DataFrame:
 # --- Parquet writing ---
 
 
-def write_parquet_atomic(df: pd.DataFrame, path: Path) -> int:
+def write_parquet_atomic(
+    df: pd.DataFrame, path: Path, *, create_parent: bool = True
+) -> int:
     """Write *df* to *path* as parquet, atomically. Returns the row count.
 
     **The only sanctioned way to write a parquet anywhere in the toolkit**, and the
@@ -119,19 +121,31 @@ def write_parquet_atomic(df: pd.DataFrame, path: Path) -> int:
     rule -- never inside a locked block except as its last act, because the
     rename replaced the inode the lock was held on -- and the rule is gone:
     ``index_lock`` holds a sidecar that no rename touches.
+
+    ``create_parent=False`` creates no directory and raises
+    :class:`FileNotFoundError` when the parent is missing. The entry task passes
+    it, because a worker must not recreate a run root that a removal deleted.
     """
     n_rows = len(df)
-    atomic_write(path, lambda p: df.to_parquet(p, index=False))
+    atomic_write(
+        path, lambda p: df.to_parquet(p, index=False), create_parent=create_parent
+    )
     return n_rows
 
 
 def write_output(
     meta: FeatureMeta,
     df_feat: FeatureOutput,
+    *,
+    create_parent: bool = True,
 ) -> int:
-    """Write feature output to parquet atomically. Returns n_rows written."""
+    """Write feature output to parquet atomically. Returns n_rows written.
+
+    ``create_parent`` is :func:`write_parquet_atomic`'s: the entry task passes
+    ``False`` so that a worker never recreates a deleted run root.
+    """
     df = pd.DataFrame() if df_feat is None else df_feat
-    return write_parquet_atomic(df, meta.out_path)
+    return write_parquet_atomic(df, meta.out_path, create_parent=create_parent)
 
 
 # --- Output validation (cache-hit checks) ---

@@ -16,9 +16,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.core.pipeline.entry_pool import EntryFailure
+from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run import (
     AllEntriesFailed,
+    build_feature_meta,
     process_apply_worker,
     run_feature,
 )
@@ -228,9 +231,10 @@ def test_apply_raising_cancelled_on_the_last_entry_with_the_token_set_is_not_an_
 
 # A process-pool worker reconstructs its feature from a module and class
 # name plus pickled inputs/params dumps (see process_apply_worker), builds
-# and discards an instance, and returns only the applied DataFrame. The test
-# cannot read ``self.close_calls`` of that instance. Module-level globals are
-# the one channel out, monkeypatched per test so pytest restores them.
+# and discards an instance, and writes the applied frame to the task's output
+# path. The test cannot read ``self.close_calls`` of that instance.
+# Module-level globals are the one channel out, monkeypatched per test so
+# pytest restores them.
 _worker_events: list[str] = []
 _worker_apply_raises: Exception | None = None
 _worker_close_raises: Exception | None = None
@@ -263,7 +267,9 @@ class _WorkerClosingFeature(_ClosingFeature):
 
 
 def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
-    output, _, _ = process_apply_worker(
+    """Run the worker on *df*, and read back the output it wrote."""
+    task = EntryTask(meta=build_feature_meta("", "seq_a", tmp_path), table=df)
+    outcome = process_apply_worker(
         __name__,
         "_WorkerClosingFeature",
         _WorkerClosingFeature.Inputs(("tracks",)).model_dump(),
@@ -271,10 +277,11 @@ def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
         str(tmp_path),
         {},
         {},
-        df,
+        task,
     )
-    assert output is not None
-    return output
+    if isinstance(outcome, EntryFailure):
+        outcome.reraise()
+    return pd.read_parquet(task.meta.out_path)
 
 
 def test_process_apply_worker_closes_its_own_instance_once(

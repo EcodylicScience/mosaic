@@ -35,7 +35,6 @@ from mosaic.core.helpers import (
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 from mosaic.core.stored_paths import stored_form
-from mosaic.core.timebase import IrregularNotice, collect_irregular_notices
 
 from ._utils import (
     FeatureMeta,
@@ -50,24 +49,14 @@ from .admission import (
     RowCostEstimate,
     WorkerBase,
     WorkerBases,
-    WorkerMeasure,
     admission_budget,
     grown_over_bases,
     larger_peak,
 )
-from .arena_guard import (
-    ArenaBlindFeature,
-    entry_arena_count,
-    indexed_arena_rows,
-    refuse_arena_blind,
-)
+from .arena_guard import entry_arena_count, indexed_arena_rows
 from .storage_names import derive_storage_name, feature_slug_of
 from .composition import cached_entry_disposition
-from .column_contract import (
-    MissingInputColumns,
-    check_input_columns,
-    declared_provides,
-)
+from .column_contract import check_input_columns, declared_provides
 from .definitions.fit_run import refuse_unpinned_model, refuse_unusable_fit_run
 from .definitions.loader import applied_definition, definition_ref_of
 from .definitions.store import (
@@ -194,12 +183,11 @@ from .types import (
 from .types.inputs import InputsLike
 from .label_series import LabelRevisionRef
 from .job import CancelToken, JobContext, job_context
-from .entry_pool import EntryPool
+from .entry_pool import EntryFailure, EntryPool
+from .entry_task import EntryReport, EntryTask, run_entry, run_entry_in_process
 from .memory_watch import (
     MemorySample,
     MemoryWatch,
-    max_rss_bytes,
-    peak_nonreclaimable_while,
     process_nonreclaimable_bytes,
     process_rss_bytes,
 )
@@ -215,12 +203,7 @@ from .parquet_reader import ParquetFooterMemo, memoized_footers, output_n_rows
 from .process_pool import caller_guarded_process_pool
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
-from .writers import (
-    FeatureOutput,
-    default_check_output,
-    trim_feature_output,
-    write_output,
-)
+from .writers import default_check_output
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -612,25 +595,6 @@ def _hand_tracklets(feature: object, tracklets: Mapping[Entry, bool | None]) -> 
         feature.set_tracklets(dict(tracklets))
 
 
-type NotedOutput = tuple[FeatureOutput, tuple[IrregularNotice, ...]]
-"""One entry's output with the uneven-time notices its ``apply`` raised."""
-
-
-def apply_noting_irregular_time(
-    apply: Callable[[pd.DataFrame], FeatureOutput], df: pd.DataFrame
-) -> NotedOutput:
-    """Run *apply* on *df* and return its output with the notices it raised.
-
-    A method that reads its rows as evenly spaced warns when a table steps
-    unevenly (:func:`~mosaic.core.timebase.warn_if_irregular`). The notices are
-    collected where the entry runs, a worker process included, and returned beside
-    the output so the calling process records them in the run-log.
-    """
-    with collect_irregular_notices() as notices:
-        output = apply(df)
-    return output, tuple(notices)
-
-
 @contextmanager
 def _rebuilt_feature(
     module_name: str,
@@ -709,15 +673,6 @@ def _rebuilt_feature(
         _close_feature(feature)
 
 
-type ApplyOutcome = tuple[
-    FeatureOutput, tuple[IrregularNotice, ...], WorkerMeasure | None
-]
-"""The output of one entry's ``apply``, the notices it raised, and the worker's memory.
-
-The measure is ``None`` where the entry was applied in the run's own process.
-"""
-
-
 def process_apply_worker(
     module_name: str,
     class_name: str,
@@ -726,21 +681,25 @@ def process_apply_worker(
     run_root_str: str,
     artifact_paths_str: dict[str, str],
     dependency_lookups: dict[str, DependencyLookup],
-    df: pd.DataFrame,
+    task: EntryTask,
     ds_manifest_path: str | None = None,
     tracklets: Mapping[Entry, bool | None] | None = None,
-) -> ApplyOutcome:
-    """Reconstruct a feature in a worker process, run apply, then close it.
+) -> EntryReport | EntryFailure:
+    """Rebuild a feature in a worker process, compute one entry, then close the feature.
 
-    The feature is rebuilt as :func:`_rebuilt_feature` describes.
+    The feature is rebuilt for each task, as :func:`_rebuilt_feature` describes. The
+    worker writes the entry's output
+    (:func:`~mosaic.core.pipeline.entry_task.run_entry_in_process`), and reads its
+    memory measure after the write.
 
     Returns:
-        The output of ``apply``, and the worker's own memory: its resident memory
-        after ``load_state`` and before ``apply`` less the table it was handed, its
-        high-water mark at that moment, and its high-water mark after ``apply``.
-        The same for its anonymous and shared memory, where ``/proc`` gives it:
-        the figure before ``apply`` less the table, and the largest figure read
-        from before ``apply`` to after it.
+        The report of the output written, with the worker's own memory, or the
+        failure of the trim or the write. The report's ``seconds_after_apply`` runs
+        to this function's return, the close of the feature included.
+
+    Raises:
+        Exception: The entry's error: a missing input column, an arena-blind
+            input that spans arenas, or whatever ``apply`` raises.
     """
     with _rebuilt_feature(
         module_name,
@@ -753,25 +712,14 @@ def process_apply_worker(
         ds_manifest_path,
         tracklets,
     ) as feature:
-        # The table arrives as an argument, so it is resident before ``apply`` and
-        # stays referenced by the pool's call item. It is the entry's memory, not
-        # the worker's, and a worker handed no table measures without it
-        # (``process_worker_base``).
-        handed = int(df.memory_usage(deep=True).sum())
-        base = max(0, process_rss_bytes() - handed)
-        resident = process_nonreclaimable_bytes()
-        base_nonreclaimable = None if resident is None else max(0, resident - handed)
-        peak_before = max_rss_bytes()
-        with peak_nonreclaimable_while() as sampled:
-            output, notices = apply_noting_irregular_time(feature.apply, df)
-        measure = WorkerMeasure(
-            base_rss_bytes=base,
-            peak_before_rss_bytes=peak_before,
-            peak_rss_bytes=max_rss_bytes(),
-            base_nonreclaimable_bytes=base_nonreclaimable,
-            peak_nonreclaimable_bytes=sampled.peak,
-        )
-    return output, notices, measure
+        outcome = run_entry_in_process(feature, task)
+        returned = time.monotonic()
+    if isinstance(outcome, EntryFailure):
+        return outcome
+    return replace(
+        outcome,
+        seconds_after_apply=outcome.seconds_after_apply + time.monotonic() - returned,
+    )
 
 
 def process_worker_base(
@@ -3300,7 +3248,7 @@ def _run_feature_impl(
 
     def _close_phase(
         phase: _PhaseState,
-        pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome],
+        pool: EntryPool[FeatureMeta, EntryReport | EntryFailure],
     ) -> None:
         """Close the phase's pool, which writes its final report, and report nothing after it.
 
@@ -3565,7 +3513,9 @@ def _run_feature_impl(
 
             Entries with a valid output on disk are recorded without loading their
             input. The rest are computed through a pool built from the settings of
-            *state*, and their measures go to *state*. Rows are flushed periodically.
+            *state*, and their measures go to *state*. Each computed entry's task
+            writes its output, and the run records the row from the task's report.
+            Rows are flushed periodically.
             When the apply stops early they are flushed, the entries in flight are
             waited for and their outputs recorded, and they are flushed again. The pool
             is closed on every exit after it is built, which writes the phase's final
@@ -4012,40 +3962,57 @@ def _run_feature_impl(
                 if isinstance(exc, ToolUnavailable):
                     raise exc
 
+            # One switch for every process-mode branch below: the dispatch, the
+            # pool's ``on_computed`` and the recording of a result.
+            in_processes = settings.entry_mode == "process"
+            # The garbage collection of the run's own process, which computes the
+            # entries in serial and thread mode. A process worker keeps its own.
             collector = PacedCollector()
+            # The moment each process-mode entry's outcome was set, from which its
+            # apply's end is read back.
+            outcome_set: dict[str, float] = {}
 
             def _record_result(
-                tag: tuple[FeatureMeta, CoreSelector | None], outcome: ApplyOutcome
+                meta: FeatureMeta, outcome: EntryReport | EntryFailure
             ) -> None:
-                meta, selector = tag
+                if isinstance(outcome, EntryFailure):
+                    outcome.reraise()
                 key = make_entry_key(meta.group, meta.sequence)
-                result_df, notices, worker = outcome
-                # A future's done callbacks may run after the wait wakes, so the
-                # apply's end is stamped here too. The earlier stamp wins.
-                state.in_flight.applied(key, time.monotonic())
-                if worker is not None:
+                if in_processes:
+                    # The worker reports the seconds from the end of its apply to
+                    # its return, the write included, so the apply ended that long
+                    # before the outcome was set.
+                    set_at = outcome_set.pop(key, None)
+                    state.in_flight.applied(
+                        key,
+                        (time.monotonic() if set_at is None else set_at)
+                        - outcome.seconds_after_apply,
+                    )
+                    worker = outcome.worker
+                    # An entry whose worker gave no figure holds None, so it is not
+                    # given the parent's sample, which counts every worker.
                     worker_growth[key] = (
-                        worker.grown_bytes if cost.nonreclaimable else None
+                        worker.grown_bytes
+                        if worker is not None and cost.nonreclaimable
+                        else None
                     )
-                    worker_base = state.worker_bases.learn(
-                        worker, nonreclaimable=cost.nonreclaimable
-                    )
-                    if worker_base is not None:
-                        state.estimate.worker_base(worker_base)
-                    # The worker's peak sees what no sample between two of its
-                    # entries did.
-                    state.estimate.observe_worker(
-                        worker,
-                        state.in_flight.rows_of(key),
-                        nonreclaimable=cost.nonreclaimable,
-                    )
-                    # A process worker's apply ends here as far as the run sees it.
+                    if worker is not None:
+                        worker_base = state.worker_bases.learn(
+                            worker, nonreclaimable=cost.nonreclaimable
+                        )
+                        if worker_base is not None:
+                            state.estimate.worker_base(worker_base)
+                        # The worker's peak sees what no sample between two of its
+                        # entries did.
+                        state.estimate.observe_worker(
+                            worker,
+                            state.in_flight.rows_of(key),
+                            nonreclaimable=cost.nonreclaimable,
+                        )
+                    # A process worker's entry ends here as far as the run sees it.
                     _observe(watch.sample())
-                for notice in notices:
+                for notice in outcome.notices:
                     ctx.time_irregular(key, notice)
-                if selector is not None:
-                    result_df = trim_feature_output(result_df, selector)
-                n_rows = write_output(meta, result_df)
                 _record_row(
                     FeatureIndexRow(
                         run_id=run_id,
@@ -4068,52 +4035,51 @@ def _run_feature_impl(
                             (meta.group, meta.sequence), ""
                         ),
                         consumed_model_state=model_state_now,
-                        n_rows=n_rows,
+                        n_rows=outcome.rows,
                         params_hash=params_hash,
                         identity_scheme=FEATURE_IDENTITY_SCHEME,
                     )
                 )
-                collector.finished(
-                    0
-                    if result_df is None
-                    else int(result_df.memory_usage(index=True).sum())
-                )
-                del result_df
+                if not in_processes:
+                    _ = collector.finished(outcome.output_bytes)
 
-            def _record_failure(
-                tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
-            ) -> None:
-                meta, _ = tag
+            def _record_failure(meta: FeatureMeta, exc: Exception) -> None:
                 _entry_failed(meta.group, meta.sequence, exc)
 
-            def _entry_key_of(tag: tuple[FeatureMeta, CoreSelector | None]) -> str:
-                return make_entry_key(tag[0].group, tag[0].sequence)
+            def _dispatched(meta: FeatureMeta) -> None:
+                state.in_flight.dispatched(
+                    make_entry_key(meta.group, meta.sequence), time.monotonic()
+                )
 
-            def _dispatched(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
-                state.in_flight.dispatched(_entry_key_of(tag), time.monotonic())
-
-            def _computed(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
-                state.in_flight.applied(_entry_key_of(tag), time.monotonic())
+            def _outcome_was_set(meta: FeatureMeta) -> None:
+                # The pool calls this from the future's done callback and again
+                # where it hands the outcome back, and the first moment is kept. A
+                # done callback that runs late can insert the key again after
+                # ``_record_result`` popped it, which is harmless: each key is
+                # dispatched once per phase, and the dict belongs to the phase.
+                _ = outcome_set.setdefault(
+                    make_entry_key(meta.group, meta.sequence), time.monotonic()
+                )
 
             # The pool holds an entry back for a free worker after its table is loaded.
             # The memory floor and the admission gate hold it back before the load
             # (``_before_load``), so a table is never loaded while memory is under the
             # floor, and the floor does not end a run on the memory a loaded table takes.
-            active: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] = (
-                EntryPool(
-                    workers=settings.workers,
-                    mode=settings.mode,
-                    on_result=_record_result,
-                    on_error=_record_failure,
-                    min_free_memory_fraction=settings.min_free_memory_fraction,
-                    on_resources=_pool_report,
-                    watch=watch,
-                    floor_at_submit=False,
-                    on_dispatch=_dispatched,
-                    on_computed=_computed,
-                    cancel_check=ctx.check_cancel,
-                    hand_back_on_break=True,
-                )
+            # Each call writes its entry's output and returns a report, from which
+            # ``_record_result`` records the row.
+            active: EntryPool[FeatureMeta, EntryReport | EntryFailure] = EntryPool(
+                workers=settings.workers,
+                mode=settings.mode,
+                on_result=_record_result,
+                on_error=_record_failure,
+                min_free_memory_fraction=settings.min_free_memory_fraction,
+                on_resources=_pool_report,
+                watch=watch,
+                floor_at_submit=False,
+                on_dispatch=_dispatched,
+                on_computed=_outcome_was_set if in_processes else None,
+                cancel_check=ctx.check_cancel,
+                hand_back_on_break=True,
             )
 
             # The key that the last load started and that has not reached _process_entry.
@@ -4235,12 +4201,18 @@ def _run_feature_impl(
                 )
                 unhanded.append(key)
 
-            def _apply_here(key: str, df: pd.DataFrame) -> ApplyOutcome:
-                """Apply in this process, and measure the tree before the result is handed back."""
-                output, notices = apply_noting_irregular_time(feature.apply, df)
-                state.in_flight.applied(key, time.monotonic())
-                _observe(watch.sample())
-                return output, notices, None
+            def _after_apply(key: str) -> Callable[[], None]:
+                """What an entry computed in this process does once its apply returns.
+
+                It stamps the end of the entry's apply and measures the tree while
+                the output is alive, before the task writes it.
+                """
+
+                def after_apply() -> None:
+                    state.in_flight.applied(key, time.monotonic())
+                    _observe(watch.sample())
+
+                return after_apply
 
             def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
                 """Record an entry with no pair rows to widen onto as lost."""
@@ -4258,34 +4230,27 @@ def _run_feature_impl(
                 ctx.check_cancel()
                 group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 meta = build_feature_meta(group, sequence, run_root)
-                key = make_entry_key(group, sequence)
-
-                # Pipeline validation checks the recipe against this declaration, and
-                # the entry's merged frame is checked against it too. A missing column
-                # fails the entry with one message, before apply reads anything.
-                try:
-                    check_input_columns(
-                        feature,
-                        df.columns,
-                        numeric=df.select_dtypes(include="number").columns,
-                    )
-                except MissingInputColumns as exc:
-                    _entry_failed(group, sequence, exc)
-                    return
-                if blind_arena_rows is not None:
-                    count = entry_arena_count(ds, group, sequence, blind_arena_rows)
-                    try:
-                        refuse_arena_blind(feature.name, df, count)
-                    except ArenaBlindFeature as exc:
-                        _entry_failed(group, sequence, exc)
-                        return
+                # The task checks the entry's merged frame against the feature's
+                # declared columns, and refuses an arena-blind input that spans
+                # arenas. Each fails the entry with one message, before apply reads
+                # anything.
+                task = EntryTask(
+                    meta=meta,
+                    table=df,
+                    selector=selector,
+                    arena_count=(
+                        None
+                        if blind_arena_rows is None
+                        else entry_arena_count(ds, group, sequence, blind_arena_rows)
+                    ),
+                )
 
                 # Cache hits are resolved up-front in the pre-pass; any entry reaching
                 # here needs (re)computation.
-                if settings.mode == "process" and active.workers > 1:
+                if in_processes:
                     artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
                     active.submit(
-                        (meta, selector),
+                        meta,
                         process_apply_worker,
                         feature.__module__,
                         type(feature).__name__,
@@ -4294,12 +4259,14 @@ def _run_feature_impl(
                         str(worker_state_root),
                         artifact_paths_str,
                         dependency_lookups,
-                        df,
+                        task,
                         str(ds.manifest_path),
                         tracklets,
                     )
                 else:
-                    active.submit((meta, selector), _apply_here, key, df)
+                    active.submit(
+                        meta, run_entry, feature, task, _after_apply(task.key)
+                    )
 
             # Iterate manifest entries. A cooperative cancel (raised at the top of
             # _process_entry) stops dispatch; completed entries stay recorded in
@@ -4338,14 +4305,14 @@ def _run_feature_impl(
                 # again. A run that stops after writing 40 of 100 entries has 40 durable
                 # on disk, and "how far did it get" is the question an operator
                 # resubmits on. An entry in flight finishes its call whether or not the
-                # run waits, so the run waits and records it: a call that returns is
-                # written and gets its row, and a call that raises is not recorded,
-                # because the run's failure is the exception that ended it. A failed
-                # flush and a settle that raised are each a note on that exception,
-                # which is the one raised, and so is the count of the errors raised
-                # while recording the outputs in flight, which the settle dropped. A
-                # second interrupt during the settle abandons it and is raised instead,
-                # with the first exception as its context.
+                # run waits, so the run waits and records it: a call that returns has
+                # written its output, which gets its row, and a call that raises is not
+                # recorded, because the run's failure is the exception that ended it. A
+                # failed flush and a settle that raised are each a note on that
+                # exception, which is the one raised, and so is the count of the errors
+                # raised while recording the outputs in flight, which the settle
+                # dropped. A second interrupt during the settle abandons it and is
+                # raised instead, with the first exception as its context.
                 _flush_noting("first", stopped)
                 abandoned: BaseException | None = None
                 try:

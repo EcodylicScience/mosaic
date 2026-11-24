@@ -2,9 +2,9 @@
 
 pyarrow does not ship type stubs, and its compiled modules leave every attribute
 unknown to the type checker. This module holds every footer read of the
-pipeline and the preview's reads, each returning plain Python values, so its
-callers type-check in full. The file-level directives below cover the unknown
-types of pyarrow alone.
+pipeline and the preview's reads, each returning plain Python values, and the
+release of pyarrow's unused memory after an entry, so its callers type-check in
+full. The file-level directives below cover the unknown types of pyarrow alone.
 
 A footer read opens the file, unless the thread entered :func:`memoized_footers`,
 which reads each file's footer once until the file changes. Every other read
@@ -49,6 +49,7 @@ __all__ = [
     "read_footer",
     "read_head",
     "read_parquet_column_names",
+    "release_arrow_memory",
     "summarize_numeric_columns",
 ]
 
@@ -385,6 +386,15 @@ def iter_column_batches(
                 name: batch.column(name).to_numpy(zero_copy_only=False)
                 for name in names
             }
+
+
+def release_arrow_memory() -> None:
+    """Return the memory pyarrow's default pool holds unused to the system.
+
+    Called after each entry's table or output is released, so a long run's
+    process does not keep the largest entry's buffers.
+    """
+    pa.default_memory_pool().release_unused()
 
 
 def _summarize(parquet: pq.ParquetFile, name: str) -> NumericSummary:

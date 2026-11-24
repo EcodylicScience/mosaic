@@ -9,6 +9,7 @@ beside the rest of the pipeline graph.
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 from typing import ClassVar
 
@@ -647,6 +648,20 @@ def test_a_missing_column_raises_one_message_naming_it_and_the_inputs() -> None:
         "test-reads-two cannot read its input. The frame merged from tracks lacks "
         "'feat_a'; 'feat_b' or 'feat_c'"
     )
+
+
+def test_a_missing_column_survives_pickle_with_its_message_and_attributes() -> None:
+    """A process worker raises it, and the executor unpickles it in the parent."""
+    with pytest.raises(MissingInputColumns) as raised:
+        check_input_columns(_ReadsTwoColumns(), ["frame", "id"])
+
+    crossed = pickle.loads(pickle.dumps(raised.value))
+
+    assert type(crossed) is MissingInputColumns
+    assert str(crossed) == str(raised.value)
+    assert crossed.feature == raised.value.feature
+    assert crossed.missing == raised.value.missing
+    assert crossed.inputs == raised.value.inputs
 
 
 def test_an_undeclared_feature_is_not_checked() -> None:

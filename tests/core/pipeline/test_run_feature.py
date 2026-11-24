@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline import run as run_module
+from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
     feature_index,
@@ -1452,16 +1452,18 @@ _EXIT_SEQUENCES = ("seq_a", "seq_b", "seq_c", "seq_d")
 def _fail_the_third_write(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the third output a run writes raise ``OSError``, as a full disk does."""
     written: list[str] = []
-    real_write_output = run_module.write_output
+    real_write_output = entry_task_module.write_output
 
-    def write_output(meta: FeatureMeta, df_feat: FeatureOutput) -> int:
+    def write_output(
+        meta: FeatureMeta, df_feat: FeatureOutput, *, create_parent: bool = True
+    ) -> int:
         if len(written) == 2:
             message = "no space left on device"
             raise OSError(message)
         written.append(meta.sequence)
-        return real_write_output(meta, df_feat)
+        return real_write_output(meta, df_feat, create_parent=create_parent)
 
-    monkeypatch.setattr(run_module, "write_output", write_output)
+    monkeypatch.setattr(entry_task_module, "write_output", write_output)
 
 
 def _indexed_sequences(ds: Dataset, storage: str, run_id: str) -> list[str]:

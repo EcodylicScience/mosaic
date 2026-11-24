@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -115,6 +117,27 @@ class TestWriteOutput:
         # Old file intact, temp cleaned up.
         assert len(pd.read_parquet(meta.out_path)) == 3
         assert list(meta.out_path.parent.glob("*.tmp")) == []
+
+    def test_a_write_that_must_not_create_its_directory_raises_and_creates_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A worker writes into the run root and never recreates one a removal deleted."""
+        missing = FeatureMeta(
+            group="g1", sequence="s1", out_path=tmp_path / "removed" / "g1__s1.parquet"
+        )
+
+        with pytest.raises(FileNotFoundError):
+            write_output(missing, pd.DataFrame({"a": [1]}), create_parent=False)
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_write_creates_its_directory_by_default(self, tmp_path: Path) -> None:
+        meta = FeatureMeta(
+            group="g1", sequence="s1", out_path=tmp_path / "made" / "g1__s1.parquet"
+        )
+
+        assert write_output(meta, pd.DataFrame({"a": [1]})) == 1
+        assert meta.out_path.exists()
 
     def test_output_permissions_respect_umask(self, meta):
         """Output is not left at mkstemp's private 0600 mode."""

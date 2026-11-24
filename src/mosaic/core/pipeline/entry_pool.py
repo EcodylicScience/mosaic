@@ -8,7 +8,7 @@ floor reached with nothing in flight to free memory.
 
 One worker computes each call in the caller's thread, so a run reads the same whatever
 its worker count. The caller decides what a call is, checks for a cancel before it
-submits, and writes what a result holds. The pool does none of that.
+submits, and records what a result reports. The pool does none of that.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from concurrent.futures import (
     wait,
 )
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal, NoReturn, overload
 
 from mosaic.runlog import ResourceReport
@@ -539,8 +539,8 @@ class EntryFailure:
 
     Attributes:
         key: What the failure is recorded under, such as a path or an entry key.
-        error: The exception, or a :class:`RuntimeError` naming its type and
-            message when the exception cannot be pickled.
+        error: The exception, or in a portable failure a :class:`RuntimeError`
+            naming its type and message when the exception cannot be pickled.
         trace: The traceback text as the worker formatted it.
     """
 
@@ -549,28 +549,55 @@ class EntryFailure:
     trace: str
 
     @classmethod
-    def capture(cls, key: str, error: Exception) -> EntryFailure:
-        """Capture *error*. Call it from inside the ``except`` block that caught it."""
+    def capture(
+        cls, key: str, error: Exception, *, portable: bool = True
+    ) -> EntryFailure:
+        """Capture *error*. Call it from inside the ``except`` block that caught it.
+
+        Args:
+            key: What the failure is recorded under.
+            error: The exception caught.
+            portable: Whether to replace an error that cannot be pickled, as
+                :meth:`portable` does. ``False`` keeps the error as raised, for a
+                failure that stays in the process that raised it.
+        """
+        failure = cls(key=key, error=error, trace=traceback.format_exc())
+        return failure.portable() if portable else failure
+
+    def portable(self) -> EntryFailure:
+        """Return this failure in a form that crosses a process boundary.
+
+        An error that cannot be pickled, or that cannot be rebuilt from its
+        pickle, is replaced by a :class:`RuntimeError` naming its type and
+        message. Any other failure is returned as it is.
+        """
         try:
-            _ = pickle.loads(pickle.dumps(error))
+            _ = pickle.loads(pickle.dumps(self.error))
         except Exception:
-            error = RuntimeError(f"{type(error).__name__}: {error}")
-        return cls(key=key, error=error, trace=traceback.format_exc())
+            error = RuntimeError(f"{type(self.error).__name__}: {self.error}")
+            return replace(self, error=error)
+        return self
+
+    def reraise(self) -> NoReturn:
+        """Raise the error.
+
+        An error that crossed a process boundary has no traceback of its own, and
+        the worker's text is attached to it as a note first.
+        """
+        if self.error.__traceback__ is None:
+            self.error.add_note(f"Raised in a worker:\n{self.trace}")
+        raise self.error
 
     def record(self, entry_failed: Callable[[str, BaseException], None]) -> None:
         """Call ``entry_failed(key, error)`` with the error raised and handled.
 
         Recorders such as :meth:`mosaic.core.pipeline.job.JobContext.entry_failed`
         read the traceback of the exception being handled, so the error is raised
-        again for them. An error that crossed a process boundary has no traceback
-        of its own, and the worker's text is attached to it as a note.
+        again for them, as :meth:`reraise` raises it.
         """
-        remote = self.error.__traceback__ is None
         try:
-            raise self.error
+            self.reraise()
         except Exception as exc:
-            if remote:
-                exc.add_note(f"Raised in a worker:\n{self.trace}")
             entry_failed(self.key, exc)
 
 

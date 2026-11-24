@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Literal, overload
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
 from ...core.recording import (
@@ -54,7 +53,7 @@ from .types import (
     resolve_order_col,
 )
 from .pacing import PacedCollector
-from .parquet_reader import read_parquet_column_names
+from .parquet_reader import read_parquet_column_names, release_arrow_memory
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -1420,7 +1419,7 @@ def iter_manifest(
 
         collector.finished(int(df.memory_usage(index=True).sum()))
         del df
-        pa.default_memory_pool().release_unused()
+        release_arrow_memory()
 
         if progress_label and ((i + 1) % progress_interval == 0 or i == n_entries - 1):
             print(

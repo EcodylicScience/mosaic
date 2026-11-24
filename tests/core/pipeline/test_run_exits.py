@@ -33,12 +33,14 @@ import psutil
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.admission import RowCostEstimate
-from mosaic.core.pipeline.entry_pool import EntryPool, ResourceReporter
+from mosaic.core.pipeline.entry_pool import EntryFailure, EntryPool, ResourceReporter
+from mosaic.core.pipeline.entry_task import EntryReport
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
     feature_index,
@@ -57,7 +59,7 @@ from mosaic.core.pipeline.parallelism import (
     WorkerProcessDied,
 )
 from mosaic.core.pipeline.refusal import ToolUnavailable
-from mosaic.core.pipeline.run import ApplyOutcome, run_feature
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Result
 from mosaic.core.pipeline.writers import FeatureOutput, write_parquet_atomic
 from mosaic.runlog import read_run, run_log_dir, run_log_path
@@ -79,13 +81,13 @@ _HELD = ("seq_b", "seq_c")
 _COMPUTED_BEFORE_THE_EXIT = frozenset({"seq_a", "seq_b", "seq_c"})
 _STORAGE = f"{HoldsUntilReleased.name}__from__tracks"
 
-type PoolTag = tuple[FeatureMeta, CoreSelector | None]
-"""What a feature run's pool hands back each outcome under."""
+type RunOutcome = EntryReport | EntryFailure
+"""What a feature run's pool hands back for each entry it computed."""
 
-RunPool = EntryPool[PoolTag, ApplyOutcome]
+RunPool = EntryPool[FeatureMeta, RunOutcome]
 """The pool of a feature run."""
 
-type OnResult = Callable[[PoolTag, ApplyOutcome], None]
+type OnResult = Callable[[FeatureMeta, RunOutcome], None]
 """The callback a feature run's pool hands each result to."""
 
 
@@ -105,6 +107,27 @@ class ReleasedWithOverlap(HoldsUntilReleased):
     """The rerun of :class:`HoldsBCWithOverlap`, which holds nothing."""
 
     accepts_overlap = True
+
+
+class HoldsBCOnAFullDisk(HoldsBC):
+    """A :class:`HoldsBC` whose process workers fail the write of ``seq_a``."""
+
+    fault = "full-disk"
+    fault_on = ("seq_a",)
+
+
+class HoldsBCWithOverlapUntrimmable(HoldsBCWithOverlap):
+    """A :class:`HoldsBCWithOverlap` whose process workers fail to trim ``seq_a``."""
+
+    fault = "trim"
+    fault_on = ("seq_a",)
+
+
+class HoldsBCWritingNoneOfThem(HoldsBC):
+    """A :class:`HoldsBC` whose process workers fail the writes of the held entries."""
+
+    fault = "full-disk"
+    fault_on = _HELD
 
 
 class RefusesSeqA(HoldsBC):
@@ -320,15 +343,21 @@ def _load(load_now: Load) -> pd.DataFrame | None:
 def _fail_writes(
     monkeypatch: pytest.MonkeyPatch, fails: Callable[[str], bool], error: Exception
 ) -> None:
-    """Make the write of each sequence for which *fails* is true raise *error*."""
-    real = run_module.write_output
+    """Make the write of each sequence for which *fails* is true raise *error*.
 
-    def write_output(meta: FeatureMeta, df_feat: FeatureOutput) -> int:
+    The write runs in the entry's worker, so the fault reaches a thread worker and
+    not a process worker.
+    """
+    real = entry_task_module.write_output
+
+    def write_output(
+        meta: FeatureMeta, df_feat: FeatureOutput, *, create_parent: bool = True
+    ) -> int:
         if fails(meta.sequence):
             raise error
-        return real(meta, df_feat)
+        return real(meta, df_feat, create_parent=create_parent)
 
-    monkeypatch.setattr(run_module, "write_output", write_output)
+    monkeypatch.setattr(entry_task_module, "write_output", write_output)
 
 
 def _events(ds: Dataset, execution_id: str, kind: str) -> list[dict[str, object]]:
@@ -539,14 +568,17 @@ def test_a_time_window_over_rows_without_time_ends_the_run_with_the_outputs_in_f
 def test_an_output_error_ends_the_run_with_the_outputs_in_flight_recorded(
     exits: Exits, mode: Mode
 ) -> None:
+    feature = HoldsBC() if mode == "thread" else HoldsBCOnAFullDisk()
+
     with pytest.MonkeyPatch.context() as faults:
-        _fail_writes(
-            faults,
-            lambda sequence: sequence == "seq_a",
-            OSError("no space left on device"),
-        )
+        if mode == "thread":
+            _fail_writes(
+                faults,
+                lambda sequence: sequence == "seq_a",
+                OSError("no space left on device"),
+            )
         with pytest.raises(OSError, match="no space left"):
-            _ = exits.run(HoldsBC(), mode, "TESTEXITWRITE")
+            _ = exits.run(feature, mode, "TESTEXITWRITE")
 
     _check_exit(
         exits,
@@ -563,8 +595,11 @@ def test_an_output_error_ends_the_run_with_the_outputs_in_flight_recorded(
 def test_a_trim_error_ends_the_run_with_the_outputs_in_flight_recorded(
     exits: Exits, mode: Mode
 ) -> None:
-    real_trim = run_module.trim_feature_output
+    real_trim = entry_task_module.trim_feature_output
     options = RunOptions(overlap_frames=1)
+    feature = (
+        HoldsBCWithOverlap() if mode == "thread" else HoldsBCWithOverlapUntrimmable()
+    )
 
     def trim(df: FeatureOutput, selector: CoreSelector) -> FeatureOutput:
         if _sequence_of(selector.entry_key) == "seq_a":
@@ -573,9 +608,10 @@ def test_a_trim_error_ends_the_run_with_the_outputs_in_flight_recorded(
         return real_trim(df, selector)
 
     with pytest.MonkeyPatch.context() as faults:
-        faults.setattr(run_module, "trim_feature_output", trim)
+        if mode == "thread":
+            faults.setattr(entry_task_module, "trim_feature_output", trim)
         with pytest.raises(ValueError, match="could not be trimmed"):
-            _ = exits.run(HoldsBCWithOverlap(), mode, "TESTEXITTRIM", options)
+            _ = exits.run(feature, mode, "TESTEXITTRIM", options)
 
     _check_exit(
         exits,
@@ -705,15 +741,19 @@ def test_a_settle_that_raises_is_a_note_on_the_exception_that_ended_the_run(
 def test_the_writes_a_settle_drops_are_one_note_on_the_exception_that_ended_the_run(
     exits: Exits, mode: Mode
 ) -> None:
+    # A process worker writes a held entry only once the settle releases it.
+    feature = HoldsBC() if mode == "thread" else HoldsBCWritingNoneOfThem()
+
     with pytest.MonkeyPatch.context() as faults:
         _on_load_of_seq_d(faults, exits, mode, _cancel_then_load(exits))
-        _fail_writes(
-            faults,
-            lambda sequence: bool(exits.settles) and sequence in _HELD,
-            OSError("no space left on device"),
-        )
+        if mode == "thread":
+            _fail_writes(
+                faults,
+                lambda sequence: bool(exits.settles) and sequence in _HELD,
+                OSError("no space left on device"),
+            )
         with pytest.raises(Cancelled) as raised:
-            _ = exits.run(HoldsBC(), mode, "TESTEXITDROPPED")
+            _ = exits.run(feature, mode, "TESTEXITDROPPED")
 
     (note,) = _notes(raised.value, "no space left on device")
     assert note.startswith("2 of the outputs of the entries in flight raised")
@@ -783,20 +823,20 @@ def _wrap_pools(
         workers: int,
         mode: ParallelMode,
         on_result: OnResult,
-        on_error: Callable[[PoolTag, Exception], None],
+        on_error: Callable[[FeatureMeta, Exception], None],
         min_free_memory_fraction: float,
         on_resources: ResourceReporter | None,
         watch: MemoryWatch | None,
         floor_at_submit: bool,
-        on_dispatch: Callable[[PoolTag], None] | None,
-        on_computed: Callable[[PoolTag], None] | None,
+        on_dispatch: Callable[[FeatureMeta], None] | None,
+        on_computed: Callable[[FeatureMeta], None] | None,
         cancel_check: Callable[[], None] | None,
         hand_back_on_break: bool,
     ) -> RunPool:
-        def computed(tag: PoolTag) -> None:
+        def computed(tag: FeatureMeta) -> None:
             if on_computed is not None:
                 on_computed(tag)
-            (marks / f"computed-{tag[0].sequence}").touch()
+            (marks / f"computed-{tag.sequence}").touch()
 
         return RunPool(
             workers=workers,
@@ -899,8 +939,8 @@ def _interrupt_after_seq_a_in_the_settle(
     """
 
     def around(on_result: OnResult) -> OnResult:
-        def interrupting(tag: PoolTag, outcome: ApplyOutcome) -> None:
-            if not exits.settles or tag[0].sequence != "seq_a":
+        def interrupting(tag: FeatureMeta, outcome: RunOutcome) -> None:
+            if not exits.settles or tag.sequence != "seq_a":
                 on_result(tag, outcome)
                 return
             try:
@@ -927,7 +967,9 @@ def _interrupt_twice(exits: Exits, execution_id: str) -> KeyboardInterrupt:
     """Run until a second interrupt abandons the settle, then release the held threads.
 
     The settle does not release ``seq_b`` and ``seq_c``, so it hands back ``seq_a``
-    alone before the second interrupt. The held threads end once the release exists.
+    alone before the second interrupt. Once the release exists, after the run has
+    raised, the held threads write ``seq_b`` and ``seq_c``, which get no row, and
+    end.
     """
     exits.releases = False
     threads = threading.enumerate()
@@ -961,6 +1003,7 @@ def test_a_second_interrupt_abandons_the_settle_and_keeps_what_it_recorded(
         status="cancelled",
         failed=set(),
         rows=frozenset({"seq_a"}),
+        unrecorded=frozenset({"seq_b", "seq_c"}),
         mode="thread",
     )
     assert exits.settles == [True]
@@ -986,7 +1029,7 @@ def test_a_failed_flush_after_an_abandoned_settle_is_a_note_on_the_second_interr
         status="cancelled",
         failed=set(),
         rows=frozenset(),
-        unrecorded=frozenset({"seq_a"}),
+        unrecorded=frozenset({"seq_a", "seq_b", "seq_c"}),
         mode="thread",
     )
 

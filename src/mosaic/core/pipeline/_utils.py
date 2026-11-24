@@ -346,7 +346,12 @@ def atomic_savez(final_path: Path, **arrays: object) -> None:
     atomic_write(final_path, _write)
 
 
-def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
+def atomic_write(
+    final_path: Path,
+    write_fn: Callable[[Path], object],
+    *,
+    create_parent: bool = True,
+) -> None:
     """Write *final_path* atomically: *write_fn* fills a temp file, then rename.
 
     ``write_fn`` receives a temp path in the same directory and must write the
@@ -356,8 +361,20 @@ def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
     pre-existing *final_path*. The temp is removed if anything raises. The temp
     name is a leading-dot, ``.tmp``-suffixed hidden file so an orphan left by a
     hard kill never matches ``*.parquet`` output filters.
+
+    Args:
+        final_path: The file to write.
+        write_fn: Fills the temp path it is handed.
+        create_parent: Whether to create the parent directory. The entry task
+            passes ``False``: a worker writes into the run root its parent
+            created, and must not recreate one that a removal deleted.
+
+    Raises:
+        FileNotFoundError: When *create_parent* is ``False`` and the parent
+            directory does not exist. Nothing is created.
     """
-    final_path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         dir=final_path.parent,
         prefix=f"{ATOMIC_TEMP_PREFIX}{final_path.stem}-",

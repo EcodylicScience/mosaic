@@ -21,6 +21,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import entry_pool, memory_watch
+from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline._loaders import LoadSpec
@@ -466,7 +467,7 @@ def test_the_pool_is_shut_down_when_the_run_fails_for_another_reason(
         raise OSError(msg)
 
     monkeypatch.setattr(entry_pool, "ThreadPoolExecutor", _Recording)
-    monkeypatch.setattr(run_module, "write_output", full_disk)
+    monkeypatch.setattr(entry_task_module, "write_output", full_disk)
 
     with pytest.raises(OSError, match="No space left"):
         _ = run_feature(
@@ -810,7 +811,7 @@ def test_an_entry_failing_its_column_check_never_stalls_the_gate(
         if len(calls) == 1:
             raise MissingInputColumns("prov-parallel", (), ("tracks",))
 
-    monkeypatch.setattr(run_module, "check_input_columns", fail_first)
+    monkeypatch.setattr(entry_task_module, "check_input_columns", fail_first)
 
     result = run_feature(
         ds,

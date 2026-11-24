@@ -392,11 +392,11 @@ _GIB = 1024**3
 def faulty_worker(*args: Any) -> Any:
     """Apply as a process worker does, unless ``FAULT`` names the entry's sequence.
 
-    Module level so that a spawned worker unpickles it by reference. The table is
-    the eighth argument.
+    Module level so that a spawned worker unpickles it by reference. The entry's
+    task, which holds its table, is the eighth argument.
     """
     action, _, target = os.environ.get(FAULT, "").partition(":")
-    sequence = str(args[7]["sequence"].iloc[0])
+    sequence = str(args[7].table["sequence"].iloc[0])
     if target in ("*", sequence):
         if action == "kill":
             os.kill(os.getpid(), signal.SIGKILL)

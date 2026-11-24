@@ -975,6 +975,19 @@ class MissingInputColumns(ValueError):
         )
         super().__init__(message)
 
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[MissingInputColumns],
+        tuple[str, tuple[NamedColumns, ...], tuple[str, ...]],
+    ]:
+        """Rebuild from the three arguments, so a process worker can raise it.
+
+        An exception unpickles by calling its class with its ``args``, which here
+        hold the message alone.
+        """
+        return (type(self), (self.feature, self.missing, self.inputs))
+
 
 def check_input_columns(
     feature: Feature,
