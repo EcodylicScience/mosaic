@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -30,8 +31,10 @@ from mosaic.core.pipeline.fit_scope import (
     FIT_SCOPE_NAME,
     FitStateUnreadable,
     list_run_root,
+    read_fit_scope,
     read_fit_state_digest,
     saved_state_digest,
+    write_fit_scope,
 )
 from mosaic.core.pipeline.index import (
     feature_index_path,
@@ -135,6 +138,19 @@ def _without_digest(record: dict[str, object]) -> str:
     """*record* without its ``state_digest``, as written before the digest."""
     del record["state_digest"]
     return json.dumps(record)
+
+
+def _blank_states_read(ds: Dataset, result: Result[str]) -> None:
+    """Blank the digest of each fit that *result*'s fit read, in its record.
+
+    A record written before those digests holds none, so its fit reads as
+    unchanged whatever the fits it read record now.
+    """
+    root = result_run_root(ds, result)
+    record = read_fit_scope(root, strict=True)
+    assert record is not None
+    via = tuple(replace(read, state_digest="") for read in record.via)
+    write_fit_scope(root, replace(record, via=via))
 
 
 def _apply_capturing(
@@ -276,17 +292,14 @@ def test_a_fit_on_templates_records_their_digest_and_recomputes_once_they_are_wr
     assert cell == f"_state={_digest(tracked, runs.fit)},templates={templates}"
     assert model_cells(tracked, runs.fit) == {"seq_a": cell, "seq_b": cell}
     move_tracks(tracked, VARIANT, SEQUENCES)
-    # The steps recompute for their moved inputs. The templates load their
-    # stored state, and the fit's rows record it.
-    _ = _fit_capturing(tracked, capsys)
-    assert _digest(tracked, runs.templates) == templates
-    shutil.rmtree(result_run_root(tracked, runs.templates))
 
+    # The templates are fitted again over their moved entries, and the fit
+    # again over the new templates. A fit run again computes every entry.
     err = _fit_capturing(tracked, capsys)
 
     again = _digest(tracked, runs.templates)
     assert again != templates
-    assert refusals(err, KMEANS_NAME) == {"seq_a": FITTED_AGAIN, "seq_b": FITTED_AGAIN}
+    assert refusals(err, KMEANS_NAME) == {}
     now = fit_state_cell({"_state": _digest(tracked, runs.fit), "templates": again})
     assert model_cells(tracked, runs.fit) == {"seq_a": now, "seq_b": now}
     assert refusals(_fit_capturing(tracked, capsys), KMEANS_NAME) == {}
@@ -419,8 +432,10 @@ def test_an_evaluation_records_its_label_map_and_its_own_state_and_recomputes_af
 
     again = _digest(ds, label_map)
     assert again != mapped
-    assert refusals(err, "evaluate-labels") == {"s3": FITTED_AGAIN}
-    assert model_cells(ds, score) == {"s3": f"_state={own},label_map={again}"}
+    # The evaluation reads another map, so it scores again and computes s3.
+    assert refusals(err, "evaluate-labels") == {}
+    scored = _digest(ds, score)
+    assert model_cells(ds, score) == {"s3": f"_state={scored},label_map={again}"}
     err = _pipeline_capturing(ds, recipe, EVALUATE_SCOPES, capsys)
     assert refusals(err, "evaluate-labels") == {}
 
@@ -556,15 +571,18 @@ def test_a_warm_started_fit_records_the_fit_it_started_from_and_recomputes_after
     _rewrite_fit_scope(result_run_root(ds, pretrained), _new_digest)
     err = _pipeline_capturing(ds, recipe, WARM_SCOPES, capsys)
 
-    # The pretrained fit's own rows read its state as their own part too.
+    # The pretrained fit's own rows read its state as their own part. The
+    # fine-tuning started from it is fitted again and computes its entries.
     assert refusals(err, "sequence-classifier") == {
         "s1": FITTED_AGAIN,
         "s2": FITTED_AGAIN,
-        "t1": FITTED_AGAIN,
-        "t2": FITTED_AGAIN,
     }
     now = fit_state_cell(
-        {"_state": own, "init_from": "0" * 16, "templates": _digest(ds, templates)}
+        {
+            "_state": _digest(ds, finetune),
+            "init_from": "0" * 16,
+            "templates": _digest(ds, templates),
+        }
     )
     assert model_cells(ds, finetune) == {"t1": now, "t2": now}
 
@@ -789,6 +807,7 @@ def test_the_warning_names_each_blank_fit_and_no_fit_that_records_a_digest(
 ) -> None:
     """The fit's own blank part is not named: it reads no other run."""
     runs = kmeans_fit(tracked, workers=WORKERS, mode=MODE)
+    _blank_states_read(tracked, runs.fit)
     for result in (runs.templates, runs.fit):
         _rewrite_fit_scope(result_run_root(tracked, result), _without_digest)
         _set_model_cells(tracked, result, "")

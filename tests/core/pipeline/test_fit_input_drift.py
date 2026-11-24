@@ -16,32 +16,38 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import Dataset, LinkUnreachableError
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.composition import input_part
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.fit_scope import (
     FIT_SCOPE_NAME,
+    CannotFitAgain,
     FitEntryInputs,
     FitScope,
     FitSourceRef,
     FitStateUnreadable,
+    fit_inputs_digest,
     read_fit_scope,
     read_fit_state_digest,
+    write_fit_scope,
 )
 from mosaic.core.pipeline.index import (
+    OWN_STATE_PART,
     DriftReads,
+    EntryCells,
     FitDrift,
     current_entry_cells,
     feature_index,
     feature_index_path,
     fit_drift,
+    fit_state_cell,
     refit_summary,
 )
 from mosaic.core.pipeline.inventory.params import (
@@ -49,18 +55,31 @@ from mosaic.core.pipeline.inventory.params import (
     read_run_params,
 )
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.types import Inputs, Result
+from mosaic.core.pipeline.types import (
+    DependencyLookup,
+    Feature,
+    Inputs,
+    InputStream,
+    Result,
+)
 from mosaic.core.scope import Scope
+from mosaic.runlog import read_run_progress, run_log_dir
 from tests.helpers import (
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
     KMEANS,
+    FitControl,
     KMeansChain,
+    KMeansFit,
     PlainFeature,
+    ScopedFittingFeature,
+    add_tracks_table,
     add_tracks_variant,
+    assert_tree_unchanged,
     calms21_dataset,
     copy_of,
     drifted,
+    index_cells,
     kmeans_apply,
     kmeans_fit,
     kmeans_fit_and_apply,
@@ -73,12 +92,16 @@ from tests.helpers import (
     refusals,
     result_run_root,
     run_step,
+    scored_classifier_recipe,
     take_link_offline,
+    track_table,
+    tree_snapshot,
 )
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
     from mosaic.core.pipeline.graph import Recipe
+    from mosaic.core.pipeline.graph.resolve import StepSpec
 
 VARIANT: Final = "convert-trex.0.2-1111111111"
 SEQUENCES: Final = ("seq_a", "seq_b")
@@ -112,21 +135,6 @@ def tracked(tmp_path: Path) -> Dataset:
 def _read(upstream: Result[str]) -> Inputs:
     """The inputs of a feature reading the run of *upstream*."""
     return Inputs((Result(feature=upstream.feature, run_id=upstream.run_id),))
-
-
-def _inputs_cells(ds: Dataset, result: Result[str]) -> dict[str, str]:
-    """The ``consumed_input_composition`` cell of each own row of *result*'s run."""
-    rows = pd.read_csv(
-        feature_index_path(ds, result.feature), dtype=str, keep_default_na=False
-    )
-    rows = rows[rows["run_id"] == result.run_id]
-    return dict(
-        zip(
-            rows["sequence"].astype(str),
-            rows["consumed_input_composition"].astype(str),
-            strict=True,
-        )
-    )
 
 
 def _below(
@@ -166,9 +174,15 @@ def test_a_feature_input_records_the_state_of_the_fit_its_upstream_read(
 
     part = input_part("", "", digest)
     assert part == f"{digest}|/"
-    assert _inputs_cells(tracked, first) == {"seq_a": part, "seq_b": part}
+    assert index_cells(tracked, first, "consumed_input_composition") == {
+        "seq_a": part,
+        "seq_b": part,
+    }
     deeper = input_part("", part, "")
-    assert _inputs_cells(tracked, second) == {"seq_a": deeper, "seq_b": deeper}
+    assert index_cells(tracked, second, "consumed_input_composition") == {
+        "seq_a": deeper,
+        "seq_b": deeper,
+    }
     assert deeper == f"/{digest}|/"
 
 
@@ -203,7 +217,10 @@ def test_a_fit_written_again_recomputes_every_row_below_it_in_turn(
     assert refusals(err, _BelowThat.name).keys() == set(SEQUENCES)
     assert drifted(tracked, second) == ()
     part = input_part("", "", digest)
-    assert _inputs_cells(tracked, first) == {"seq_a": part, "seq_b": part}
+    assert index_cells(tracked, first, "consumed_input_composition") == {
+        "seq_a": part,
+        "seq_b": part,
+    }
 
 
 def test_a_chain_whose_upstream_rows_record_no_state_keeps_every_cells_form(
@@ -215,7 +232,7 @@ def test_a_chain_whose_upstream_rows_record_no_state_keeps_every_cells_form(
 
     assert set(model_cells(tracked, speed).values()) == {""}
     for result in (first, second):
-        cells = _inputs_cells(tracked, result)
+        cells = index_cells(tracked, result, "consumed_input_composition")
         assert set(cells) == set(SEQUENCES)
         assert all("|" not in cell for cell in cells.values())
         assert set(cells.values()) == {""}
@@ -862,3 +879,909 @@ def test_a_refit_summary_samples_as_many_entries_as_it_is_asked() -> None:
 
     assert refit_summary(drift, sample=1) == "1 moved, 1 gone (g:a and 1 more)"
     assert refit_summary(drift, sample=0) == "1 moved, 1 gone"
+
+
+# --- fitting again -------------------------------------------------------------
+
+
+AGAIN: Final = "again, since the inputs its fit read changed"
+"""The words of the line a run prints when it fits again."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Offer:
+    """One ``load_state`` call: the root offered, what it held, and the answer."""
+
+    root: Path
+    held: tuple[str, ...]
+    loaded: bool
+
+
+def _spy_loads(monkeypatch: pytest.MonkeyPatch, cls: type[Feature]) -> list[_Offer]:
+    """Record each ``load_state`` call of *cls* made from now on."""
+    offers: list[_Offer] = []
+    real = cls.load_state
+
+    def load_state(
+        self: Feature,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        held = (
+            tuple(sorted(path.name for path in run_root.iterdir()))
+            if run_root.is_dir()
+            else ()
+        )
+        loaded = real(self, run_root, artifact_paths, dependency_lookups)
+        offers.append(_Offer(root=run_root, held=held, loaded=loaded))
+        return loaded
+
+    monkeypatch.setattr(cls, "load_state", load_state)
+    return offers
+
+
+def _spy_kmeans_fits(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Record each ``global-kmeans`` fit from now on, ``True`` for one given a model."""
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+
+    fits: list[bool] = []
+    real = GlobalKMeansClustering.fit
+
+    def fit(self: GlobalKMeansClustering, inputs: InputStream) -> None:
+        fits.append(self.params.model is not None)
+        real(self, inputs)
+
+    monkeypatch.setattr(GlobalKMeansClustering, "fit", fit)
+    return fits
+
+
+def _record_bytes(ds: Dataset, result: Result[str]) -> bytes:
+    """The bytes of the fit record of *result*'s run."""
+    return (result_run_root(ds, result) / FIT_SCOPE_NAME).read_bytes()
+
+
+def _fit_phases(ds: Dataset, result: Result[str]) -> list[str]:
+    """The ``fit`` phase messages the attempt of *result* recorded."""
+    assert result.execution_id is not None
+    return [
+        event["message"]
+        for event in read_run_progress(run_log_dir(ds.base_dir), result.execution_id)
+        if event["step_type"] == "phase" and event["message"].startswith("fit")
+    ]
+
+
+def _again_line(feature: str, run_id: str | None, summary: str) -> str:
+    """The line a run of *feature* prints when it fits *run_id* again."""
+    return (
+        f"[feature:{feature}] fitting run {run_id} again, since the inputs its fit "
+        f"read changed: {summary}"
+    )
+
+
+def test_a_fit_whose_entry_was_converted_again_is_fitted_again(
+    tracked: Dataset, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chain = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+    templates_was = _record(tracked, chain.templates)
+    fit_was = _record(tracked, chain.fit)
+    fit_rows_was = index_cells(tracked, chain.fit, "started_at")
+    move_tracks(tracked, VARIANT, ["seq_a"])
+
+    again = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+
+    assert again.run_ids() == chain.run_ids()
+    assert again.apply.run_id == chain.apply.run_id
+    templates_now = _record(tracked, again.templates)
+    assert templates_now.execution_id == again.templates.execution_id
+    assert templates_now.state_digest != templates_was.state_digest
+    assert templates_now.inputs != templates_was.inputs
+    assert templates_now.inputs == _cells_now(tracked, again.templates, BOTH)
+    fit_now = _record(tracked, again.fit)
+    assert fit_now.execution_id == again.fit.execution_id
+    assert fit_now.state_digest != fit_was.state_digest
+    fit_rows_now = index_cells(tracked, again.fit, "started_at")
+    assert fit_rows_now.keys() == set(SEQUENCES)
+    assert all(fit_rows_now[seq] != fit_rows_was[seq] for seq in SEQUENCES)
+    digest = fit_now.state_digest
+    assert model_cells(tracked, again.apply) == {"seq_a": digest, "seq_b": digest}
+    err = capsys.readouterr().err
+    assert (
+        _again_line("extract-templates", chain.templates.run_id, "1 moved (seq_a)")
+        in err
+    )
+    assert (
+        _again_line("global-kmeans", chain.fit.run_id, "fitted again: templates") in err
+    )
+
+
+def test_a_fit_whose_inputs_did_not_change_is_served_and_keeps_its_record(
+    tracked: Dataset,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+    records = [_record_bytes(tracked, run) for run in (chain.templates, chain.fit)]
+    fits = _spy_kmeans_fits(monkeypatch)
+    _ = capsys.readouterr()
+
+    again = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+
+    assert fits == []
+    assert (again.fit.cache_hit, again.apply.cache_hit) == (True, True)
+    assert [
+        _record_bytes(tracked, run) for run in (again.templates, again.fit)
+    ] == records
+    assert AGAIN not in capsys.readouterr().err
+
+
+def test_a_kmeans_apply_fits_nothing_and_announces_no_refit(
+    tracked: Dataset,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chain = kmeans_fit_and_apply(tracked, workers=WORKERS, mode=MODE)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    _ = kmeans_fit(tracked, workers=WORKERS, mode=MODE)
+    fits = _spy_kmeans_fits(monkeypatch)
+    _ = capsys.readouterr()
+
+    applied = kmeans_apply(tracked, chain, workers=WORKERS, mode=MODE)
+
+    assert fits == []
+    assert applied.failed_entries == ()
+    assert not (result_run_root(tracked, applied) / FIT_SCOPE_NAME).exists()
+    assert AGAIN not in capsys.readouterr().err
+
+
+def test_a_kmeans_fit_is_fitted_again_when_its_templates_are_not_on_a_conversion(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = kmeans_fit(tracked, workers=WORKERS, mode=MODE)
+    was = _record(tracked, runs.fit)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    speed = _speed_again(tracked)
+    fits = _spy_kmeans_fits(monkeypatch)
+
+    served = run_step(
+        tracked,
+        "global-kmeans",
+        [model_reference(speed)],
+        {"templates": model_reference(runs.templates), **KMEANS},
+        workers=WORKERS,
+        mode=MODE,
+    )
+
+    assert fits == []
+    assert _record(tracked, served).execution_id == was.execution_id
+
+    _ = _templates(tracked, speed, None)
+    fitted = run_step(
+        tracked,
+        "global-kmeans",
+        [model_reference(speed)],
+        {"templates": model_reference(runs.templates), **KMEANS},
+        workers=WORKERS,
+        mode=MODE,
+    )
+
+    assert fits == [False]
+    assert fitted.run_id == runs.fit.run_id
+    now = _record(tracked, fitted)
+    assert now.execution_id == fitted.execution_id
+    assert now.state_digest != was.state_digest
+
+
+def test_an_entry_gone_from_a_templates_scope_gives_the_step_another_run(
+    tracked: Dataset,
+) -> None:
+    speed = _speed_again(tracked)
+    templates = _templates(tracked, speed, None)
+    _remove_entry(tracked, GONE, speed)
+
+    again = _templates(tracked, speed, None)
+
+    assert again.run_id != templates.run_id
+    drift = _drift(tracked, templates)
+    assert drift is not None
+    assert (drift.moved, drift.dropped, drift.drifted) == ((), (), False)
+
+
+def test_the_line_and_the_fit_phase_of_a_refit_carry_its_summary(
+    tracked: Dataset, capsys: pytest.CaptureFixture[str]
+) -> None:
+    speed = _speed_again(tracked)
+    templates = _templates(tracked, speed, None)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    _ = _speed_again(tracked)
+    summary = refit_summary(
+        FitDrift(
+            link_id="", recorded=True, moved=(("", "seq_a"),), dropped=(), refitted=()
+        )
+    )
+    _ = capsys.readouterr()
+
+    from mosaic.core.pipeline.graph import build_feature
+
+    feature = build_feature(
+        "extract-templates", [model_reference(speed)], {"n_templates": 20}
+    )
+    again = run_feature(tracked, feature)
+
+    assert again.run_id == templates.run_id
+    err = capsys.readouterr().err
+    assert err.count(AGAIN) == 1
+    assert _again_line("extract-templates", templates.run_id, summary) in err
+    (phase,) = _fit_phases(tracked, again)
+    assert phase.startswith("fit: ")
+    assert summary in phase
+
+
+def _refit_kmeans_after_a_move(tracked: Dataset) -> tuple[KMeansFit, Result[str]]:
+    """Fit the k-means chain, move ``seq_a`` and fit its templates again."""
+    runs = kmeans_fit(tracked, workers=WORKERS, mode=MODE)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    speed = _speed_again(tracked)
+    _ = _templates(tracked, speed, None)
+    return runs, speed
+
+
+def test_a_kmeans_refit_loads_from_an_empty_directory_that_is_gone_after(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
+
+    runs, speed = _refit_kmeans_after_a_move(tracked)
+    own_root = result_run_root(tracked, runs.fit)
+    assert (own_root / "model.joblib").is_file()
+    offers = _spy_loads(monkeypatch, GlobalKMeansClustering)
+
+    fitted = run_step(
+        tracked,
+        "global-kmeans",
+        [model_reference(speed)],
+        {"templates": model_reference(runs.templates), **KMEANS},
+        workers=1,
+        mode=MODE,
+    )
+
+    assert fitted.failed_entries == ()
+    first = offers[0]
+    assert first.root != own_root
+    assert (first.held, first.loaded) == ((), False)
+    assert not first.root.exists()
+    assert all(offer.root == own_root for offer in offers[1:])
+    assert _record(tracked, fitted).execution_id == fitted.execution_id
+
+
+def _evaluation_recipe() -> Recipe:
+    """The ``evaluate-labels`` recipe scoring k-means clusters through a label map."""
+    return _recipe(
+        "held-out-map",
+        [
+            CONVERT_TRACKS_STEP,
+            CONVERT_LABELS_STEP,
+            {
+                "id": "speed",
+                "type": "feature",
+                "feature": "speed-angvel",
+                "inputs": ["tracks"],
+                "tracks": {"step": "tracks"},
+            },
+            {
+                "id": "templates",
+                "type": "feature",
+                "feature": "extract-templates",
+                "inputs": [{"step": "speed"}],
+                "params": {"n_templates": 40},
+            },
+            {
+                "id": "kmeans",
+                "type": "feature",
+                "feature": "global-kmeans",
+                "inputs": [{"step": "speed"}],
+                "params": {"templates": {"step": "templates"}, "k": 3},
+            },
+            {
+                "id": "map",
+                "type": "feature",
+                "feature": "fit-label-map",
+                "inputs": [{"step": "kmeans"}],
+                "params": {"labels": {"step": "labels"}},
+            },
+            {
+                "id": "score",
+                "type": "feature",
+                "feature": "evaluate-labels",
+                "inputs": [{"step": "kmeans"}],
+                "params": {
+                    "labels": {"step": "labels"},
+                    "mode": "clusters",
+                    "prediction_column": "cluster",
+                    "label_map": {"step": "map"},
+                },
+            },
+        ],
+    )
+
+
+def _mark_fitted_again(ds: Dataset, result: Result[str]) -> None:
+    """Record another state digest in the fit record of *result*'s run.
+
+    Stands for a fit written again with other state, which every fit that read
+    it then compares.
+    """
+    root = result_run_root(ds, result)
+    record = _record(ds, result)
+    write_fit_scope(root, replace(record, state_digest="f" * len(record.state_digest)))
+
+
+def test_a_label_map_fitted_again_scores_the_evaluation_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.evaluate_labels import (
+        METRICS_FILE,
+        EvaluateLabels,
+    )
+
+    ds = _labeled_dataset(tmp_path / "ds")
+    recipe = _evaluation_recipe()
+    scopes = {"templates": TRAIN, "map": TRAIN, "score": TEST}
+    _run_recipe(ds, recipe, scopes)
+    score = _step_result(ds, recipe, scopes, "score")
+    was = _record(ds, score)
+    own_root = result_run_root(ds, score)
+    written = (own_root / METRICS_FILE).stat().st_mtime_ns
+    _mark_fitted_again(ds, _step_result(ds, recipe, scopes, "map"))
+    assert _drift(ds, score) == FitDrift(
+        link_id="", recorded=True, moved=(), dropped=(), refitted=("label_map",)
+    )
+    offers = _spy_loads(monkeypatch, EvaluateLabels)
+
+    _run_recipe(ds, recipe, scopes)
+
+    now = _record(ds, score)
+    assert now.execution_id != was.execution_id
+    assert [ref.state_digest for ref in now.via] == ["f" * len(was.state_digest)]
+    assert (own_root / METRICS_FILE).stat().st_mtime_ns != written
+    first = offers[0]
+    assert first.root != own_root
+    assert (first.held, first.loaded) == ((), False)
+    assert not first.root.exists()
+    drift = _drift(ds, score)
+    assert drift is not None
+    assert not drift.drifted
+
+
+class _LoadsElsewhere(ScopedFittingFeature):
+    """Finds a state in an empty root, as a load from an apply's model does."""
+
+    name = "fit-loads-elsewhere"
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        held = super().load_state(run_root, artifact_paths, dependency_lookups)
+        return held or not any(run_root.iterdir())
+
+
+class _WritesOffered(ScopedFittingFeature):
+    """Writes into the root its last ``load_state`` was offered, while it fits."""
+
+    name = "fit-writes-offered"
+    written = "working.txt"
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        self.offered = run_root
+        return super().load_state(run_root, artifact_paths, dependency_lookups)
+
+    def fit(self, inputs: InputStream) -> None:
+        super().fit(inputs)
+        _ = (self.offered / self.written).write_text("fitting")
+
+
+class _WritesBound(ScopedFittingFeature):
+    """Writes a working file into the run root it is bound to, while it fits."""
+
+    name = "fit-writes-bound"
+    written = "working.txt"
+
+    def bind_run_root(self, run_root: Path) -> None:
+        self.bound = run_root
+
+    def fit(self, inputs: InputStream) -> None:
+        super().fit(inputs)
+        _ = (self.bound / self.written).write_text(f"fit {self.control.fits}")
+
+
+class _ResumesFits(ScopedFittingFeature):
+    """Records each fit-inputs digest the engine hands it."""
+
+    name = "fit-resumes"
+
+    def __init__(self, control: FitControl) -> None:
+        super().__init__(control)
+        self.digests: list[str] = []
+
+    def bind_fit_inputs(self, digest: str) -> None:
+        self.digests.append(digest)
+
+
+def test_each_fit_is_handed_the_digest_of_the_inputs_it_reads(
+    tracked: Dataset,
+) -> None:
+    control = FitControl()
+    first = _ResumesFits(control)
+    fitted = run_feature(tracked, first, track=False)
+    was = _record(tracked, fitted)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    again = _ResumesFits(control)
+
+    refitted = run_feature(tracked, again, track=False)
+
+    assert control.fits == 2
+    now = _record(tracked, refitted)
+    assert first.digests == [fit_inputs_digest(was.inputs or (), {})]
+    assert again.digests == [fit_inputs_digest(now.inputs or (), {})]
+    assert first.digests != again.digests
+
+
+def _entry_inputs(sequence: str, tracks: str) -> FitEntryInputs:
+    """The cells of one entry of group ``g``."""
+    return FitEntryInputs(
+        group="g",
+        sequence=sequence,
+        cells=EntryCells(roots="", tracks=tracks, inputs=""),
+    )
+
+
+def test_the_fit_inputs_digest_ignores_order_and_follows_each_state() -> None:
+    entries = (_entry_inputs("a", "t1"), _entry_inputs("b", "t2"))
+    states = {"labels": "11", "templates": "22"}
+
+    digest = fit_inputs_digest(entries, states)
+
+    assert digest == fit_inputs_digest(entries[::-1], dict(reversed(states.items())))
+    assert digest != fit_inputs_digest(entries, {**states, "templates": "33"})
+    assert digest != fit_inputs_digest(
+        (_entry_inputs("a", "t1"), _entry_inputs("b", "moved")), states
+    )
+
+
+def _state_files(root: Path) -> dict[str, bytes]:
+    """The state and the fit record in *root*."""
+    return {name: (root / name).read_bytes() for name in ("state.json", FIT_SCOPE_NAME)}
+
+
+def test_a_refit_whose_load_finds_a_state_in_an_empty_directory_is_refused(
+    tracked: Dataset,
+) -> None:
+    control = FitControl()
+    first = run_feature(tracked, _LoadsElsewhere(control), track=False)
+    root = result_run_root(tracked, first)
+    kept = _state_files(root)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+
+    with pytest.raises(CannotFitAgain) as refused:
+        _ = run_feature(tracked, _LoadsElsewhere(control), track=False)
+
+    assert refused.value.error_kind == "conflict"
+    assert refused.value.error_detail() == {
+        "feature": _LoadsElsewhere.name,
+        "run_id": first.run_id,
+        "cause": "loads_elsewhere",
+        "files": [],
+    }
+    assert control.fits == 1
+    assert _state_files(root) == kept
+
+
+def test_a_refit_that_writes_into_the_offered_directory_is_refused(
+    tracked: Dataset,
+) -> None:
+    control = FitControl()
+    first = run_feature(tracked, _WritesOffered(control), track=False)
+    root = result_run_root(tracked, first)
+    kept = _state_files(root)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+
+    with pytest.raises(CannotFitAgain) as refused:
+        _ = run_feature(tracked, _WritesOffered(control), track=False)
+
+    assert refused.value.error_detail() == {
+        "feature": _WritesOffered.name,
+        "run_id": first.run_id,
+        "cause": "wrote_outside_run_root",
+        "files": [_WritesOffered.written],
+    }
+    assert _WritesOffered.written in str(refused.value)
+    assert control.fits == 2
+    assert _state_files(root) == kept
+
+
+def test_a_refit_writes_its_working_files_into_the_bound_run_root(
+    tracked: Dataset,
+) -> None:
+    control = FitControl()
+    first = run_feature(tracked, _WritesBound(control), track=False)
+    root = result_run_root(tracked, first)
+    was = _record(tracked, first)
+    move_tracks(tracked, VARIANT, ["seq_a"])
+    feature = _WritesBound(control)
+
+    again = run_feature(tracked, feature, track=False)
+
+    assert again.run_id == first.run_id
+    assert control.fits == 2
+    assert feature.bound == root
+    assert (root / _WritesBound.written).read_text() == "fit 2"
+    assert (root / "state.json").is_file()
+    assert _record(tracked, again).fitted_at != was.fitted_at
+
+
+def test_an_unreadable_fit_inputs_is_refused_before_the_run_root_is_written(
+    tracked: Dataset,
+) -> None:
+    speed = _speed_again(tracked)
+    templates = _templates(tracked, speed, None)
+    root = result_run_root(tracked, templates)
+    record = root / FIT_SCOPE_NAME
+    document = json.loads(record.read_text(encoding="utf-8"))
+    document["fit_inputs"] = ["not", "an", "object"]
+    _ = record.write_text(json.dumps(document), encoding="utf-8")
+    before = tree_snapshot(root)
+
+    with pytest.raises(FitStateUnreadable):
+        _ = _templates(tracked, speed, None)
+
+    assert_tree_unchanged(root, before)
+
+
+def test_a_drifted_fit_reading_a_fit_under_an_unreachable_link_is_refused(
+    tracked: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    speed = _speed_again(tracked)
+    templates = _templates(tracked, speed, None)
+    copy = copy_of(tracked, tmp_path / "copy")
+    for sequence in SEQUENCES:
+        add_tracks_table(
+            copy,
+            VARIANT,
+            track_table("", sequence, n_rows=40, n_ids=2),
+            consumed_composition="converted-here",
+            std_format="mosaic_v1",
+        )
+    assert _speed_again(copy).run_id == speed.run_id
+    fit = run_step(
+        copy,
+        "global-kmeans",
+        [model_reference(speed)],
+        {"templates": model_reference(templates), **KMEANS},
+        workers=WORKERS,
+        mode=MODE,
+    )
+    offline = take_link_offline(copy)
+    root = result_run_root(offline, fit)
+    before = tree_snapshot(root)
+    fits = _spy_kmeans_fits(monkeypatch)
+
+    with pytest.raises(LinkUnreachableError):
+        _ = run_step(
+            offline,
+            "global-kmeans",
+            [model_reference(speed)],
+            {"templates": model_reference(templates), **KMEANS},
+            workers=WORKERS,
+            mode=MODE,
+        )
+
+    assert fits == []
+    assert_tree_unchanged(root, before)
+
+
+def test_a_classifier_fitted_again_scores_its_evaluation_again(
+    tmp_path: Path,
+) -> None:
+    ds = _labeled_dataset(tmp_path / "ds")
+    recipe = scored_classifier_recipe()
+    _run_recipe(ds, recipe, {})
+    clf = _step_result(ds, recipe, {}, "clf")
+    score = _step_result(ds, recipe, {}, "score")
+    clf_was = _record(ds, clf)
+    cells_was = model_cells(ds, clf)
+    inputs_was = index_cells(ds, score, "consumed_input_composition")
+    score_was = _record(ds, score)
+    reconvert_entry(ds, ("train", "s1"), composition="converted-again", scale=2.0)
+
+    _run_recipe(ds, recipe, {})
+
+    assert _step_result(ds, recipe, {}, "clf") == clf
+    clf_now = _record(ds, clf)
+    assert clf_now.execution_id != clf_was.execution_id
+    assert clf_now.state_digest != clf_was.state_digest
+    cells_now = model_cells(ds, clf)
+    assert cells_now.keys() == cells_was.keys()
+    assert all(cells_now[seq] != cells_was[seq] for seq in cells_was)
+    inputs_now = index_cells(ds, score, "consumed_input_composition")
+    assert all(inputs_now[seq] != inputs_was[seq] for seq in inputs_was)
+    assert _record(ds, score).execution_id != score_was.execution_id
+
+
+# --- what a pinned fit streams when fitted again -------------------------------
+
+
+CONVERTED_AGAIN: Final = ("train", "s1")
+"""The training entry converted again from changed sources."""
+
+GONE_TRAINING: Final = ("train", "s2")
+"""The training entry removed from the tracks index."""
+
+
+def _spy_classifier_fits(monkeypatch: pytest.MonkeyPatch) -> list[list[Entry]]:
+    """Record the entries each ``sequence-classifier`` fit streams from now on."""
+    from mosaic.behavior.feature_library.sequence_classifier import (
+        SequenceClassifier,
+    )
+
+    fits: list[list[Entry]] = []
+    real = SequenceClassifier.fit
+
+    def fit(self: SequenceClassifier, inputs: InputStream) -> None:
+        fits.append(sorted(self.fitted_entries or ()))
+        real(self, inputs)
+
+    monkeypatch.setattr(SequenceClassifier, "fit", fit)
+    return fits
+
+
+def _spy_streamed(monkeypatch: pytest.MonkeyPatch, cls: type[Feature]) -> list[int]:
+    """Record the entry count of each stream a fit of *cls* is offered."""
+    counts: list[int] = []
+    real = cls.fit
+
+    def fit(self: Feature, inputs: InputStream) -> None:
+        counts.append(inputs.n_entries)
+        real(self, inputs)
+
+    monkeypatch.setattr(cls, "fit", fit)
+    return counts
+
+
+def _classifier_scopes(classifier: Scope) -> dict[str, Scope]:
+    """The step scopes that ask the classifier for *classifier*."""
+    return {"labeled": TRAIN, "classifier": classifier}
+
+
+def _trained_classifier(base: Path) -> tuple[Dataset, Recipe, Result[str]]:
+    """A classifier fitted and applied over the train group alone."""
+    _ = pytest.importorskip("torch")
+    ds = _labeled_dataset(base)
+    recipe = _recipe("classifier", _classifier_steps())
+    _run_recipe(ds, recipe, _classifier_scopes(TRAIN))
+    return ds, recipe, _step_result(ds, recipe, _classifier_scopes(TRAIN), "classifier")
+
+
+def test_an_apply_over_a_wider_scope_or_one_without_the_training_entries_fits_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, recipe, classifier = _trained_classifier(tmp_path / "ds")
+    was = _record(ds, classifier)
+    fits = _spy_classifier_fits(monkeypatch)
+
+    _run_recipe(ds, recipe, _classifier_scopes(WIDER))
+    _run_recipe(ds, recipe, _classifier_scopes(TEST))
+
+    assert fits == []
+    assert _record(ds, classifier) == was
+    assert model_cells(ds, classifier).keys() == {"s1", "s2", "t1"}
+
+
+def test_a_classifier_asked_for_the_test_entries_fits_again_over_its_training_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.sequence_classifier import (
+        SequenceClassifier,
+    )
+
+    ds, recipe, classifier = _trained_classifier(tmp_path / "ds")
+    was = _record(ds, classifier)
+    own_root = result_run_root(ds, classifier)
+    fits = _spy_classifier_fits(monkeypatch)
+    streamed = _spy_streamed(monkeypatch, SequenceClassifier)
+    offers = _spy_loads(monkeypatch, SequenceClassifier)
+    reconvert_entry(ds, CONVERTED_AGAIN, composition="converted-again", scale=2.0)
+
+    _run_recipe(ds, recipe, _classifier_scopes(TEST))
+
+    assert fits == [list(TRAIN_ENTRIES)]
+    assert streamed == [len(TRAIN_ENTRIES)]
+    first = offers[0]
+    assert first.root != own_root
+    assert (first.held, first.loaded) == ((), False)
+    now = _record(ds, classifier)
+    assert now.execution_id != was.execution_id
+    assert now.state_digest != was.state_digest
+    assert _recorded_entries(now) == list(TRAIN_ENTRIES)
+    assert now.inputs == _cells_now(ds, classifier, TRAIN_ENTRIES)
+    assert "t1" in model_cells(ds, classifier)
+
+
+def _labels_of(ds: Dataset, entry: Entry) -> Path:
+    """The label file of *entry*."""
+    from mosaic.core.pipeline.labels_index import labels_rows
+
+    rows = labels_rows(ds, "behavior")
+    group, sequence = entry
+    (path,) = rows.loc[
+        (rows["group"].astype(str) == group)
+        & (rows["sequence"].astype(str) == sequence),
+        "abs_path",
+    ]
+    return ds.resolve_path(str(path))
+
+
+def _run_over(ds: Dataset, spec: StepSpec, scope: Scope) -> Result[str]:
+    """Run the feature step *spec* over *scope*."""
+    from mosaic.core.pipeline.graph.resolve import build_step_feature
+
+    return run_feature(
+        ds,
+        build_step_feature(spec),
+        scope=scope,
+        tracks_run_id=spec.tracks_run_id,
+        labels_run_id=spec.labels_run_id,
+        track=False,
+    )
+
+
+def _without_a_training_entry(base: Path) -> tuple[Dataset, Result[str], StepSpec]:
+    """A trained classifier, the step it runs as, and a training entry removed.
+
+    The entry leaves the tracks index and the rows of the step's input, while
+    the templates the classifier pins still name it.
+    """
+    from mosaic.core.pipeline.graph import plan_pipeline
+
+    ds, recipe, classifier = _trained_classifier(base)
+    spec = (
+        plan_pipeline(ds, recipe, step_scopes=_classifier_scopes(TEST))
+        .step("classifier")
+        .spec
+    )
+    _remove_entry(ds, GONE_TRAINING, _step_result(ds, recipe, {}, "pairs"))
+    return ds, classifier, spec
+
+
+def test_a_refit_streams_the_training_entries_its_inputs_still_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.sequence_classifier import (
+        SequenceClassifier,
+    )
+
+    ds, classifier, spec = _without_a_training_entry(tmp_path / "ds")
+    _labels_of(ds, GONE_TRAINING).unlink()
+    was = _record(ds, classifier)
+    streamed = _spy_streamed(monkeypatch, SequenceClassifier)
+
+    applied = _run_over(ds, spec, TEST)
+
+    assert applied.run_id == classifier.run_id
+    assert streamed == [1]
+    now = _record(ds, classifier)
+    assert now.execution_id != was.execution_id
+    assert _recorded_entries(now) == [CONVERTED_AGAIN]
+
+
+def test_a_refit_missing_a_training_entry_the_templates_label_is_refused(
+    tmp_path: Path,
+) -> None:
+    ds, classifier, spec = _without_a_training_entry(tmp_path / "ds")
+    was = _record(ds, classifier)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"\[sequence-classifier\] 1 train entries of the templates run have "
+            r"labels and are not in this step's scope: train/s2\."
+        ),
+    ):
+        _ = _run_over(ds, spec, TEST)
+
+    assert _record(ds, classifier) == was
+
+
+def test_the_other_scope_of_a_classifier_fitted_again_drifts_through_its_own_state(
+    tmp_path: Path,
+) -> None:
+    ds, recipe, classifier = _trained_classifier(tmp_path / "ds")
+    _run_recipe(ds, recipe, _classifier_scopes(TEST))
+    was = _record(ds, classifier)
+    held_out_was = model_cells(ds, classifier)["t1"]
+    reconvert_entry(ds, CONVERTED_AGAIN, composition="converted-again", scale=2.0)
+
+    _run_recipe(ds, recipe, _classifier_scopes(TRAIN))
+
+    now = _record(ds, classifier)
+    assert now.state_digest != was.state_digest
+    assert drifted(ds, classifier) == (("test", "t1"),)
+    assert model_cells(ds, classifier)["t1"] == held_out_was
+
+    _run_recipe(ds, recipe, _classifier_scopes(TEST))
+
+    labeled = _step_result(ds, recipe, _classifier_scopes(TRAIN), "labeled")
+    assert model_cells(ds, classifier)["t1"] == fit_state_cell(
+        {"templates": _fit_state(ds, labeled)[2], OWN_STATE_PART: now.state_digest}
+    )
+    assert drifted(ds, classifier) == ()
+
+
+def _tuning_recipe() -> Recipe:
+    """The labeled steps, a classifier with folds and the tuning of its thresholds."""
+    return _recipe(
+        "tuned",
+        [
+            *_labeled_steps(),
+            {
+                "id": "clf",
+                "type": "feature",
+                "feature": "xgboost",
+                "inputs": [{"step": "pairs"}],
+                "params": {
+                    "templates": {"step": "labeled"},
+                    "default_class": 0,
+                    "n_estimators": 5,
+                    "n_jobs": 1,
+                    "random_state": 1,
+                    "cv_folds": 2,
+                },
+            },
+            {
+                "id": "tune",
+                "type": "feature",
+                "feature": "tune-threshold",
+                "inputs": [{"step": "clf"}],
+                "params": {
+                    "labels": {"step": "labels"},
+                    "default_class": 0,
+                    "average_over": [0, 1, 2],
+                },
+            },
+        ],
+    )
+
+
+def test_a_tuning_asked_for_the_test_entries_fits_again_over_its_fold_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.tune_threshold import TuneThresholdFeature
+
+    ds = _labeled_dataset(tmp_path / "ds")
+    recipe = _tuning_recipe()
+    trained = {"labeled": TRAIN, "clf": WIDER, "tune": TRAIN}
+    _run_recipe(ds, recipe, trained)
+    tune = _step_result(ds, recipe, trained, "tune")
+    was = _record(ds, tune)
+    own_root = result_run_root(ds, tune)
+    streamed = _spy_streamed(monkeypatch, TuneThresholdFeature)
+    offers = _spy_loads(monkeypatch, TuneThresholdFeature)
+    reconvert_entry(ds, CONVERTED_AGAIN, composition="converted-again", scale=2.0)
+
+    _run_recipe(ds, recipe, {**trained, "tune": TEST})
+
+    assert streamed == [len(TRAIN_ENTRIES)]
+    first = offers[0]
+    assert first.root != own_root
+    assert (first.held, first.loaded) == ((), False)
+    now = _record(ds, tune)
+    assert now.execution_id != was.execution_id
+    assert _recorded_entries(now) == list(TRAIN_ENTRIES)
+    assert "t1" in model_cells(ds, tune)

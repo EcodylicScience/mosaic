@@ -135,6 +135,35 @@ log = logging.getLogger(__name__)
 FERAL: Final = OptionalModule("feral", "feral", "the FERAL behavior classifier")
 """The installed FERAL package, as the pipeline catalog checks for it."""
 
+_TRAINING_CHECKPOINT: Final = "training_checkpoint.pt"
+"""The run-root file an interrupted training resumes from."""
+
+_CHECKPOINT_INPUTS: Final = "training_checkpoint.inputs"
+"""The run-root file naming the digest of the inputs the checkpoint is trained on."""
+
+
+def _keep_checkpoint_for(run_root: Path, digest: str | None) -> None:
+    """Keep the training checkpoint of *run_root* only for the inputs *digest* names.
+
+    A checkpoint resumes when the file beside it names *digest*. Otherwise the
+    checkpoint and that file are removed, in that order, and a file naming
+    *digest* is written, so no crash leaves an earlier checkpoint beside a file
+    naming the inputs now. Without a digest nothing is resumed or named.
+
+    Args:
+        run_root: The run root the fit trains in.
+        digest: The digest of the inputs the fit reads, or ``None`` when the
+            run could not build it.
+    """
+    checkpoint = run_root / _TRAINING_CHECKPOINT
+    named = run_root / _CHECKPOINT_INPUTS
+    if digest is not None and named.is_file() and named.read_text() == digest:
+        return
+    checkpoint.unlink(missing_ok=True)
+    named.unlink(missing_ok=True)
+    if digest is not None:
+        atomic_write(named, lambda temporary: temporary.write_text(digest))
+
 
 def _check_feral() -> None:
     """Raise a helpful refusal if the ``feral`` package is not importable.
@@ -1308,6 +1337,7 @@ class FeralFeature:
         self._metrics: dict[str, object] | None = None
         self._training_metrics: list[dict[str, float]] = []
         self._run_root: Path | None = None
+        self._fit_inputs: str | None = None
         self._input_root: Path | None = None
         self._train_entries: set[tuple[str, str]] | None = None
         self._test_entries: set[tuple[str, str]] | None = None
@@ -1317,6 +1347,21 @@ class FeralFeature:
     def bind_dataset(self, ds: Dataset) -> None:
         """Store dataset reference for resolving media paths."""
         self._ds = ds
+
+    def bind_run_root(self, run_root: Path) -> None:
+        """Keep the run root that ``fit`` writes its working files into.
+
+        ``run_feature`` calls it after ``load_state`` returned ``False``.
+        """
+        self._run_root = run_root
+
+    def bind_fit_inputs(self, digest: str) -> None:
+        """Keep the digest of the inputs the next fit reads.
+
+        ``fit`` resumes a ``training_checkpoint.pt`` left by an interrupted
+        attempt only when that attempt trained on inputs of the same digest.
+        """
+        self._fit_inputs = digest
 
     def _input_mode(self) -> FeralInputMode:
         """Where the first feature input has FERAL read its videos from."""
@@ -1344,7 +1389,6 @@ class FeralFeature:
     ) -> bool:
         self._reset()
         self.fitted_entries: tuple[Entry, ...] | None = None
-        self._run_root = run_root
         self._load_input_root(dependency_lookups)
         p = self.params
 
@@ -1484,17 +1528,20 @@ class FeralFeature:
         p = self.params
         training, labels_source = p.training, p.labels
         train_entries, test_entries = self._train_entries, self._test_entries
-        run_root = self._run_root
         if (
             training is None
             or labels_source is None
             or train_entries is None
             or test_entries is None
-            or run_root is None
         ):
             raise RuntimeError(
                 f"[{self.name}] no templates were loaded to fit on: fit follows a "
                 "load_state that returned False for a step given templates"
+            )
+        run_root = self._run_root
+        if run_root is None:
+            raise RuntimeError(
+                f"[{self.name}] fit needs a run root bound with bind_run_root"
             )
 
         videos_of_entry: dict[tuple[str, str], list[FeralVideo]] = {}
@@ -1591,6 +1638,7 @@ class FeralFeature:
         run_root.mkdir(parents=True, exist_ok=True)
         _write_json(run_root / "feral_labels.json", labels_json)
         _write_json(run_root / "config.json", cfg)
+        _keep_checkpoint_for(run_root, self._fit_inputs)
 
         model, best_map, training_metrics = train_feral(
             cfg,
@@ -2969,7 +3017,8 @@ def train_feral(
     ensembled into per-frame predictions before they are measured. The best
     model by validation mAP, the base or the EMA model, is written to
     ``model_best.pt`` in *run_root*, and the last epoch is kept when there is no
-    validation split. An interrupted run resumes from ``training_checkpoint.pt``.
+    validation split. An interrupted run resumes from ``training_checkpoint.pt``,
+    which ``fit`` keeps only for the inputs it was trained on.
 
     Args:
         cfg: The config :func:`feral_config` builds.
@@ -3027,7 +3076,7 @@ def train_feral(
         "class_values": list(class_values),
     }
     best_path = run_root / "model_best.pt"
-    checkpoint_path = run_root / "training_checkpoint.pt"
+    checkpoint_path = run_root / _TRAINING_CHECKPOINT
     best_map = -1.0
     epochs_without_improvement = 0
     training_metrics: list[dict[str, float]] = []

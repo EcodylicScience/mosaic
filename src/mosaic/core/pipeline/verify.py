@@ -89,6 +89,7 @@ from .run import (
     _make_filter_factory,  # pyright: ignore[reportPrivateUsage]
     _resolve_dependencies,  # pyright: ignore[reportPrivateUsage]
     _resolve_pair_filter,  # pyright: ignore[reportPrivateUsage]
+    bind_fit_root,
     build_output_path,
     compute_run_id,
     fit_input_stream,
@@ -890,6 +891,7 @@ def _verify_fit(
                 "reason": "it loads a model that was given and fits nothing",
             }
         )
+    bind_fit_root(feature, state_dir)
     feature.fit(rebuilt.stream)
     feature.save_state(state_dir)
     verdict.state = _compare_state(
@@ -1084,6 +1086,7 @@ def _verify_scores(
         return verdict.model_copy(
             update={"status": "skipped", "reason": "it loads a report that was given"}
         )
+    bind_fit_root(feature, state_dir)
     feature.fit(stream)
     feature.save_state(state_dir)
     new = state_dir / report_file

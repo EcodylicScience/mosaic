@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeGuard, get_args
@@ -54,9 +54,10 @@ from .error_kind import ClassifiedError, ErrorKind
 from .file_digest import MODEL_DIGEST_HEX, file_digest
 from .identity_scheme import FEATURE_IDENTITY_SCHEME
 from .identity_scheme import MARKER_NAME as IDENTITY_SCHEME_NAME
-from .index import EntryCells, FitReference
+from .index import EntryCells, FitDrift, FitReference, refit_summary
 from .inventory.params import RUN_PARAMS_NAME
 from .markers import MARKER_PREFIX, is_atomic_temp
+from .refusal import Refusal
 from .types import ArtifactSpec, DefinitionModel, Feature
 
 if TYPE_CHECKING:
@@ -66,13 +67,17 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FIT_SCOPE_NAME",
+    "CannotFitAgain",
+    "CannotFitAgainCause",
     "FitEntryInputs",
     "FitScope",
     "FitSource",
     "FitSourceRef",
     "FitStateUnreadable",
+    "LinkedFitDrifted",
     "derive_fit_scope",
     "fit_and_apply_scopes",
+    "fit_inputs_digest",
     "fit_references",
     "list_run_root",
     "read_fit_scope",
@@ -286,6 +291,135 @@ class FitStateUnreadable(ClassifiedError):
     def error_detail(self) -> dict[str, JsonValue]:
         """Return the feature and the run whose record is unreadable."""
         return {"feature": self.feature, "run_id": self.run_id}
+
+
+type CannotFitAgainCause = Literal["loads_elsewhere", "wrote_outside_run_root"]
+"""Why a run cannot fit again under its run id.
+
+- ``loads_elsewhere``: the feature's ``load_state`` found a state in an empty
+  directory, so it reads its state from somewhere other than the run root.
+- ``wrote_outside_run_root``: the feature's ``fit`` wrote into the directory its
+  ``load_state`` was offered rather than into the run root it was bound to.
+"""
+
+
+class CannotFitAgain(ClassifiedError):
+    """A run whose fit read changed inputs, and whose feature cannot fit it again.
+
+    Attributes:
+        feature: The feature's name.
+        run_id: The run.
+        cause: Why the fit cannot run again.
+        files: The files written outside the run root, sorted, for
+            ``wrote_outside_run_root``. Empty otherwise.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+    def __init__(
+        self,
+        *,
+        feature: str,
+        run_id: str,
+        cause: CannotFitAgainCause,
+        files: tuple[str, ...] = (),
+    ) -> None:
+        if cause == "loads_elsewhere":
+            message = (
+                f"{feature}'s load_state found a state in an empty directory, so it "
+                "reads its state from elsewhere and cannot be fitted again under run "
+                f"{run_id}"
+            )
+        else:
+            message = (
+                f"{feature}'s fit wrote {', '.join(files)} into the directory its "
+                "load_state was offered, not into the run root bind_run_root "
+                f"names, so run {run_id} cannot be fitted again: its earlier state "
+                "is kept"
+            )
+        super().__init__(message)
+        self.feature: str = feature
+        self.run_id: str = run_id
+        self.cause: CannotFitAgainCause = cause
+        self.files: tuple[str, ...] = tuple(sorted(files))
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the feature, the run, the cause and the files written outside."""
+        return {
+            "feature": self.feature,
+            "run_id": self.run_id,
+            "cause": self.cause,
+            "files": list(self.files),
+        }
+
+
+class LinkedFitDrifted(Refusal):
+    """A fit a linked dataset holds, whose inputs changed in the reading dataset.
+
+    Fitting it again here would write a new fit beside the link's, which no
+    linked dataset is written to hold, so the run is refused before its run
+    root exists.
+
+    Attributes:
+        feature: The feature's name.
+        run_id: The run.
+        drift: What changed under the fit.
+    """
+
+    def __init__(self, *, feature: str, run_id: str, drift: FitDrift) -> None:
+        message = (
+            f"run {run_id} of {feature} was fitted in link {drift.link_id}, and the "
+            f"inputs its fit read have changed here ({refit_summary(drift)}). A "
+            "linked dataset is never written: run the step with --refit to fit it "
+            "again into this dataset, or fit it again in the linked dataset"
+        )
+        super().__init__(
+            message,
+            reason="linked_fit_drifted",
+            detail={
+                "feature": feature,
+                "run_id": run_id,
+                "link_id": drift.link_id,
+                "moved": len(drift.moved),
+                "dropped": len(drift.dropped),
+                "refitted": list(drift.refitted),
+            },
+        )
+        self.feature: str = feature
+        self.run_id: str = run_id
+        self.drift: FitDrift = drift
+
+
+def fit_inputs_digest(
+    inputs: Iterable[FitEntryInputs], states: Mapping[str, str]
+) -> str:
+    """The digest of the inputs a fit reads: its entries' cells and the fits it reads.
+
+    Independent of the order of *inputs* and *states*. It is recorded nowhere
+    and enters no run id: a feature that resumes an interrupted fit compares it
+    with the digest the interrupted attempt was handed.
+
+    Args:
+        inputs: The cells of each entry the fit reads.
+        states: The fit-state digest of each fit the run reads, by field.
+
+    Returns:
+        The digest, ``MODEL_DIGEST_HEX`` hex characters.
+    """
+    entries = sorted(
+        [
+            item.group,
+            item.sequence,
+            item.cells.roots,
+            item.cells.tracks,
+            item.cells.inputs,
+        ]
+        for item in inputs
+    )
+    payload = json.dumps({"entries": entries, "states": sorted(states.items())})
+    return hashlib.blake2b(
+        payload.encode(), digest_size=MODEL_DIGEST_HEX // 2
+    ).hexdigest()
 
 
 def read_fit_state_digest(run_root: Path) -> str:

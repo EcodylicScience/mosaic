@@ -9,6 +9,7 @@ fails when the stored answer is not the one the recipe produces.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -164,6 +165,53 @@ def test_an_evaluation_that_raises_is_an_error_of_the_evaluation_role(
     score = _verdict(report, "score")
     assert (score.role, score.status) == ("evaluation", "error")
     assert score.reason == "RuntimeError: the fit broke"
+
+
+def _requiring_a_bound_root(
+    monkeypatch: pytest.MonkeyPatch, feature_class: type
+) -> list[Path]:
+    """Give *feature_class* a ``bind_run_root`` that its ``fit`` fails without.
+
+    Returns the roots bound, in order.
+    """
+    bound: list[Path] = []
+    fitted: Callable[..., None] = getattr(feature_class, "fit")
+
+    def bind_run_root(_self: object, run_root: Path) -> None:
+        bound.append(run_root)
+
+    def fit(self: object, inputs: InputStream) -> None:
+        if not bound:
+            raise RuntimeError("fit ran with no run root bound")
+        fitted(self, inputs)
+
+    monkeypatch.setattr(feature_class, "bind_run_root", bind_run_root, raising=False)
+    monkeypatch.setattr(feature_class, "fit", fit)
+    return bound
+
+
+def test_a_fit_verified_again_is_handed_the_scratch_state_as_its_run_root(
+    study: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = _requiring_a_bound_root(monkeypatch, XgboostFeature)
+    scratch = tmp_path / "scratch"
+
+    report = verify_plan(study, _plan(study), steps=["clf"], scratch=scratch)
+
+    assert _verdict(report, "clf").status == "ok"
+    assert bound == [scratch / "clf" / "state"]
+
+
+def test_a_scoring_verified_again_is_handed_the_scratch_state_as_its_run_root(
+    study: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = _requiring_a_bound_root(monkeypatch, EvaluateLabels)
+    scratch = tmp_path / "scratch"
+
+    report = verify_plan(study, _plan(study), steps=["score"], scratch=scratch)
+
+    assert _verdict(report, "score").status == "ok"
+    assert bound == [scratch / "score" / "state"]
 
 
 PCA_STEPS: list[dict[str, JsonValue]] = [

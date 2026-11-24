@@ -37,10 +37,18 @@ from mosaic.core.pipeline.markers import (
 )
 from mosaic.core.pipeline.run import resolve_feature_identity, run_feature
 from mosaic.core.pipeline.storage_names import derive_storage_name
-from mosaic.core.pipeline.types import Feature, Result
+from mosaic.core.pipeline.types import DependencyLookup, Feature, InputStream, Result
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, parse_instant, run_log_path
-from tests.helpers import FitControl, FittingFeature
+from tests.helpers import (
+    FitControl,
+    FittingFeature,
+    ScopedFittingFeature,
+    add_tracks_variant,
+    make_dataset,
+    reconvert_entry,
+    result_run_root,
+)
 
 _WAIT_SECONDS = 30.0
 
@@ -176,6 +184,69 @@ def test_a_ready_state_takes_no_claim(
     assert control.fits == 1
 
 
+class _RootBinding(FittingFeature):
+    """A fitting feature that records the engine's calls in order."""
+
+    def __init__(self, control: FitControl) -> None:
+        super().__init__(control)
+        self.events: list[str] = []
+        self.bound: list[Path] = []
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        loaded = super().load_state(run_root, artifact_paths, dependency_lookups)
+        self.events.append(f"load_state {loaded}")
+        return loaded
+
+    def bind_run_root(self, run_root: Path) -> None:
+        self.events.append("bind_run_root")
+        self.bound.append(run_root)
+
+    def fit(self, inputs: InputStream) -> None:
+        self.events.append("fit")
+        super().fit(inputs)
+
+
+def test_a_fit_is_handed_its_run_root_once_after_the_load_misses(
+    scenario_dataset: Dataset,
+) -> None:
+    control = FitControl()
+    feature = _RootBinding(control)
+
+    result = run_feature(scenario_dataset, feature)
+
+    assert result.failed_entries == ()
+    assert feature.events[-3:] == ["load_state False", "bind_run_root", "fit"]
+    assert feature.events.count("bind_run_root") == 1
+    assert feature.bound == [_run_root(scenario_dataset, control)]
+
+
+def test_a_load_that_finds_a_state_is_not_followed_by_a_run_root(
+    scenario_dataset: Dataset,
+) -> None:
+    control = FitControl()
+    _ = run_feature(scenario_dataset, FittingFeature(control))
+    feature = _RootBinding(control)
+
+    _ = run_feature(scenario_dataset, feature, overwrite=True)
+
+    assert feature.events == ["load_state True"]
+
+
+def test_a_state_a_peer_saved_under_the_claim_is_not_followed_by_a_run_root(
+    scenario_dataset: Dataset,
+) -> None:
+    feature = _RootBinding(FitControl(peer_saves_first=True))
+
+    _ = run_feature(scenario_dataset, feature)
+
+    assert feature.events == ["load_state False", "load_state True"]
+
+
 def test_apply_is_unclaimed_so_runs_over_different_sequences_both_finish(
     scenario_dataset: Dataset,
 ) -> None:
@@ -307,3 +378,73 @@ def test_an_untracked_fit_is_claimed_and_released(scenario_dataset: Dataset) -> 
     assert control.fits == 1
     assert result.failed_entries == ()
     assert not _claimed(_run_root(scenario_dataset, control))
+
+
+_MOVED = ("", "seq_a")
+"""The entry a test converts again after the first fit."""
+
+
+@pytest.fixture
+def tracked(tmp_path: Path) -> Dataset:
+    """Two track tables of one variant, whose cells a fit over them records."""
+    dataset = make_dataset(tmp_path / "tracked")
+    add_tracks_variant(
+        dataset, "convert-trex.0.2-1111111111", "seq_a", "seq_b", std_format="mosaic_v1"
+    )
+    return dataset
+
+
+def test_a_refit_whose_peer_fitted_again_meanwhile_loads_the_peers_state(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    control = FitControl()
+    _ = run_feature(tracked, ScopedFittingFeature(control))
+    reconvert_entry(tracked, _MOVED, composition="converted-again")
+    claimed = run_module.held_run_root
+    peers: list[Result] = []
+    peer_started = threading.Event()
+
+    def held_run_root(
+        ds: Dataset,
+        execution_id: str,
+        run_root: Path,
+        kind: str,
+        idle_seconds: float,
+        *,
+        doing: str,
+    ) -> AbstractContextManager[InflightMarker]:
+        if not peer_started.is_set():
+            peer_started.set()
+            peers.append(run_feature(tracked, ScopedFittingFeature(control)))
+        return claimed(ds, execution_id, run_root, kind, idle_seconds, doing=doing)
+
+    monkeypatch.setattr(run_module, "held_run_root", held_run_root)
+
+    result = run_feature(tracked, ScopedFittingFeature(control))
+
+    assert len(peers) == 1
+    assert control.fits == 2, "the first fit and the peer's refit"
+    assert result.failed_entries == ()
+    assert not _claimed(result_run_root(tracked, result))
+
+
+def test_a_second_execution_mid_refit_is_refused(tracked: Dataset) -> None:
+    control = FitControl()
+    _ = run_feature(tracked, ScopedFittingFeature(control))
+    reconvert_entry(tracked, _MOVED, composition="converted-again")
+    control.fitting.clear()
+    control.finish_fit = threading.Event()
+    first = _Run(tracked, ScopedFittingFeature(control))
+    first.start()
+    try:
+        assert control.fitting.wait(_WAIT_SECONDS)
+        with pytest.raises(RunRootHeld) as refused:
+            _ = run_feature(tracked, ScopedFittingFeature(control))
+    finally:
+        control.finish_fit.set()
+        result = first.finish()
+
+    assert refused.value.reason == "run_root_held"
+    assert control.fits == 2
+    assert result.failed_entries == ()
+    assert not _claimed(result_run_root(tracked, result))

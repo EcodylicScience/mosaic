@@ -1,22 +1,23 @@
 """Stand-in features that declare which source roots they consume.
 
-The provenance walk, delete sets, media rearrangement and source staleness are
-all decided by a feature's ``consumed_roots``, so their tests run a feature that
-does nothing but declare one. :class:`LossyFeature` loses the entries it is told
-to and :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of
-how a run is measured against the entries it was asked for.
-:class:`PairClusterFeature` writes pair rows for the tests of scoring them.
-:class:`FittingFeature` fits once per run root and saves its state, for the tests
-of the claim a fit holds. :class:`CenteringFeature` fits a mean and applies it,
-in worker processes too, for the tests of a fit that a linked dataset holds.
+The provenance walk, delete sets, media rearrangement and source staleness are all
+decided by a feature's ``consumed_roots``, so their tests run a feature that does
+nothing but declare one. :class:`LossyFeature` loses the entries it is told to and
+:class:`ScopedFeature` also declares ``scope_dependent``, for the tests of how a run is
+measured against the entries it was asked for. :class:`PairClusterFeature` writes pair
+rows for the tests of scoring them. :class:`FittingFeature` fits once per run root and
+saves its state, for the tests of the claim a fit holds, and
+:class:`ScopedFittingFeature` fits over its scope, for the tests of a fit whose recorded
+entries change. :class:`CenteringFeature` fits a mean and applies it, in worker
+processes too, for the tests of a fit that a linked dataset holds.
 :class:`ParallelFeature` declares ``parallelizable``, and a subclass that sets
-``kill_on`` ends the process computing those sequences, for the tests of a run
-that computes several entries at once. :class:`LabelsClassifier` reads
-ground-truth labels and records the file of each entry it is handed, for the
-tests of labels that a linked dataset holds. :class:`HoldsOnSequences` stops in
-the entries it names until it is killed, for the tests of a cancel that reaches
-a run's workers. :class:`HoldsUntilReleased` stops in the entries it names until
-the test releases them, for the tests of how a run ends with entries in flight.
+``kill_on`` ends the process computing those sequences, for the tests of a run that
+computes several entries at once. :class:`LabelsClassifier` reads ground-truth labels
+and records the file of each entry it is handed, for the tests of labels that a linked
+dataset holds. :class:`HoldsOnSequences` stops in the entries it names until it is
+killed, for the tests of a cancel that reaches a run's workers.
+:class:`HoldsUntilReleased` stops in the entries it names until the test releases them,
+for the tests of how a run ends with entries in flight.
 """
 
 from __future__ import annotations
@@ -318,6 +319,13 @@ class FittingFeature(PlainFeature):
         self.control.applying.set()
         _wait(self.control.finish_apply)
         return df
+
+
+class ScopedFittingFeature(FittingFeature):
+    """A :class:`FittingFeature` over its scope, so its fit records its entries."""
+
+    name = "prov-fitting-scoped"
+    scope_dependent = True
 
 
 class CenteringFeature(PlainFeature):

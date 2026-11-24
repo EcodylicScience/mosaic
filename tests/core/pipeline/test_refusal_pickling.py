@@ -9,6 +9,7 @@ pool where the worker raised a refusal.
 from __future__ import annotations
 
 import pickle
+from typing import get_args
 
 import pytest
 
@@ -16,10 +17,12 @@ from mosaic.core.dataset import LinkUnreachableError
 from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.fit_scope import LinkedFitDrifted
 from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall, StepRefused
 from mosaic.core.pipeline.markers import InflightMarker
 from mosaic.core.pipeline.preview import PreviewInvalid, PreviewNotFound
-from mosaic.core.pipeline.refusal import Refusal, ToolUnavailable
+from mosaic.core.pipeline.index import FitDrift
+from mosaic.core.pipeline.refusal import Refusal, RefusalReason, ToolUnavailable
 from mosaic.core.pipeline.run_matrix import (
     AmbiguousRunLeaf,
     RunColumnsConflict,
@@ -62,6 +65,35 @@ def test_a_link_unreachable_refusal_survives_pickle_with_its_links() -> None:
     )
     assert str(restored) == "the group link is offline"
     assert restored.error_json("train") == error.error_json("train")
+
+
+def test_a_linked_fit_drift_is_a_refusal_that_survives_pickle() -> None:
+    drift = FitDrift(
+        link_id="library",
+        recorded=True,
+        moved=(("g", "a"),),
+        dropped=(("g", "b"),),
+        refitted=("templates",),
+    )
+    error = LinkedFitDrifted(feature="global-kmeans", run_id="0.1-abc", drift=drift)
+
+    restored = _round_trip(error)
+
+    assert "linked_fit_drifted" in get_args(RefusalReason.__value__)
+    assert type(restored) is LinkedFitDrifted
+    assert (restored.reason, restored.detail) == (
+        "linked_fit_drifted",
+        {
+            "feature": "global-kmeans",
+            "run_id": "0.1-abc",
+            "link_id": "library",
+            "moved": 1,
+            "dropped": 1,
+            "refitted": ["templates"],
+        },
+    )
+    assert str(restored) == str(error)
+    assert restored.error_json("fit") == error.error_json("fit")
 
 
 def test_a_step_refusal_survives_pickle_with_its_step_and_detail() -> None:

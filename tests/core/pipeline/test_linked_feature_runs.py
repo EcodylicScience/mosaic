@@ -39,6 +39,7 @@ from mosaic.core.pipeline.graph.score import run_group_scores
 from mosaic.core.pipeline.artifact_kinds import LINKED_KINDS, LinkedKind
 from mosaic.core.pipeline.fit_scope import (
     FitScope,
+    LinkedFitDrifted,
     read_fit_state_digest,
     read_run_fit_scope,
     write_fit_scope,
@@ -109,6 +110,7 @@ from tests.helpers import (
     add_tracks_variant,
     add_feature_run,
     applying_instance,
+    assert_tree_unchanged,
     calms21_dataset,
     converted_source,
     copy_of,
@@ -886,6 +888,50 @@ def test_an_entry_the_copy_converted_again_is_computed_into_its_own_tree(
     pd.testing.assert_series_equal(
         _output(own_root, "s1")["X"], _output(source_root, "s1")["X"]
     )
+
+
+class _ScopedCentering(CenteringFeature):
+    """A :class:`CenteringFeature` over its scope, so its fit records its entries."""
+
+    name = "prov-centering-scoped"
+    scope_dependent = True
+
+
+def test_a_drifted_fit_the_source_holds_is_refused_in_the_copy(
+    tmp_path: Path, fit_spy: list[int]
+) -> None:
+    source = _tracked_source(tmp_path / "source")
+    computed = run_feature(source, _ScopedCentering())
+    copy = copy_of(source, tmp_path / "copy")
+    table = track_table("", "s1", n_rows=40, n_ids=2)
+    add_tracks_table(
+        copy, VARIANT, table, consumed_composition="changed", std_format="mosaic_v1"
+    )
+    source_before = tree_snapshot(source.base_dir)
+    copy_features = copy.get_root("features")
+    copy_before = tree_snapshot(copy_features) if copy_features.exists() else None
+    link = f"source-{source.uuid}"
+
+    with pytest.raises(LinkedFitDrifted) as refused:
+        _ = run_feature(copy, _ScopedCentering(), track=False)
+
+    assert refused.value.reason == "linked_fit_drifted"
+    assert refused.value.detail == {
+        "feature": _ScopedCentering.name,
+        "run_id": computed.run_id,
+        "link_id": link,
+        "moved": 1,
+        "dropped": 0,
+        "refitted": [],
+    }
+    assert f"was fitted in link {link}" in str(refused.value)
+    assert "(1 moved (s1))" in str(refused.value)
+    assert fit_spy == [1]
+    assert_tree_unchanged(source.base_dir, source_before)
+    if copy_before is None:
+        assert not copy_features.exists()
+    else:
+        assert_tree_unchanged(copy_features, copy_before)
 
 
 def _copy_adding(source: Dataset, directory: Path, *sequences: str) -> Dataset:

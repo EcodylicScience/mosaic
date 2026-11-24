@@ -4,6 +4,7 @@ import importlib
 import json
 import multiprocessing as mp
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -85,6 +86,7 @@ from .index import (
     OWN_STATE_PART,
     DriftReads,
     FeatureIndexRow,
+    FitDrift,
     FitReference,
     RecordedTracksReads,
     feature_index,
@@ -97,11 +99,13 @@ from .index import (
     current_entry_cells,
     has_feature_index,
     latest_feature_run_root,
+    fit_drift,
     fit_state_cell,
     fit_state_root,
     missing_outputs_error,
     recorded_consumption,
     recorded_tracks_reads,
+    refit_summary,
     resolve_artifact_file,
 )
 from .arena_index import entry_compositions
@@ -147,12 +151,16 @@ from .manifest import (
 )
 from .op_identity import parse_op_run_id
 from .fit_scope import (
+    CannotFitAgain,
     FitEntryInputs,
+    LinkedFitDrifted,
     derive_fit_scope,
+    fit_inputs_digest,
     fit_references,
     list_run_root,
     read_fit_scope,
     read_fit_state_digest,
+    records_fit_inputs,
     reported_fit_entries,
     saved_state_digest,
     write_fit_scope,
@@ -165,7 +173,7 @@ from .tag_reads import ResolvedTagTable, feature_tag_read
 from .tracks_index import tracklets_by_entry, tracks_compositions
 from .types.data_config import COLUMNS, META_COLS
 from .ops import IdentityDeferred
-from .types.feature import ReadsTags, SetsTracklets
+from .types.feature import BindsRunRoot, ReadsTags, ResumesFits, SetsTracklets
 from mosaic.core.entry import Entry
 from .types import (
     ArtifactSpec,
@@ -360,6 +368,44 @@ def _fit_input_record(
         FitEntryInputs(group=group, sequence=sequence, cells=cells[(group, sequence)])
         for group, sequence in entries
         if (group, sequence) in held
+    )
+
+
+def _input_manifest(
+    ds: Dataset,
+    feature: Feature,
+    selector: Scope,
+    *,
+    tracks_run_id: str | None,
+) -> tuple[Manifest, ResolvedScope]:
+    """The manifest of *feature*'s inputs over *selector*.
+
+    Built from the run's inputs, tracks variant, stacking, declared roots and
+    projection. The run builds it over the invocation's selector, and a fit
+    pinned to its training set fitted again over the entries its load reports,
+    whatever the invocation asks for. An entry the inputs do not hold is left
+    out, and a selector naming no entry resolves none.
+
+    Args:
+        ds: The dataset the run belongs to.
+        feature: The feature about to run.
+        selector: The entries to build the manifest over.
+        tracks_run_id: The tracks variant the run reads.
+
+    Returns:
+        The manifest and the scope it resolved, both empty for a feature
+        without inputs.
+    """
+    if feature.inputs.is_empty:
+        return {}, ResolvedScope(selector=selector)
+    return build_manifest(
+        ds,
+        feature.inputs,
+        selector,
+        tracks_run_id=tracks_run_id,
+        stack=stacks_inputs(feature),
+        consumed_roots=feature.consumed_roots,
+        projection=input_projection(feature),
     )
 
 
@@ -1831,6 +1877,154 @@ def _load_run_state(
     return None
 
 
+def bind_fit_root(
+    feature: Feature, run_root: Path, *, inputs_digest: str | None = None
+) -> None:
+    """Hand *feature* the root its fit writes into, when it declares the hook.
+
+    The run and a verification each call it before ``fit``, once their
+    ``load_state`` returned ``False``.
+
+    Args:
+        feature: The feature about to fit.
+        run_root: The root its fit writes into.
+        inputs_digest: The digest of the inputs the fit reads, handed to a
+            feature that declares ``bind_fit_inputs``, or ``None`` when it
+            could not be built.
+    """
+    if isinstance(feature, BindsRunRoot):
+        feature.bind_run_root(run_root)
+    if inputs_digest is not None and isinstance(feature, ResumesFits):
+        feature.bind_fit_inputs(inputs_digest)
+
+
+def _check_fit_inputs(
+    ds: Dataset,
+    feature: Feature,
+    storage: str,
+    run_id: str,
+    states_now: Mapping[str, str],
+    *,
+    announce: bool = True,
+) -> FitDrift | None:
+    """Compare the inputs the run's fit recorded with what the dataset holds now.
+
+    Runs before the run root is made, so a refusal writes nothing under any
+    dataset, and again under the claim of a fit. A feature for which
+    :func:`~.fit_scope.records_fit_inputs` is false returns without a read.
+
+    Args:
+        ds: The dataset the run belongs to.
+        feature: The feature about to run.
+        storage: The run's feature storage.
+        run_id: The run.
+        states_now: The fit-state digest of each fit the run reads, by field,
+            as :func:`_current_fit_states` reads it.
+        announce: Whether a drifted fit prints the line that says it is fitted
+            again.
+
+    Returns:
+        The drift of the run's fit, or ``None`` when no dataset holds its
+        record or the run records no fit inputs.
+
+    Raises:
+        FitStateUnreadable: The run's ``fit_scope.json`` cannot be read.
+        LinkUnreachableError: The fit drifted, a fit it reads reads as blank,
+            and a link that provides features is unreachable and may hold it.
+        LinkedFitDrifted: The fit drifted and a linked dataset holds it.
+    """
+    if not records_fit_inputs(feature):
+        return None
+    reads = DriftReads(ds, strict=True)
+    drift = fit_drift(
+        ds, storage, run_id, _prior_run_params(ds, storage, run_id), reads
+    )
+    if drift is None or not drift.drifted:
+        return drift
+    record = reads.fit_record(storage, run_id)
+    if record is not None and any(
+        not states_now.get(read.field) for read in record.via
+    ):
+        ds.refuse_while_unreachable(
+            "features",
+            ds.fresh_unreachable_links("features"),
+            f"whether the fits that run {run_id} of {feature.name} reads have changed",
+            "Fitting it again now would read none of what the link holds.",
+        )
+    if drift.link_id:
+        raise LinkedFitDrifted(feature=feature.name, run_id=run_id, drift=drift)
+    if announce:
+        print(
+            f"[feature:{feature.name}] fitting run {run_id} again, since the inputs "
+            f"its fit read changed: {refit_summary(drift)}",
+            file=sys.stderr,
+        )
+    return drift
+
+
+class _RefitScratch:
+    """The empty directory a fit run again offers its feature's ``load_state``.
+
+    Made on the first call to :meth:`path`, outside the dataset, and removed by
+    :meth:`cleanup`, which ``run_feature`` calls after it closes the feature.
+    """
+
+    def __init__(self) -> None:
+        self._directory: tempfile.TemporaryDirectory[str] | None = None
+
+    def path(self) -> Path:
+        """The directory, made on the first call."""
+        if self._directory is None:
+            self._directory = tempfile.TemporaryDirectory(prefix="mosaic-refit-")
+        return Path(self._directory.name)
+
+    def cleanup(self) -> None:
+        """Remove the directory and what was written into it, if it was made."""
+        if self._directory is not None:
+            self._directory.cleanup()
+            self._directory = None
+
+
+def _load_nothing_from(
+    feature: Feature,
+    scratch: Path,
+    run_id: str,
+    artifact_paths: dict[str, Path],
+    dependency_lookups: dict[str, DependencyLookup],
+) -> None:
+    """Offer ``load_state`` the empty *scratch*, as a first fit's own root is.
+
+    The load prepares what ``fit`` reads, and finds no state to return.
+
+    Raises:
+        CannotFitAgain: The load found a state in the empty directory, so the
+            feature reads its state from elsewhere (``loads_elsewhere``).
+    """
+    if feature.load_state(scratch, artifact_paths, dependency_lookups):
+        raise CannotFitAgain(
+            feature=feature.name, run_id=run_id, cause="loads_elsewhere"
+        )
+
+
+def _refuse_writes_into(feature: Feature, scratch: Path, run_id: str) -> None:
+    """Refuse a fit that wrote into the directory its ``load_state`` was offered.
+
+    Raises:
+        CannotFitAgain: *scratch* is not empty (``wrote_outside_run_root``),
+            naming each path written.
+    """
+    written = tuple(
+        sorted(path.relative_to(scratch).as_posix() for path in scratch.rglob("*"))
+    )
+    if written:
+        raise CannotFitAgain(
+            feature=feature.name,
+            run_id=run_id,
+            cause="wrote_outside_run_root",
+            files=written,
+        )
+
+
 def _refuse_unusable_model(
     ds: Dataset, feature: Feature, storage_feature_name: str
 ) -> None:
@@ -2596,6 +2790,7 @@ def run_feature(
             progress_callback=progress_callback,
             cancel_token=cancel_token,
         ) as ctx:
+            scratch = _RefitScratch()
             try:
                 if probe is not None and ctx.run_log is not None:
                     probe.write(ctx.run_log)
@@ -2605,6 +2800,7 @@ def run_feature(
                         feature,
                         ctx,
                         storage_feature_name,
+                        scratch,
                         scope=scope,
                         tracks_run_id=tracks_run_id,
                         labels_run_id=labels_run_id,
@@ -2625,7 +2821,10 @@ def run_feature(
                         tag_revision=tag_revision,
                     )
             finally:
-                _close_feature(feature)
+                try:
+                    _close_feature(feature)
+                finally:
+                    scratch.cleanup()
 
 
 def _run_feature_impl(
@@ -2633,6 +2832,7 @@ def _run_feature_impl(
     feature: Feature,
     ctx: JobContext,
     storage_feature_name: str,
+    scratch: _RefitScratch,
     *,
     scope: Scope | None = None,
     tracks_run_id: str | None = None,
@@ -2657,7 +2857,8 @@ def _run_feature_impl(
 
     ``ctx`` owns the attempt lifecycle (status/progress/cancel via its append-only
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
-    outputs on disk -- the permanent source of truth.
+    outputs on disk -- the permanent source of truth. A fit run again for changed
+    inputs offers ``load_state`` the empty directory of *scratch*.
     """
     # The frame-only-merge escape, for the one feature that declares it.
     cross_join = feature.name in CROSS_JOIN_FEATURES
@@ -2685,13 +2886,13 @@ def _run_feature_impl(
     # inputs resolve, the same answer an absent narrowing has always given here.
     selector = scope if scope is not None else Scope()
 
-    # An explicitly empty selector is ambiguous, and currently answers two ways
-    # within one call: on a tracks input the manifest tests truthiness and
-    # yields the *full* scope, while on a feature input IndexCSV.read tests
-    # `is not None` and yields the *empty* one. A caller naming nothing meant
-    # neither answer. Reject it rather than pick a side. An op answers this
-    # question instead of refusing it, through ``check_scope_takes``, which
-    # reads the selector rather than the resolution.
+    # An explicitly empty selector names no entry on every input, so the run
+    # would compute nothing. A caller who names nothing almost certainly meant
+    # every sequence, so the entry point refuses it. A refit builds its own
+    # selector over its training entries and is not checked here. An op
+    # answers this question instead of refusing it, through
+    # ``check_scope_takes``, which reads the selector rather than the
+    # resolution.
     for name, narrowing in (
         ("groups", selector.groups),
         ("sequences", selector.sequences),
@@ -2699,9 +2900,8 @@ def _run_feature_impl(
     ):
         if narrowing is not None and not narrowing:
             raise ValueError(
-                f"Scope({name}=[]) selects nothing, but is read as 'everything' "
-                f"on a tracks input and as 'nothing' on a feature input. Omit "
-                f"the scope to mean every sequence."
+                f"Scope({name}=[]) selects nothing, so the run would compute "
+                f"nothing. Omit the scope to mean every sequence."
             )
 
     # A definition's model is checked before any root of the run is written.
@@ -2721,20 +2921,9 @@ def _run_feature_impl(
     fit_states_now = _current_fit_states(ds, feature)
     _refuse_inputs_without_columns(ds, feature)
 
-    # Build manifest
-    if feature.inputs.is_empty:
-        manifest: Manifest = {}
-        resolved = ResolvedScope(selector=selector)
-    else:
-        manifest, resolved = build_manifest(
-            ds,
-            feature.inputs,
-            selector,
-            tracks_run_id=tracks_run_id,
-            stack=stacks_inputs(feature),
-            consumed_roots=feature.consumed_roots,
-            projection=input_projection(feature),
-        )
+    manifest, resolved = _input_manifest(
+        ds, feature, selector, tracks_run_id=tracks_run_id
+    )
 
     # Built once: the property rebuilds the map on each access, and the run asks
     # for it once for each entry.
@@ -2820,6 +3009,11 @@ def _run_feature_impl(
     # written at the end is one such an attempt never records. A global feature's
     # ResolvedScope is empty and honestly records none.
     ctx.tracks_variant(resolved.tracks_variants)
+
+    # The inputs the fit recorded, compared before the run root is made, so a
+    # refusal writes nothing. A fit whose inputs changed is fitted again.
+    drift = _check_fit_inputs(ds, feature, storage_feature_name, run_id, fit_states_now)
+    refit = drift is not None and drift.drifted
 
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
@@ -2931,9 +3125,18 @@ def _run_feature_impl(
     pair_filter_spec = _resolve_pair_filter(feature.params)
 
     # Load state, from the own run root or a linked one. The root that loaded is
-    # the one each process worker loads again.
-    loaded = _load_run_state(
-        feature, ds, storage_feature_name, run_id, artifact_paths, dependency_lookups
+    # the one each process worker loads again. A fit run again loads nothing.
+    loaded = (
+        None
+        if refit
+        else _load_run_state(
+            feature,
+            ds,
+            storage_feature_name,
+            run_id,
+            artifact_paths,
+            dependency_lookups,
+        )
     )
     state_ready = loaded is not None
     if not state_ready:
@@ -3129,7 +3332,9 @@ def _run_feature_impl(
         # run root, so the fit holds it: a second execution arriving mid-fit is
         # refused, and the state is loaded again under the claim, so a save a peer
         # finished since the first load is used rather than fitted again. The claim
-        # is released before apply, which runs concurrently across scopes.
+        # is released before apply, which runs concurrently across scopes. A fit
+        # run again checks its inputs again under the claim: a record a peer wrote
+        # meanwhile no longer drifts, and its state is loaded.
         if not state_ready:
             ctx.check_cancel()
             kind = f"feature:{feature.name}"
@@ -3137,25 +3342,79 @@ def _run_feature_impl(
             with held_run_root(
                 ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
             ) as marker:
-                loaded = _load_run_state(
-                    feature,
-                    ds,
-                    storage_feature_name,
-                    run_id,
-                    artifact_paths,
-                    dependency_lookups,
-                )
+                if refit:
+                    drift = _check_fit_inputs(
+                        ds,
+                        feature,
+                        storage_feature_name,
+                        run_id,
+                        fit_states_now,
+                        announce=False,
+                    )
+                    refit = drift is not None and drift.drifted
+                if refit:
+                    _load_nothing_from(
+                        feature,
+                        scratch.path(),
+                        run_id,
+                        artifact_paths,
+                        dependency_lookups,
+                    )
+                    loaded = None
+                else:
+                    loaded = _load_run_state(
+                        feature,
+                        ds,
+                        storage_feature_name,
+                        run_id,
+                        artifact_paths,
+                        dependency_lookups,
+                    )
                 state_ready = loaded is not None
                 if not state_ready:
                     fit_inputs = _fit_input_record(
                         ds, feature, resolved, run_params_now
                     )
-                    ctx.phase("fit", f"{len(manifest)} entries")
+                    bind_fit_root(
+                        feature,
+                        run_root,
+                        inputs_digest=None
+                        if fit_inputs is None
+                        else fit_inputs_digest(fit_inputs, fit_states_now),
+                    )
+                    # A fit pinned to its training set fitted again streams the
+                    # entries its load reports, whatever the invocation asks for.
+                    # Any other fit streams the invocation's manifest.
+                    fit_manifest, fit_filters = manifest, filter_factory
+                    training = reported_fit_entries(feature) if refit else None
+                    if training is not None:
+                        fit_manifest, fit_resolved = _input_manifest(
+                            ds,
+                            feature,
+                            Scope(entries=list(training)),
+                            tracks_run_id=tracks_run_id,
+                        )
+                        fit_filters = _make_filter_factory(
+                            ds,
+                            fit_resolved,
+                            pair_filter_spec,
+                            frame_start,
+                            frame_end,
+                            time_window,
+                        )
+                    fit_detail = f"{len(fit_manifest)} entries"
+                    if refit and drift is not None:
+                        fit_detail += (
+                            ", fitted again since the inputs its fit read changed: "
+                            f"{refit_summary(drift)}"
+                        )
+                    ctx.phase("fit", fit_detail)
                     # The stream the fit is offered. A fitter that fits from pinned
                     # artifacts ignores it, and these figures still describe it.
-                    cost.fit_entries = len(manifest)
+                    cost.fit_entries = len(fit_manifest)
                     cost.fit_input_rows = sum(
-                        size.rows for size in manifest_input_sizes(manifest).values()
+                        size.rows
+                        for size in manifest_input_sizes(fit_manifest).values()
                     )
                     _observe(watch.sample())
                     cost.fitting = True
@@ -3164,8 +3423,8 @@ def _run_feature_impl(
                         feature.fit(
                             fit_input_stream(
                                 feature,
-                                manifest,
-                                filter_factory,
+                                fit_manifest,
+                                fit_filters,
                                 cross_join,
                                 widens_individuals,
                             )
@@ -3173,6 +3432,8 @@ def _run_feature_impl(
                     finally:
                         _observe(watch.sample())
                         cost.end_fit(watch, time.monotonic() - fit_started)
+                    if refit:
+                        _refuse_writes_into(feature, scratch.path(), run_id)
                     _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
                     before_save = list_run_root(run_root)
                     feature.save_state(run_root)

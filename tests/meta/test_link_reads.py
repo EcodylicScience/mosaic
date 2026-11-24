@@ -22,6 +22,7 @@ from tests.helpers import (
     SOURCE_ROOT,
     ImportedName,
     imports_in,
+    inside_a_virtualenv,
     imports_of,
     modules_loaded_by,
     source_tree,
@@ -251,6 +252,7 @@ def test_every_lookup_the_guard_names_is_defined() -> None:
     defined = {
         node.name
         for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        if not inside_a_virtualenv(path, SOURCE_ROOT)
         for node in ast.walk(source_tree(path))
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }

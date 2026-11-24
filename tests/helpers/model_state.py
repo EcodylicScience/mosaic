@@ -35,6 +35,7 @@ __all__ = [
     "KMeansChain",
     "KMeansFit",
     "drifted",
+    "index_cells",
     "kmeans_apply",
     "kmeans_apply_feature",
     "kmeans_fit",
@@ -178,24 +179,32 @@ def move_tracks(ds: Dataset, variant: str, sequences: Iterable[str]) -> None:
     """
     tracks = tracks_variant_root(ds.get_root("tracks"), variant)
     for sequence in sequences:
-        table = pd.read_parquet(tracks / f"{sequence}.parquet")
-        moved = [
-            column
-            for column in table.columns
-            if column in {"X", "Y"} or column.startswith(("X#", "Y#", "pose"))
-        ]
-        table[moved] = table[moved] * 2.0
+        table = _scaled(pd.read_parquet(tracks / f"{sequence}.parquet"), 2.0)
         add_tracks_table(
             ds, variant, table, std_format="mosaic_v1", consumed_composition="moved"
         )
 
 
-def reconvert_entry(ds: Dataset, entry: Entry, *, composition: str) -> None:
+def _scaled(table: pd.DataFrame, factor: float) -> pd.DataFrame:
+    """*table* with each of its position columns multiplied by *factor*."""
+    positions = [
+        column
+        for column in table.columns
+        if column in {"X", "Y"} or column.startswith(("X#", "Y#", "pose"))
+    ]
+    table[positions] = table[positions] * factor
+    return table
+
+
+def reconvert_entry(
+    ds: Dataset, entry: Entry, *, composition: str, scale: float = 1.0
+) -> None:
     """Write each tracks table of *entry* again, recording *composition*.
 
     Stands for a conversion of the entry from changed sources: the table is
-    written back under its variant, and its row records the new composition,
-    which a run reading the entry compares.
+    written back under its variant, its positions multiplied by *scale*, and
+    its row records the new composition, which a run reading the entry
+    compares.
     """
     group, sequence = entry
     rows = read_tracks_index(ds)
@@ -205,7 +214,7 @@ def reconvert_entry(ds: Dataset, entry: Entry, *, composition: str) -> None:
     ]
     assert not selected.empty
     for _, row in selected.iterrows():
-        table = pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
+        table = _scaled(pd.read_parquet(ds.resolve_path(str(row["abs_path"]))), scale)
         add_tracks_table(
             ds,
             str(row["run_id"]),
@@ -252,18 +261,19 @@ def refusals(err: str, feature: str) -> dict[str, str]:
     }
 
 
-def model_cells(ds: Dataset, result: Result[str]) -> dict[str, str]:
-    """The ``consumed_model_state`` cell of each own row of *result*'s run."""
+def index_cells(ds: Dataset, result: Result[str], column: str) -> dict[str, str]:
+    """The *column* cell of each own row of *result*'s run, by sequence."""
     path = feature_index_path(ds, result.feature)
     rows = pd.read_csv(path, dtype=str, keep_default_na=False)
     rows = rows[rows["run_id"] == result.run_id]
     return dict(
-        zip(
-            rows["sequence"].astype(str),
-            rows["consumed_model_state"].astype(str),
-            strict=True,
-        )
+        zip(rows["sequence"].astype(str), rows[column].astype(str), strict=True)
     )
+
+
+def model_cells(ds: Dataset, result: Result[str]) -> dict[str, str]:
+    """The ``consumed_model_state`` cell of each own row of *result*'s run."""
+    return index_cells(ds, result, "consumed_model_state")
 
 
 def drifted(ds: Dataset, result: Result[str]) -> tuple[tuple[str, str], ...]:

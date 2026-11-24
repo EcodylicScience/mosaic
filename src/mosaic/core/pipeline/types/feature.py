@@ -52,6 +52,8 @@ class Feature(Protocol):
 
     - ``bind_dataset(ds)``: binds the dataset to a feature that reopens its media
       (crops, overlay) in addition to the table that the feature is handed.
+    - ``bind_run_root(run_root)``: see :class:`BindsRunRoot`.
+    - ``bind_fit_inputs(digest)``: see :class:`ResumesFits`.
     - ``set_scope(resolved)``: passes the run's chosen tracks variant to a
       feature that resolves tracks itself.
     - ``set_tracklets(by_entry)``: see :class:`SetsTracklets`.
@@ -253,6 +255,36 @@ class ReadsTags(Protocol):
     """
 
     def tag_read(self) -> TagRead: ...
+
+
+@runtime_checkable
+class BindsRunRoot(Protocol):
+    """Declares the ``bind_run_root`` hook of a feature that fits into its run root.
+
+    A feature that writes into its run root during ``fit``, or keeps a log
+    there, takes the root from this hook. ``run_feature`` calls it once per fit,
+    with the run root, between a ``load_state`` that returned ``False`` and
+    ``fit``. A ``load_state`` that returns ``False`` hands ``fit`` no root, and
+    this hook does.
+    """
+
+    def bind_run_root(self, run_root: Path) -> None: ...
+
+
+@runtime_checkable
+class ResumesFits(Protocol):
+    """Declares the ``bind_fit_inputs`` hook of a feature that resumes a fit.
+
+    A feature that keeps resumable work in its run root, such as a training
+    checkpoint, resumes it only for the inputs it was done on. ``run_feature``
+    calls this hook before each ``fit``, a first fit and a fit run again alike,
+    with the digest of the inputs the fit reads
+    (:func:`~mosaic.core.pipeline.fit_scope.fit_inputs_digest`). It is not
+    called when the run cannot build that digest, and the feature then resumes
+    nothing. A ``load_state`` forgets an earlier call.
+    """
+
+    def bind_fit_inputs(self, digest: str) -> None: ...
 
 
 @runtime_checkable

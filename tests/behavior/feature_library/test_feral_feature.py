@@ -1610,6 +1610,8 @@ class _FitCalls:
         self.trained: list[tuple[FeralConfig, FeralLabelsJson, Path]] = []
         self.class_values: list[tuple[int, ...]] = []
         self.evaluated: list[str] = []
+        self.checkpoint_found: list[bool] = []
+        self.interrupt = False
 
 
 def _stand_in_feral(monkeypatch: pytest.MonkeyPatch) -> _FitCalls:
@@ -1628,6 +1630,11 @@ def _stand_in_feral(monkeypatch: pytest.MonkeyPatch) -> _FitCalls:
         progress_callback: object,
     ) -> tuple[_WeightlessModel, float, list[dict[str, float]]]:
         calls.trained.append((cfg, labels_json, run_root))
+        checkpoint = run_root / "training_checkpoint.pt"
+        calls.checkpoint_found.append(checkpoint.exists())
+        if calls.interrupt:
+            _ = checkpoint.write_bytes(b"epoch 3")
+            raise RuntimeError("the training was interrupted")
         calls.class_values.append(tuple(class_values))
         return _WeightlessModel(), 0.5, [{"epoch": 0, "train_loss": 1.0}]
 
@@ -1665,6 +1672,7 @@ class _Fit:
         labeled: Sequence[str],
         val_fraction: float = 0.5,
         bind: bool = True,
+        bind_root: bool = True,
         tables: Mapping[str, int] | None = None,
         events: Mapping[str, Sequence[Event]] | None = None,
         **params: object,
@@ -1712,6 +1720,8 @@ class _Fit:
             {"labels": label_files, "_input_0": crop_tables},
         )
         assert ready is False
+        if bind_root:
+            self.feature.bind_run_root(self.run_root)
 
     def _write_table(self, entry: str, row_count: int) -> Path:
         """The crop table of *entry* in the crop run, with *row_count* rows."""
@@ -2157,6 +2167,104 @@ class TestFit:
 
         with pytest.raises(RuntimeError, match="no templates were loaded"):
             feature.fit(InputStream(lambda: iter([]), 0))
+
+    def test_load_state_keeps_no_run_root_for_the_fit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab", bind_root=False)
+
+        with pytest.raises(RuntimeError, match="bind_run_root"):
+            fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.trained == []
+        assert not fit.run_root.exists()
+
+    def test_a_fit_writes_into_the_run_root_it_is_bound_to(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab", bind_root=False)
+        bound = tmp_path / "bound"
+
+        fit.feature.bind_run_root(bound)
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        ((_, _, trained_into),) = calls.trained
+        assert trained_into == bound
+        assert (bound / "feral_labels.json").is_file()
+        assert (bound / "config.json").is_file()
+        assert not fit.run_root.exists()
+
+
+class TestResume:
+    """A training checkpoint resumes only for the inputs it was trained on."""
+
+    def _interrupted(self, fit: _Fit, calls: _FitCalls, digest: str) -> None:
+        """Fit for *digest* and stop after the first checkpoint is written."""
+        fit.feature.bind_fit_inputs(digest)
+        calls.interrupt = True
+        with pytest.raises(RuntimeError, match="interrupted"):
+            fit.feature.fit(_interaction_stream(["a", "b"]))
+        calls.interrupt = False
+
+    def _checkpoint(self, fit: _Fit, sidecar: str | None) -> None:
+        """Leave a checkpoint in the run root, with a sidecar naming *sidecar*."""
+        fit.run_root.mkdir(parents=True, exist_ok=True)
+        _ = (fit.run_root / "training_checkpoint.pt").write_bytes(b"epoch 3")
+        if sidecar is not None:
+            _ = (fit.run_root / "training_checkpoint.inputs").write_text(sidecar)
+
+    def test_an_interrupted_fit_resumes_for_the_same_inputs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab")
+        self._interrupted(fit, calls, "inputs-1")
+
+        fit.feature.bind_fit_inputs("inputs-1")
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.checkpoint_found == [False, True]
+
+    def test_a_fit_retried_after_its_inputs_changed_starts_afresh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab")
+        self._interrupted(fit, calls, "inputs-1")
+
+        fit.feature.bind_fit_inputs("inputs-2")
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.checkpoint_found == [False, False]
+        sidecar = fit.run_root / "training_checkpoint.inputs"
+        assert sidecar.read_text() == "inputs-2"
+
+    @pytest.mark.parametrize("sidecar", ["other-inputs", None], ids=["other", "none"])
+    def test_a_checkpoint_not_named_for_the_inputs_is_discarded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar: str | None
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab")
+        self._checkpoint(fit, sidecar)
+
+        fit.feature.bind_fit_inputs("inputs-1")
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.checkpoint_found == [False]
+
+    def test_a_fit_handed_no_inputs_resumes_nothing_and_names_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab")
+        self._checkpoint(fit, "inputs-1")
+
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.checkpoint_found == [False]
+        assert not (fit.run_root / "training_checkpoint.inputs").exists()
 
 
 class TestCheckpointClasses:
@@ -3739,6 +3847,7 @@ class TestFitOnCpu:
             },
         )
         assert ready is False
+        feature.bind_run_root(run_root)
         stream = InputStream(
             lambda: iter(
                 [

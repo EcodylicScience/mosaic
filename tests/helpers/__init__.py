@@ -50,7 +50,8 @@ What lives where:
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
   roots they consume, for the tests of what a source change reaches, one that
-  fits, for the tests of the claim a fit holds, one that fits a mean, for the
+  fits, for the tests of the claim a fit holds, one that fits over its scope,
+  for the tests of a fit whose entries change, one that fits a mean, for the
   tests of a fit that a linked dataset holds, and a classifier that records the
   labels it reads.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
@@ -125,8 +126,9 @@ What lives where:
 - ``model_state``: the k-means chain that fits ``global-kmeans`` and applies it
   through ``model``, a refit of it over moved tracks, an entry converted again
   from changed sources, the reasons a run printed
-  for the entries it did not serve, the fit-state digest each row of an apply
-  records, and the entries a plan reports as drifted.
+  for the entries it did not serve, a column of a run's index rows, the
+  fit-state digest each row of an apply records, and the entries a plan reports
+  as drifted.
 - ``feature_definitions``: the sources of feature definitions, a dataset with
   tracks that defines them, an instance of the applying definition for a ``model``
   mapping, and the distance from the origin of each row of an entry's tracks.
@@ -368,6 +370,7 @@ from tests.helpers.model_state import (
     KMeansChain,
     KMeansFit,
     drifted,
+    index_cells,
     kmeans_apply,
     kmeans_apply_feature,
     kmeans_fit,
@@ -528,6 +531,7 @@ from tests.helpers.stand_in_features import (
     ParallelFeature,
     PlainFeature,
     ScopedFeature,
+    ScopedFittingFeature,
     labels_classifier_registered,
 )
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
@@ -743,6 +747,7 @@ __all__ = [
     "FakeResult",
     "FitControl",
     "FittingFeature",
+    "ScopedFittingFeature",
     "LABELS_CLASSIFIER_STEP",
     "LabelsClassifier",
     "labels_classifier_registered",
@@ -931,6 +936,7 @@ __all__ = [
     "KMeansChain",
     "KMeansFit",
     "drifted",
+    "index_cells",
     "kmeans_apply",
     "kmeans_apply_feature",
     "kmeans_fit",

@@ -43,7 +43,7 @@ from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.types import InputStream, Result
 from mosaic.core.scope import Scope
 from tests.helpers import (
     VAME_PROTOCOL,
@@ -798,6 +798,27 @@ def test_one_instance_runs_twice(fake: _FakeVame, dataset: Dataset) -> None:
     assert_process_exited(one)
     assert fake.journal.commands(one) == ["fit", "load_model", "embed"]
     assert fake.journal.commands(two) == ["fit", "load_model", "embed", "embed"]
+
+
+def test_the_log_of_a_fit_is_kept_in_the_run_root_bound_after_the_load(
+    fake: _FakeVame, dataset: Dataset, tmp_path: Path
+) -> None:
+    offered, bound = tmp_path / "offered", tmp_path / "bound"
+    offered.mkdir()
+    bound.mkdir()
+    tracks = tracks_variant_root(dataset.get_root("tracks"), _VARIANT)
+    frames = [
+        pd.read_parquet(tracks / f"{sequence}.parquet") for sequence in _SEQUENCES
+    ]
+    feature = fake.feature()
+    assert feature.load_state(offered, {}, {}) is False
+
+    feature.bind_run_root(bound)
+    feature.fit(InputStream(lambda: iter(("", frame) for frame in frames), len(frames)))
+    feature.close()
+
+    assert "fit: 4 sessions" in (bound / VAME_RUNNER_LOG).read_text()
+    assert not (offered / VAME_RUNNER_LOG).exists()
 
 
 def test_close_stops_the_runner_and_a_later_apply_starts_another(

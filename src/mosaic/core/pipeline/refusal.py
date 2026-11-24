@@ -75,6 +75,7 @@ type RefusalReason = Literal[
     "run_root_held",
     "subset_refused",
     "link_unreachable",
+    "linked_fit_drifted",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -119,7 +120,10 @@ needs the answer of a linked dataset that cannot be read: a training whose run
 no reachable dataset finished while a link that provides models is offline. Its
 ``links`` detail lists each unreachable link by ``id`` and ``provides``. The
 attempt may be retried once the link opens, and no training output was written for
-it.
+it. ``linked_fit_drifted`` is a run of a fit that a linked dataset holds, whose
+inputs have changed in the reading dataset; its detail names the ``link_id``,
+counts the ``moved`` and ``dropped`` entries and lists the ``refitted`` fields.
+Nothing is written under either dataset.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

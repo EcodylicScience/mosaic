@@ -22,6 +22,7 @@ from mosaic.behavior.feature_library import kpms as kpms_module
 from mosaic.behavior.feature_library.kpms import (
     KPMS_ENV,
     KPMS_LICENSE_ENV,
+    KPMS_SERVER_LOG,
     KpmsFeature,
 )
 from mosaic.core.dataset import Dataset
@@ -44,6 +45,7 @@ from tests.helpers import (
     kpms_params,
     make_dataset,
     model_reference,
+    reconvert_entry,
     result_outputs,
     result_run_root,
     wait_for,
@@ -441,6 +443,46 @@ def test_close_stops_the_runner_and_a_later_request_starts_another(
     _, _, restarted = fake.journal.starts()
     assert fake.journal.commands(restarted) == ["load_model", "apply", "apply"]
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_the_log_of_a_fit_is_kept_in_the_run_root_bound_after_the_load(
+    fake: _FakeKpms, tmp_path: Path
+) -> None:
+    offered, bound = tmp_path / "offered", tmp_path / "bound"
+    offered.mkdir()
+    bound.mkdir()
+    feature = fake.feature()
+    rows = keypoint_rows(range(_N_ROWS), n_keypoints=3)
+    assert feature.load_state(offered, {}, {}) is False
+
+    feature.bind_run_root(bound)
+    feature.fit(InputStream(lambda: iter([("s1", rows)]), n_entries=1))
+    feature.close()
+
+    assert "fit: 1 recordings" in (bound / KPMS_SERVER_LOG).read_text()
+    assert not (offered / KPMS_SERVER_LOG).exists()
+
+
+def test_a_refit_that_fails_appends_its_runner_log_to_the_run_root(
+    fake: _FakeKpms, dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fit run again for changed inputs keeps its log beside the earlier fit's."""
+    fitted = run_feature(dataset, fake.feature())
+    log = result_run_root(dataset, fitted) / KPMS_SERVER_LOG
+    assert log.read_text().count("fit: 4 recordings") == 1
+    reconvert_entry(dataset, ("", "s1"), composition="converted-again")
+    fit = KpmsFeature.fit
+
+    def fails(self: KpmsFeature, inputs: InputStream) -> None:
+        fit(self, inputs)
+        raise RuntimeError("the fit failed")
+
+    monkeypatch.setattr(KpmsFeature, "fit", fails)
+
+    with pytest.raises(RuntimeError, match="the fit failed"):
+        _ = run_feature(dataset, fake.feature())
+
+    assert log.read_text().count("fit: 4 recordings") == 2
 
 
 def test_a_runner_that_exits_holding_the_tracks_fails_the_fit(

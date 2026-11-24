@@ -804,6 +804,13 @@ class VameFeature:
 
     # --- Feature protocol ---
 
+    def bind_run_root(self, run_root: Path) -> None:
+        """Keep the runner's log in *run_root*, where a fit that fails leaves it.
+
+        ``run_feature`` calls it after ``load_state`` returned ``False``.
+        """
+        self._runner.keep_log(run_root / VAME_RUNNER_LOG)
+
     def load_state(
         self,
         run_root: Path,
