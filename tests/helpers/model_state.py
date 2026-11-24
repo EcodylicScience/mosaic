@@ -44,8 +44,8 @@ __all__ = [
     "run_step",
 ]
 
-FITTED_AGAIN: Final = "the model it applies was fitted again"
-"""The reason a run gives for an entry whose model was fitted again."""
+FITTED_AGAIN: Final = "a fit it reads was fitted again"
+"""The reason a run gives for an entry a fit of which was written again."""
 
 KMEANS: Final[dict[str, object]] = {"k": 1, "n_init": 1}
 """The clustering params of the ``global-kmeans`` fit and of its apply."""

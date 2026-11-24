@@ -16,9 +16,11 @@ from pathlib import Path
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.graph import build_feature as build_graph_feature
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory.params import RunParams, ScopeBlock
-from mosaic.core.pipeline.run import build_run_params_payload
+from mosaic.core.pipeline.run import build_run_params_payload, compute_run_id
+from mosaic.core.pipeline.types import Feature
 from mosaic.core.scope import Scope
 from mosaic.version import DISTRIBUTION_NAME, installed_version
 from tests.helpers import ScopedFeature
@@ -186,3 +188,44 @@ def test_an_unscoped_scope_dependent_run_asks_for_its_own_entries(
     )
     assert block.asked == [["", "seq_a"], ["", "seq_b"]]
     assert block.asked_all is False
+
+
+def _sequence_classifier() -> Feature:
+    return build_graph_feature(
+        "sequence-classifier",
+        [{"feature": "speed-angvel__from__tracks", "run_id": "0.1-up"}],
+        {
+            "default_class": 0,
+            "labels": {},
+            "templates": {"feature": "extract-labeled-templates", "run_id": "0.1-t"},
+            "init_from": {"run_id": "0.1-i"},
+        },
+    )
+
+
+def test_the_payload_records_each_fit_the_run_reads() -> None:
+    payload = build_run_params_payload(
+        _sequence_classifier(), None, None, ResolvedScope(), []
+    )
+
+    assert payload["_fit_references"] == [
+        {
+            "field": "init_from",
+            "feature": "sequence-classifier",
+            "run_id": "0.1-i",
+            "pattern": "sequence_classifier_model.joblib",
+        },
+        {
+            "field": "templates",
+            "feature": "extract-labeled-templates",
+            "run_id": "0.1-t",
+            "pattern": "templates.parquet",
+        },
+    ]
+
+
+def test_the_fit_references_move_no_identifier() -> None:
+    """The id this feature had before ``params.json`` recorded its fits."""
+    run_id, _ = compute_run_id(_sequence_classifier(), None, None, ResolvedScope())
+
+    assert run_id == "0.2-ecb068ee95"

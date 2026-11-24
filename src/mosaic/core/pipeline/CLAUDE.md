@@ -22,7 +22,7 @@ are in `graph/CLAUDE.md`.
   (`tests/core/test_irregular_time_notices.py`).
 - **A read site uses a per-kind lookup, and a write site an own-address function.** A
   dataset reads linked data through `tracks_rows`, `feature_rows`, `feature_run_roots`,
-  `feature_run_file`, `model_state_root`, `readable_feature_storages`, `frame_rows`,
+  `feature_run_file`, `fit_state_root`, `readable_feature_storages`, `frame_rows`,
   `frame_run_file`, `label_series_rows`, `labels_rows`, `readable_label_kinds` and
   `run_coverage`, which walk `Dataset.lookup_order(kind)`. A site that writes, removes
   or reconciles stays on `feature_run_root`, `feature_index_path`,
@@ -220,11 +220,13 @@ are in `graph/CLAUDE.md`.
   upstream part recomputes once.
 - A run with a feature input also compares `consumed_input_composition`
   (`ResolvedScope.input_root_compositions`): its upstreams' declared-root
-  compositions, each upstream row's `consumed_composition` and
-  `consumed_input_composition` as `own/inherited`, joined in input order by
-  `join_input_cells` (`composition.py`). An entry recomputes after its upstream
-  entry recomputes for a moved declared root, at any depth of a chain. Both sides
-  blank is absence, served without a warning. The blind tracks warning covers a
+  compositions and fit states, each upstream row's `consumed_composition` and
+  `consumed_input_composition` as `own/inherited`, led by its
+  `consumed_model_state` as `state|own/inherited` when that is not blank
+  (`input_part`, `composition.py`), joined in input order by `join_input_cells`.
+  An entry recomputes after its upstream entry recomputes for a moved declared
+  root or a fit written again, at any depth of a chain. Both sides blank is
+  absence, served without a warning. The blind tracks warning covers a
   feature input whose upstream chain read a named tracks variant at any depth
   (`TracksVariantWalk`), and names that input's run.
 - At `overlap_frames > 0` the row's `consumed_neighbors` (`neighbor_compositions`,
@@ -246,7 +248,7 @@ are in `graph/CLAUDE.md`.
   files: the claim marker, the run's `params.json`, `.identity_scheme` and
   `fit_scope.json`, and temporary files) and digested by `saved_state_digest`
   (`fit_scope.py`). The run reads the fit's current digest once
-  (`_current_model_state`), and `_servable` compares it with each cached row's cell. A
+  (`_current_fit_states`), and `_servable` compares it with each cached row's cell. A
   row records the digest of the state it read. A fit written again under its run id then
   recomputes the entries. A row and a fit that both predate the digest are served, with
   one warning. The cell is blank on a fit's rows, and the digest stays out of `run_id`.
@@ -256,8 +258,8 @@ are in `graph/CLAUDE.md`.
 - `drifted_entries` (`index.py`) follows `cached_entry_disposition` over four channels,
   given the run's `RunParams`: the declared roots, the tracks cell and the upstreams'
   roots cell, each built as `build_manifest` builds it, and for a run that records a
-  `model` the fit-state cell, against the digest `DriftReads.model_state` reads once per
-  fit through `model_state_root`. That digest is blank under an unreachable link, for an
+  `model` the fit-state cell, against the digest `DriftReads.fit_state` reads once per
+  fit through `fit_state_root`. That digest is blank under an unreachable link, for an
   unreadable `fit_scope.json`, and for a pattern that matches more than one file of the
   fit's root (`AmbiguousArtifactFile`), since a status read does not raise. One known
   side is drift, and the plan names every entry `run_feature` recomputes. The neighbors

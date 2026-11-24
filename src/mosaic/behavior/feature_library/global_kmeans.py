@@ -217,6 +217,7 @@ class GlobalKMeansClustering:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.fits = self.params.model is None
 
         self._kmeans: _SklearnKMeans | None = None
         self._feature_columns: list[str] | None = None

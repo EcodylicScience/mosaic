@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.filter_bounds import TimeWindow
-from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.index import FitReference, feature_run_root
 from mosaic.core.pipeline.inventory import params as params_module
 from mosaic.core.pipeline.inventory.params import (
     REPORT_MAX_CHARS,
@@ -636,28 +636,66 @@ def test_a_run_report_is_read_bounded_and_by_one_path_component(
         _ = read_run_report(run_root, "../metrics.json")
 
 
-class TestModelReference:
-    """The fit a run applies, as its recorded ``_params.model`` names it."""
+class TestFitReferences:
+    """The fits a run read, as its recorded ``_fit_references`` names them."""
+
+    def test_the_recorded_references_are_read(self) -> None:
+        params = RunParams.model_validate(
+            {
+                "_params": {"model": {"feature": "ignored", "run_id": "0.1-x"}},
+                "_fit_references": [
+                    {
+                        "field": "model",
+                        "feature": "def:mine",
+                        "run_id": "0.1-fit",
+                        "pattern": None,
+                    },
+                    {
+                        "field": "templates",
+                        "feature": "extract-templates",
+                        "run_id": "0.1-tpl",
+                        "pattern": "templates.parquet",
+                    },
+                ],
+            }
+        )
+
+        assert params.fit_references() == (
+            FitReference("model", "def:mine", "0.1-fit", None),
+            FitReference(
+                "templates", "extract-templates", "0.1-tpl", "templates.parquet"
+            ),
+        )
+
+    def test_an_empty_record_names_no_fit(self) -> None:
+        params = RunParams.model_validate(
+            {
+                "_params": {"model": {"feature": "def:mine", "run_id": "0.1-fit"}},
+                "_fit_references": [],
+            }
+        )
+
+        assert params.fit_references() == ()
 
     @staticmethod
     def _recorded(model: object) -> RunParams:
         return RunParams.model_validate({"_params": {"model": model}})
 
-    def test_an_artifact_record_gives_its_feature_run_and_pattern(self) -> None:
+    def test_a_file_without_the_record_reads_its_artifact_model(self) -> None:
         params = self._recorded(
             {"feature": "global-kmeans", "run_id": "0.1-abc", "pattern": "model.joblib"}
         )
 
-        assert params.model_reference() == (
-            "global-kmeans",
-            "0.1-abc",
-            "model.joblib",
+        assert params.fit_references() == (
+            FitReference("model", "global-kmeans", "0.1-abc", "model.joblib"),
         )
 
-    def test_a_definition_model_record_has_no_pattern(self) -> None:
+    def test_a_file_without_the_record_reads_its_definition_model(self) -> None:
         params = self._recorded({"feature": "def:mine", "run_id": "0.1-abc"})
 
-        assert params.model_reference() == ("def:mine", "0.1-abc", None)
+        assert params.fit_references() == (
+            FitReference("model", "def:mine", "0.1-abc", None),
+        )
 
     @pytest.mark.parametrize(
         "model",
@@ -670,8 +708,8 @@ class TestModelReference:
             pytest.param({"feature": "global-kmeans", "run_id": ""}, id="empty-run"),
         ],
     )
-    def test_a_record_that_names_no_fit_gives_none(self, model: object) -> None:
-        assert self._recorded(model).model_reference() is None
+    def test_a_model_that_names_no_fit_gives_none(self, model: object) -> None:
+        assert self._recorded(model).fit_references() == ()
 
-    def test_a_run_without_a_model_gives_none(self) -> None:
-        assert RunParams.model_validate({}).model_reference() is None
+    def test_a_file_with_neither_names_no_fit(self) -> None:
+        assert RunParams.model_validate({}).fit_references() == ()

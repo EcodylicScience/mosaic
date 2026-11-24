@@ -245,20 +245,17 @@ def test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance(
     The held-out guard reads ``fits`` off the instance, and an apply step left
     declaring ``True`` would be refused over the test group. A fitter that hashes
     its scope narrows ``scope_dependent`` beside it (``arhmm``, ``kpms``, ``vame``,
-    the identity models), which the check above also covers. A scope-free fitter is
-    not the guard's concern, except one
-    that declares ``fit_set_pinned_by``: ``sequence-classifier`` and
-    ``lightning-action`` hash no scope and still narrow ``fits`` for a given
-    ``model``, which the planner and the catalog read.
+    the identity models), which the check above also covers. A scope-free fitter
+    narrows ``fits`` too: ``sequence-classifier``, ``lightning-action`` and the
+    global fitters hash no scope and still clear ``fits`` for a given ``model``,
+    which the planner and the held-out guard read.
     """
     params: object = getattr(cls, "Params", None)
     if not (isinstance(params, type) and issubclass(params, BaseModel)):
         pytest.skip("no Params model")
     fits: object = getattr(cls, "fits", False)
-    named: object = getattr(cls, "scope_dependent", False)
-    pinned = getattr(cls, "fit_set_pinned_by", None) is not None
-    if "model" not in params.model_fields or fits is not True or not (named or pinned):
-        pytest.skip("takes no model, does not fit, or a scope-free fitter")
+    if "model" not in params.model_fields or fits is not True:
+        pytest.skip("takes no model, or does not fit")
     assert _sets_on_instance(cls, "fits"), (
         f"{cls.__name__} fits and takes a 'model' param to apply, and does not "
         f"narrow 'fits' in __init__ for a run given one."

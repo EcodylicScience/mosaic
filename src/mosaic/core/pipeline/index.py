@@ -10,14 +10,13 @@ import pandas as pd
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.composition import (
     cached_entry_disposition,
-    input_root_part,
+    input_part,
     join_input_cells,
 )
 from mosaic.core.pipeline.dataset_indexes import (
     feature_storages,
     register_reconcilable_index,
 )
-from mosaic.core.pipeline.definitions.store import MODEL_FIELD
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -29,6 +28,7 @@ from mosaic.core.scope import Scope
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.arena_index import ArenaLookup
+    from mosaic.core.pipeline.fit_scope import FitScope
     from mosaic.core.pipeline.inventory.params import RunParams
 
 
@@ -193,12 +193,13 @@ class FeatureIndexRow(RunIndexRowBase):
     # joined with ``+`` in input order, a feature input's cell being its upstream
     # row's own (``build_manifest``).
     consumed_tracks_composition: str = ""
-    # The declared-root compositions of a run's feature inputs: per input in input
-    # order, joined with ``+``, the upstream row's ``consumed_composition`` and
-    # ``consumed_input_composition`` as ``own/inherited`` (``input_root_part`` in
-    # ``composition.py``). A ``tracks`` input's part is blank, and so is the cell of
-    # a run whose every part is blank. Kept apart from ``consumed_composition``,
-    # which holds this run's own declared roots.
+    # What a run's feature inputs recorded: per input in input order, joined with
+    # ``+``, the upstream row's ``consumed_composition`` and
+    # ``consumed_input_composition`` as ``own/inherited``, led by its
+    # ``consumed_model_state`` as ``state|own/inherited`` when that is not blank
+    # (``input_part`` in ``composition.py``). A ``tracks`` input's part is blank,
+    # and so is the cell of a run whose every part is blank. Kept apart from
+    # ``consumed_composition``, which holds this run's own declared roots.
     consumed_input_composition: str = ""
     # The neighbors an overlapped run read for this entry, each by entry key with
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
@@ -397,16 +398,51 @@ def feature_run_file(ds: Dataset, storage: str, run_id: str, name: str) -> Path 
     return None
 
 
-type ModelReference = tuple[str, str, str | None]
-"""A pinned ``model`` reference: the fit's storage, its run id and its pattern.
+@dataclass(frozen=True)
+class FitReference:
+    """A params field that names a pinned fit: the state a run reads from it.
 
-The pattern is the glob an ``ArtifactSpec`` names, and ``None`` for a
-``DefinitionModel``, whose fit saved its state into the run root itself.
+    Attributes:
+        field: The top-level params field holding the reference.
+        feature: The fit's feature storage.
+        run_id: The fit's run id.
+        pattern: The glob an ``ArtifactSpec`` names in the fit's root, and
+            ``None`` for a ``DefinitionModel``, whose fit saved its state into
+            the run root itself.
+    """
+
+    field: str
+    feature: str
+    run_id: str
+    pattern: str | None
+
+
+OWN_STATE_PART: Final = "_state"
+"""The part of a fit-state cell that holds the digest of the run's own state.
+
+No params field takes the name, since a Pydantic field cannot begin with an
+underscore.
 """
 
 
-def model_state_root(ds: Dataset, reference: ModelReference) -> Path | None:
-    """The run root a ``model`` reference loads its state from, in lookup order.
+def fit_state_cell(states: Mapping[str, str]) -> str:
+    """The ``consumed_model_state`` cell of a row that read *states*.
+
+    Args:
+        states: Each fit the row read, keyed by its params field, and the run's
+            own state under :data:`OWN_STATE_PART`, each mapped to its digest.
+
+    Returns:
+        A bare digest for one part, sorted ``field=digest`` pairs for several,
+        and ``""`` when every part is blank.
+    """
+    from .sequence_index import encode_entry_composition
+
+    return encode_entry_composition(states, states.keys())
+
+
+def fit_state_root(ds: Dataset, reference: FitReference) -> Path | None:
+    """The run root a fit reference loads its state from, in lookup order.
 
     For a reference with a pattern, the first root of :func:`feature_run_roots`
     in which :func:`resolve_artifact_file` finds it. For one without, the first
@@ -418,15 +454,20 @@ def model_state_root(ds: Dataset, reference: ModelReference) -> Path | None:
 
     Raises:
         AmbiguousArtifactFile: The pattern matches more than one file of a root.
+            The message names the reference's field.
     """
     from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME
 
-    storage, run_id, pattern = reference
-    if pattern is None:
-        fit_scope = feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME)
+    if reference.pattern is None:
+        fit_scope = feature_run_file(
+            ds, reference.feature, reference.run_id, FIT_SCOPE_NAME
+        )
         return None if fit_scope is None else fit_scope.parent
-    for root in feature_run_roots(ds, storage, run_id):
-        if resolve_artifact_file(MODEL_FIELD, storage, root, pattern) is not None:
+    for root in feature_run_roots(ds, reference.feature, reference.run_id):
+        found = resolve_artifact_file(
+            reference.field, reference.feature, root, reference.pattern
+        )
+        if found is not None:
             return root
     return None
 
@@ -577,21 +618,27 @@ class DriftReads:
             exists, in this dataset and in the datasets it links. The default
             reads it through :func:`feature_index`. A scan passes the reader it
             reads the indexes with, and the file is read once.
+        strict: :meth:`fit_record` raises for a record that cannot be read
+            instead of reading it as none.
     """
 
     def __init__(
         self,
         ds: Dataset,
         feature_frame: Callable[[Path], pd.DataFrame] = _read_feature_frame,
+        *,
+        strict: bool = False,
     ) -> None:
         self._ds: Dataset = ds
         self._feature_frame: Callable[[Path], pd.DataFrame] = feature_frame
+        self._strict: bool = strict
+        self._fit_records: dict[tuple[str, str], FitScope | None] = {}
         self._runs: dict[str, dict[str, pd.DataFrame]] = {}
         self._tracks: dict[tuple[str, ...], dict[Entry, str]] = {}
         self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
         self._arena_lookup: ArenaLookup | None = None
         self._recorded: dict[Entry, dict[str, str]] | None = None
-        self._model_states: dict[ModelReference, str] = {}
+        self._fit_states: dict[FitReference, str] = {}
 
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
         runs = self._runs.get(storage)
@@ -613,10 +660,10 @@ class DriftReads:
         """What :func:`recorded_tracks_reads` returns, from the shared frame."""
         return _tracks_reads_of(self._rows(storage, run_id))
 
-    def model_state(self, reference: ModelReference) -> str:
+    def fit_state(self, reference: FitReference) -> str:
         """The fit-state digest of the fit *reference* names, read once per fit.
 
-        Read from the root :func:`model_state_root` resolves, through the
+        Read from the root :func:`fit_state_root` resolves, through the
         datasets the dataset links. A fit that no reachable root holds, a
         ``fit_scope.json`` that cannot be read and a pattern that matches more
         than one file of a root (:class:`AmbiguousArtifactFile`) read as blank:
@@ -627,15 +674,38 @@ class DriftReads:
         """
         from .fit_scope import FitStateUnreadable, read_fit_state_digest
 
-        digest = self._model_states.get(reference)
+        digest = self._fit_states.get(reference)
         if digest is None:
             try:
-                root = model_state_root(self._ds, reference)
+                root = fit_state_root(self._ds, reference)
                 digest = "" if root is None else read_fit_state_digest(root)
             except (AmbiguousArtifactFile, FitStateUnreadable):
                 digest = ""
-            self._model_states[reference] = digest
+            self._fit_states[reference] = digest
         return digest
+
+    def fit_record(self, storage: str, run_id: str) -> FitScope | None:
+        """The ``fit_scope.json`` of a run, read once per run.
+
+        Read through :func:`~.fit_scope.read_run_fit_scope`, in the first
+        dataset of the lookup that holds one.
+
+        Returns:
+            The record, and ``None`` when no dataset holds one, or, unless the
+            reads are strict, when it cannot be read.
+
+        Raises:
+            FitStateUnreadable: The reads are strict and the record cannot be
+                read.
+        """
+        from .fit_scope import read_run_fit_scope
+
+        key = (storage, run_id)
+        if key not in self._fit_records:
+            self._fit_records[key] = read_run_fit_scope(
+                self._ds, storage, run_id, strict=self._strict
+            )
+        return self._fit_records[key]
 
     def consumption(
         self, storage: str, run_id: str
@@ -703,9 +773,9 @@ def drifted_entries(
 
     Each entry's row is compared, channel by channel, with what the dataset
     records now, under :func:`~.composition.cached_entry_disposition`, the rule
-    ``run_feature`` applies before it serves a cached entry. An entry is drifted
-    when any channel says ``recompute``. The entries reported are those a run
-    would recompute:
+    ``run_feature`` applies before it serves a cached entry. An entry is
+    drifted when any channel says ``recompute``. The entries reported are those
+    a run would recompute:
 
     - its declared roots: the row's ``consumed_composition`` against the entry's
       composition under those roots in ``<root>/sequences.csv``, and its layout
@@ -716,32 +786,36 @@ def drifted_entries(
       a run whose only input is ``tracks``, or against its inputs' cells joined
       in input order (:func:`~.composition.join_input_cells`), a feature input's
       cell being its upstream row's ``consumed_tracks_composition``;
-    - its upstreams' roots: the row's ``consumed_input_composition`` against its
-      feature inputs' parts (:func:`~.composition.input_root_part`), joined the
-      same way;
-    - its model: for a run whose ``params.json`` records a ``model``, the row's
-      ``consumed_model_state`` against the digest the fit records now
-      (:meth:`DriftReads.model_state`). A fit under an unreachable link, or whose
-      record cannot be read, reads as blank.
+    - its upstreams' roots and fit states: the row's
+      ``consumed_input_composition`` against its feature inputs' parts
+      (:func:`~.composition.input_part` of each upstream row's declared roots,
+      inputs cell and ``consumed_model_state``), joined the same way, so an
+      entry recomputes after a fit its upstream read was fitted again;
+    - its fits: the row's ``consumed_model_state`` against the cell of
+      :func:`fit_state_cell` over the digest each fit reference of the run
+      records now (:meth:`DriftReads.fit_state`), and the run's own digest
+      under :data:`OWN_STATE_PART` when the run holds a fit record
+      (:meth:`DriftReads.fit_record`). A fit under an unreachable link, or
+      whose record cannot be read, reads as blank.
 
     The neighbors cell is compared by ``run_feature`` alone. An entry the run's
-    inputs no longer resolve, dropped from the tracks index for instance, is not
-    reported: a run would recompute nothing for it. A run that intersects its
-    inputs resolves an entry every input holds, and a stacked run one that any
-    input holds. A ``params.json`` written before it recorded stacking counts an
-    entry any input holds: a false drift there lasts one run, which records the
-    stacking, while counting only the entries every input holds would hide the
-    real drift of a stacked run that nothing then recomputes.
+    inputs no longer resolve, dropped from the tracks index for instance, is
+    not reported: a run would recompute nothing for it. A run that intersects
+    its inputs resolves an entry every input holds, and a stacked run one that
+    any input holds. A ``params.json`` written before it recorded stacking
+    counts an entry any input holds: a false drift there lasts one run, which
+    records the stacking, while counting only the entries every input holds
+    would hide the real drift of a stacked run that nothing then recomputes.
 
     **Both sides are recorded values.** A value recomputed from the present
     would always agree with itself. Reading recorded values also keeps a status
     display free of any filesystem measurement.
 
-    **One known side is drift**, and two blank sides are not. A row written before
-    its cell existed against a present that records one is recomputed once, after
-    which the row records the present. Two blanks cannot converge: the run
-    serves them with a warning, and reporting them here would ask for a recompute
-    that changes nothing.
+    **One known side is drift**, and two blank sides are not. A row written
+    before its cell existed against a present that records one is recomputed
+    once, after which the row records the present. Two blanks cannot converge:
+    the run serves them with a warning, and reporting them here would ask for a
+    recompute that changes nothing.
 
     Args:
         ds: The dataset holding the run.
@@ -762,8 +836,7 @@ def drifted_entries(
     recorded_roots = shared.consumption(feature_name, run_id)
     declared = tuple(run_params.scope.consumed_roots) if run_params else ()
     recorded_reads = shared.tracks_reads(feature_name, run_id) if run_params else {}
-    model = run_params.model_reference() if run_params else None
-    model_now = "" if model is None else shared.model_state(model)
+    fits_now = _current_fit_cell(shared, feature_name, run_id, run_params)
     entries = sorted(set(recorded_roots) | set(recorded_reads))
     if not entries:
         return ()
@@ -792,14 +865,34 @@ def drifted_entries(
             read = recorded_reads.get(entry, RecordedTracksReads())
             channels.append((read.composition, tracks_now.get(entry, "")))
             channels.append((read.inputs, inputs_now.get(entry, "")))
-            if model is not None:
-                channels.append((read.model_state, model_now))
+            channels.append((read.model_state, fits_now))
         if any(
             cached_entry_disposition(recorded, current) == "recompute"
             for recorded, current in channels
         ):
             drifted.append(entry)
     return tuple(drifted)
+
+
+def _current_fit_cell(
+    reads: DriftReads, storage: str, run_id: str, run_params: RunParams | None
+) -> str:
+    """The fit-state cell a run of *storage* would record for a row now.
+
+    Built as ``run_feature`` builds it: each fit reference of the run's
+    ``params.json`` with the digest its fit records now, and the run's own
+    digest when the run holds a fit record. ``""`` without params.
+    """
+    if run_params is None:
+        return ""
+    states = {
+        reference.field: reads.fit_state(reference)
+        for reference in run_params.fit_references()
+    }
+    own = reads.fit_record(storage, run_id)
+    if own is not None:
+        states[OWN_STATE_PART] = own.state_digest
+    return fit_state_cell(states)
 
 
 def _current_input_cells(
@@ -841,8 +934,10 @@ def _current_input_cells(
         )
         per_input_roots.append(
             {
-                entry: input_root_part(
-                    upstream_roots.get(entry, ((), ""))[1], read.inputs
+                entry: input_part(
+                    upstream_roots.get(entry, ((), ""))[1],
+                    read.inputs,
+                    read.model_state,
                 )
                 for entry, read in upstream_reads.items()
             }

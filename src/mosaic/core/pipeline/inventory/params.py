@@ -56,7 +56,7 @@ from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.definitions.store import MODEL_FIELD
 from mosaic.core.pipeline.index import (
     DatasetRoots,
-    ModelReference,
+    FitReference,
     feature_run_file,
     feature_run_root,
 )
@@ -191,6 +191,10 @@ class RunParams(BaseModel):
     mosaic_version: str = Field("", alias="_mosaic_version")
     definition: DefinitionRef | None = Field(None, alias="_definition")
     """The feature definition that wrote the run, ``None`` for a built-in."""
+    fit_references_record: list[FitReference] | None = Field(
+        None, alias="_fit_references"
+    )
+    """The fits the run read, ``None`` for a file written before the record."""
 
     @property
     def records_resolutions(self) -> bool:
@@ -373,28 +377,38 @@ class RunParams(BaseModel):
             sources.append((feature, pins.get(f"inputs[{position}]") or run_id))
         return tuple(sources)
 
-    def model_reference(self) -> ModelReference | None:
-        """The fit the run applied, as its recorded ``_params.model`` names it.
+    def fit_references(self) -> tuple[FitReference, ...]:
+        """The pinned fits the run read, as its ``_fit_references`` names them.
 
-        ``run_feature`` pinned the reference before it wrote the file, so the
-        record holds the fit's run id.
+        ``run_feature`` pinned each reference before it wrote the file, and the
+        record names each fit's run id. A file without the record names the fit
+        of its recorded ``_params.model`` alone, the one reference its writer
+        recorded a digest for.
 
         Returns:
-            The fit's storage, run id and pattern, the pattern ``None`` for a
-            record without one, as a ``DefinitionModel`` is. ``None`` when the
-            run records no ``model`` or one that names no feature or no run.
+            The references in recorded order, and none for a file that records
+            no fit.
         """
+        if self.fit_references_record is not None:
+            return tuple(self.fit_references_record)
         model = self.params.get(MODEL_FIELD)
         if not is_str_mapping(model):
-            return None
+            return ()
         feature = model.get("feature")
         run_id = model.get("run_id")
         if not isinstance(feature, str) or not feature:
-            return None
+            return ()
         if not isinstance(run_id, str) or not run_id:
-            return None
+            return ()
         pattern = model.get("pattern")
-        return feature, run_id, pattern if isinstance(pattern, str) else None
+        return (
+            FitReference(
+                field=MODEL_FIELD,
+                feature=feature,
+                run_id=run_id,
+                pattern=pattern if isinstance(pattern, str) else None,
+            ),
+        )
 
     def upstream_references(self) -> tuple[frozenset[RunKey], frozenset[str]]:
         """The feature runs this run read, as ``(pairs, storages)``.

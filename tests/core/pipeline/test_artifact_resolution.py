@@ -24,8 +24,10 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.fit_scope import FIT_SCOPE_NAME
 from mosaic.core.pipeline.index import (
+    AmbiguousArtifactFile,
+    FitReference,
     feature_run_root,
-    model_state_root,
+    fit_state_root,
     resolve_artifact_file,
 )
 from tests.helpers import copy_of, make_dataset
@@ -142,6 +144,11 @@ def linked_pair(tmp_path: Path) -> tuple[Dataset, Dataset]:
     return copy, source
 
 
+def _reference(pattern: str | None, field: str = "model") -> FitReference:
+    """The reference of *field* to the one run, by *pattern*."""
+    return FitReference(field=field, feature=_STORAGE, run_id=_RUN_ID, pattern=pattern)
+
+
 def _put(dataset: Dataset, name: str) -> Path:
     """Write the file *name* into *dataset*'s root of the run, returning the root."""
     root = feature_run_root(dataset, _STORAGE, _RUN_ID)
@@ -160,7 +167,7 @@ def test_an_artifact_models_root_is_the_first_that_holds_its_pattern(
         if holders in (name, "both")
     ]
 
-    root = model_state_root(copy, (_STORAGE, _RUN_ID, "*.joblib"))
+    root = fit_state_root(copy, _reference("*.joblib"))
 
     assert root == roots[0]
 
@@ -171,7 +178,7 @@ def test_an_artifact_model_no_root_holds_has_no_root(
     copy, source = linked_pair
     _ = _put(source, "other.joblib")
 
-    assert model_state_root(copy, (_STORAGE, _RUN_ID, "model.joblib")) is None
+    assert fit_state_root(copy, _reference("model.joblib")) is None
 
 
 def test_a_definition_models_root_holds_its_fit_scope(
@@ -182,7 +189,7 @@ def test_a_definition_models_root_holds_its_fit_scope(
     _ = _put(copy, "params.json")
     fitted = _put(source, FIT_SCOPE_NAME)
 
-    assert model_state_root(copy, (_STORAGE, _RUN_ID, None)) == fitted
+    assert fit_state_root(copy, _reference(None)) == fitted
 
 
 def test_a_definition_model_no_root_fitted_has_no_root(
@@ -190,4 +197,15 @@ def test_a_definition_model_no_root_fitted_has_no_root(
 ) -> None:
     copy, _ = linked_pair
 
-    assert model_state_root(copy, (_STORAGE, _RUN_ID, None)) is None
+    assert fit_state_root(copy, _reference(None)) is None
+
+
+def test_an_ambiguous_pattern_names_the_field_of_its_reference(
+    linked_pair: tuple[Dataset, Dataset],
+) -> None:
+    copy, _ = linked_pair
+    _ = _put(copy, "a.joblib")
+    _ = _put(copy, "b.joblib")
+
+    with pytest.raises(AmbiguousArtifactFile, match="'init_from'"):
+        _ = fit_state_root(copy, _reference("*.joblib", field="init_from"))

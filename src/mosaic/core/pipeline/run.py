@@ -72,7 +72,6 @@ from .definitions.loader import applied_definition, definition_ref_of
 from .definitions.store import (
     DEFINITIONS_PACKAGE,
     DEFINITIONS_ROOT,
-    MODEL_FIELD,
     DefinitionModelRefused,
     is_definition_slug,
 )
@@ -83,8 +82,9 @@ from .identity_scheme import (
     write_identity_scheme,
 )
 from .index import (
+    OWN_STATE_PART,
     FeatureIndexRow,
-    ModelReference,
+    FitReference,
     RecordedTracksReads,
     feature_index,
     feature_index_path,
@@ -95,8 +95,9 @@ from .index import (
     feature_run_rows,
     has_feature_index,
     latest_feature_run_root,
+    fit_state_cell,
+    fit_state_root,
     missing_outputs_error,
-    model_state_root,
     recorded_consumption,
     recorded_tracks_reads,
     resolve_artifact_file,
@@ -145,7 +146,9 @@ from .manifest import (
 from .op_identity import parse_op_run_id
 from .fit_scope import (
     derive_fit_scope,
+    fit_references,
     list_run_root,
+    read_fit_scope,
     read_fit_state_digest,
     saved_state_digest,
     write_fit_scope,
@@ -290,60 +293,26 @@ def _optional_results(feature: Feature) -> frozenset[str]:
     return names
 
 
-def _model_reference(params: Params) -> ModelReference | None:
-    """The pinned fit that the top-level ``model`` field of *params* names.
+def _current_fit_states(ds: Dataset, feature: Feature) -> dict[str, str]:
+    """The fit-state digest of each pinned fit *feature* reads, by its field.
+
+    Each is read from the root that
+    :func:`~mosaic.core.pipeline.index.fit_state_root` resolves, the root the
+    run loads that fit's state from.
 
     Returns:
-        The reference's storage, run id and pattern, the pattern ``None`` for a
-        reference that is not an ``ArtifactSpec``. ``None`` when ``model`` is
-        absent, names no feature or names no run.
-    """
-    model: object = getattr(params, MODEL_FIELD, None)
-    match model:
-        case ArtifactSpec(
-            feature=str(feature), run_id=str(run_id), pattern=str(pattern)
-        ):
-            return (feature, run_id, pattern) if feature else None
-        case Result(feature=str(feature), run_id=str(run_id)):
-            return (feature, run_id, None) if feature else None
-        case _:
-            return None
-
-
-def _current_model_state(ds: Dataset, feature: Feature) -> str:
-    """The fit-state digest of the fit that *feature*'s ``model`` names.
-
-    Read from the root that
-    :func:`~mosaic.core.pipeline.index.model_state_root` resolves, the root the
-    apply loads its state from.
-
-    Returns:
-        The digest, and ``""`` when *feature* names no fit through
-        ``model``, no root holds the fit's state, or the fit records no digest.
+        Each field of :func:`~.fit_scope.fit_references` mapped to its digest,
+        ``""`` for a fit that no root holds or that records no digest.
 
     Raises:
-        FitStateUnreadable: The fit's ``fit_scope.json`` cannot be read.
+        FitStateUnreadable: A fit's ``fit_scope.json`` cannot be read.
+        AmbiguousArtifactFile: A pattern matches more than one file of a root.
     """
-    reference = _model_reference(feature.params)
-    if reference is None:
-        return ""
-    root = model_state_root(ds, reference)
-    return "" if root is None else read_fit_state_digest(root)
-
-
-def _model_path(ds: Dataset, reference: ModelReference) -> Path | None:
-    """The path a ``model`` reference resolves to: its state's root, or its file.
-
-    Returns:
-        The root of :func:`~mosaic.core.pipeline.index.model_state_root` for a
-        reference without a pattern, the file the pattern names in that root for
-        one with a pattern, and ``None`` when no root holds the state.
-    """
-    root = model_state_root(ds, reference)
-    storage, _, pattern = reference
-    if root is None or pattern is None:
-        return root
-    return resolve_artifact_file(MODEL_FIELD, storage, root, pattern)
+    states: dict[str, str] = {}
+    for reference in fit_references(feature.params):
+        root = fit_state_root(ds, reference)
+        states[reference.field] = "" if root is None else read_fit_state_digest(root)
+    return states
 
 
 def _resolve_dependencies(
@@ -366,10 +335,12 @@ def _resolve_dependencies(
     *tags*. The table is the revision the caller resolved for the run's identity,
     so this reads no series index and cannot meet a revision written since.
 
-    The ``model`` field resolves through
-    :func:`~mosaic.core.pipeline.index.model_state_root`. A ``DefinitionModel``
-    resolves to the root of its fit's saved state. An ``ArtifactSpec`` resolves
-    to the file its pattern names in the first root with a match.
+    Each pinned fit of :func:`~.fit_scope.fit_references` resolves through
+    :func:`~mosaic.core.pipeline.index.fit_state_root`: a ``DefinitionModel`` to
+    the root of its fit's saved state, an ``ArtifactSpec`` to the file its
+    pattern names in that root. The state a run loads and the digest it records
+    then come from one root. An unpinned ``ArtifactSpec`` resolves to the file
+    its pattern names in the latest run of its feature.
 
     Raises:
         IdentityDeferred: *feature* reads the tag table and *tags* is ``None``.
@@ -379,11 +350,28 @@ def _resolve_dependencies(
     from .index import latest_feature_run_root as _latest_feature_run_root
 
     params = feature.params
-    model = _model_reference(params)
     artifact_paths: dict[str, Path] = {}
     dependency_lookups: dict[str, DependencyLookup] = {}
 
+    pinned_fits = fit_references(params)
+    for reference in pinned_fits:
+        root = fit_state_root(ds, reference)
+        if root is None:
+            continue
+        path = (
+            root
+            if reference.pattern is None
+            else resolve_artifact_file(
+                reference.field, reference.feature, root, reference.pattern
+            )
+        )
+        if path is not None:
+            artifact_paths[reference.field] = path
+    pinned_fields = {reference.field for reference in pinned_fits}
+
     for field_name in type(params).model_fields:
+        if field_name in pinned_fields:
+            continue
         value = getattr(params, field_name)
 
         match value:
@@ -402,35 +390,22 @@ def _resolve_dependencies(
                 )
                 raise ValueError(msg)
 
-            case DefinitionModel() | ArtifactSpec() if (
-                field_name == MODEL_FIELD and model is not None
-            ):
-                path = _model_path(ds, model)
-                if path is not None:
-                    artifact_paths[field_name] = path
+            case DefinitionModel():
+                # Resolved through fit_state_root above when pinned.
+                continue
 
-            case ArtifactSpec(
-                feature=str(feature_name),
-                run_id=_run_id,
-                pattern=str(pattern),
-            ):
+            case ArtifactSpec(feature=str(feature_name), pattern=str(pattern)):
                 if not feature_name:
                     continue
-                if _run_id is None:
-                    # Pinned by resolve_references before the identifier was
-                    # computed, so this fires only for a caller that skipped
-                    # that pass. See _build_result_lookup for why it survives.
-                    _run_id, dep_root = _latest_feature_run_root(ds, feature_name)
-                    dep_roots = (dep_root,)
-                else:
-                    dep_roots = feature_run_roots(ds, feature_name, _run_id)
-                for dep_root in dep_roots:
-                    resolved_file = resolve_artifact_file(
-                        field_name, feature_name, dep_root, pattern
-                    )
-                    if resolved_file is not None:
-                        artifact_paths[field_name] = resolved_file
-                        break
+                # An unpinned spec. resolve_references pins every spec before
+                # the identifier is computed, and this branch serves a caller
+                # skipping it. See _build_result_lookup for why it survives.
+                _, dep_root = _latest_feature_run_root(ds, feature_name)
+                resolved_file = resolve_artifact_file(
+                    field_name, feature_name, dep_root, pattern
+                )
+                if resolved_file is not None:
+                    artifact_paths[field_name] = resolved_file
 
             case Result(feature=str(feature_name), run_id=_run_id):
                 if not feature_name:
@@ -1058,28 +1033,37 @@ def _disposition_reason(
 
 
 def _model_state_reason(recorded: str, current: str) -> str:
-    """Why a cached entry was refused for its model's fit-state digest.
+    """Why a cached entry was refused for the fit-state cell of its fits.
 
     Args:
-        recorded: The digest the entry's row recorded.
-        current: The digest the fit records now.
+        recorded: The cell the entry's row recorded.
+        current: The cell of the digests the fits record now.
     """
     if recorded and current:
-        return "the model it applies was fitted again"
+        return "a fit it reads was fitted again"
     if recorded:
-        return "its model's fit no longer records a fit-state digest"
-    return "nothing records which fit of its model it applied"
+        return "a fit it reads no longer records a fit-state digest"
+    return "nothing records which fits it read"
 
 
 def _model_state_blind_warning(
-    feature_name: str, model_feature: str, model_run_id: str, count: int
+    feature_name: str, blank: Sequence[FitReference], count: int
 ) -> str:
-    """What to say when served entries and their fit record no digest."""
+    """What to say when served entries read fits that record no digest.
+
+    Args:
+        feature_name: The feature whose entries were served.
+        blank: The fit references whose current digest is blank.
+        count: The number of entries served.
+    """
+    named = ", ".join(
+        f"{reference.field} ({reference.feature} {reference.run_id})"
+        for reference in blank
+    )
     return (
-        f"[feature:{feature_name}] {count} entries apply run {model_run_id} of "
-        f"{model_feature}, which records no fit-state digest, so a fit written "
-        "again under that run id goes undetected: remove the run and fit it again "
-        "to record one"
+        f"[feature:{feature_name}] {count} entries read fits that record no "
+        f"fit-state digest ({named}): a fit written again under its run id goes "
+        "undetected. Remove each run and fit it again to record one"
     )
 
 
@@ -1737,6 +1721,15 @@ def build_run_params_payload(
             },
         },
         "_resolved": [*resolved, *series_revisions],
+        "_fit_references": [
+            {
+                "field": reference.field,
+                "feature": reference.feature,
+                "run_id": reference.run_id,
+                "pattern": reference.pattern,
+            }
+            for reference in fit_references(feature.params)
+        ],
     }
     definition = definition_ref_of(type(feature))
     if definition is not None:
@@ -1767,18 +1760,26 @@ def _load_run_state(
     run_id: str,
     artifact_paths: dict[str, Path],
     dependency_lookups: dict[str, DependencyLookup],
-) -> Path | None:
+) -> tuple[Path, str | None] | None:
     """Load a run's fit state from the first of its roots that holds one.
 
     Each root of :func:`~mosaic.core.pipeline.index.feature_run_roots` is offered
-    to ``feature.load_state`` in lookup order, the dataset's own first.
+    to ``feature.load_state`` in lookup order, the dataset's own first. The
+    root's fit record is read before the offer: the digest returned is then
+    that of the state loaded, also when a peer fits the run again meanwhile.
 
     Returns:
-        The root whose load returned ``True``, or ``None`` when none did.
+        The root whose load returned ``True`` and the ``state_digest`` of its
+        ``fit_scope.json``, ``None`` for a root without one. ``None`` when no
+        load returned ``True``.
+
+    Raises:
+        FitStateUnreadable: The record of a root offered cannot be read.
     """
     for root in feature_run_roots(ds, storage, run_id):
+        record = read_fit_scope(root, strict=True)
         if feature.load_state(root, artifact_paths, dependency_lookups):
-            return root
+            return root, None if record is None else record.state_digest
     return None
 
 
@@ -2664,11 +2665,12 @@ def _run_feature_impl(
     # run that consumed a later one shared one identifier and one directory.
     # Resolution reads the filesystem; compute_run_id below stays pure.
     resolutions = resolve_references(ds, feature)
-    # The fit-state digest of the pinned model, read before anything of the run
+    # The fit-state digest of each pinned fit, read before anything of the run
     # is written. An unreadable digest then refuses the run with its root
-    # unmade. Rows record it, and a cached row that recorded another is
-    # recomputed.
-    model_state_now = _current_model_state(ds, feature)
+    # unmade.
+    # Rows record them with the run's own digest, and a cached row that
+    # recorded others is recomputed.
+    fit_states_now = _current_fit_states(ds, feature)
     _refuse_inputs_without_columns(ds, feature)
 
     # Build manifest
@@ -2878,10 +2880,10 @@ def _run_feature_impl(
 
     # Load state, from the own run root or a linked one. The root that loaded is
     # the one each process worker loads again.
-    state_root = _load_run_state(
+    loaded = _load_run_state(
         feature, ds, storage_feature_name, run_id, artifact_paths, dependency_lookups
     )
-    state_ready = state_root is not None
+    state_ready = loaded is not None
     if not state_ready:
         _refuse_an_unloaded_model(feature)
 
@@ -3083,7 +3085,7 @@ def _run_feature_impl(
             with held_run_root(
                 ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
             ) as marker:
-                state_root = _load_run_state(
+                loaded = _load_run_state(
                     feature,
                     ds,
                     storage_feature_name,
@@ -3091,7 +3093,7 @@ def _run_feature_impl(
                     artifact_paths,
                     dependency_lookups,
                 )
-                state_ready = state_root is not None
+                state_ready = loaded is not None
                 if not state_ready:
                     ctx.phase("fit", f"{len(manifest)} entries")
                     # The stream the fit is offered. A fitter that fits from pinned
@@ -3122,7 +3124,7 @@ def _run_feature_impl(
                     state_digest = saved_state_digest(
                         run_root, before_save, list_run_root(run_root)
                     )
-                    state_root = run_root
+                    loaded = (run_root, state_digest)
                     # Written here rather than beside params.json because only this
                     # branch means a fit actually ran: params.json is written on every
                     # invocation, before load_state, so its `_scope` is the scope of
@@ -3141,7 +3143,15 @@ def _run_feature_impl(
             if fitted:
                 ctx.phase("apply")
         # The run root a process worker loads the feature's state from.
-        worker_state_root = run_root if state_root is None else state_root
+        worker_state_root = run_root if loaded is None else loaded[0]
+        # The cell each row records: the digest of each fit the run read, and
+        # of the state it applies when its root holds a fit record.
+        own_state = None if loaded is None else loaded[1]
+        model_state_now = fit_state_cell(
+            fit_states_now
+            if own_state is None
+            else {**fit_states_now, OWN_STATE_PART: own_state}
+        )
 
         # The run's own memory before the first entry loads: the interpreter, the
         # imports and the feature's state.
@@ -3335,9 +3345,13 @@ def _run_feature_impl(
             # was served in silence.
             roots_blind: set[tuple[str, str]] = set()
             tracks_blind: set[tuple[str, str]] = set()
-            # Entries served with no digest on their row or on the fit.
+            # Entries served while a fit they read records no digest.
             model_blind: set[tuple[str, str]] = set()
-            applied_model = _model_reference(feature.params)
+            blank_fits = [
+                reference
+                for reference in fit_references(feature.params)
+                if not fit_states_now[reference.field]
+            ]
             # Only a source root can be blind. An entry without an arena layout is a
             # known state, and one that gains a layout recomputes once.
             blind_capable = sorted(
@@ -3452,7 +3466,7 @@ def _run_feature_impl(
                     resolved.tracks_variants or upstreams_over_variants
                 ):
                     tracks_blind.add(entry)
-                if applied_model is not None and model_disposition == "undetectable":
+                if blank_fits:
                     model_blind.add(entry)
                 return _CachedOutput(
                     n_rows=n_rows,
@@ -3539,11 +3553,10 @@ def _run_feature_impl(
                     ),
                     file=sys.stderr,
                 )
-            if model_blind and applied_model is not None:
-                model_feature, model_run_id, _ = applied_model
+            if model_blind:
                 print(
                     _model_state_blind_warning(
-                        feature.name, model_feature, model_run_id, len(model_blind)
+                        feature.name, blank_fits, len(model_blind)
                     ),
                     file=sys.stderr,
                 )

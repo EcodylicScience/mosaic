@@ -25,7 +25,7 @@ from ...core.spaces import TrackSpace
 from ...core.scope import Scope
 from ...core.entry import Entry
 from .arena_index import entry_compositions
-from .composition import input_root_part, join_input_cells
+from .composition import input_part, join_input_cells
 from .storage_names import feature_slug_of
 from ._utils import ResolvedScope
 from .index import (
@@ -124,9 +124,10 @@ class ResolvedInput:
             Covers every resolvable entry, so a neighbor outside the scope
             has one too.
         root_compositions: Per entry, this input's part of the downstream's
-            ``consumed_input_composition`` (:func:`input_root_part` of each
-            upstream row's ``consumed_composition`` and
-            ``consumed_input_composition``), for the feature resolver only.
+            ``consumed_input_composition`` (:func:`input_part` of each
+            upstream row's ``consumed_composition``,
+            ``consumed_input_composition`` and ``consumed_model_state``), for
+            the feature resolver only.
         run_id: The upstream run a feature input resolved to, ``""`` for the
             tracks resolver and for a run that is not there.
     """
@@ -307,7 +308,7 @@ def build_manifest(
     When any input is a feature, ``ResolvedScope.input_tracks_compositions``
     holds per entry the inputs' tracks compositions joined with ``+`` in input
     order, and ``ResolvedScope.input_root_compositions`` their declared-root
-    parts joined the same way (:func:`join_input_cells`).
+    and fit-state parts joined the same way (:func:`join_input_cells`).
     ``ResolvedScope.feature_inputs`` names each feature input's storage and run.
     A run whose only input is ``tracks`` leaves both cells ``None``.
 
@@ -1172,9 +1173,10 @@ def _resolve_feature(
         path_map_all[entry] = (resolved, ParquetLoadSpec())
         all_entries.append(entry)
         tracks_read[entry] = text_cell(row.get("consumed_tracks_composition"))
-        roots_read[entry] = input_root_part(
+        roots_read[entry] = input_part(
             text_cell(row.get("consumed_composition")),
             text_cell(row.get("consumed_input_composition")),
+            text_cell(row.get("consumed_model_state")),
         )
 
     if missing_all and not all_entries:

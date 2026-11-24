@@ -12,7 +12,13 @@ import pytest
 from pydantic import ValidationError
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
+from mosaic.core.pipeline.composition import input_part
+from mosaic.core.pipeline.index import (
+    FeatureIndexRow,
+    drifted_entries,
+    feature_index,
+)
+from mosaic.core.pipeline.inventory.params import RunParams
 from mosaic.core.pipeline.manifest import (
     ManifestEntry,
     UnrunFeatureInput,
@@ -25,7 +31,7 @@ from mosaic.core.recording import OrderFacts
 from mosaic.core.scope import Scope
 
 
-from tests.helpers import MockDataset, add_track_sequences, track_table
+from tests.helpers import MockDataset, add_track_sequences, make_dataset, track_table
 
 
 def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:
@@ -44,7 +50,9 @@ def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -
     df.to_parquet(path)
 
 
-def _setup_feature(ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False):
+def _setup_feature(
+    ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False, **cells: str
+):
     feat_dir = ds.get_root("features") / feat_name
     run_dir = feat_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +72,7 @@ def _setup_feature(ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False)
                 abs_path=str(p),
                 n_rows=10,
                 params_hash="abc",
+                **cells,
             )
         )
     idx.append(rows)
@@ -910,3 +919,91 @@ def test_a_neighbor_without_pair_rows_gives_no_context(tmp_path: Path) -> None:
     _key, df, selector = loaded[0]
     assert not (df["frame"] < selector.first).any()
     assert (df["frame"] > selector.last).any()
+
+
+# --- the part a feature input adds to the inputs cell ----------------------------
+
+
+def test_an_input_part_of_two_blank_halves_and_no_state_is_blank() -> None:
+    assert input_part("", "", "") == ""
+
+
+def test_an_input_part_without_a_state_is_its_two_halves() -> None:
+    assert input_part("own", "inherited", "") == "own/inherited"
+    assert input_part("own", "", "") == "own/"
+    assert input_part("", "inherited", "") == "/inherited"
+
+
+def test_an_input_part_with_a_state_leads_with_it() -> None:
+    assert input_part("own", "inherited", "model=d1") == "model=d1|own/inherited"
+    assert input_part("", "", "d1") == "d1|/"
+
+
+def test_parts_that_differ_in_where_the_state_begins_differ() -> None:
+    inherited_state = input_part("a", "b|c/d", "")
+    own_state = input_part("b", "c/d", "a")
+
+    assert inherited_state == "a/b|c/d"
+    assert own_state == "a|b/c/d"
+    assert inherited_state != own_state
+    assert input_part("a", "b/s", "") != input_part("a", "b", "s")
+
+
+def test_every_input_part_over_a_small_alphabet_is_its_own_spelling() -> None:
+    """No two ``(own, inherited, state)`` triples give one part, at two depths."""
+    halves = ("", "a", "b")
+    states = ("", "s", "t")
+    inherited = {""}
+    for _ in range(2):
+        inherited |= {
+            input_part(own, deeper, state)
+            for own in halves
+            for deeper in inherited
+            for state in states
+        }
+    spelled: dict[str, tuple[str, str, str]] = {}
+    for own in halves:
+        for deeper in sorted(inherited):
+            for state in states:
+                part = input_part(own, deeper, state)
+                if not (own or deeper or state):
+                    continue
+                assert spelled.setdefault(part, (own, deeper, state)) == (
+                    own,
+                    deeper,
+                    state,
+                )
+
+
+def test_build_manifest_and_the_current_cells_give_equal_input_parts(
+    tmp_path: Path,
+) -> None:
+    """A row that recorded the manifest's cell is served, and one without the state drifts."""
+    ds = make_dataset(tmp_path / "ds")
+    pairs = [("g1", "s1"), ("g1", "s2")]
+    upstream = _setup_feature(
+        ds,
+        "up",
+        pairs,
+        consumed_roots="media_raw",
+        consumed_composition="own",
+        consumed_input_composition="inherited",
+        consumed_model_state="model=d1",
+    )
+    _, scope = build_manifest(ds, Inputs((Result(feature="up", run_id=upstream),)))
+    expected = input_part("own", "inherited", "model=d1")
+    assert scope.input_root_compositions == {entry: expected for entry in pairs}
+    run_params = RunParams.model_validate(
+        {"_inputs": [{"feature": "up", "run_id": upstream}]}
+    )
+
+    served = _setup_feature(ds, "served", pairs, consumed_input_composition=expected)
+    stateless = _setup_feature(
+        ds,
+        "stateless",
+        pairs,
+        consumed_input_composition=input_part("own", "inherited", ""),
+    )
+
+    assert drifted_entries(ds, "served", served, run_params) == ()
+    assert drifted_entries(ds, "stateless", stateless, run_params) == tuple(pairs)

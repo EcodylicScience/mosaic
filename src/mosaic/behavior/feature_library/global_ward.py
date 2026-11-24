@@ -142,6 +142,7 @@ class GlobalWardClustering:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.fits = self.params.model is None
 
         self._linkage: np.ndarray | None = None
         self._cluster_ids: np.ndarray | None = None

@@ -973,11 +973,13 @@ def _apply_recording(
     *,
     model: bool,
     pattern: str | None = None,
+    records_references: bool = True,
 ) -> None:
     """Make *result*'s run an apply of the fit run whose rows recorded *digest*.
 
     Its ``params.json`` names the fit through ``model`` when *model* is set,
-    with *pattern* when one is given.
+    with *pattern* when one is given, and records it in ``_fit_references``
+    unless *records_references* is false, as a file written before the record.
     """
     assert result.run_id is not None
     if model:
@@ -987,6 +989,17 @@ def _apply_recording(
         if pattern is not None:
             reference["pattern"] = pattern
         document["_params"]["model"] = reference
+        if records_references:
+            document["_fit_references"] = [
+                {
+                    "field": "model",
+                    "feature": FIT_FEATURE,
+                    "run_id": FIT_RUN,
+                    "pattern": pattern,
+                }
+            ]
+        else:
+            document.pop("_fit_references", None)
         path.write_text(json.dumps(document))
     index_path = feature_index_path(ds, result.feature)
     rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
@@ -1015,12 +1028,60 @@ class TestDriftedEntriesOfAFitWrittenAgain:
 
         assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
 
-    def test_a_run_without_a_model_adds_no_channel(
+    def test_a_fit_the_run_does_not_name_is_not_compared(
         self, scenario_dataset: Dataset
     ) -> None:
         ds = scenario_dataset
-        applied = self._apply(ds, "stale", model=False)
+        applied = self._apply(ds, "", model=False)
         _write_fit(ds, "d2")
+
+        assert _drifted(ds, applied) == ()
+
+    def test_a_row_recording_a_fit_the_run_no_longer_names_is_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        """The run compares the same blank cell and recomputes the row."""
+        ds = scenario_dataset
+        applied = self._apply(ds, "stale", model=False)
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_run_recording_no_fit_references_reads_its_model(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        applied = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        _apply_recording(ds, applied, "d1", model=True, records_references=False)
+        _write_fit(ds, "d1")
+        assert _drifted(ds, applied) == ()
+
+        _write_fit(ds, "d2")
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_the_runs_own_state_is_a_part_of_the_cell(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds, "_state=s1,model=d1")
+        _write_fit(ds, "d1")
+        own = feature_run_root(ds, applied.feature, applied.run_id or "")
+        _ = (own / "fit_scope.json").write_text(json.dumps({"state_digest": "s1"}))
+        assert _drifted(ds, applied) == ()
+
+        _ = (own / "fit_scope.json").write_text(json.dumps({"state_digest": "s2"}))
+
+        assert _drifted(ds, applied) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_a_record_of_the_run_without_a_digest_is_a_blank_part(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        applied = self._apply(ds, "_state=,model=d1")
+        _write_fit(ds, "d1")
+        own = feature_run_root(ds, applied.feature, applied.run_id or "")
+        _ = (own / "fit_scope.json").write_text(json.dumps({}))
 
         assert _drifted(ds, applied) == ()
 

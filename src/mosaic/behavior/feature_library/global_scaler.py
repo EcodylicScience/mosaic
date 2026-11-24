@@ -136,6 +136,7 @@ class GlobalScaler:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.fits = self.params.model is None
 
         self._feature_columns: list[str] | None = None
         self._scaler: StandardScaler | None = None

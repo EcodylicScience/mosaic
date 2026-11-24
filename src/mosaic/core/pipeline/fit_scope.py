@@ -52,12 +52,14 @@ from .error_kind import ClassifiedError, ErrorKind
 from .file_digest import MODEL_DIGEST_HEX, file_digest
 from .identity_scheme import FEATURE_IDENTITY_SCHEME
 from .identity_scheme import MARKER_NAME as IDENTITY_SCHEME_NAME
+from .index import FitReference
 from .inventory.params import RUN_PARAMS_NAME
 from .markers import MARKER_PREFIX, is_atomic_temp
-from .types import ArtifactSpec, Feature
+from .types import ArtifactSpec, DefinitionModel, Feature
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.params import Params
     from mosaic.core.json_value import JsonValue
 
     from .resolve import Resolution
@@ -70,6 +72,7 @@ __all__ = [
     "FitStateUnreadable",
     "derive_fit_scope",
     "fit_and_apply_scopes",
+    "fit_references",
     "list_run_root",
     "read_fit_scope",
     "read_fit_state_digest",
@@ -268,29 +271,36 @@ def read_fit_state_digest(run_root: Path) -> str:
         FitStateUnreadable: The record cannot be read, is not a JSON object, or
             holds a ``state_digest`` that is not a string.
     """
-    path = run_root / FIT_SCOPE_NAME
+    fitted = read_fit_scope(run_root, strict=True)
+    return "" if fitted is None else fitted.state_digest
 
-    def unreadable(error: str) -> FitStateUnreadable:
-        return FitStateUnreadable(
-            feature=run_root.parent.name, run_id=run_root.name, error=error
-        )
 
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        return ""
-    except OSError as error:
-        raise unreadable(str(error)) from error
-    try:
-        parsed: object = json.loads(text)
-    except ValueError as error:
-        raise unreadable(str(error)) from error
-    if not _is_object(parsed):
-        raise unreadable("not a JSON object")
-    digest = parsed.get("state_digest", "")
-    if not isinstance(digest, str):
-        raise unreadable("its state_digest is not a string")
-    return digest
+def fit_references(params: Params) -> tuple[FitReference, ...]:
+    """The pinned fits *params* name, each a state the run reads.
+
+    A top-level field counts when it holds an ``ArtifactSpec`` or a
+    ``DefinitionModel`` that names a feature and a run. Any other ``Result``
+    names a run's per-entry outputs, which a dependency lookup reads, and is
+    left out, as are a ``LabelsSource`` and a reference without a run id.
+
+    Returns:
+        The references, sorted by field.
+    """
+    references: list[FitReference] = []
+    for field in sorted(type(params).model_fields):
+        value: object = getattr(params, field)
+        match value:
+            case ArtifactSpec(
+                feature=str(feature), run_id=str(run_id), pattern=str(pattern)
+            ) if feature and run_id:
+                references.append(FitReference(field, feature, run_id, pattern))
+            case DefinitionModel(feature=str(feature), run_id=str(run_id)) if (
+                feature and run_id
+            ):
+                references.append(FitReference(field, feature, run_id, None))
+            case _:
+                pass
+    return tuple(references)
 
 
 def derive_fit_scope(
@@ -491,57 +501,92 @@ def _entry(value: object) -> tuple[str, str] | None:
     return (str(pair[0]), str(pair[1]))
 
 
-def read_run_fit_scope(ds: Dataset, storage: str, run_id: str) -> FitScope | None:
+def read_run_fit_scope(
+    ds: Dataset, storage: str, run_id: str, *, strict: bool = False
+) -> FitScope | None:
     """The fit record of a run in the first dataset of the lookup that holds one.
 
     Args:
         ds: The dataset reading, whose ``features`` lookup order decides.
         storage: The run's feature storage directory.
         run_id: The run.
+        strict: Raise for a record that cannot be read, as
+            :func:`read_fit_scope` does.
 
     Returns:
         What :func:`read_fit_scope` returns for that run root, and ``None`` when
         no dataset holds a fit record of the run.
+
+    Raises:
+        FitStateUnreadable: *strict* is set and the record cannot be read.
     """
     from .index import feature_run_file
 
     path = feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME)
-    return None if path is None else read_fit_scope(path.parent)
+    return None if path is None else read_fit_scope(path.parent, strict=strict)
 
 
-def read_fit_scope(run_root: Path) -> FitScope | None:
+def _unreadable(run_root: Path, error: str, *, strict: bool) -> None:
+    """Refuse the record of *run_root* for *error* when *strict*.
+
+    Otherwise return ``None``, the record read as none.
+
+    Raises:
+        FitStateUnreadable: *strict* is set.
+    """
+    if strict:
+        raise FitStateUnreadable(
+            feature=run_root.parent.name, run_id=run_root.name, error=error
+        )
+
+
+def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
     """The fit record in *run_root*, or ``None`` when there is none.
 
     ``None`` means **unknown**, not "fitted over nothing": it covers a run that
     predates this record and a feature that has no fit phase at all. A caller
-    must not read it as an empty fit scope -- that would report every run written
-    before item 5.3 as having trained on nothing.
+    must not read it as an empty fit scope -- that would report every run
+    written before item 5.3 as having trained on nothing.
 
     A JSON ``null`` set reads as ``None`` (unknown). A record without a
     ``source`` key reads as ``source="legacy"``. A legacy scope-free record held
-    the scope it was *invoked* over, not what its artifacts held, so its entries
-    and variants read as ``None``; a legacy scope-dependent record keeps them.
+    the scope it was *invoked* over, not what its artifacts held, so its
+    entries and variants read as ``None``; a legacy scope-dependent record
+    keeps them.
     A record without ``state_digest`` reads it as ``""``, and one whose
     ``state_digest`` is not a string reads as ``None``. Nothing is rewritten on
     disk.
+
+    Args:
+        run_root: A run root, ``features/<feature>/<run_id>``.
+        strict: Raise for a record that cannot be read or parsed, is not a
+            JSON object, or holds a ``state_digest`` that is not a string,
+            instead of reading it as ``None``.
+
+    Raises:
+        FitStateUnreadable: *strict* is set and the record is one of those.
     """
     path = run_root / FIT_SCOPE_NAME
-    if not path.exists():
-        return None
     parsed: object
     try:
-        parsed = json.loads(path.read_text())
-    except (OSError, ValueError):
+        text = path.read_text()
+    except FileNotFoundError:
         return None
+    except OSError as error:
+        return _unreadable(run_root, str(error), strict=strict)
+    try:
+        parsed = json.loads(text)
+    except ValueError as error:
+        return _unreadable(run_root, str(error), strict=strict)
     # Narrowed to a fully-known mapping type rather than iterated: ``json.loads``
     # is untyped, so every read off a plain ``isinstance`` narrowing would
     # otherwise be an unknown the strict checker cannot see through.
     if not _is_object(parsed):
-        return None
+        return _unreadable(run_root, "not a JSON object", strict=strict)
     raw = parsed
     state_digest = raw.get("state_digest", "")
     if not isinstance(state_digest, str):
-        return None
+        return _unreadable(run_root, "its state_digest is not a string", strict=strict)
     scope_dependent = bool(raw.get("scope_dependent", False))
     raw_source = raw.get("source")
     source: FitSource = "legacy"

@@ -57,7 +57,7 @@ LINK_LOOKUPS: Final = frozenset(
         "linked_training_complete",
         "open_enclosing",
         "linked_run_params",
-        "model_state_root",
+        "fit_state_root",
     }
 )
 """Every function that reads a link's data, by the name a call spells."""
@@ -243,6 +243,18 @@ def test_a_write_path_calls_no_lookup_through_a_link(site: GuardedSite) -> None:
     tree = source_tree(SOURCE_ROOT / site.path)
 
     assert lookups_called(tree, site.qualified) == set()
+
+
+def test_every_lookup_the_guard_names_is_defined() -> None:
+    """A lookup renamed away would leave the guard matching a name nothing calls."""
+    defined = {
+        node.name
+        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for node in ast.walk(source_tree(path))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+
+    assert sorted(LINK_LOOKUPS - defined) == []
 
 
 SOURCE: Final = """

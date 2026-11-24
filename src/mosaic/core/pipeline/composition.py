@@ -57,7 +57,7 @@ __all__ = [
     "cached_entry_disposition",
     "composition_drift",
     "compositions_disagree",
-    "input_root_part",
+    "input_part",
     "join_input_cells",
     "labels_raw_composition",
     "media_composition",
@@ -320,19 +320,29 @@ def composition_drift(
     )
 
 
-def input_root_part(own: str, inherited: str) -> str:
+def input_part(own: str, inherited: str, state: str) -> str:
     """One feature input's part of a downstream's ``consumed_input_composition``.
 
     The part is ``f"{own}/{inherited}"``: *own* is the upstream row's
     ``consumed_composition``, the composition of the roots it declares, and
-    *inherited* its ``consumed_input_composition``, which carries the roots of the
-    upstream's own feature inputs. A part with both halves blank is ``""``.
+    *inherited* its ``consumed_input_composition``, which carries what the
+    upstream's own feature inputs recorded. A part with both halves and *state*
+    blank is ``""``. A non-blank *state*, the upstream row's
+    ``consumed_model_state``, leads the part as ``f"{state}|{own}/{inherited}"``,
+    so a fit written again moves the part of every row that reads it.
+
+    The spelling is injective. *own* and *state* hold neither ``/`` nor ``|``,
+    so a part whose text before its first ``/`` holds a ``|`` carries a state
+    and one whose text before its first ``/`` holds none does not, whatever
+    ``/``, ``+`` or ``|`` *inherited* holds from deeper parts.
 
     Args:
         own: The upstream row's ``consumed_composition``.
         inherited: The upstream row's ``consumed_input_composition``.
+        state: The upstream row's ``consumed_model_state``.
     """
-    return f"{own}/{inherited}" if own or inherited else ""
+    body = f"{own}/{inherited}" if own or inherited or state else ""
+    return f"{state}|{body}" if state else body
 
 
 def join_input_cells(per_input: Sequence[Mapping[Entry, str]]) -> dict[Entry, str]:

@@ -27,6 +27,7 @@ from mosaic.core.pipeline.fit_scope import (
     FitScope,
     FitStateUnreadable,
     fit_and_apply_scopes,
+    fit_references,
     list_run_root,
     read_fit_scope,
     read_fit_state_digest,
@@ -35,7 +36,13 @@ from mosaic.core.pipeline.fit_scope import (
     write_fit_scope,
 )
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
-from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.graph import build_feature
+from mosaic.core.pipeline.index import (
+    DriftReads,
+    FitReference,
+    feature_index_path,
+    feature_run_root,
+)
 from mosaic.core.pipeline.markers import (
     new_inflight,
     refresh_inflight,
@@ -43,10 +50,14 @@ from mosaic.core.pipeline.markers import (
 )
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
+    DefinitionModel,
     DependencyLookup,
     Feature,
+    GroundTruthLabelsSource,
     Inputs,
     InputStream,
+    NNResult,
+    Result,
     TemplatesRef,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
@@ -177,6 +188,56 @@ def _run(ds: Dataset, feature: Feature, sequences: list[str] | None) -> str:
 def _templates(ds: Dataset, sequences: list[str]) -> str:
     """Run the template source over *sequences*; its run id."""
     return _run(ds, _TemplateSource(), sequences)
+
+
+PEER_DIGEST = "0" * MODEL_DIGEST_HEX
+"""The digest a peer's fit records while a run loads the state before it."""
+
+
+class _RefittedWhileLoading(_TemplateSource):
+    """Loads its state while a peer fits the run again and records that."""
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        loaded = super().load_state(run_root, artifact_paths, dependency_lookups)
+        record = run_root / FIT_SCOPE_NAME
+        if loaded and record.is_file():
+            stored: dict[str, object] = json.loads(record.read_text())
+            stored["state_digest"] = PEER_DIGEST
+            _ = record.write_text(json.dumps(stored))
+        return loaded
+
+
+def _model_state_cells(ds: Dataset, run_id: str) -> dict[str, str]:
+    """The ``consumed_model_state`` of each row of the source run *run_id*."""
+    rows = pd.read_csv(
+        feature_index_path(ds, SOURCE_DIR), dtype=str, keep_default_na=False
+    )
+    rows = rows[rows["run_id"] == run_id]
+    return dict(zip(rows["sequence"], rows["consumed_model_state"], strict=True))
+
+
+def test_rows_record_the_digest_of_the_state_loaded_not_a_peers_refit(
+    scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The run reads its fit record before ``load_state``, not after it."""
+    run_id = _run(scenario_dataset, _TemplateSource(), ["seq_a"])
+    loaded = read_fit_state_digest(
+        feature_run_root(scenario_dataset, SOURCE_DIR, run_id)
+    )
+    assert loaded
+    assert _model_state_cells(scenario_dataset, run_id) == {"seq_a": loaded}
+    _ = capsys.readouterr()
+
+    again = _run(scenario_dataset, _RefittedWhileLoading(), ["seq_a"])
+
+    assert again == run_id
+    assert "cannot serve cached output" not in capsys.readouterr().err
+    assert _model_state_cells(scenario_dataset, run_id) == {"seq_a": loaded}
 
 
 def test_a_fit_records_the_scope_it_was_fitted_over(
@@ -621,6 +682,69 @@ def test_an_unreadable_record_refuses_the_digest_read(
     }
     assert "run 0.1-abc of fit-scope-fit__from__tracks" in str(raised.value)
     assert read_fit_scope(run_root) is None
+    with pytest.raises(FitStateUnreadable):
+        _ = read_fit_scope(run_root, strict=True)
+
+
+def test_a_strict_read_of_a_readable_record_or_none_is_the_plain_read(
+    tmp_path: Path,
+) -> None:
+    assert read_fit_scope(tmp_path, strict=True) is None
+    _write_record(tmp_path, {"scope_dependent": True, "state_digest": "d1"})
+
+    strict = read_fit_scope(tmp_path, strict=True)
+
+    assert strict is not None
+    assert strict == read_fit_scope(tmp_path)
+    assert strict.state_digest == "d1"
+
+
+class TestDriftReadsFitRecord:
+    """``DriftReads.fit_record`` reads a run's ``fit_scope.json`` once."""
+
+    RUN = "0.1-abc"
+
+    def _root(self, ds: Dataset) -> Path:
+        root = feature_run_root(ds, FIT_DIR, self.RUN)
+        root.mkdir(parents=True)
+        return root
+
+    def test_a_record_is_read_once(
+        self, scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mosaic.core.pipeline import fit_scope as fit_scope_module
+
+        _write_record(self._root(scenario_dataset), {"state_digest": "d1"})
+        reads: list[Path] = []
+
+        def counted(run_root: Path, *, strict: bool = False) -> FitScope | None:
+            reads.append(run_root)
+            return read_fit_scope(run_root, strict=strict)
+
+        monkeypatch.setattr(fit_scope_module, "read_fit_scope", counted)
+        shared = DriftReads(scenario_dataset)
+
+        first = shared.fit_record(FIT_DIR, self.RUN)
+        second = shared.fit_record(FIT_DIR, self.RUN)
+
+        assert first is not None
+        assert first.state_digest == "d1"
+        assert second is first
+        assert len(reads) == 1
+
+    def test_a_run_without_a_record_reads_none(self, scenario_dataset: Dataset) -> None:
+        assert DriftReads(scenario_dataset).fit_record(FIT_DIR, self.RUN) is None
+
+    def test_an_unparsable_record_reads_none_and_strictly_raises(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        root = self._root(scenario_dataset)
+        _ = (root / FIT_SCOPE_NAME).write_text("{not json")
+
+        assert DriftReads(scenario_dataset).fit_record(FIT_DIR, self.RUN) is None
+        with pytest.raises(FitStateUnreadable) as raised:
+            _ = DriftReads(scenario_dataset, strict=True).fit_record(FIT_DIR, self.RUN)
+        assert raised.value.error_detail() == {"feature": FIT_DIR, "run_id": self.RUN}
 
 
 def test_a_fit_records_the_digest_of_the_state_it_saved(
@@ -684,3 +808,119 @@ def test_run_bookkeeping_a_peer_writes_during_the_save_is_left_out(
     assert saved_state_digest(run_root, before, after) == _expected(
         run_root, ["model/weights.bin", "state.bin"]
     )
+
+
+_UPSTREAM = [{"feature": "speed-angvel__from__tracks", "run_id": "0.1-up"}]
+
+
+def _params_of(slug: str, params: dict[str, object]) -> Params:
+    return build_feature(slug, _UPSTREAM, params).params
+
+
+def test_a_pinned_templates_reference_names_the_templates_file() -> None:
+    params = _params_of(
+        "global-kmeans",
+        {"templates": {"feature": "extract-templates", "run_id": "0.1-tpl"}},
+    )
+
+    assert fit_references(params) == (
+        FitReference(
+            field="templates",
+            feature="extract-templates",
+            run_id="0.1-tpl",
+            pattern="templates.parquet",
+        ),
+    )
+
+
+def test_a_pinned_model_artifact_names_its_file() -> None:
+    params = _params_of("global-kmeans", {"model": {"run_id": "0.1-fit"}})
+
+    assert fit_references(params) == (
+        FitReference(
+            field="model",
+            feature="global-kmeans",
+            run_id="0.1-fit",
+            pattern="model.joblib",
+        ),
+    )
+
+
+def test_the_references_are_sorted_by_field_and_skip_an_unpinned_model() -> None:
+    """``init_from`` and ``templates``; the default ``model`` names no run."""
+    params = _params_of(
+        "sequence-classifier",
+        {
+            "default_class": 0,
+            "labels": {},
+            "templates": {"feature": "extract-labeled-templates", "run_id": "0.1-t"},
+            "init_from": {"run_id": "0.1-i"},
+        },
+    )
+
+    assert fit_references(params) == (
+        FitReference(
+            field="init_from",
+            feature="sequence-classifier",
+            run_id="0.1-i",
+            pattern="sequence_classifier_model.joblib",
+        ),
+        FitReference(
+            field="templates",
+            feature="extract-labeled-templates",
+            run_id="0.1-t",
+            pattern="templates.parquet",
+        ),
+    )
+
+
+def test_a_label_map_is_a_fit_reference() -> None:
+    params = _params_of(
+        "evaluate-labels", {"label_map": {"feature": "fit-label-map", "run_id": "l"}}
+    )
+
+    assert [ref.field for ref in fit_references(params)] == ["label_map"]
+
+
+def test_a_thresholds_artifact_is_a_fit_reference_and_a_float_is_not() -> None:
+    tuned = _params_of(
+        "smooth-probabilities",
+        {"default_class": 0, "method": "none", "decision_threshold": {"run_id": "t"}},
+    )
+    fixed = _params_of(
+        "smooth-probabilities", {"default_class": 0, "decision_threshold": 0.5}
+    )
+
+    assert [ref.field for ref in fit_references(tuned)] == ["decision_threshold"]
+    assert fit_references(fixed) == ()
+
+
+class _DefinitionParams(Params):
+    model: DefinitionModel | None = None
+    upstream: Result[str] | None = None
+    pair_filter: NNResult | None = None
+    labels: GroundTruthLabelsSource = GroundTruthLabelsSource()
+    templates: TemplatesRef | None = None
+
+
+def test_a_pinned_definition_model_has_no_pattern() -> None:
+    params = _DefinitionParams(
+        model=DefinitionModel(feature="def:mine", run_id="0.1-fit"),
+        upstream=Result(feature="speed-angvel__from__tracks", run_id="0.1-up"),
+        pair_filter=NNResult(run_id="0.1-nn"),
+    )
+
+    assert fit_references(params) == (
+        FitReference(field="model", feature="def:mine", run_id="0.1-fit", pattern=None),
+    )
+
+
+def test_unpinned_references_and_other_results_are_not_fit_references() -> None:
+    params = _DefinitionParams(
+        model=DefinitionModel(feature="def:mine"),
+        upstream=Result(feature="speed-angvel__from__tracks", run_id="0.1-up"),
+        pair_filter=NNResult(run_id="0.1-nn"),
+        templates=TemplatesRef(feature="extract-templates"),
+    )
+
+    assert fit_references(params) == ()
