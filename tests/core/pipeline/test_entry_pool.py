@@ -13,7 +13,10 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -30,10 +33,13 @@ from mosaic.core.pipeline.memory_watch import MemoryWatch
 from mosaic.core.pipeline.parallelism import (
     MemoryFloorReached,
     ParallelMode,
+    ParallelSettings,
     WorkerProcessDied,
 )
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.runlog import ResourceReport
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     CLOCK_TICK_SECONDS,
     count_process_tree_walks,
     process_alive,
@@ -743,3 +749,398 @@ def test_the_cpu_figure_does_not_fall_across_a_worker_that_dies_and_is_reaped(
     assert sample is not None
     assert sample.spawned_workers == 0
     assert after >= before - CLOCK_TICK_SECONDS
+
+
+class _HashedFuture(Future[int]):
+    """A future whose hash is fixed and whose equality is its identity.
+
+    CPython iterates a small set of small integer hashes in ascending order, so the
+    ``done`` set that ``wait`` returns hands these futures out in hash order.
+    """
+
+    def __init__(self, order: int) -> None:
+        super().__init__()
+        self.order: int = order
+
+    @override
+    def __hash__(self) -> int:
+        return self.order
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+
+class _HandingExecutor:
+    """An executor whose submissions return the futures a test resolves, in order."""
+
+    def __init__(self, futures: list[_HashedFuture]) -> None:
+        self._futures: list[_HashedFuture] = list(futures)
+
+    def submit(self, fn: Callable[[int], int], *args: int) -> Future[int]:
+        return self._futures.pop(0)
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        return None
+
+
+def _hand_out(monkeypatch: pytest.MonkeyPatch, futures: list[_HashedFuture]) -> None:
+    executor = _HandingExecutor(futures)
+
+    def make(max_workers: int) -> _HandingExecutor:
+        return executor
+
+    monkeypatch.setattr(entry_pool, "ThreadPoolExecutor", make)
+
+
+class _Events:
+    """The results and errors a pool handed back, in the order it handed them."""
+
+    def __init__(self) -> None:
+        self.heard: list[tuple[str, int]] = []
+
+    def on_result(self, tag: int, result: int) -> None:
+        self.heard.append(("result", tag))
+
+    def on_error(self, tag: int, exc: Exception) -> None:
+        self.heard.append(("error", tag))
+
+
+def _broken_set() -> list[_HashedFuture]:
+    """A broken call that hashes first, two calls that returned and one that raised."""
+    broken, first, failed, second = (_HashedFuture(order) for order in range(4))
+    broken.set_exception(BrokenProcessPool("a worker ended"))
+    first.set_result(10)
+    failed.set_exception(ValueError("refused"))
+    second.set_result(30)
+    return [broken, first, failed, second]
+
+
+def _cancelled(order: int) -> _HashedFuture:
+    future = _HashedFuture(order)
+    _ = future.cancel()
+    _ = future.set_running_or_notify_cancel()
+    return future
+
+
+def _handing_pool(
+    events: _Events,
+    *,
+    on_error: Callable[[int, Exception], None] | None = None,
+    cancel_check: Callable[[], None] | None = None,
+) -> EntryPool[int, int]:
+    return EntryPool(
+        workers=8,
+        mode="thread",
+        on_result=events.on_result,
+        on_error=on_error or events.on_error,
+        cancel_check=cancel_check,
+        hand_back_on_break=True,
+    )
+
+
+def _submit_all(pool: EntryPool[int, int], count: int) -> None:
+    for tag in range(count):
+        pool.submit(tag, double, tag)
+
+
+def test_a_pool_that_hands_back_on_a_break_hears_the_finished_calls_results_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interrupted = _HashedFuture(4)
+    interrupted.set_exception(KeyboardInterrupt())
+    _hand_out(monkeypatch, [*_broken_set(), interrupted])
+    events = _Events()
+    pool = _handing_pool(events)
+    _submit_all(pool, 5)
+
+    with pytest.raises(WorkerProcessDied):
+        pool.finish()
+    pool.close()
+
+    assert events.heard == [("result", 1), ("result", 3), ("error", 2)]
+    assert pool.in_flight == 0
+
+
+def test_the_hand_back_on_a_break_skips_a_cancelled_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hand_out(monkeypatch, [*_broken_set(), _cancelled(4)])
+    events = _Events()
+    pool = _handing_pool(events)
+    _submit_all(pool, 5)
+
+    with pytest.raises(WorkerProcessDied):
+        pool.finish()
+    pool.close()
+
+    assert events.heard == [("result", 1), ("result", 3), ("error", 2)]
+
+
+def test_a_cancel_during_the_hand_back_keeps_the_results_and_records_no_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hand_out(monkeypatch, _broken_set())
+    events = _Events()
+    token = CancelToken()
+    token.cancel()
+
+    def failed_unless_cancelled(tag: int, exc: Exception) -> None:
+        if token.is_cancelled():
+            raise Cancelled from exc
+        events.on_error(tag, exc)
+
+    pool = _handing_pool(
+        events,
+        on_error=failed_unless_cancelled,
+        cancel_check=token.raise_if_cancelled,
+    )
+    _submit_all(pool, 4)
+
+    with pytest.raises(Cancelled):
+        pool.finish()
+    pool.close()
+
+    assert events.heard == [("result", 1), ("result", 3)]
+
+
+def test_an_unavailable_tool_raised_in_the_hand_back_follows_the_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hand_out(monkeypatch, _broken_set())
+    events = _Events()
+
+    def unavailable(tag: int, exc: Exception) -> None:
+        raise ToolUnavailable("fake-tool", "environment", "fake-tool is not set up")
+
+    pool = _handing_pool(events, on_error=unavailable)
+    _submit_all(pool, 4)
+
+    with pytest.raises(ToolUnavailable):
+        pool.finish()
+    pool.close()
+
+    assert events.heard == [("result", 1), ("result", 3)]
+
+
+def test_a_pool_built_for_settings_hands_back_nothing_on_a_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hand_out(monkeypatch, _broken_set())
+    events = _Events()
+    pool = EntryPool[int, int].for_settings(
+        ParallelSettings(workers=8),
+        on_result=events.on_result,
+        on_error=events.on_error,
+    )
+    _submit_all(pool, 4)
+
+    with pytest.raises(WorkerProcessDied):
+        pool.finish()
+    pool.close()
+
+    assert events.heard == []
+
+
+def test_a_submission_to_a_broken_pool_hands_back_the_call_that_returned() -> None:
+    computed = {tag: threading.Event() for tag in (1, 2)}
+    heard = _Heard()
+
+    def stamp(tag: int) -> None:
+        if tag in computed:
+            computed[tag].set()
+
+    pool: EntryPool[int, int] = EntryPool(
+        workers=3,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        on_computed=stamp,
+        hand_back_on_break=True,
+    )
+    try:
+        pool.submit(1, double, 1)
+        assert computed[1].wait(CHILD_TIMEOUT_SECONDS)
+        pool.submit(2, die, 2)
+        assert computed[2].wait(CHILD_TIMEOUT_SECONDS)
+
+        with pytest.raises(WorkerProcessDied):
+            pool.submit(3, double, 3)
+    finally:
+        pool.close()
+
+    assert heard.results == [(1, 2)]
+
+
+def test_a_results_only_settle_hears_the_results_and_returns_what_their_callback_raised() -> (
+    None
+):
+    release = threading.Event()
+    errors: list[int] = []
+
+    def held(value: int) -> int:
+        _ = release.wait(5)
+        if value == 2:
+            msg = "two is refused"
+            raise ValueError(msg)
+        return value
+
+    refused = ValueError("the callback refuses")
+    heard: list[tuple[int, int]] = []
+
+    def on_result(tag: int, result: int) -> None:
+        if tag == 3:
+            raise refused
+        heard.append((tag, result))
+
+    pool: EntryPool[int, int] = EntryPool(
+        workers=3,
+        mode="thread",
+        on_result=on_result,
+        on_error=lambda tag, exc: errors.append(tag),
+    )
+    for value in (1, 2, 3):
+        pool.submit(value, held, value)
+    release.set()
+
+    dropped = pool.settle(results_only=True)
+    pool.close()
+
+    assert dropped == [refused]
+    assert heard == [(1, 1)]
+    assert errors == []
+    assert pool.in_flight == 0
+
+
+def test_a_results_only_settle_skips_a_call_cancelled_by_an_earlier_error_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed, waiting, returned = (_HashedFuture(order) for order in range(3))
+    failed.set_exception(ValueError("refused"))
+    returned.set_result(20)
+    _hand_out(monkeypatch, [failed, waiting, returned])
+    events = _Events()
+
+    class _Stop(Exception):
+        pass
+
+    def stop(tag: int, exc: Exception) -> None:
+        raise _Stop
+
+    pool = _handing_pool(events, on_error=stop)
+    _submit_all(pool, 3)
+    with pytest.raises(_Stop):
+        pool.drain_one()
+    assert waiting.cancelled()
+
+    dropped = pool.settle(results_only=True)
+    pool.close()
+
+    assert dropped == []
+    assert events.heard == [("result", 2)]
+    assert pool.in_flight == 0
+
+
+def interrupt(_value: int) -> int:
+    raise KeyboardInterrupt
+
+
+def test_a_results_only_settle_skips_a_worker_interrupted_by_a_signal() -> None:
+    heard = _Heard()
+    pool = _pool(heard, workers=2, mode="process")
+    try:
+        pool.submit(1, interrupt, 1)
+        pool.submit(2, double, 2)
+        try:
+            dropped = pool.settle(results_only=True)
+        except KeyboardInterrupt:
+            pytest.fail("the settle raised the worker's KeyboardInterrupt")
+    finally:
+        pool.close()
+
+    assert dropped == []
+    assert heard.results == [(2, 4)]
+    assert heard.errors == []
+
+
+def die_once_file_exists(path: str) -> int:
+    while not Path(path).exists():
+        time.sleep(0.01)
+    os._exit(1)
+
+
+def test_a_results_only_settle_of_a_pool_that_breaks_returns_with_the_results(
+    tmp_path: Path,
+) -> None:
+    computed = tmp_path / "computed-1"
+    heard = _Heard()
+
+    def stamp(tag: int) -> None:
+        if tag == 1:
+            computed.touch()
+
+    pool: EntryPool[int, int] = EntryPool(
+        workers=2,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        on_computed=stamp,
+    )
+    try:
+        pool.submit(2, die_once_file_exists, str(computed))
+        pool.submit(1, double, 1)
+        started = time.monotonic()
+        dropped = pool.settle(results_only=True)
+        elapsed = time.monotonic() - started
+    finally:
+        pool.close()
+
+    assert dropped == []
+    assert heard.results == [(1, 2)]
+    assert heard.errors == []
+    assert elapsed < CHILD_TIMEOUT_SECONDS
+
+
+class _BreaksAfterAnEarlierResult(_HashedFuture):
+    """A broken future that, once armed, sets an earlier result when asked if done.
+
+    It stands for the executor that sets a call's result between the settle's
+    look at that call and its look at this one, and then breaks.
+    """
+
+    def __init__(self, order: int) -> None:
+        super().__init__(order)
+        self._earlier: _HashedFuture | None = None
+        self._earlier_result: int = 0
+        self.set_exception(BrokenProcessPool("a worker ended"))
+
+    def arm(self, earlier: _HashedFuture, result: int) -> None:
+        self._earlier = earlier
+        self._earlier_result = result
+
+    @override
+    def done(self) -> bool:
+        earlier = self._earlier
+        if earlier is not None:
+            self._earlier = None
+            earlier.set_result(self._earlier_result)
+        return super().done()
+
+
+def test_a_results_only_settle_hears_a_result_set_while_it_found_the_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    earlier, never = _HashedFuture(0), _HashedFuture(2)
+    broken = _BreaksAfterAnEarlierResult(1)
+    _hand_out(monkeypatch, [earlier, broken, never])
+    events = _Events()
+    pool = _handing_pool(events)
+    _submit_all(pool, 3)
+    broken.arm(earlier, 10)
+
+    dropped = pool.settle(results_only=True)
+    pool.close()
+
+    assert dropped == []
+    assert events.heard == [("result", 0)]
+    assert pool.in_flight == 1

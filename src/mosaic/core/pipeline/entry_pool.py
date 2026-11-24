@@ -28,7 +28,7 @@ from concurrent.futures import (
 )
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, overload
 
 from mosaic.runlog import ResourceReport
 
@@ -85,6 +85,11 @@ class EntryPool[Tag, Result]:
     worker, so a submission between the two starts a worker without a walk, and the
     watch finds that worker at its next interval walk.
 
+    A pool built with ``hand_back_on_break`` hands back every call that finished
+    before a break of its process pool, the results first and then the errors,
+    before it raises for the break. An error callback that raises then propagates in
+    place of the break, after every result was heard.
+
     Args:
         workers: How many calls are computed at once. 1 computes each call inside
             :meth:`submit`, with no executor.
@@ -116,6 +121,9 @@ class EntryPool[Tag, Result]:
             :class:`WorkerProcessDied`. The check is polled for
             ``CANCEL_ARRIVAL_SECONDS`` because the cancel that killed the workers
             may not have reached the caller yet.
+        hand_back_on_break: Whether a broken pool hands back the calls that
+            finished before the break. A call that failed with the break itself is
+            dropped, and a call not yet done stays in flight.
     """
 
     def __init__(
@@ -132,7 +140,10 @@ class EntryPool[Tag, Result]:
         on_dispatch: Callable[[Tag], None] | None = None,
         on_computed: Callable[[Tag], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
+        hand_back_on_break: bool = False,
     ) -> None:
+        self._hand_back_on_break: bool = hand_back_on_break
+        self._broken: bool = False
         self._cancel_check: Callable[[], None] | None = cancel_check
         self.workers: int = max(1, workers)
         self.mode: ParallelMode = mode
@@ -218,6 +229,9 @@ class EntryPool[Tag, Result]:
             if self._on_computed is not None:
                 future.add_done_callback(self._stamp(tag))
         except BrokenProcessPool as exc:
+            self._broken = True
+            if self._hand_back_on_break:
+                self._hand_back_finished()
             self.report(final=True)
             self._raise_broken(exc)
         if self._walks_at_start is not None:
@@ -236,14 +250,37 @@ class EntryPool[Tag, Result]:
         if self._executor is not None:
             self._executor.shutdown(wait=True)
 
-    def settle(self) -> None:
+    @overload
+    def settle(self, *, results_only: Literal[False] = False) -> None: ...
+
+    @overload
+    def settle(self, *, results_only: Literal[True]) -> list[Exception]: ...
+
+    def settle(self, *, results_only: bool = False) -> list[Exception] | None:
         """Wait for the calls in flight and hand back each outcome, whatever it was.
 
         For a caller that is ending on an exception and keeps what the calls in
         flight finish: a table a worker wrote is indexed, and is not left for a
         rerun to skip as already current. An exception that a callback raises while
         the calls settle is dropped, because the caller is already raising.
+
+        Args:
+            results_only: Hand back only the calls that returned, each as it
+                arrives, and skip every call that raised, a worker's
+                ``KeyboardInterrupt`` included, without calling ``on_error``. A
+                broken pool ends the settle once the calls that returned before the
+                break are handed back, and a pool already broken is settled
+                without a wait. A ``BaseException`` raised in the caller's thread,
+                by a signal during the wait or inside a callback, abandons the
+                settle and propagates, and the calls not yet handed back stay in
+                flight.
+
+        Returns:
+            With ``results_only``, the exceptions that ``on_result`` raised and the
+            settle dropped, in the order they were raised. Otherwise ``None``.
         """
+        if results_only:
+            return self._settle_results()
         while self._pending:
             done, _ = wait(self._pending)
             for future in done:
@@ -259,6 +296,68 @@ class EntryPool[Tag, Result]:
                         self._on_result(tag, result)
                 except Exception:
                     continue
+        return None
+
+    def _settle_results(self) -> list[Exception]:
+        """Hand back the results of the calls in flight, and return what was dropped.
+
+        A pass that first finds the break may have passed a call before the
+        executor set its result, so one more pass runs without a wait. The executor
+        sets every result before it fails a call with the break, so that pass sees
+        each of them.
+        """
+        dropped: list[Exception] = []
+        while True:
+            broken_before_pass = self._broken
+            for future in [pending for pending in self._pending if pending.done()]:
+                tag = self._pending.pop(future)
+                if future.cancelled():
+                    continue
+                error = future.exception()
+                if isinstance(error, BrokenProcessPool):
+                    self._broken = True
+                if error is not None:
+                    continue
+                if self._on_computed is not None:
+                    self._on_computed(tag)
+                try:
+                    self._on_result(tag, future.result())
+                except Exception as exc:
+                    dropped.append(exc)
+            if broken_before_pass or not self._pending:
+                return dropped
+            if not self._broken:
+                _ = wait(self._pending, return_when=FIRST_COMPLETED)
+
+    def _hand_back_finished(self) -> None:
+        """Hand back the calls of a broken pool that finished, the results first.
+
+        Results go first so that an error callback that raises costs no finished
+        call its result. A call that failed with the break, or with a
+        ``BaseException`` such as a worker's ``KeyboardInterrupt``, is dropped. A
+        call not yet done stays in flight, and so do the calls not yet handed back
+        when a callback raises.
+        """
+        failed: list[Future[Result]] = []
+        for future in [pending for pending in self._pending if pending.done()]:
+            if future.cancelled():
+                del self._pending[future]
+            elif future.exception() is not None:
+                failed.append(future)
+            else:
+                tag = self._pending.pop(future)
+                if self._on_computed is not None:
+                    self._on_computed(tag)
+                self._on_result(tag, future.result())
+        for future in failed:
+            tag = self._pending.pop(future)
+            error = future.exception()
+            if isinstance(error, BrokenProcessPool) or not isinstance(error, Exception):
+                continue
+            try:
+                _ = future.result()
+            except Exception as exc:
+                self._on_error(tag, exc)
 
     def close(self) -> None:
         """Shut the executor down without waiting, and record the final measurement.
@@ -348,6 +447,9 @@ class EntryPool[Tag, Result]:
             except BrokenProcessPool as exc:
                 # Every other pending future of a broken pool fails the same way, so
                 # this is the run's failure and not one entry's.
+                self._broken = True
+                if self._hand_back_on_break:
+                    self._hand_back_finished()
                 self.report(final=True)
                 self._raise_broken(exc)
             except Exception as exc:
