@@ -68,6 +68,7 @@ from mosaic_media import MediaProbeError
 from numpy.typing import NDArray
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.label_intervals import label_vocabulary
 from mosaic.core.pipeline._utils import atomic_write
@@ -1342,6 +1343,7 @@ class FeralFeature:
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._reset()
+        self.fitted_entries: tuple[Entry, ...] | None = None
         self._run_root = run_root
         self._load_input_root(dependency_lookups)
         p = self.params
@@ -1394,6 +1396,7 @@ class FeralFeature:
             )
         self._train_entries = set(train_entries)
         self._test_entries = set(test_entries)
+        self.fitted_entries = tuple(sorted(self._train_entries | self._test_entries))
         self._label_files = dependency_lookups.get("labels", {})
         return False
 

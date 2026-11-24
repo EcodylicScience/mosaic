@@ -26,6 +26,7 @@ from mosaic.behavior.feature_library.probability_ensemble import (
 )
 from mosaic.behavior.feature_library.classifier_common import probability_classes
 from mosaic.core.evaluation import classification_scores
+from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.loading import load_entry_data
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -949,3 +950,50 @@ def test_without_controls_members_missing_a_class_still_fit(tmp_path: Path) -> N
     report = _fit_report(study)
 
     assert report["n_frames"] == 4 * FRAMES
+
+
+def test_a_fitted_blend_reports_the_entries_of_the_members_fold_table(
+    tmp_path: Path,
+) -> None:
+    study = _Study(tmp_path)
+    kept = [(GROUP, "s3"), (GROUP, "s0"), (GROUP, "s2")]
+    study.folds = {entry: study.folds[entry] for entry in kept}
+    feature, _ = _fit_feature(study)
+
+    assert reported_fit_entries(feature) == (
+        (GROUP, "s0"),
+        (GROUP, "s2"),
+        (GROUP, "s3"),
+    )
+
+
+def test_a_blend_with_fixed_weights_reports_no_fit_entries(tmp_path: Path) -> None:
+    study = _Study(tmp_path)
+    feature = _feature(2, weights=[3.0, 1.0])
+
+    assert not feature.load_state(tmp_path / "run", {}, study.lookups())
+
+    assert reported_fit_entries(feature) is None
+
+
+def test_a_saved_blend_reports_no_fit_entries_after_a_load_that_asked_for_a_fit(
+    tmp_path: Path,
+) -> None:
+    study = _Study(tmp_path)
+    lookups = study.lookups()
+    params: dict[str, object] = {
+        "weights": "fit",
+        "labels": {"kind": "behavior"},
+        "score_classes": [0, 1, 2],
+    }
+    feature = _feature(2, **params)
+    run = tmp_path / "blend"
+    assert not feature.load_state(run, {}, lookups)
+    assert reported_fit_entries(feature) is not None
+    feature.fit(study.stream())
+    feature.save_state(run)
+    again = _feature(2, **params)
+
+    assert again.load_state(run, {}, lookups)
+
+    assert reported_fit_entries(again) is None

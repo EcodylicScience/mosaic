@@ -43,16 +43,18 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, TypeGuard, get_args
+
+from mosaic.core.entry import Entry
 
 from ._utils import ResolvedScope, atomic_write, now_iso
 from .error_kind import ClassifiedError, ErrorKind
 from .file_digest import MODEL_DIGEST_HEX, file_digest
 from .identity_scheme import FEATURE_IDENTITY_SCHEME
 from .identity_scheme import MARKER_NAME as IDENTITY_SCHEME_NAME
-from .index import FitReference
+from .index import EntryCells, FitReference
 from .inventory.params import RUN_PARAMS_NAME
 from .markers import MARKER_PREFIX, is_atomic_temp
 from .types import ArtifactSpec, DefinitionModel, Feature
@@ -62,10 +64,9 @@ if TYPE_CHECKING:
     from mosaic.core.params import Params
     from mosaic.core.json_value import JsonValue
 
-    from .resolve import Resolution
-
 __all__ = [
     "FIT_SCOPE_NAME",
+    "FitEntryInputs",
     "FitScope",
     "FitSource",
     "FitSourceRef",
@@ -76,7 +77,10 @@ __all__ = [
     "list_run_root",
     "read_fit_scope",
     "read_fit_state_digest",
+    "read_located_fit_scope",
     "read_run_fit_scope",
+    "records_fit_inputs",
+    "reported_fit_entries",
     "saved_state_digest",
     "write_fit_scope",
 ]
@@ -107,12 +111,31 @@ class FitSourceRef:
         run_id: The upstream run.
         known: False when that run has no fit record, or one whose entries are
             unknown, which makes the downstream's entries unknown too.
+        state_digest: The digest of that fit's state as the fitting run read it,
+            and ``""`` when the fit records none.
     """
 
     field: str
     feature: str
     run_id: str
     known: bool
+    state_digest: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FitEntryInputs:
+    """The cells of one entry as a fit read it.
+
+    Attributes:
+        group: The entry's group.
+        sequence: The entry's sequence.
+        cells: The entry's roots, tracks and upstream-roots cells at fit time,
+            the cells a feature row records.
+    """
+
+    group: str
+    sequence: str
+    cells: EntryCells
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +161,12 @@ class FitScope:
     ``state_digest`` is the digest of the files ``save_state`` wrote
     (:func:`saved_state_digest`), and ``""`` when unknown. It is recorded, never
     hashed into a run id.
+
+    ``inputs`` lists the cells of each entry the fit read, taken at fit time and
+    sorted by group and sequence. It is ``None`` for a record written without
+    it, which differs from an empty tuple. ``execution_id`` is the attempt that
+    fitted, and ``""`` when the record names none. Both are recorded and stay
+    out of every run id.
     """
 
     scope_dependent: bool
@@ -149,6 +178,8 @@ class FitScope:
     source: FitSource = "stream"
     via: tuple[FitSourceRef, ...] = ()
     state_digest: str = ""
+    inputs: tuple[FitEntryInputs, ...] | None = None
+    execution_id: str = ""
 
 
 _RUN_BOOKKEEPING: Final = frozenset(
@@ -239,14 +270,14 @@ def saved_state_digest(
 
 
 class FitStateUnreadable(ClassifiedError):
-    """A ``fit_scope.json`` that is not a JSON object, or holds a non-string digest."""
+    """A ``fit_scope.json`` that cannot be read, or whose content is malformed."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
     def __init__(self, *, feature: str, run_id: str, error: str) -> None:
         super().__init__(
             f"run {run_id} of {feature} holds a {FIT_SCOPE_NAME} that cannot be "
-            f"read ({error}), so whether the model this step applies has changed "
+            f"read ({error}), so whether the fit this run reads has changed "
             "cannot be told: remove the run and fit it again"
         )
         self.feature: str = feature
@@ -268,11 +299,43 @@ def read_fit_state_digest(run_root: Path) -> str:
         or a record without the ``state_digest`` key.
 
     Raises:
-        FitStateUnreadable: The record cannot be read, is not a JSON object, or
-            holds a ``state_digest`` that is not a string.
+        FitStateUnreadable: The record cannot be read, is not a JSON object,
+            holds a ``state_digest`` that is not a string, or holds a
+            ``fit_inputs`` that is not an object with an ``entries`` list of
+            objects.
     """
     fitted = read_fit_scope(run_root, strict=True)
     return "" if fitted is None else fitted.state_digest
+
+
+def records_fit_inputs(feature: Feature) -> bool:
+    """Does the run of *feature* save state derived from its stream or its fits?
+
+    True when the instance's ``fits`` or ``scope_dependent`` is set: a fitter, or
+    a feature such as ``evaluate-labels`` that computes its report from its
+    stream and saves it. A feature given a ``model`` to apply sets neither, and
+    records no fit inputs.
+    """
+    return bool(getattr(feature, "fits", False)) or feature.scope_dependent
+
+
+def reported_fit_entries(feature: Feature) -> tuple[Entry, ...] | None:
+    """The entries a fit pinned to its training set streams, as its feature reports them.
+
+    A feature that declares ``fit_set_pinned_by`` sets the instance attribute
+    ``fitted_entries`` in ``load_state`` when the load asks for a fit: every
+    entry the fit streams, so ``feral``'s train and test entries both. The
+    attribute is ``None`` after a load that found a fitted state, and a feature
+    that pins no fit set reports nothing whatever its attributes hold.
+
+    Returns:
+        The entries sorted by group and sequence, or ``None`` when the feature
+        declares no pinned fit set or reports no entries.
+    """
+    if getattr(feature, "fit_set_pinned_by", None) is None:
+        return None
+    reported: tuple[Entry, ...] | None = getattr(feature, "fitted_entries", None)
+    return None if reported is None else tuple(sorted(reported))
 
 
 def fit_references(params: Params) -> tuple[FitReference, ...]:
@@ -307,35 +370,42 @@ def derive_fit_scope(
     ds: Dataset,
     feature: Feature,
     resolved: ResolvedScope,
-    resolutions: tuple[Resolution, ...],
     artifact_paths: Mapping[str, Path],
+    *,
+    states: Mapping[str, str],
+    inputs: tuple[FitEntryInputs, ...] | None,
+    execution_id: str,
 ) -> FitScope:
     """The fit scope of a fit that just ran, from where its data came from.
 
     A scope-dependent feature fits from its own stream, so its record is the
-    scope it resolved, and its ``via`` names the artifacts it pinned. A
-    scope-free fitter fits from the artifacts its params pin -- the scope it was
-    invoked over is only where it is *applied* -- so its record is the union of
-    those artifacts' own fit records. That is transitive: each upstream recorded
-    its own fit scope when it ran.
+    scope it resolved, and its ``via`` names the fits it pinned. A scope-free
+    fitter fits from the fits its params pin -- the scope it was invoked over
+    is only where it is *applied* -- so its record is the union of those fits'
+    own records. That is transitive: each upstream recorded its own fit scope
+    when it ran.
 
     Args:
         ds: The dataset the run belongs to.
         feature: The feature that just fitted.
         resolved: The scope the run resolved.
-        resolutions: The references ``resolve_references`` pinned for this run,
-            reused rather than walking the params a second time.
-        artifact_paths: The artifact files ``_resolve_dependencies`` found, by
-            params field. A reference with no file fed nothing into the fit.
+        artifact_paths: The files and roots ``_resolve_dependencies`` found, by
+            params field. A fit reference with none fed nothing into the fit.
+        states: The state digest of each fit reference as the run read it, by
+            params field.
+        inputs: The cells of each entry the fit read, or ``None`` when they
+            could not be taken.
+        execution_id: The attempt that fitted.
 
     Returns:
-        The record to write. Its entries are ``None`` when no pinned artifact
-        exists (``source="unknown"``) or when some pinned artifact has no known
-        fit scope (``source="artifacts"`` with that upstream ``known=False``).
+        The record to write. Its entries are ``None`` when no pinned fit exists
+        (``source="unknown"``) or when some pinned fit has no known fit scope
+        (``source="artifacts"`` with that upstream ``known=False``).
     """
-    pinned = _pinned_artifacts(ds, feature, resolutions, artifact_paths)
+    pinned = _pinned_fits(ds, feature, artifact_paths, states)
+    via = tuple(ref for ref, _ in pinned)
     if feature.scope_dependent:
-        return FitScope(
+        scope = FitScope(
             scope_dependent=True,
             entries=tuple(sorted(resolved.entries)),
             tracks_variants=tuple(sorted(resolved.tracks_variants)),
@@ -343,56 +413,52 @@ def derive_fit_scope(
             fitted_at=now_iso(),
             identity_scheme=FEATURE_IDENTITY_SCHEME,
             source="stream",
-            via=tuple(ref for ref, _ in pinned),
+            via=via,
         )
+    elif not via:
+        scope = _unknown(source="unknown", via=())
+    elif not all(ref.known for ref in via):
+        scope = _unknown(source="artifacts", via=via)
+    else:
+        entries: set[tuple[str, str]] = set()
+        tracks: set[str] = set()
+        labels: set[str] = set()
+        for _, upstream in pinned:
+            if upstream is not None:
+                entries.update(upstream.entries or ())
+                tracks.update(upstream.tracks_variants or ())
+                labels.update(upstream.labels_variants or ())
+        scope = FitScope(
+            scope_dependent=False,
+            entries=tuple(sorted(entries)),
+            tracks_variants=tuple(sorted(tracks)),
+            labels_variants=tuple(sorted(labels)),
+            fitted_at=now_iso(),
+            identity_scheme=FEATURE_IDENTITY_SCHEME,
+            source="artifacts",
+            via=via,
+        )
+    return replace(scope, inputs=inputs, execution_id=execution_id)
 
-    entries: set[tuple[str, str]] = set()
-    tracks: set[str] = set()
-    labels: set[str] = set()
-    for _, upstream in pinned:
-        if upstream is not None:
-            entries.update(upstream.entries or ())
-            tracks.update(upstream.tracks_variants or ())
-            labels.update(upstream.labels_variants or ())
 
-    via = tuple(ref for ref, _ in pinned)
-    if not via:
-        return _unknown(source="unknown", via=())
-    if not all(ref.known for ref in via):
-        return _unknown(source="artifacts", via=via)
-    return FitScope(
-        scope_dependent=False,
-        entries=tuple(sorted(entries)),
-        tracks_variants=tuple(sorted(tracks)),
-        labels_variants=tuple(sorted(labels)),
-        fitted_at=now_iso(),
-        identity_scheme=FEATURE_IDENTITY_SCHEME,
-        source="artifacts",
-        via=via,
-    )
-
-
-def _pinned_artifacts(
+def _pinned_fits(
     ds: Dataset,
     feature: Feature,
-    resolutions: tuple[Resolution, ...],
     artifact_paths: Mapping[str, Path],
+    states: Mapping[str, str],
 ) -> list[tuple[FitSourceRef, FitScope | None]]:
-    """Each artifact the params pin that fed the run, and its own fit record.
+    """Each fit the params pin that fed the run, and its own fit record.
 
-    The record is ``None`` for a run that has none. The artifact is ``known``
-    only when its record holds entries and both variant sets.
+    The fits are the :func:`fit_references` of the params, sorted by field, that
+    ``_resolve_dependencies`` found a file or root for. The record is ``None``
+    for a run that has none. The fit is ``known`` only when its record holds
+    entries and both variant sets.
     """
     pinned: list[tuple[FitSourceRef, FitScope | None]] = []
-    for resolution in resolutions:
-        field = resolution.where.removeprefix("params.")
-        if field == resolution.where or field not in artifact_paths:
+    for reference in fit_references(feature.params):
+        if reference.field not in artifact_paths:
             continue
-        if resolution.run_id is None:
-            continue
-        if not isinstance(getattr(feature.params, field, None), ArtifactSpec):
-            continue
-        upstream = read_run_fit_scope(ds, resolution.feature, resolution.run_id)
+        upstream = read_run_fit_scope(ds, reference.feature, reference.run_id)
         known = (
             upstream is not None
             and upstream.entries is not None
@@ -400,10 +466,11 @@ def _pinned_artifacts(
             and upstream.labels_variants is not None
         )
         ref = FitSourceRef(
-            field=field,
-            feature=resolution.feature,
-            run_id=resolution.run_id,
+            field=reference.field,
+            feature=reference.feature,
+            run_id=reference.run_id,
             known=known,
+            state_digest=states[reference.field],
         )
         pinned.append((ref, upstream))
     return pinned
@@ -432,13 +499,15 @@ def write_fit_scope(run_root: Path, scope: FitScope) -> None:
     ``write_identity_scheme`` either -- that one is written on every invocation
     including a pure cache hit, and this must not be.
 
-    Overwriting is correct when it happens: reaching here means ``load_state``
-    found nothing, so the state being described is being replaced too.
+    Overwriting is correct when it happens: a fit or a refit ran here, so the
+    state being described is being replaced too.
 
     *scope* comes from :func:`derive_fit_scope`. Its unknown sets are written as
-    JSON ``null``.
+    JSON ``null``. Its ``inputs`` are written under ``fit_inputs`` sorted by
+    group and sequence, and left out when ``None``. ``via`` is written sorted by
+    field, so the file does not depend on the order of either.
     """
-    payload = {
+    payload: dict[str, object] = {
         "scope_dependent": scope.scope_dependent,
         "entries": (
             None
@@ -460,11 +529,28 @@ def write_fit_scope(run_root: Path, scope: FitScope) -> None:
                 "feature": ref.feature,
                 "run_id": ref.run_id,
                 "known": ref.known,
+                "state_digest": ref.state_digest,
             }
-            for ref in scope.via
+            for ref in sorted(scope.via, key=lambda ref: ref.field)
         ],
         "state_digest": scope.state_digest,
+        "execution_id": scope.execution_id,
     }
+    if scope.inputs is not None:
+        payload["fit_inputs"] = {
+            "entries": [
+                {
+                    "group": entry.group,
+                    "sequence": entry.sequence,
+                    "roots": entry.cells.roots,
+                    "tracks": entry.cells.tracks,
+                    "inputs": entry.cells.inputs,
+                }
+                for entry in sorted(
+                    scope.inputs, key=lambda entry: (entry.group, entry.sequence)
+                )
+            ]
+        }
     atomic_write(
         run_root / FIT_SCOPE_NAME,
         lambda p: p.write_text(json.dumps(payload, indent=2, sort_keys=True)),
@@ -520,10 +606,37 @@ def read_run_fit_scope(
     Raises:
         FitStateUnreadable: *strict* is set and the record cannot be read.
     """
-    from .index import feature_run_file
+    located = read_located_fit_scope(ds, storage, run_id, strict=strict)
+    return None if located is None else located[1]
 
-    path = feature_run_file(ds, storage, run_id, FIT_SCOPE_NAME)
-    return None if path is None else read_fit_scope(path.parent, strict=strict)
+
+def read_located_fit_scope(
+    ds: Dataset, storage: str, run_id: str, *, strict: bool = False
+) -> tuple[str, FitScope | None] | None:
+    """The fit record of a run, and the link of the dataset that holds it.
+
+    Args:
+        ds: The dataset reading, whose ``features`` lookup order decides.
+        storage: The run's feature storage directory.
+        run_id: The run.
+        strict: Raise for a record that cannot be read, as
+            :func:`read_fit_scope` does.
+
+    Returns:
+        The link id of the first dataset of the lookup that holds a fit record
+        of the run, ``""`` for *ds* itself, and what :func:`read_fit_scope`
+        returns for that run root. ``None`` when no dataset holds one.
+
+    Raises:
+        FitStateUnreadable: *strict* is set and the record cannot be read.
+    """
+    from .index import feature_run_file_location
+
+    located = feature_run_file_location(ds, storage, run_id, FIT_SCOPE_NAME)
+    if located is None:
+        return None
+    link_id, path = located
+    return link_id, read_fit_scope(path.parent, strict=strict)
 
 
 def _unreadable(run_root: Path, error: str, *, strict: bool) -> None:
@@ -554,14 +667,20 @@ def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
     entries and variants read as ``None``; a legacy scope-dependent record
     keeps them.
     A record without ``state_digest`` reads it as ``""``, and one whose
-    ``state_digest`` is not a string reads as ``None``. Nothing is rewritten on
-    disk.
+    ``state_digest`` is not a string reads as ``None``. A record without
+    ``fit_inputs`` reads ``inputs=None``, without ``execution_id`` reads ``""``,
+    and a ``via`` item without ``state_digest`` reads ``""``. A ``fit_inputs``
+    that is not an object with an ``entries`` list reads the record as ``None``,
+    and an entry of it that is not an object is left out.
+    Nothing is rewritten on disk.
 
     Args:
         run_root: A run root, ``features/<feature>/<run_id>``.
         strict: Raise for a record that cannot be read or parsed, is not a
-            JSON object, or holds a ``state_digest`` that is not a string,
-            instead of reading it as ``None``.
+            JSON object, holds a ``state_digest`` that is not a string, or
+            holds a ``fit_inputs`` that is not an object with an ``entries``
+            list, or an entry of it that is not an object, instead of reading
+            it as ``None`` or leaving the entry out.
 
     Raises:
         FitStateUnreadable: *strict* is set and the record is one of those.
@@ -587,6 +706,30 @@ def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
     state_digest = raw.get("state_digest", "")
     if not isinstance(state_digest, str):
         return _unreadable(run_root, "its state_digest is not a string", strict=strict)
+    inputs: tuple[FitEntryInputs, ...] | None = None
+    if "fit_inputs" in raw:
+        raw_inputs = raw["fit_inputs"]
+        raw_items = raw_inputs.get("entries") if _is_object(raw_inputs) else None
+        if not _is_list(raw_items):
+            return _unreadable(
+                run_root,
+                "its fit_inputs is not an object with an entries list",
+                strict=strict,
+            )
+        entries_read: list[FitEntryInputs] = []
+        for raw_item in raw_items:
+            item = _entry_inputs(raw_item)
+            if item is None:
+                _unreadable(
+                    run_root,
+                    "an entry of its fit_inputs is not an object",
+                    strict=strict,
+                )
+                continue
+            entries_read.append(item)
+        inputs = tuple(
+            sorted(entries_read, key=lambda item: (item.group, item.sequence))
+        )
     scope_dependent = bool(raw.get("scope_dependent", False))
     raw_source = raw.get("source")
     source: FitSource = "legacy"
@@ -612,6 +755,8 @@ def read_fit_scope(run_root: Path, *, strict: bool = False) -> FitScope | None:
         source=source,
         via=tuple(ref for ref in map(_source_ref, _items(raw.get("via"))) if ref),
         state_digest=state_digest,
+        inputs=inputs,
+        execution_id=str(raw.get("execution_id", "")),
     )
 
 
@@ -631,6 +776,22 @@ def _source_ref(value: object) -> FitSourceRef | None:
         feature=str(value.get("feature", "")),
         run_id=str(value.get("run_id", "")),
         known=bool(value.get("known", False)),
+        state_digest=str(value.get("state_digest", "")),
+    )
+
+
+def _entry_inputs(value: object) -> FitEntryInputs | None:
+    """One ``fit_inputs`` entry, or ``None`` when it is not an object."""
+    if not _is_object(value):
+        return None
+    return FitEntryInputs(
+        group=str(value.get("group", "")),
+        sequence=str(value.get("sequence", "")),
+        cells=EntryCells(
+            roots=str(value.get("roots", "")),
+            tracks=str(value.get("tracks", "")),
+            inputs=str(value.get("inputs", "")),
+        ),
     )
 
 

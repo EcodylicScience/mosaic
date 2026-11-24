@@ -42,6 +42,7 @@ LINK_LOOKUPS: Final = frozenset(
         "has_feature_index",
         "feature_run_roots",
         "feature_run_file",
+        "feature_run_file_location",
         "readable_feature_storages",
         "latest_feature_run_root",
         "run_coverage",

@@ -123,7 +123,8 @@ What lives where:
 - ``state_writes``: the files a feature's ``save_state`` publishes and their order,
   and whether ``load_state`` finds a state after each publish fails.
 - ``model_state``: the k-means chain that fits ``global-kmeans`` and applies it
-  through ``model``, a refit of it over moved tracks, the reasons a run printed
+  through ``model``, a refit of it over moved tracks, an entry converted again
+  from changed sources, the reasons a run printed
   for the entries it did not serve, the fit-state digest each row of an apply
   records, and the entries a plan reports as drifted.
 - ``feature_definitions``: the sources of feature definitions, a dataset with
@@ -373,6 +374,7 @@ from tests.helpers.model_state import (
     kmeans_fit_and_apply,
     model_cells,
     move_tracks,
+    reconvert_entry,
     refit_kmeans,
     refusals,
     run_step,
@@ -935,6 +937,7 @@ __all__ = [
     "kmeans_fit_and_apply",
     "model_cells",
     "move_tracks",
+    "reconvert_entry",
     "refit_kmeans",
     "refusals",
     "run_step",

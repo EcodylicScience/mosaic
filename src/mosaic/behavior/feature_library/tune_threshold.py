@@ -77,6 +77,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -513,11 +514,16 @@ class TuneThresholdFeature:
         self._thresholds = None
         self._report = None
         self._label_files = {}
+        self.fitted_entries: tuple[Entry, ...] | None = None
         cached = run_root / THRESHOLDS_FILE
         if cached.exists():
             self._thresholds = read_thresholds(cached)
             return True
         self._fold_table = self._input_fold_table(dependency_lookups)
+        if self._fold_table is not None:
+            self.fitted_entries = tuple(
+                sorted(FoldLookup.from_table(self._fold_table).entries)
+            )
         self._label_files = dependency_lookups.get("labels", {})
         self._controls_in_play = label_controls_in_play(
             self.params.labels, dependency_lookups

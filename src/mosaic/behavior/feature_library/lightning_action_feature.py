@@ -59,6 +59,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.column_contract import (
@@ -616,6 +617,7 @@ class LightningActionFeature(FitReporting):
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._reset()
+        self.fitted_entries: tuple[Entry, ...] | None = None
 
         # Branch 1: cached model in run_root
         cached_path = run_root / "lightning_action_model.joblib"
@@ -644,6 +646,7 @@ class LightningActionFeature(FitReporting):
                 )
                 raise ValueError(msg)
             self._train_entries = set(train_entries)
+            self.fitted_entries = tuple(sorted(train_entries))
             self._label_files = dependency_lookups.get("labels", {})
             return False
 

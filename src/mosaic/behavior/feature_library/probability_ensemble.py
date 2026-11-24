@@ -68,6 +68,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -363,6 +364,7 @@ class ProbabilityEnsembleFeature:
         self._report = None
         self._label_files = {}
         self._controls_in_play = False
+        self.fitted_entries: tuple[Entry, ...] | None = None
         self._threshold = tuned_threshold(
             self.name,
             self.params.decision_threshold,
@@ -382,6 +384,10 @@ class ProbabilityEnsembleFeature:
             self._controls_in_play = label_controls_in_play(
                 self.params.labels, dependency_lookups
             )
+            if self._cv_table is not None:
+                self.fitted_entries = tuple(
+                    sorted(FoldLookup.from_table(self._cv_table).entries)
+                )
         return False
 
     def fit(self, inputs: InputStream) -> None:

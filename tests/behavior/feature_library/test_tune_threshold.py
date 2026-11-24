@@ -33,6 +33,7 @@ from mosaic.behavior.feature_library.tune_threshold import (
     REPORT_FILE,
     TuneThresholdFeature,
 )
+from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.types import DependencyLookup, InputStream, Result
 from tests.helpers import Event, write_lineage_run, write_sparse_labels
 
@@ -996,3 +997,43 @@ def test_without_controls_a_class_the_input_lacks_is_tuned_as_misses(
     _, run = _tuned_over(study, plain)
 
     assert sorted(read_thresholds(run / THRESHOLDS_FILE)) == [0, 1]
+
+
+def test_a_load_that_asks_for_a_fit_reports_the_entries_of_the_fold_table(
+    tmp_path: Path,
+) -> None:
+    study = _Study(tmp_path, entries=4)
+    kept = [(GROUP, "s3"), (GROUP, "s0"), (GROUP, "s2")]
+    study.folds = {entry: study.folds[entry] for entry in kept}
+    feature = _feature()
+
+    assert not feature.load_state(tmp_path / "run", {}, study.lookups())
+
+    assert reported_fit_entries(feature) == (
+        (GROUP, "s0"),
+        (GROUP, "s2"),
+        (GROUP, "s3"),
+    )
+
+
+def test_an_input_without_a_fold_table_reports_no_fit_entries(tmp_path: Path) -> None:
+    study = _Study(tmp_path)
+    feature = _feature()
+
+    assert not feature.load_state(tmp_path / "run", {}, study.lookups(fold_table=False))
+
+    assert reported_fit_entries(feature) is None
+
+
+def test_a_saved_run_reports_no_fit_entries_after_a_load_that_asked_for_a_fit(
+    tmp_path: Path,
+) -> None:
+    study = _Study(tmp_path)
+    _, run = _tuned(study)
+    feature = _feature()
+    assert not feature.load_state(tmp_path / "other", {}, study.lookups())
+    assert reported_fit_entries(feature) is not None
+
+    assert feature.load_state(run, {}, study.lookups())
+
+    assert reported_fit_entries(feature) is None

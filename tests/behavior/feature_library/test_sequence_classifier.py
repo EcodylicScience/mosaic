@@ -58,6 +58,7 @@ from mosaic.behavior.feature_library.sequence_training import (
     seed_torch,
     train_network,
 )
+from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.pipeline.types import InputStream, Result
@@ -2212,3 +2213,38 @@ def test_an_unreadable_run_upstream_of_the_sources_input_is_not_refused(
     warm = _warm(study, tables, features, source)
 
     assert _saved(warm, tmp_path / "warm")["classes"] == CLASSES
+
+
+def test_a_load_that_asks_for_a_fit_reports_the_train_entries_of_the_templates(
+    tmp_path: Path,
+) -> None:
+    study, _ = _study(tmp_path, {A: 0, B: 1, C: 2}, train=[B, A], test=[C])
+    feature = _feature()
+
+    assert not feature.load_state(
+        tmp_path / "run", {"templates": study.templates}, {"labels": study.label_files}
+    )
+
+    assert reported_fit_entries(feature) == (A, B)
+
+
+def test_a_load_that_finds_a_fitted_state_reports_no_fit_entries(
+    tmp_path: Path,
+) -> None:
+    study, tables = _two_entries(tmp_path)
+    _ = _saved(_fit(study, tables), tmp_path / "saved")
+    reloaded = _feature()
+    assert not reloaded.load_state(
+        tmp_path / "other",
+        {"templates": study.templates},
+        {"labels": study.label_files},
+    )
+    assert reported_fit_entries(reloaded) == (A, B)
+
+    assert reloaded.load_state(
+        tmp_path / "saved",
+        {"templates": study.templates},
+        {"labels": study.label_files},
+    )
+
+    assert reported_fit_entries(reloaded) is None

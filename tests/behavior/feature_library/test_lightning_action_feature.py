@@ -36,6 +36,7 @@ from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionModelArtifact,
     LightningActionModelBundle,
 )
+from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.types import InputStream, Result
 from mosaic.optional_dependency import MissingOptionalDependency
@@ -1167,3 +1168,43 @@ def test_the_network_trains_on_the_controlled_classes(
 
     assert bundle["classes"] == classes
     assert package.config_value("model", "output_size") == len(classes)
+
+
+def test_a_load_that_asks_for_a_fit_reports_the_train_entries_of_the_templates(
+    tmp_path: Path,
+) -> None:
+    study = write_templates_study(
+        tmp_path, {A: [], B: [], C: []}, train=[B, A], test=[C]
+    )
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(),
+    )
+
+    assert not feature.load_state(
+        tmp_path / "run", {"templates": study.templates}, {"labels": {}}
+    )
+
+    assert reported_fit_entries(feature) == (A, B)
+
+
+def test_a_load_that_finds_a_fitted_state_reports_no_fit_entries(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    study = write_templates_study(tmp_path / "study", {A: [], B: []}, train=[A, B])
+    feature = _applier(tmp_path)
+    assert feature.load_state(tmp_path / "model", {}, {})
+    fitting = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(),
+    )
+    assert not fitting.load_state(
+        tmp_path / "other", {"templates": study.templates}, {"labels": {}}
+    )
+    assert reported_fit_entries(fitting) == (A, B)
+
+    assert fitting.load_state(
+        tmp_path / "model", {"templates": study.templates}, {"labels": {}}
+    )
+
+    assert reported_fit_entries(fitting) is None

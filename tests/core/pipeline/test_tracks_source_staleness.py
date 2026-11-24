@@ -39,7 +39,9 @@ from mosaic.core.pipeline.fit_scope import read_fit_state_digest
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
     DriftReads,
+    EntryCells,
     adopt_feature_columns,
+    current_entry_cells,
     drifted_entries,
     feature_index_path,
     feature_run_root,
@@ -53,7 +55,7 @@ from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline import tracks_index as tracks_index_module
 from mosaic.core.pipeline.inventory import inventory
-from mosaic.core.pipeline.inventory.params import read_run_params
+from mosaic.core.pipeline.inventory.params import RunParams, read_run_params
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
@@ -789,16 +791,18 @@ def _stacked_over_two_halves(ds: Dataset) -> tuple[Result, Result]:
     return first, stacked
 
 
+def _params_of(ds: Dataset, result: Result) -> RunParams | None:
+    """The ``params.json`` of *result*'s run."""
+    assert result.run_id is not None
+    return read_run_params(feature_run_root(ds, result.feature, result.run_id)).params
+
+
 def _drifted(
     ds: Dataset, result: Result, *, with_params: bool = True
 ) -> tuple[tuple[str, str], ...]:
     """The entries ``drifted_entries`` reports for *result*'s run."""
     assert result.run_id is not None
-    params = (
-        read_run_params(feature_run_root(ds, result.feature, result.run_id)).params
-        if with_params
-        else None
-    )
+    params = _params_of(ds, result) if with_params else None
     return drifted_entries(ds, result.feature, result.run_id, params)
 
 
@@ -950,6 +954,174 @@ class TestDriftedEntries:
 
         assert _drifted(ds, upstream) == (("", "seq_a"), ("", "seq_b"))
         assert _drifted(ds, upstream, with_params=False) == (("", "seq_a"),)
+
+
+SEQ_A = ("", "seq_a")
+SEQ_B = ("", "seq_b")
+
+
+def _recorded_cells(ds: Dataset, result: Result, entry: tuple[str, str]) -> EntryCells:
+    """The three cells *result*'s row for *entry* recorded."""
+    assert result.run_id is not None
+    read = recorded_tracks_reads(ds, result.feature, result.run_id)[entry]
+    consumed = recorded_consumption(ds, result.feature, result.run_id).get(entry)
+    return EntryCells(
+        roots="" if consumed is None else consumed[1],
+        tracks=read.composition,
+        inputs=read.inputs,
+    )
+
+
+def _current_cells(
+    ds: Dataset, result: Result
+) -> tuple[dict[tuple[str, str], EntryCells], frozenset[tuple[str, str]]]:
+    """What ``current_entry_cells`` builds for *result*'s run over both sequences."""
+    return current_entry_cells(DriftReads(ds), _params_of(ds, result), [SEQ_A, SEQ_B])
+
+
+class TestCurrentEntryCells:
+    """One construction gives the cells a row records and the entries its inputs hold."""
+
+    def test_a_tracks_run_gets_its_tracks_cell_and_no_upstream_cell(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        written = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+
+        cells, held = _current_cells(ds, written)
+
+        assert held == {SEQ_A, SEQ_B}
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry] == _recorded_cells(ds, written, entry)
+            assert cells[entry].tracks != ""
+            assert cells[entry].inputs == ""
+
+    def test_the_cells_follow_the_dataset_and_not_the_row(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        written = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        was = _recorded_cells(ds, written, SEQ_A)
+
+        _convert(ds, "seq_a", n=9)
+        cells, _ = _current_cells(ds, written)
+
+        assert cells[SEQ_A].tracks == _tracks_cell(ds, "seq_a")
+        assert cells[SEQ_A].tracks != was.tracks
+        assert cells[SEQ_B] == _recorded_cells(ds, written, SEQ_B)
+
+    def test_a_declared_root_gives_the_roots_cell(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, _ = _root_chain(ds)
+
+        cells, _ = _current_cells(ds, upstream)
+
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry].roots != ""
+            assert cells[entry] == _recorded_cells(ds, upstream, entry)
+
+        _index_media(ds, "uid-a-2", "uid-b-1")
+        moved, _ = _current_cells(ds, upstream)
+
+        assert moved[SEQ_A].roots != cells[SEQ_A].roots
+        assert moved[SEQ_B] == cells[SEQ_B]
+
+    def test_a_feature_input_gives_its_upstreams_cells(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, reader = _root_chain(ds)
+        written = run_feature(ds, reader)
+
+        cells, held = _current_cells(ds, written)
+
+        assert held == {SEQ_A, SEQ_B}
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry] == _recorded_cells(ds, written, entry)
+            assert cells[entry].inputs != ""
+            assert cells[entry].tracks == _recorded_cells(ds, upstream, entry).tracks
+
+    def test_a_reader_over_tracks_and_a_feature_joins_the_cells_in_input_order(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        written = run_feature(
+            ds, _reader_of("tracks", _input_of(upstream)), tracks_run_id=VARIANT
+        )
+
+        cells, _ = _current_cells(ds, written)
+
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry] == _recorded_cells(ds, written, entry)
+
+    def test_an_entry_an_intersected_run_no_longer_resolves_is_not_held(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        written = run_feature(
+            ds, _reader_of("tracks", _input_of(upstream)), tracks_run_id=VARIANT
+        )
+
+        _ = ds.drop_entries(scope=Scope(entries=[SEQ_B]))
+        cells, held = _current_cells(ds, written)
+
+        assert held == {SEQ_A}
+        assert cells[SEQ_A] == _recorded_cells(ds, written, SEQ_A)
+        assert SEQ_B in cells
+
+    def test_a_stacked_run_holds_an_entry_either_input_holds(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _, stacked = _stacked_over_two_halves(ds)
+
+        cells, held = _current_cells(ds, stacked)
+
+        assert held == {SEQ_A, SEQ_B}
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry] == _recorded_cells(ds, stacked, entry)
+
+    def test_the_recorded_roots_of_an_entry_set_the_roots_it_is_built_under(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, _ = _root_chain(ds)
+        assert upstream.run_id is not None
+        recorded = {
+            entry: roots
+            for entry, (roots, _) in recorded_consumption(
+                ds, upstream.feature, upstream.run_id
+            ).items()
+        }
+
+        cells, held = current_entry_cells(
+            DriftReads(ds), None, [SEQ_A, SEQ_B], recorded_roots=recorded
+        )
+
+        assert held == {SEQ_A, SEQ_B}
+        for entry in (SEQ_A, SEQ_B):
+            assert cells[entry].roots == _recorded_cells(ds, upstream, entry).roots
+            assert cells[entry].tracks == ""
+            assert cells[entry].inputs == ""
+
+    def test_a_run_without_params_and_roots_has_blank_cells(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+
+        cells, held = current_entry_cells(DriftReads(ds), None, [SEQ_A])
+
+        assert held == {SEQ_A}
+        assert cells == {SEQ_A: EntryCells(roots="", tracks="", inputs="")}
 
 
 FIT_FEATURE = "prov-fit"

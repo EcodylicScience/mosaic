@@ -66,6 +66,7 @@ from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.pipeline.graph import ColumnSet
 from mosaic.core.pipeline.graph.columns import measured_columns, output_columns
 from mosaic.core.pipeline.progress import NullProgressCallback
+from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.types import GroundTruthLabelsSource, InputStream, Result
 from mosaic_media import MediaProbeError
@@ -4262,3 +4263,35 @@ class TestChunkProbabilities:
 
         assert [chunk.shape for chunk in probabilities] == [(4, 3), (4, 3)]
         assert {chunk.dtype for chunk in probabilities} == {np.dtype(np.float32)}
+
+
+class TestFitEntries:
+    """``fitted_entries`` names every entry the fit streams: train and test both."""
+
+    def test_templates_report_the_train_and_test_entries_together(
+        self, tmp_path: Path, loaded: _LoadedModels
+    ) -> None:
+        templates = _templates_run(tmp_path / "templates", ["b", "a"], ["d", "c"])
+        feature = _feature(_TRAINING_SOURCE)
+
+        assert not feature.load_state(tmp_path / "run", {"templates": templates}, {})
+
+        assert reported_fit_entries(feature) == (
+            ("g", "a"),
+            ("g", "b"),
+            ("g", "c"),
+            ("g", "d"),
+        )
+
+    def test_a_cached_run_reports_none_after_a_load_that_asked_for_a_fit(
+        self, tmp_path: Path, loaded: _LoadedModels
+    ) -> None:
+        templates = _templates_run(tmp_path / "templates", ["a"], ["b"])
+        feature = _feature(_TRAINING_SOURCE)
+        assert not feature.load_state(tmp_path / "run", {"templates": templates}, {})
+        assert reported_fit_entries(feature) is not None
+        _ = _bundle_file(tmp_path / "cached")
+
+        assert feature.load_state(tmp_path / "cached", {"templates": templates}, {})
+
+        assert reported_fit_entries(feature) is None

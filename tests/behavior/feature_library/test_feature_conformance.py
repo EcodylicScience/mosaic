@@ -162,12 +162,12 @@ def test_every_global_and_media_feature_declares_costly_fit(cls: type) -> None:
     assert isinstance(vars(cls)["costly_fit"], bool)
 
 
-def _sets_on_instance(cls: type, attribute: str) -> bool:
-    """Whether the class's own ``__init__`` assigns ``self.<attribute>``."""
-    init = vars(cls).get("__init__")
-    if init is None:
+def _sets_on_instance(cls: type, attribute: str, method: str = "__init__") -> bool:
+    """Whether the class's own *method* assigns ``self.<attribute>``."""
+    own = vars(cls).get(method)
+    if own is None:
         return False
-    tree = ast.parse(textwrap.dedent(inspect.getsource(init)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(own)))
     return any(
         isinstance(node, ast.Attribute)
         and node.attr == attribute
@@ -284,6 +284,25 @@ def test_a_scope_free_fitter_declares_fits_and_narrows_it_per_instance(
     assert _sets_on_instance(cls, "fits"), (
         f"{cls.__name__} pins its fit set and does not narrow 'fits' in __init__ "
         "for a run that fits nothing."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_fit_pinned_to_its_training_set_reports_the_entries_it_streams(
+    cls: type,
+) -> None:
+    """``fitted_entries`` names every entry the fit streams, and ``load_state`` sets it.
+
+    A fit pinned outside its scope trains on entries the invocation does not name,
+    so the entries its fit reads are the ones that can drift. ``feral`` streams its
+    train and test entries both, and reports both. ``load_state`` sets the
+    attribute, ``None`` when it finds a fitted state to load.
+    """
+    if getattr(cls, "fit_set_pinned_by", None) is None:
+        pytest.skip("does not pin its fit set outside the scope")
+    assert _sets_on_instance(cls, "fitted_entries", "load_state"), (
+        f"{cls.__name__} pins its fit set and does not assign "
+        "'self.fitted_entries' in its own load_state."
     )
 
 

@@ -18,11 +18,13 @@ from typing import Final
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.fit_scope import read_fit_state_digest
 from mosaic.core.pipeline.index import drifted_entries, feature_index_path
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import Feature, Result
 from tests.helpers.results import model_reference, result_run_root
 from tests.helpers.tracks import add_tracks_table
@@ -39,6 +41,7 @@ __all__ = [
     "kmeans_fit_and_apply",
     "model_cells",
     "move_tracks",
+    "reconvert_entry",
     "refit_kmeans",
     "refusals",
     "run_step",
@@ -184,6 +187,31 @@ def move_tracks(ds: Dataset, variant: str, sequences: Iterable[str]) -> None:
         table[moved] = table[moved] * 2.0
         add_tracks_table(
             ds, variant, table, std_format="mosaic_v1", consumed_composition="moved"
+        )
+
+
+def reconvert_entry(ds: Dataset, entry: Entry, *, composition: str) -> None:
+    """Write each tracks table of *entry* again, recording *composition*.
+
+    Stands for a conversion of the entry from changed sources: the table is
+    written back under its variant, and its row records the new composition,
+    which a run reading the entry compares.
+    """
+    group, sequence = entry
+    rows = read_tracks_index(ds)
+    selected = rows[
+        (rows["group"].astype(str) == group)
+        & (rows["sequence"].astype(str) == sequence)
+    ]
+    assert not selected.empty
+    for _, row in selected.iterrows():
+        table = pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
+        add_tracks_table(
+            ds,
+            str(row["run_id"]),
+            table,
+            std_format=str(row["std_format"]),
+            consumed_composition=composition,
         )
 
 

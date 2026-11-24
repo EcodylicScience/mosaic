@@ -83,6 +83,7 @@ from .identity_scheme import (
 )
 from .index import (
     OWN_STATE_PART,
+    DriftReads,
     FeatureIndexRow,
     FitReference,
     RecordedTracksReads,
@@ -93,6 +94,7 @@ from .index import (
     feature_run_root,
     feature_run_roots,
     feature_run_rows,
+    current_entry_cells,
     has_feature_index,
     latest_feature_run_root,
     fit_state_cell,
@@ -145,11 +147,13 @@ from .manifest import (
 )
 from .op_identity import parse_op_run_id
 from .fit_scope import (
+    FitEntryInputs,
     derive_fit_scope,
     fit_references,
     list_run_root,
     read_fit_scope,
     read_fit_state_digest,
+    reported_fit_entries,
     saved_state_digest,
     write_fit_scope,
 )
@@ -313,6 +317,50 @@ def _current_fit_states(ds: Dataset, feature: Feature) -> dict[str, str]:
         root = fit_state_root(ds, reference)
         states[reference.field] = "" if root is None else read_fit_state_digest(root)
     return states
+
+
+def _fit_input_record(
+    ds: Dataset,
+    feature: Feature,
+    resolved: ResolvedScope,
+    run_params_now: RunParams | None,
+) -> tuple[FitEntryInputs, ...] | None:
+    """The cells of each entry a fit about to run reads, taken now.
+
+    Called after ``load_state`` asked for a fit and before ``fit``. A fit
+    pinned to its training set reads the entries it reports
+    (:func:`~.fit_scope.reported_fit_entries`), a scope-dependent run its
+    resolved scope, and any other fit no entry: it fits from the fits it pins,
+    whose states the record's ``via`` carries. An entry the run's inputs no
+    longer hold is left out.
+
+    Args:
+        ds: The dataset the run belongs to.
+        feature: The feature about to fit, after the ``load_state`` that asked
+            for the fit.
+        resolved: The scope the run resolved.
+        run_params_now: The run's ``params.json`` document as this invocation
+            built it, ``None`` when it could not be built.
+
+    Returns:
+        The cells of each entry, sorted by group and sequence, or ``None`` when
+        there is no document to build them from.
+    """
+    if run_params_now is None:
+        return None
+    reported = reported_fit_entries(feature)
+    if reported is not None:
+        entries = reported
+    elif feature.scope_dependent:
+        entries = tuple(sorted(resolved.entries))
+    else:
+        entries = ()
+    cells, held = current_entry_cells(DriftReads(ds), run_params_now, entries)
+    return tuple(
+        FitEntryInputs(group=group, sequence=sequence, cells=cells[(group, sequence)])
+        for group, sequence in entries
+        if (group, sequence) in held
+    )
 
 
 def _resolve_dependencies(
@@ -2784,6 +2832,9 @@ def _run_feature_impl(
         return Path(stored_form(resolved_run_root / output.name, dataset_base))
 
     params_path = run_root / "params.json"
+    # The document as built here, which the record of a fit reads its cells
+    # from. ``None`` when building it failed.
+    run_params_now: RunParams | None = None
     try:
         # The feature's index lock serializes the invocations of one run, each of
         # which merges its asked scope with the previous document. A lock on
@@ -2816,6 +2867,7 @@ def _run_feature_impl(
                 asked=asked,
                 asked_all=asked_all,
             )
+            run_params_now = RunParams.model_validate(save_payload)
             atomic_write(
                 params_path,
                 lambda p: p.write_text(json.dumps(save_payload, indent=2)),
@@ -3095,6 +3147,9 @@ def _run_feature_impl(
                 )
                 state_ready = loaded is not None
                 if not state_ready:
+                    fit_inputs = _fit_input_record(
+                        ds, feature, resolved, run_params_now
+                    )
                     ctx.phase("fit", f"{len(manifest)} entries")
                     # The stream the fit is offered. A fitter that fits from pinned
                     # artifacts ignores it, and these figures still describe it.
@@ -3132,9 +3187,17 @@ def _run_feature_impl(
                     # every apply scope shares one run root -- fits from its pinned
                     # artifacts, not from this invocation's scope, so its record is
                     # derived from theirs. It also records the digest of the files
-                    # save_state wrote, which an apply through `model` compares.
+                    # save_state wrote, which an apply through `model` compares,
+                    # the cells of the entries the fit read, the state of each
+                    # fit it read and the attempt that fitted.
                     fit_scope = derive_fit_scope(
-                        ds, feature, resolved, resolutions, artifact_paths
+                        ds,
+                        feature,
+                        resolved,
+                        artifact_paths,
+                        states=fit_states_now,
+                        inputs=fit_inputs,
+                        execution_id=ctx.execution_id,
                     )
                     write_fit_scope(
                         run_root, replace(fit_scope, state_digest=state_digest)

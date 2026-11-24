@@ -85,6 +85,7 @@ from pydantic import (
 )
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared
@@ -815,6 +816,7 @@ class SequenceClassifier(FitReporting):
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._reset()
+        self.fitted_entries: tuple[Entry, ...] | None = None
 
         cached_path = run_root / "sequence_classifier_model.joblib"
         if cached_path.exists():
@@ -837,6 +839,7 @@ class SequenceClassifier(FitReporting):
                 )
                 raise ValueError(msg)
             self._train_entries = entries
+            self.fitted_entries = tuple(sorted(entries))
             self._label_files = dependency_lookups.get("labels", {})
             if self.params.init_from is not None:
                 self._source = self._warm_start_source(

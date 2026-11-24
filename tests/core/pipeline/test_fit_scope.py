@@ -16,22 +16,28 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX, file_digest
 from mosaic.core.pipeline.fit_scope import (
     FIT_SCOPE_NAME,
+    FitEntryInputs,
     FitScope,
+    FitSourceRef,
     FitStateUnreadable,
     fit_and_apply_scopes,
     fit_references,
     list_run_root,
     read_fit_scope,
     read_fit_state_digest,
+    reported_fit_entries,
     read_run_fit_scope,
+    records_fit_inputs,
     saved_state_digest,
     write_fit_scope,
 )
@@ -39,6 +45,7 @@ from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.graph import build_feature
 from mosaic.core.pipeline.index import (
     DriftReads,
+    EntryCells,
     FitReference,
     feature_index_path,
     feature_run_root,
@@ -63,6 +70,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
+from tests.helpers import kpms_params
 
 SOURCE_DIR = "fit-scope-source__from__tracks"
 FIT_DIR = "fit-scope-fit__from__tracks"
@@ -924,3 +932,316 @@ def test_unpinned_references_and_other_results_are_not_fit_references() -> None:
     )
 
     assert fit_references(params) == ()
+
+
+# --- the fit's inputs, its attempt and the states it read -------------------
+
+
+def _fitted(
+    inputs: tuple[FitEntryInputs, ...] | None,
+    via: tuple[FitSourceRef, ...] = (),
+    execution_id: str = "",
+) -> FitScope:
+    return FitScope(
+        scope_dependent=True,
+        entries=(("g1", "s1"), ("g2", "s2")),
+        tracks_variants=(),
+        labels_variants=(),
+        fitted_at="2026-01-01T00:00:00Z",
+        identity_scheme="x",
+        via=via,
+        state_digest="d1",
+        inputs=inputs,
+        execution_id=execution_id,
+    )
+
+
+_INPUTS = (
+    FitEntryInputs(
+        group="g1",
+        sequence="s1",
+        cells=EntryCells(roots="", tracks="b2c4e1", inputs=""),
+    ),
+    FitEntryInputs(
+        group="g1",
+        sequence="s2",
+        cells=EntryCells(roots="r1", tracks="c3d5f2", inputs="i1"),
+    ),
+    FitEntryInputs(
+        group="g2",
+        sequence="s1",
+        cells=EntryCells(roots="", tracks="", inputs="i2"),
+    ),
+)
+_VIA = (
+    FitSourceRef(
+        field="model", feature="up", run_id="0.1-aa", known=True, state_digest="9af07c"
+    ),
+    FitSourceRef(
+        field="templates", feature="tp", run_id="0.2-bb", known=False, state_digest=""
+    ),
+)
+
+
+def test_the_fit_inputs_the_attempt_and_the_states_read_round_trip(
+    tmp_path: Path,
+) -> None:
+    write_fit_scope(tmp_path, _fitted(_INPUTS, _VIA, "01JD8M3Q6W2F5Y0RKX7T4N9BCA"))
+
+    fitted = read_fit_scope(tmp_path)
+
+    assert fitted is not None
+    assert fitted.inputs == _INPUTS
+    assert fitted.execution_id == "01JD8M3Q6W2F5Y0RKX7T4N9BCA"
+    assert fitted.via == _VIA
+    assert [ref.state_digest for ref in fitted.via] == ["9af07c", ""]
+    stored = json.loads((tmp_path / FIT_SCOPE_NAME).read_text())
+    assert stored["fit_inputs"]["entries"][0] == {
+        "group": "g1",
+        "sequence": "s1",
+        "roots": "",
+        "tracks": "b2c4e1",
+        "inputs": "",
+    }
+    assert stored["via"][0]["state_digest"] == "9af07c"
+
+
+def test_an_empty_set_of_fit_inputs_is_a_record_and_none_is_not(
+    tmp_path: Path,
+) -> None:
+    write_fit_scope(tmp_path, _fitted(()))
+    recorded = read_fit_scope(tmp_path)
+    assert recorded is not None
+    assert recorded.inputs == ()
+
+    write_fit_scope(tmp_path, _fitted(None))
+
+    unrecorded = read_fit_scope(tmp_path)
+    assert unrecorded is not None
+    assert unrecorded.inputs is None
+    assert "fit_inputs" not in json.loads((tmp_path / FIT_SCOPE_NAME).read_text())
+
+
+def test_the_files_bytes_do_not_depend_on_the_order_given(tmp_path: Path) -> None:
+    ordered = tmp_path / "ordered"
+    shuffled = tmp_path / "shuffled"
+    ordered.mkdir()
+    shuffled.mkdir()
+
+    write_fit_scope(ordered, _fitted(_INPUTS, _VIA))
+    write_fit_scope(shuffled, _fitted(_INPUTS[::-1], _VIA[::-1]))
+
+    assert (shuffled / FIT_SCOPE_NAME).read_bytes() == (
+        ordered / FIT_SCOPE_NAME
+    ).read_bytes()
+    fitted = read_fit_scope(shuffled)
+    assert fitted is not None
+    assert fitted.inputs == _INPUTS
+    assert fitted.via == _VIA
+
+
+def test_a_record_without_the_new_keys_reads_them_as_unrecorded(
+    tmp_path: Path,
+) -> None:
+    _write_record(
+        tmp_path,
+        {
+            "scope_dependent": True,
+            "entries": [["", "seq_a"]],
+            "tracks_variants": [],
+            "labels_variants": [],
+            "fitted_at": "2026-01-01T00:00:00Z",
+            "identity_scheme": "x",
+            "source": "stream",
+            "via": [
+                {"field": "model", "feature": "up", "run_id": "0.1-aa", "known": True}
+            ],
+            "state_digest": "d1",
+        },
+    )
+
+    fitted = read_fit_scope(tmp_path)
+
+    assert fitted is not None
+    assert fitted.inputs is None
+    assert fitted.execution_id == ""
+    assert [ref.state_digest for ref in fitted.via] == [""]
+
+
+@pytest.mark.parametrize(
+    "fit_inputs",
+    [[], "entries", None, {"entries": {"g1": "s1"}}, {"rows": []}],
+    ids=["list", "string", "null", "entries-not-a-list", "no-entries"],
+)
+def test_a_fit_inputs_that_is_not_an_object_with_entries_is_unreadable(
+    tmp_path: Path, fit_inputs: object
+) -> None:
+    run_root = tmp_path / "fit-scope-fit__from__tracks" / "0.1-abc"
+    run_root.mkdir(parents=True)
+    _write_record(
+        run_root,
+        {"scope_dependent": True, "state_digest": "d1", "fit_inputs": fit_inputs},
+    )
+
+    assert read_fit_scope(run_root) is None
+    with pytest.raises(FitStateUnreadable) as raised:
+        _ = read_fit_scope(run_root, strict=True)
+
+    assert "the fit this run reads" in str(raised.value)
+    assert "run 0.1-abc of fit-scope-fit__from__tracks" in str(raised.value)
+    with pytest.raises(FitStateUnreadable):
+        _ = read_fit_state_digest(run_root)
+
+
+def test_an_entry_of_the_fit_inputs_that_is_not_an_object_is_unreadable_strictly(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "fit-scope-fit__from__tracks" / "0.1-abc"
+    run_root.mkdir(parents=True)
+    entry = {"group": "g1", "sequence": "s1", "roots": "", "tracks": "t", "inputs": ""}
+    _write_record(
+        run_root,
+        {
+            "scope_dependent": True,
+            "state_digest": "d1",
+            "fit_inputs": {"entries": [entry, "g2:s2"]},
+        },
+    )
+
+    lenient = read_fit_scope(run_root)
+    assert lenient is not None
+    assert [(item.group, item.sequence) for item in lenient.inputs or ()] == [
+        ("g1", "s1")
+    ]
+    with pytest.raises(FitStateUnreadable) as raised:
+        _ = read_fit_scope(run_root, strict=True)
+
+    assert "an entry of its fit_inputs is not an object" in str(raised.value)
+    assert "run 0.1-abc of fit-scope-fit__from__tracks" in str(raised.value)
+    with pytest.raises(FitStateUnreadable):
+        _ = read_fit_state_digest(run_root)
+
+
+def test_a_fit_inputs_object_with_an_entries_list_is_readable_strictly(
+    tmp_path: Path,
+) -> None:
+    _write_record(
+        tmp_path,
+        {
+            "scope_dependent": True,
+            "state_digest": "d1",
+            "fit_inputs": {
+                "entries": [
+                    {
+                        "group": "g1",
+                        "sequence": "s1",
+                        "roots": "",
+                        "tracks": "b2c4e1",
+                        "inputs": "",
+                    }
+                ]
+            },
+        },
+    )
+
+    fitted = read_fit_scope(tmp_path, strict=True)
+
+    assert fitted is not None
+    assert fitted.inputs == _INPUTS[:1]
+
+
+_APPLIED_RUN: dict[str, object] = {"feature": "up", "run_id": "0.1-aa"}
+_APPLIED_INPUT: list[object] = [_APPLIED_RUN]
+_TEMPLATES_REF: dict[str, object] = {
+    "feature": "extract-templates",
+    "run_id": "0.1-aa",
+    "pattern": "templates.parquet",
+    "load": {"kind": "parquet"},
+}
+
+
+@pytest.mark.parametrize(
+    ("slug", "params", "records"),
+    [
+        ("extract-templates", {"n_templates": 5}, True),
+        (
+            "sequence-classifier",
+            {"templates": _TEMPLATES_REF, "labels": {}, "default_class": 0},
+            True,
+        ),
+        ("evaluate-labels", {}, True),
+        ("kpms", kpms_params(), True),
+        ("speed-angvel", {}, False),
+        ("global-kmeans", {"model": _APPLIED_RUN}, False),
+        ("sequence-classifier", {"model": _APPLIED_RUN, "default_class": 0}, False),
+        ("kpms", kpms_params(model=_APPLIED_RUN), False),
+    ],
+    ids=[
+        "extract-templates",
+        "sequence-classifier-fitting",
+        "evaluate-labels",
+        "kpms-fitting",
+        "speed-angvel",
+        "global-kmeans-given-a-model",
+        "sequence-classifier-given-a-model",
+        "kpms-given-a-model",
+    ],
+)
+def test_a_run_records_fit_inputs_when_it_fits_or_depends_on_its_scope(
+    slug: str, params: dict[str, object], records: bool
+) -> None:
+    feature = build_feature(slug, _APPLIED_INPUT, params)
+
+    assert records_fit_inputs(feature) is records
+
+
+class _ReportsFitEntries(_ScopeFreeFit):
+    """A fit pinned to its training set that reports the entries it streams."""
+
+    fit_set_pinned_by: ClassVar[str] = "templates"
+
+    def __init__(self, entries: tuple[Entry, ...] | None) -> None:
+        super().__init__()
+        self.fitted_entries = entries
+
+
+class _ReportsNothing(_ScopeFreeFit):
+    """A fit pinned to its training set that never sets ``fitted_entries``."""
+
+    fit_set_pinned_by: ClassVar[str] = "templates"
+
+
+class _ReportsWithoutPinning(_ScopeFreeFit):
+    """A fit that sets ``fitted_entries`` and declares no pinned fit set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fitted_entries: tuple[Entry, ...] = (("g1", "s1"),)
+
+
+def test_the_entries_a_fit_reports_come_back_sorted() -> None:
+    feature = _ReportsFitEntries((("g2", "s1"), ("g1", "s2"), ("g1", "s1")))
+
+    assert reported_fit_entries(feature) == (
+        ("g1", "s1"),
+        ("g1", "s2"),
+        ("g2", "s1"),
+    )
+
+
+def test_a_fit_that_reports_an_empty_set_reports_an_empty_tuple() -> None:
+    assert reported_fit_entries(_ReportsFitEntries(())) == ()
+
+
+@pytest.mark.parametrize(
+    "feature",
+    [
+        _ReportsFitEntries(None),
+        _ReportsNothing(),
+        _ReportsWithoutPinning(),
+        _ScopeFreeFit(),
+    ],
+    ids=["reports-none", "sets-nothing", "declares-no-pin", "has-no-attribute"],
+)
+def test_a_fit_that_reports_no_entries_reports_none(feature: Feature) -> None:
+    assert reported_fit_entries(feature) is None

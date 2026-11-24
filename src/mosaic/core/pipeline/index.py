@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
+from mosaic.core.entry import Entry, entry_token
 from mosaic.core.pipeline.composition import (
     cached_entry_disposition,
     input_part,
@@ -391,10 +391,24 @@ def feature_run_file(ds: Dataset, storage: str, run_id: str, name: str) -> Path 
     Returns:
         The file's path, or ``None`` when no root holds it.
     """
-    for root in feature_run_roots(ds, storage, run_id):
-        candidate = root / name
+    located = feature_run_file_location(ds, storage, run_id, name)
+    return None if located is None else located[1]
+
+
+def feature_run_file_location(
+    ds: Dataset, storage: str, run_id: str, name: str
+) -> tuple[str, Path] | None:
+    """The run-level file *name* in the first root that holds it, and the link.
+
+    Returns:
+        The link id of the dataset of ``ds.lookup_order("features")`` whose run
+        root holds the file, ``""`` for *ds* itself, and the file's path.
+        ``None`` when no root holds it.
+    """
+    for linked in ds.lookup_order("features"):
+        candidate = feature_run_root(linked.dataset, storage, run_id) / name
         if candidate.is_file():
-            return candidate
+            return linked.link_id, candidate
     return None
 
 
@@ -415,6 +429,23 @@ class FitReference:
     feature: str
     run_id: str
     pattern: str | None
+
+
+@dataclass(frozen=True)
+class EntryCells:
+    """The three cells an entry's row records of what it consumed.
+
+    Attributes:
+        roots: The entry's composition under the run's declared roots.
+        tracks: The tracks cell: the tracks rows of the run's variants, or its
+            inputs' cells joined in input order.
+        inputs: The upstream-roots cell: its feature inputs' parts joined in
+            input order, blank for a run whose only input is ``tracks``.
+    """
+
+    roots: str
+    tracks: str
+    inputs: str
 
 
 OWN_STATE_PART: Final = "_state"
@@ -632,13 +663,20 @@ class DriftReads:
         self._ds: Dataset = ds
         self._feature_frame: Callable[[Path], pd.DataFrame] = feature_frame
         self._strict: bool = strict
-        self._fit_records: dict[tuple[str, str], FitScope | None] = {}
+        self._fit_records: dict[
+            tuple[str, str], tuple[str, FitScope | None] | None
+        ] = {}
         self._runs: dict[str, dict[str, pd.DataFrame]] = {}
         self._tracks: dict[tuple[str, ...], dict[Entry, str]] = {}
         self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
         self._arena_lookup: ArenaLookup | None = None
         self._recorded: dict[Entry, dict[str, str]] | None = None
         self._fit_states: dict[FitReference, str] = {}
+
+    @property
+    def dataset(self) -> Dataset:
+        """The dataset whose indexes are read."""
+        return self._ds
 
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
         runs = self._runs.get(storage)
@@ -687,8 +725,7 @@ class DriftReads:
     def fit_record(self, storage: str, run_id: str) -> FitScope | None:
         """The ``fit_scope.json`` of a run, read once per run.
 
-        Read through :func:`~.fit_scope.read_run_fit_scope`, in the first
-        dataset of the lookup that holds one.
+        Read through :meth:`located_fit_record`.
 
         Returns:
             The record, and ``None`` when no dataset holds one, or, unless the
@@ -698,11 +735,31 @@ class DriftReads:
             FitStateUnreadable: The reads are strict and the record cannot be
                 read.
         """
-        from .fit_scope import read_run_fit_scope
+        located = self.located_fit_record(storage, run_id)
+        return None if located is None else located[1]
+
+    def located_fit_record(
+        self, storage: str, run_id: str
+    ) -> tuple[str, FitScope | None] | None:
+        """The ``fit_scope.json`` of a run and the link it is under, read once.
+
+        Read through :func:`~.fit_scope.read_located_fit_scope`, in the first
+        dataset of the lookup that holds one.
+
+        Returns:
+            The link id of the dataset holding the record, ``""`` for the
+            reading dataset, and the record, ``None`` when it cannot be read
+            and the reads are not strict. ``None`` when no dataset holds one.
+
+        Raises:
+            FitStateUnreadable: The reads are strict and the record cannot be
+                read.
+        """
+        from .fit_scope import read_located_fit_scope
 
         key = (storage, run_id)
         if key not in self._fit_records:
-            self._fit_records[key] = read_run_fit_scope(
+            self._fit_records[key] = read_located_fit_scope(
                 self._ds, storage, run_id, strict=self._strict
             )
         return self._fit_records[key]
@@ -829,26 +886,19 @@ def drifted_entries(
     Returns:
         The drifted entries, sorted.
     """
-    from .arena_index import ARENAS_ROOT, entry_compositions
-    from .sequence_index import encode_entry_composition
-
     shared = DriftReads(ds) if reads is None else reads
     recorded_roots = shared.consumption(feature_name, run_id)
-    declared = tuple(run_params.scope.consumed_roots) if run_params else ()
     recorded_reads = shared.tracks_reads(feature_name, run_id) if run_params else {}
     fits_now = _current_fit_cell(shared, feature_name, run_id, run_params)
     entries = sorted(set(recorded_roots) | set(recorded_reads))
     if not entries:
         return ()
-    in_play = set(declared).union(*(roots for roots, _ in recorded_roots.values()))
-    lookup = shared.arena_lookup() if ARENAS_ROOT in in_play else None
-    current_roots = entry_compositions(
-        ds, entries, in_play, lookup=lookup, recorded=shared.recorded_compositions()
-    )
-    tracks_now, inputs_now, held = (
-        _current_input_cells(shared, run_params)
-        if run_params
-        else ({}, {}, frozenset(entries))
+    declared = tuple(run_params.scope.consumed_roots) if run_params else ()
+    cells_now, held = current_entry_cells(
+        shared,
+        run_params,
+        entries,
+        recorded_roots={entry: roots for entry, (roots, _) in recorded_roots.items()},
     )
 
     drifted: list[tuple[str, str]] = []
@@ -856,15 +906,12 @@ def drifted_entries(
         if entry not in held:
             continue
         roots, was = recorded_roots.get(entry, (declared, ""))
-        channels = [
-            (was, encode_entry_composition(current_roots.get(entry, {}), roots))
-            if roots
-            else ("", "")
-        ]
+        cells = cells_now[entry]
+        channels = [(was, cells.roots) if roots else ("", "")]
         if run_params is not None:
             read = recorded_reads.get(entry, RecordedTracksReads())
-            channels.append((read.composition, tracks_now.get(entry, "")))
-            channels.append((read.inputs, inputs_now.get(entry, "")))
+            channels.append((read.composition, cells.tracks))
+            channels.append((read.inputs, cells.inputs))
             channels.append((read.model_state, fits_now))
         if any(
             cached_entry_disposition(recorded, current) == "recompute"
@@ -872,6 +919,76 @@ def drifted_entries(
         ):
             drifted.append(entry)
     return tuple(drifted)
+
+
+def current_entry_cells(
+    reads: DriftReads,
+    run_params: RunParams | None,
+    entries: Sequence[Entry],
+    *,
+    recorded_roots: Mapping[Entry, Sequence[str]] | None = None,
+) -> tuple[dict[Entry, EntryCells], frozenset[Entry]]:
+    """The cells each of *entries* would record for a run of *run_params* now.
+
+    The one construction of an entry's cells from the dataset's indexes, built
+    as ``build_manifest`` builds them: the entry's composition under its
+    declared roots, the tracks cell and the upstream-roots cell
+    (:class:`EntryCells`). The comparison of :func:`drifted_entries` and the
+    record of a fit's inputs both read it.
+
+    A run whose only input is ``tracks`` compares its variants' tracks rows and
+    no upstream roots. A run with a feature input joins each input's part in
+    input order, a ``tracks`` input's roots part being blank. An entry no input
+    holds has blank tracks and upstream-roots cells.
+
+    Args:
+        reads: The index reads shared with other calls.
+        run_params: The run's ``params.json``, which names its declared roots,
+            inputs and tracks variants. ``None`` builds the roots cell alone,
+            under *recorded_roots*, and holds every entry.
+        entries: The entries to build the cells of.
+        recorded_roots: The roots an entry's row recorded, which replace the
+            declared roots for that entry. An entry it leaves out is built
+            under the declared roots.
+
+    Returns:
+        The cells of each of *entries*, and the entries the run's inputs still
+        resolve: those every input holds a row for, or any input for a stacked
+        run or one whose file does not say, whether or not the row records a
+        composition. An entry outside it has no input to read.
+    """
+    from .arena_index import ARENAS_ROOT, entry_compositions
+    from .sequence_index import encode_entry_composition
+
+    declared = tuple(run_params.scope.consumed_roots) if run_params else ()
+    recorded: Mapping[Entry, Sequence[str]] = (
+        {} if recorded_roots is None else recorded_roots
+    )
+    in_play = set(declared).union(*recorded.values())
+    lookup = reads.arena_lookup() if ARENAS_ROOT in in_play else None
+    compositions = entry_compositions(
+        reads.dataset,
+        entries,
+        in_play,
+        lookup=lookup,
+        recorded=reads.recorded_compositions(),
+    )
+    tracks_now, inputs_now, held = (
+        _current_input_cells(reads, run_params)
+        if run_params
+        else ({}, {}, frozenset(entries))
+    )
+    cells: dict[Entry, EntryCells] = {}
+    for entry in entries:
+        roots = tuple(recorded.get(entry, declared))
+        cells[entry] = EntryCells(
+            roots=encode_entry_composition(compositions.get(entry, {}), roots)
+            if roots
+            else "",
+            tracks=tracks_now.get(entry, ""),
+            inputs=inputs_now.get(entry, ""),
+        )
+    return cells, held
 
 
 def _current_fit_cell(
@@ -952,6 +1069,173 @@ def _current_input_cells(
         join_input_cells(per_input_roots),
         held,
     )
+
+
+@dataclass(frozen=True)
+class FitDrift:
+    """How a fit's recorded inputs compare with what the dataset holds now.
+
+    Attributes:
+        link_id: The link of the dataset that holds the fit's record, and
+            ``""`` for the reading dataset.
+        recorded: Whether the record holds the inputs of the fit. A fit saved
+            before it did holds none and does not read as drifted.
+        moved: The recorded entries whose cells moved, sorted.
+        dropped: The training entries the run's inputs no longer hold, sorted.
+            Always empty for a run whose entry set is in its run id.
+        refitted: The params fields whose fit records another state than the
+            fit read, sorted.
+    """
+
+    link_id: str
+    recorded: bool
+    moved: tuple[Entry, ...]
+    dropped: tuple[Entry, ...]
+    refitted: tuple[str, ...]
+
+    @property
+    def drifted(self) -> bool:
+        """Whether the fit read inputs that have changed since."""
+        return self.recorded and bool(self.moved or self.dropped or self.refitted)
+
+
+def fit_drift(
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    run_params: RunParams | None,
+    reads: DriftReads | None = None,
+) -> FitDrift | None:
+    """Compare the inputs a run's fit recorded with what the dataset holds now.
+
+    The run's ``fit_scope.json`` is read from the first dataset of the lookup
+    that holds it (:meth:`DriftReads.located_fit_record`). Each recorded entry
+    the run's inputs still hold has its cells compared with those
+    :func:`current_entry_cells` builds now, and each fit the run read has the
+    digest it recorded compared with the one that fit records now
+    (:meth:`DriftReads.fit_state`), each under
+    :func:`~.composition.cached_entry_disposition`: a side blank on both is
+    not drift, and one known side is.
+
+    A recorded entry the inputs no longer hold is dropped for a run whose entry
+    set is not in its run id, a fit pinned to its training set. A
+    scope-dependent run resolves a new run id once an entry leaves, and the
+    entry is left out of its comparison.
+
+    Both sides are recorded values. The read writes nothing, takes no lock and
+    imports no feature definition.
+
+    Args:
+        ds: The dataset reading.
+        storage: The run's feature storage.
+        run_id: The run.
+        run_params: The run's ``params.json``, which names its inputs, its fit
+            references and whether its scope is in its run id. ``None``
+            compares the fits read alone.
+        reads: The index reads shared with other calls, or ``None`` to read
+            them for this call alone. Strict reads raise for a record that
+            cannot be read.
+
+    Returns:
+        The drift, or ``None`` when no dataset holds a readable record of the
+        run.
+
+    Raises:
+        FitStateUnreadable: *reads* are strict and the record cannot be read.
+    """
+    shared = DriftReads(ds) if reads is None else reads
+    located = shared.located_fit_record(storage, run_id)
+    if located is None:
+        return None
+    link_id, record = located
+    if record is None:
+        return None
+    references = (
+        {reference.field: reference for reference in run_params.fit_references()}
+        if run_params
+        else {}
+    )
+    refitted = {
+        read.field
+        for read in record.via
+        if cached_entry_disposition(
+            read.state_digest,
+            shared.fit_state(
+                references.get(
+                    read.field,
+                    FitReference(
+                        field=read.field,
+                        feature=read.feature,
+                        run_id=read.run_id,
+                        pattern=None,
+                    ),
+                )
+            ),
+        )
+        == "recompute"
+    }
+    moved: set[Entry] = set()
+    dropped: set[Entry] = set()
+    if record.inputs and run_params is not None:
+        recorded = {(item.group, item.sequence): item.cells for item in record.inputs}
+        cells_now, held = current_entry_cells(shared, run_params, sorted(recorded))
+        for entry, was in recorded.items():
+            if entry not in held:
+                if not run_params.scope.scope_dependent:
+                    dropped.add(entry)
+                continue
+            now = cells_now[entry]
+            channels = (
+                (was.roots, now.roots),
+                (was.tracks, now.tracks),
+                (was.inputs, now.inputs),
+            )
+            if any(
+                cached_entry_disposition(before, after) == "recompute"
+                for before, after in channels
+            ):
+                moved.add(entry)
+    return FitDrift(
+        link_id=link_id,
+        recorded=record.inputs is not None,
+        moved=tuple(sorted(moved)),
+        dropped=tuple(sorted(dropped)),
+        refitted=tuple(sorted(refitted)),
+    )
+
+
+def refit_summary(drift: FitDrift, *, sample: int = 5) -> str:
+    """One line saying what changed under a fit.
+
+    ``<moved> moved, <dropped> gone, fitted again: <fields>``, a zero count and
+    an empty field list left out, then up to *sample* entries in parentheses,
+    moved before dropped and each sorted, with the count of those left out.
+    Each entry is named by :func:`~mosaic.core.entry.entry_token`.
+
+    Args:
+        drift: The fit's drift.
+        sample: How many entries to name at most.
+
+    Returns:
+        The summary, and ``""`` for a drift that names nothing.
+    """
+    parts: list[str] = []
+    if drift.moved:
+        parts.append(f"{len(drift.moved)} moved")
+    if drift.dropped:
+        parts.append(f"{len(drift.dropped)} gone")
+    if drift.refitted:
+        parts.append(f"fitted again: {', '.join(sorted(drift.refitted))}")
+    summary = ", ".join(parts)
+    entries = [*sorted(drift.moved), *sorted(drift.dropped)]
+    named = [
+        entry_token(group, sequence) for group, sequence in entries[: max(sample, 0)]
+    ]
+    if not named:
+        return summary
+    rest = len(entries) - len(named)
+    listed = ", ".join(named) + (f" and {rest} more" if rest else "")
+    return f"{summary} ({listed})"
 
 
 # Item 6.1: reconciled through the shared registry, beside the tracker
