@@ -19,9 +19,11 @@ at the top of `run.sh`.
 | `make_raw.py` | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry |
 | `recipes/` | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60) |
 | `timed.py` | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv` |
-| `summary.py` | prints `results.tsv` and the three target figures |
+| `summary.py` | prints `results.tsv`, the target figures and the pipe bytes per entry |
+| `pipes.py` | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, in `OUT/pipes.tsv` |
 | `micro.py` | per-entry operations timed alone |
 | `stacksample.py` | wall-clock stack samples of every thread of one `mosaic` command |
+| `cli_run.py` | runs the `mosaic` CLI in-process for `pipes.py` and `stacksample.py`, with its exit status and wall |
 | `pstat.py` | the costliest functions of a cProfile file |
 | `fingerprint.py` | hashes of a dataset's outputs and index rows |
 
@@ -111,7 +113,7 @@ sample at the earlier `d73a57f0` put them at 10.7%. The memo removes 160 of the
 ### Process-tree walks, before and after
 
 The memory watch's process-tree walks, measured before (`53b03cdd`) and after
-the change (`b819e312`), each pair run back to back on one machine over one
+the change (`c662aff9`), each pair run back to back on one machine over one
 `WORK` path, 160 entries, 8 workers. The `fingerprint-*.txt` files of a full
 before and after run are byte-identical on both machines. The task machine
 carried other work during the pair that the table gives: a load average of 12
@@ -157,3 +159,73 @@ its walk at most once an interval and after a pool's submission. The micro run
 measures `psutil children(recursive=True)` alone at 11.8 ms on the task machine
 and 8.2 ms on the Mac after the change. On the Mac the main-thread samples show
 no `children` frame above 3.8%, the least share that the sampler reports.
+
+### Workers write, before and after
+
+Each entry's worker writes its output and sends the parent a report in place of
+the output frame. Measured before (`2c40cfa6`) and after this change, back to
+back on one machine over one `WORK` path, 160 entries, 8 workers: a Linux 6.17
+workstation with an Intel i7-14700 (8 performance cores with two threads each
+and 12 efficiency cores, 20 cores in all) and 31 GB, about 535 processes on the
+host. Each run used a container of the mosaic agent image built from the base
+commit, with the tree under test first on the import path, pinned to 10
+efficiency cores, which share no hyperthreads (`--cpuset-cpus 16-25`). The host
+was otherwise idle. Its load average was 0.02 at the start of the before run
+and 1.98 at the start of the after run, which followed the before run directly.
+The table gives that pair. A second pair of the `cold` and `pipes` sections
+over the same base, started at load averages of 0.46 and 4.33 (the latter again
+from the run before it), gave the figures in brackets.
+
+| Figure                                                | Before        | After         |
+| ----------------------------------------------------- | ------------- | ------------- |
+| `speed-angvel` cold, serial (s)                       | 11.87 (11.40) | 11.60 (11.54) |
+| `speed-angvel` cold, thread 4 (s)                     | 9.80 (9.97)   | 8.58 (8.63)   |
+| `speed-angvel` cold, thread 8 (s)                     | 10.08 (10.09) | 9.19 (8.99)   |
+| `speed-angvel` cold, process 8 (s)                    | 14.27 (14.11) | 11.79 (11.89) |
+| the same recipe cached, thread 8, shorter of two (s)  | 5.55 (5.56)   | 5.55 (5.54)   |
+| the same recipe cached, process 8, shorter of two (s) | 5.64 (5.54)   | 5.57 (5.56)   |
+| parent cost per entry, cold thread 8 (ms)             | 28.3 (28.3)   | 22.8 (21.6)   |
+| parent cost per entry, cold process 8 (ms)            | 53.9 (53.6)   | 38.9 (39.6)   |
+| bytes per entry to the workers, process 8             | 2,161,738     | 2,162,061     |
+| bytes per entry from the workers, process 8           | 2,449,668     | 334           |
+| process 8, mean CPU of a worker                       | 53.6%         | 92.5%         |
+| process 8, CPU seconds of the parent / the workers    | 14.2 / 35.7   | 10.7 / 41.5   |
+
+The bytes from the workers fall from the output frame to the report. Before the
+change each entry's result carried 2,449,668 bytes, 274 bytes more than the
+mean pickled size of an entry's `speed-angvel` output, 2,449,394 bytes. After
+it, a result carries 334 bytes. The bytes to the workers, which carry each
+entry's input table, stay at 2.16 MB per entry. The counts come from
+`Connection._send_bytes` and `_recv_bytes` in the parent: the call queue's
+feeder thread sent 168 messages, one per entry and one stop per worker. The
+executor's manager thread received the results, one exit message from each
+worker as it takes its stop, and the executor's empty wake-ups.
+
+The parent's per-entry cost falls by 5.5 ms (19%) in thread mode and by 15.0 ms
+(28%) in process mode. The write moves into the workers: in the process run the
+parent spends 3.5 s less CPU and the workers 5.8 s more. The stack samples of
+the parent's main thread show it. Before the change `write_output` holds 30% of
+that thread in the cold thread-8 run and 16% in the process-8 run. After it,
+`write_output` is absent from the main thread's list in both runs, whose least
+shares are 5.4% and 4.1%. In the thread-8 run it holds 17.8% of the pool
+threads' samples. In the process-8 run the main thread waits on the pool for
+33% of its samples.
+
+The parent's per-entry cost that remains is its loads, which stay in the parent
+in this change. After it, in the cold thread-8 run, `iter_manifest` holds 27.3%
+of the main thread's samples (1.83 s), `load_entry_data` 14.9%, `read_footer`
+10.0% and `_apply_entries` 39.7%. None of the four appears in the cached
+thread-8 run, whose main thread spends 69.6% of its samples in `plan_pipeline`
+and lists no frame below 4.4%.
+
+Against the bench's targets: process workers now average above 60% CPU. The
+parent stays above 15 ms per entry, at 22.8 ms in thread mode and 38.9 ms in
+process mode. Thread 8 runs 1.26 times as fast as serial, short of twice.
+Outputs and index rows are unchanged against the base.
+
+The `fingerprint-*.txt` files of the nine bench datasets are byte-identical
+before and after. So are the fingerprints of the 18 datasets that
+`tests/core/pipeline/test_output_byte_identity.py` leaves under a fixed
+`--basetemp` (six cases, each in serial, thread 3 and process 3), run at the
+base and at the change back to back on a second Linux machine: 237 lines, every
+one equal.

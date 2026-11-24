@@ -6,7 +6,10 @@
 # WORK holds the datasets (several GB at the default size) and OUT the results.
 # Sections run in the order given; the default runs all but profile:
 #   build        write ENTRIES synthetic track files and convert them (base)
-#   cold         speed-angvel cold at four worker settings, then cached
+#   cold         speed-angvel cold at four worker settings, then cached in
+#                thread and in process mode
+#   pipes        speed-angvel cold in process mode, counting the bytes this
+#                process sends to its workers and receives from them
 #   request      the six-step recipe cold and cached, one process per step,
 #                and the start-up and import times
 #   settle       one `pipeline settle` process per cached step (after request)
@@ -14,7 +17,8 @@
 #   micro        per-entry operations timed alone
 #   profile      cProfile and stack samples of the runs above (after them)
 #   fingerprint  hashes of every dataset's outputs and index rows
-# Every timed run appends to OUT/results.tsv. summary.py OUT prints the table.
+# Every timed run appends to OUT/results.tsv and every counted run to
+# OUT/pipes.tsv. summary.py OUT prints the tables.
 #
 # Environment: PY (default: the repository's .venv/bin/python), ENTRIES
 # (default 160), WORKERS (default 8). Compare fingerprints only between runs
@@ -22,7 +26,7 @@
 set -u
 
 if [ $# -lt 2 ]; then
-    sed -n '2,21p' "$0"
+    sed -n '2,25p' "$0"
     exit 2
 fi
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -36,7 +40,7 @@ ENTRIES="${ENTRIES:-160}"
 WORKERS="${WORKERS:-8}"
 RECIPES="$here/recipes"
 if [ $# -eq 0 ]; then
-    set -- build cold request settle wide micro fingerprint
+    set -- build cold pipes request settle wide micro fingerprint
 fi
 
 timed() {
@@ -84,6 +88,22 @@ section_cold() {
             pipeline run -m "$WORK/speed_thread$WORKERS/dataset.yaml" \
             --recipe "@$RECIPES/speed.json" --workers "$WORKERS" --parallel-mode thread
     done
+    for attempt in 1 2; do
+        timed "speed-angvel recipe cached, process, $attempt" "$PY" -m mosaic \
+            pipeline run -m "$WORK/speed_process$WORKERS/dataset.yaml" \
+            --recipe "@$RECIPES/speed.json" --workers "$WORKERS" --parallel-mode process
+    done
+}
+
+section_pipes() {
+    local status
+    fresh "pipes_process$WORKERS"
+    "$PY" "$here/pipes.py" "$OUT" "speed-angvel cold, process$WORKERS" -- pipeline run \
+        -m "$WORK/pipes_process$WORKERS/dataset.yaml" --recipe "@$RECIPES/speed.json" \
+        --workers "$WORKERS" --parallel-mode process > /dev/null 2>&1
+    status=$?
+    tail -1 "$OUT/pipes.tsv"
+    return "$status"
 }
 
 section_request() {
@@ -157,7 +177,8 @@ section_micro() {
 }
 
 section_profile() {
-    local request
+    local name request
+    local -a samples
     fresh profile_serial
     "$PY" -m cProfile -o "$OUT/speed-cold-serial.prof" -m mosaic pipeline run \
         -m "$WORK/profile_serial/dataset.yaml" --recipe "@$RECIPES/speed.json" --workers 1 \
@@ -169,19 +190,34 @@ section_profile() {
     "$PY" "$here/stacksample.py" "$OUT/speed-cached-thread$WORKERS" -- pipeline run \
         -m "$WORK/profile_thread/dataset.yaml" --recipe "@$RECIPES/speed.json" \
         --workers "$WORKERS" --parallel-mode thread > /dev/null 2>&1
-    request="$(request_id "$OUT/six steps submit.out")"
-    "$PY" -m cProfile -o "$OUT/step-process-speed.prof" -m mosaic run \
-        -m "$WORK/six/dataset.yaml" --graph-request "$request" --step speed --json \
-        > /dev/null 2>&1
-    "$PY" -X importtime -m mosaic run -m "$WORK/six/dataset.yaml" --graph-request "$request" \
-        --step speed --json 2> "$OUT/importtime-step-process.txt" > /dev/null
-    request="$(request_id "$OUT/settle submit.out")"
-    "$PY" "$here/stacksample.py" "$OUT/settle-heading" -- pipeline settle \
-        -m "$WORK/six/dataset.yaml" --request "$request" --step heading --json > /dev/null 2>&1
-    "$PY" "$here/stacksample.py" "$OUT/wide-cached" -- pipeline run \
-        -m "$WORK/wide/dataset.yaml" --recipe "@$RECIPES/wide.json" \
-        --entry s000 --entry s001 > /dev/null 2>&1
-    for name in speed-cold-thread$WORKERS speed-cached-thread$WORKERS settle-heading wide-cached; do
+    fresh profile_process
+    "$PY" "$here/stacksample.py" "$OUT/speed-cold-process$WORKERS" -- pipeline run \
+        -m "$WORK/profile_process/dataset.yaml" --recipe "@$RECIPES/speed.json" \
+        --workers "$WORKERS" --parallel-mode process > /dev/null 2>&1
+    samples=(speed-cold-thread$WORKERS speed-cached-thread$WORKERS speed-cold-process$WORKERS)
+    if [ -f "$OUT/six steps submit.out" ]; then
+        request="$(request_id "$OUT/six steps submit.out")"
+        "$PY" -m cProfile -o "$OUT/step-process-speed.prof" -m mosaic run \
+            -m "$WORK/six/dataset.yaml" --graph-request "$request" --step speed --json \
+            > /dev/null 2>&1
+        "$PY" -X importtime -m mosaic run -m "$WORK/six/dataset.yaml" \
+            --graph-request "$request" --step speed --json \
+            2> "$OUT/importtime-step-process.txt" > /dev/null
+    fi
+    if [ -f "$OUT/settle submit.out" ]; then
+        request="$(request_id "$OUT/settle submit.out")"
+        "$PY" "$here/stacksample.py" "$OUT/settle-heading" -- pipeline settle \
+            -m "$WORK/six/dataset.yaml" --request "$request" --step heading --json \
+            > /dev/null 2>&1
+        samples+=(settle-heading)
+    fi
+    if [ -f "$WORK/wide/dataset.yaml" ]; then
+        "$PY" "$here/stacksample.py" "$OUT/wide-cached" -- pipeline run \
+            -m "$WORK/wide/dataset.yaml" --recipe "@$RECIPES/wide.json" \
+            --entry s000 --entry s001 > /dev/null 2>&1
+        samples+=(wide-cached)
+    fi
+    for name in "${samples[@]}"; do
         head -1 "$OUT/$name.stacks.txt"
     done
 }

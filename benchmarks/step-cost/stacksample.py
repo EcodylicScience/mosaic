@@ -1,4 +1,4 @@
-"""Run ``python -m mosaic ARGS`` in this process while sampling every thread's stack.
+"""Run ``mosaic ARGS`` in this process while sampling every thread's stack.
 
 Usage: stacksample.py OUT_PREFIX -- MOSAIC_ARGS...
 
@@ -8,13 +8,13 @@ of each frame and the share of the innermost frames. The sampler runs only while
 it holds the GIL, so its seconds undercount; read its percentages.
 """
 
-import runpy
 import sys
 import threading
-import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from types import CodeType, FrameType
+
+from cli_run import run_mosaic
 
 INTERVAL_SECONDS = 0.01
 
@@ -72,16 +72,11 @@ def main() -> int:
 
     sampler = threading.Thread(target=sample, daemon=True, name="stack-sampler")
     sampler.start()
-    started = time.perf_counter()
-    sys.argv = ["mosaic", *args]
-    status = 0
     try:
-        runpy.run_module("mosaic", run_name="__main__")
-    except SystemExit as exit_:
-        status = exit_.code if isinstance(exit_.code, int) else 0
-    stop.set()
-    sampler.join()
-    wall = time.perf_counter() - started
+        status, wall = run_mosaic(args)
+    finally:
+        stop.set()
+        sampler.join()
     with open(f"{prefix}.stacks.txt", "w") as out:
         out.write(
             f"wall {wall:.2f}s exit {status}; samples per thread role: {dict(counts)}\n"
