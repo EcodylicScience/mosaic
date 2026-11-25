@@ -50,6 +50,7 @@ __all__ = [
     "ToolInvocation",
     "ToolNotFoundError",
     "captured_output",
+    "conda_executable",
     "conda_invocation",
     "display_overlay",
     "PROBE_DEADLINE_FLOOR_SECONDS",
@@ -291,6 +292,17 @@ def _conda_env_prefixes(conda: str, env_name: str) -> list[Path]:
     return [root / env_name for root in roots]
 
 
+def conda_executable() -> Path | None:
+    """Return the ``conda`` executable, or ``None`` when none can be found.
+
+    ``conda`` on ``$PATH`` wins. ``CONDA_EXE``, which an activated conda sets, is
+    the fallback, and it may begin with ``~``, so it passes through
+    :func:`~mosaic.user_paths.user_path`.
+    """
+    found = shutil.which("conda") or os.environ.get("CONDA_EXE")
+    return None if found is None else user_path(found)
+
+
 def conda_invocation(
     env: ToolEnv, env_name: str, executable: str, *, source: str
 ) -> list[str]:
@@ -330,16 +342,14 @@ def conda_invocation(
             ``conda`` is not found, or when *env* declares ``repo_venv`` and the
             search does not find *executable*.
     """
-    conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
-    if conda is None:
+    found = conda_executable()
+    if found is None:
         raise env.not_found(
             f"'conda' was not found on $PATH; cannot run {executable} in env "
             f"'{env_name}'. Set {env.bin_var} to an explicit path instead, or "
             f"make conda available."
         )
-    # `shutil.which` already returns an absolute path; the `CONDA_EXE` fallback
-    # does not, and this value becomes argv[0] below.
-    conda = str(user_path(conda))
+    conda = str(found)
     candidates = [
         _installed_executable(prefix, executable, "conda")
         for prefix in _conda_env_prefixes(conda, env_name)

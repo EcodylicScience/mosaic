@@ -29,6 +29,7 @@ from mosaic.core.pipeline.toolenv import (
     ToolExitError,
     ToolInvocation,
     ToolNotFoundError,
+    conda_executable,
     locate_tool,
     missing_interpreter,
     missing_output_error,
@@ -844,3 +845,29 @@ def test_the_launchers_own_epilogue_does_not_crowd_out_the_tools_error() -> None
 
     assert "nvidia-dali is required" in text
     assert "lightning_pose.api" not in text
+
+
+# --- conda's own location ---------------------------------------------------
+
+
+def test_conda_on_path_wins_over_conda_exe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONDA_EXE", "/elsewhere/bin/conda")
+
+    assert conda_executable() == Path(FAKE_CONDA)
+
+
+def test_conda_exe_alone_names_conda_through_user_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_path_lookup(monkeypatch, {})
+    monkeypatch.setenv("CONDA_EXE", "~/miniforge/bin/conda")
+
+    assert conda_executable() == tmp_path / "miniforge" / "bin" / "conda"
+
+
+def test_conda_is_none_when_neither_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_path_lookup(monkeypatch, {})
+
+    assert conda_executable() is None
