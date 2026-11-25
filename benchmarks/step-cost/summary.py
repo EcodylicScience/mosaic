@@ -8,11 +8,15 @@ time. It then prints the target figures: the wall of one cached step process
 cached in one process, and the parent's cost per entry of the cold speed-angvel
 step in thread and in process mode at WORKERS (default 8). That cost is the cold
 run's wall less the shorter of the cached runs of the same mode, over ENTRIES
-(default 160). Last it prints the bytes per entry that the process-mode run of
+(default 160). It prints the serial cold wall over the thread-mode cold wall at
+WORKERS, and for the cold process-mode run the mean CPU of its WORKERS busiest
+child processes and the CPU seconds of the parent and of those workers, from its
+``.cpu.txt``. Last it prints the bytes per entry that the process-mode run of
 pipes.py sent to its workers and received from them, from OUT/pipes.tsv. A run
 that is missing leaves its figure out.
 """
 
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -51,6 +55,27 @@ def main() -> None:
         if cold is not None and cached:
             per_entry = (cold - min(cached)) / entries * 1000
             print(f"parent per-entry cost, cold {mode} {workers}: {per_entry:.1f} ms")
+    serial = walls.get("speed-angvel cold, serial")
+    thread = walls.get(f"speed-angvel cold, thread{workers}")
+    if serial is not None and thread is not None:
+        print(f"cold thread {workers} speed over serial: {serial / thread:.2f}")
+    cpu = out / f"speed-angvel cold, process{workers}.cpu.txt"
+    if cpu.is_file():
+        # The lines rank each process by its summed samples, busiest first.
+        processes = [
+            (match.group(1), float(match.group(2)), float(match.group(3)))
+            for line in cpu.read_text().splitlines()
+            if (match := re.match(r"(\w+) \d+: .* mean (\d+)% .* cpu_s ([\d.]+)", line))
+        ]
+        children = [process for process in processes if process[0] == "child"][:workers]
+        parent = [process for process in processes if process[0] == "parent"]
+        if children and parent:
+            print(
+                f"cold process {workers}: mean CPU of a worker"
+                f" {statistics.mean(mean for _, mean, _ in children):.1f}%"
+                f" over {len(children)}, CPU seconds of the parent {parent[0][2]:.1f},"
+                f" of the workers {sum(seconds for _, _, seconds in children):.1f}"
+            )
     pipes = out / "pipes.tsv"
     if pipes.is_file():
         for line in pipes.read_text().splitlines():
