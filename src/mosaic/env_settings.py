@@ -8,6 +8,7 @@ or cv2 to read it. The module imports only the standard library.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 
 def int_env(name: str, default: int) -> int:
@@ -37,7 +38,7 @@ def int_env(name: str, default: int) -> int:
         raise ValueError(message) from exc
 
 
-def flag_env(name: str) -> bool:
+def flag_env(name: str, environ: Mapping[str, str] | None = None) -> bool:
     """Whether environment variable *name* is exactly ``1``, whitespace aside.
 
     Surrounding whitespace is ignored: a value carried in from a ``.env`` file or
@@ -49,8 +50,10 @@ def flag_env(name: str) -> bool:
 
     Args:
         name: The environment variable to read.
+        environ: The environment to read it from. ``None`` reads the process's.
 
     Returns:
         ``True`` only when the stripped value equals ``"1"``.
     """
-    return os.environ.get(name, "").strip() == "1"
+    source = os.environ if environ is None else environ
+    return source.get(name, "").strip() == "1"

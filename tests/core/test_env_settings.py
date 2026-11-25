@@ -60,3 +60,12 @@ def test_a_flag_set_to_anything_else_is_false(
 ) -> None:
     monkeypatch.setenv(NAME, raw)
     assert flag_env(NAME) is False
+
+
+def test_a_flag_is_read_from_the_environment_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(NAME, "1")
+    assert flag_env(NAME, {NAME: "0"}) is False
+    assert flag_env(NAME, {NAME: " 1 "}) is True
+    assert flag_env(NAME, {}) is False
