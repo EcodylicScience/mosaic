@@ -1,25 +1,21 @@
 """What names one *variant* of a dataset's standardized tracks.
 
 Three producers write into ``tracks/``: a registered converter reading an
-upload, the TREx tracker, and an inference op running a detection model. Until
-now none of them recorded *which recipe* produced a table, so two tracker runs
-with different settings, or a re-conversion with different parameters, both
-targeted one flat ``tracks/<group>__<seq>.parquet`` behind an ``exists()`` skip
--- and the second was discarded with a success return.
+upload, the TREx tracker, and an inference op running a detection model. Each
+records *which recipe* produced a table, so two tracker runs with different
+settings, or a re-conversion with different parameters, are distinct variants
+and neither is discarded.
 
 The identity here is **params-only and scope-free**, so one value names one
 variant across every sequence it covers rather than one per sequence. Source
-*content* is tracked separately (item 5.1); this names the recipe, not the
-input.
+*content* is tracked separately; this names the recipe, not the input.
 
 Shape is ``<op>.<version>-<digest>``, the same as an op run identifier and for
 the same reasons -- the version is a visible segment so two producer versions
 are distinguishable and readable on disk, and it stays out of the digest so a
-version bump does not re-derive anything. Stage 3.2 promotes this value into a
-directory level (``tracks/<op>.<version>-<hash>/``), which is why it is minted
-in full now rather than as something weaker: the migration then moves files and
-rewrites ``abs_path``, with no identity to re-derive and no ambiguity about
-which variant a pre-existing row belongs to.
+version bump does not re-derive anything. The value is also a directory level
+(``tracks/<op>.<version>-<hash>/``), so it is minted in full, with no ambiguity
+about which variant a row belongs to.
 
 **Omit an absent term; never pass it empty.** ``json.dumps(..., sort_keys=True)``
 digests an absent key differently from a key whose value is empty, which is the
@@ -74,13 +70,12 @@ number cannot honestly cover several independent hash functions, and a marker
 that lies is worse than none. Tracks variants are born marked -- they did not
 exist before scheme 1 -- so nothing has to be retrofitted.
 
-Scheme 2 (item 4.6): an inference variant's ``model`` term is now what *names*
-the model -- its training run, or the weights' content digest when it was handed
-in as a bare path -- where it used to be a digest of the path string. Two
-detectors sitting at one path used to share one variant, and moving unchanged
-weights used to mint a new one. Only ``infer_variant_payload`` is affected; a
-converted or tracked variant's payload is untouched, and scheme-1 sidecars stay
-on disk saying so.
+Scheme 2: an inference variant's ``model`` term *names* the model -- its
+training run, or the weights' content digest when it was handed in as a bare
+path -- where scheme 1 digested the path string. Under scheme 1 two detectors
+sitting at one path shared one variant, and moving unchanged weights minted a
+new one. Only ``infer_variant_payload`` is affected; a converted or tracked
+variant's payload is untouched, and scheme-1 sidecars stay on disk saying so.
 """
 
 
@@ -94,9 +89,8 @@ def tracks_run_id(
 
     Args:
         op: What produced it -- ``convert-<src_format>``, ``trex``, or an
-            inference kind. Becomes a readable segment of the directory name in
-            Stage 3.2, so two producers are distinguishable without decoding a
-            digest.
+            inference kind. Becomes a readable segment of the directory name,
+            so two producers are distinguishable without decoding a digest.
         version: The producer's *declared* version. A visible segment, kept out
             of the digest.
         payload: Everything about the recipe that determines the table. Sort any
@@ -173,8 +167,8 @@ def infer_variant_payload(
     """What determines a table bridged from an inference run.
 
     The op params plus the model that produced the predictions, matching
-    ``infer_run_id`` term for term and for the same reason: leaving the model out
-    would let two detectors share one identifier.
+    ``infer_run_id`` term for term and for the same reason: leaving the model
+    out would let two detectors share one identifier.
 
     *media* is the media variant that the predictions were made on, and empty
     when they were made on the entry's original media. The term is omitted from
@@ -182,11 +176,11 @@ def infer_variant_payload(
     existed keeps its identifier.
 
     *model_id* is what **names** the model, never where it sits: a training run
-    identity, or the weights' content digest when there is no run to name them
-    (item 4.6). It used to be a digest of the path string, which meant swapping
-    ``best.pt`` in place reused the identifier and moving unchanged weights
-    minted a new one -- wrong in both directions, and the first is the one that
-    reports a cache hit over another model's output.
+    identity, or the weights' content digest when there is no run to name them.
+    Scheme 1 digested the path string, which meant swapping ``best.pt`` in
+    place reused the identifier and moving unchanged weights minted a new one
+    -- wrong in both directions, and the first is the one that reports a cache
+    hit over another model's output.
     """
     payload: dict[str, object] = {"params": dict(params_identity), _MODEL: model_id}
     if media:
@@ -223,13 +217,7 @@ def converter_op(src_format: str) -> str:
 
 
 def tracks_variant_root(tracks_root: Path, run_id: str) -> Path:
-    """Where a variant's own metadata lives, and where Stage 3.2 will move its
-    parquets.
-
-    Created now, holding metadata only, so that migration is a file move plus an
-    ``abs_path`` rewrite into a directory that already exists -- rather than a
-    rename of something written somewhere else in the meantime.
-    """
+    """Where a variant's metadata and its parquet tables live."""
     return tracks_root / run_id
 
 

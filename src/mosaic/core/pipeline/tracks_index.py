@@ -180,14 +180,15 @@ class TracksIndexRow(RunIndexRowBase):
     is that: the TREx or inference run whose output this table was bridged from,
     empty for a conversion, which has no op run at all. Keeping them apart is
     what stops an op-version bump relocating every tracks table, and it is the
-    column that lets the ``predictions`` root be retired (item 8.7).
+    column that makes a separate ``predictions`` root unnecessary.
 
     ``producer`` is ``convert-<src_format>``, ``trex`` or ``infer-<kind>`` --
-    exactly ``parse_op_run_id(run_id).kind``, and exactly the segment Stage 3.2
-    turns into a directory name. Typed a bare ``str`` rather than a ``Literal``
-    because the set is open: converters register through
-    ``@register_track_converter`` and inference kinds through ``@register_op``,
-    so a closed alias would be a claim this module cannot keep.
+    exactly ``parse_op_run_id(run_id).kind``, and exactly the segment of a
+    variant's directory name that precedes the version. Typed a bare ``str``
+    rather than a ``Literal`` because the set is open: converters register
+    through ``@register_track_converter`` and inference kinds through
+    ``@register_op``, so a closed alias would be a claim this module cannot
+    keep.
 
     ``source_abs_path`` is a ``str``, not a ``Path``: "this table has no source
     file" is a real state (the inference bridge builds from an in-memory frame),
@@ -209,19 +210,19 @@ class TracksIndexRow(RunIndexRowBase):
     have. Empty means "not establishable", never "none".
 
     ``consumed_composition`` is what those roots *held* for this entry when the
-    table was written -- item 5.1's tracks half, and the value that closes the one
-    dated gap in the Stage 4 design. ``consumed_source_roots`` answers "which root
-    would a change have to be under?"; only this answers "has it changed?", which
-    is the question item 6.2's walk actually asks. Encoded by
-    :func:`encode_entry_composition`, the same minter the feature row uses.
+    table was written. ``consumed_source_roots`` answers "which root would a
+    change have to be under?"; only this answers "has it changed?", which is the
+    question the source-change walk in :mod:`mosaic.core.pipeline.provenance`
+    asks. Encoded by :func:`encode_entry_composition`, the same minter the
+    feature row uses.
 
     **It sits on the row and never in ``run_id``**, and the distinction is forced
-    rather than stylistic. A tracks variant is params-only and scope-free (item
-    3.1): one identity names one recipe covering many sequences, which under one
-    variant legitimately hold *different* compositions. Folding a per-sequence
+    rather than stylistic. A tracks variant is params-only and scope-free: one
+    identity names one recipe covering many sequences, which under one variant
+    legitimately hold *different* compositions. Folding a per-sequence
     value into the name would rename one recipe's whole directory because one
     other sequence's source moved -- the same reason a per-frame feature records
-    its composition here rather than in its identifier (rule P2d).
+    its composition here rather than in its identifier.
 
     ``consumed_media_composition`` is what the entry's media was when a producer
     that read video wrote the table (:func:`media_composition_for`). It is
@@ -471,12 +472,9 @@ def tracks_index_path(ds: Dataset) -> Path:
 def tracks_index(path: Path) -> IndexCSV[TracksIndexRow]:
     """Factory: an ``IndexCSV`` configured for the tracks schema.
 
-    ``dedup_keys`` is the ``run_id``-led triple its six sibling indexes use. Until
-    Stage 3.2 it was the ``(group, sequence)`` pair, because that was the
-    invariant the flat layout actually had: every writer targeted one
-    ``tracks/<group>__<seq>.parquet``, so a second row for an entry would have
-    named a file the first had already overwritten. Now each variant has its own
-    directory, so two rows describe two real tables.
+    ``dedup_keys`` is the ``run_id``-led triple its six sibling indexes use.
+    Each variant has its own directory, so two rows for one entry describe two
+    real tables.
 
     Which row an entry *resolves* to is a separate question, and not one the
     writer can answer -- see :func:`select_variant_rows`.
@@ -625,17 +623,17 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
 
     ``run_id`` given selects that variant exactly. ``""`` is a legal argument and
     names the *unlabelled* tables -- rows written before variants existed -- which
-    is how a pre-Stage-3 flat layout stays addressable by name.
+    is how those rows stay addressable by name.
 
     ``run_id`` of ``None`` means "whichever variant this entry has", and the rule
     it applies is that **an empty ``run_id`` is unknown, never a peer variant**.
-    Every dataset converted before Stage 3 has a full index of empty ones, and
-    the first ordinary re-conversion writes a labelled row beside each. Treating
-    those as two competing recipes would make the ambiguity below fire on every
-    existing dataset, with ``''`` as one of the candidates the user is asked to
-    choose between -- so a labelled row supersedes an unlabelled one for the same
-    entry. Nothing is deleted: the row stays in the index as a record, and
-    reverting Stage 3 finds it again.
+    Every dataset converted before variants existed has a full index of empty
+    ones, and the first ordinary re-conversion writes a labelled row beside
+    each. Treating those as two competing recipes would make the ambiguity below
+    fire on every existing dataset, with ``''`` as one of the candidates the user
+    is asked to choose between -- so a labelled row supersedes an unlabelled one
+    for the same entry. Nothing is deleted: the row stays in the index as a record, and
+    ``run_id=""`` still finds it.
 
     Two genuinely different recipes for one entry is the case with no defensible
     default, and it raises. Different entries carrying different variants -- some
@@ -1133,7 +1131,7 @@ def tracks_variant_location(ds: Dataset, variant: str) -> Path | None:
 def consumed_composition_for(
     ds: Dataset, group: str, sequence: str, roots: Iterable[str]
 ) -> str:
-    """What *roots* recorded for this entry, as one cell -- item 5.1's tracks half.
+    """What *roots* recorded for this entry, as one cell.
 
     Only the **source** roots among *roots* can answer: a composition exists for
     a root that holds what cannot be recomputed, and ``consumed_source_roots``
@@ -2641,8 +2639,8 @@ def _tracks_row(
     )
 
 
-# Item 6.1: reconciled through the shared registry, beside the tracker
-# indexes, so one pass covers every root that has an ``IndexCSV`` behind it.
+# Reconciled through the shared registry, beside the tracker indexes, so one
+# pass covers every root that has an ``IndexCSV`` behind it.
 register_reconcilable_index("tracks", tracks_index)
 
 

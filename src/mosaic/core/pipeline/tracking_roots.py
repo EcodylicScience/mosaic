@@ -1,30 +1,28 @@
-"""Where tracker intermediates live, and what may be done with them -- item 8.1.
+"""Where tracker intermediates live, and what may be done with them.
 
-One root for every tracking-stage intermediate, and one place that says so. Item
-8.1 asked for the root literal collapsed into a single constant "so the
-relocation is a single edit"; by the time three trackers had landed there were
-**six** copies of it -- one per tool in ``default_roots``, one per tool in each
-runner's self-creating ``set_root`` -- and the add-a-tracker recipe had written
-the duplication down as a checklist item rather than removing it.
+One root for every tracking-stage intermediate, and one place that says so. The
+root literal is a single constant, so a relocation is a single edit, and no
+tool in ``default_roots`` or in a runner's self-creating ``set_root`` repeats
+it.
 
 **A table rather than a constant, because the sweeper needs more than a path.**
-Item 8.4's retention is *per artifact class, not per root*: a ``.pv`` and its
-settings are expensive and reusable, inference output is audit-only. Written as a
-branch per tool that is three branches and then four; written as a column here it
-is data, and a fifth tracker joins by adding a row.
+Retention is *per artifact class, not per root*: a ``.pv`` and its settings are
+expensive and reusable, inference output is audit-only. Written as a branch per
+tool that is three branches and then four; written as a column here it is data,
+and a fifth tracker joins by adding a row.
 
 **Naming: ``_tracking``, not ``tmp``.** The contents are generated and safe to
 delete, but nothing evicts them automatically and no code may assume they are
 ephemeral. The leading underscore marks the root as machine-generated without
 hiding it, so a user browsing the dataset can see what is safe to remove.
 
-**This module deliberately holds no index-row classes.** ``core`` does not import
-``tracking`` -- the constraint ``provenance.py`` states and the reason its walk
-leaves extracted frames out -- so a table naming ``TRexIndexRow`` would invert
-the layering for the sake of a type annotation. What the sweeper and the
-reconciler need from a row is ``prune_missing`` and ``drop_entries``, which every
-``IndexCSV`` has whatever it holds; the row classes stay where they are written
-and reach this table through registration, not import.
+**This module deliberately holds no index-row classes.** ``core`` does not
+import ``tracking`` -- the constraint ``provenance.py`` states and the reason
+its walk leaves extracted frames out -- so a table naming ``TRexIndexRow``
+would invert the layering for the sake of a type annotation. What the sweeper
+and the reconciler need from a row is ``prune_missing`` and ``drop_entries``,
+which every ``IndexCSV`` has whatever it holds; the row classes stay where they
+are written and reach this table through registration, not import.
 """
 
 from __future__ import annotations
@@ -59,10 +57,9 @@ __all__ = [
 TRACKING_ROOT: Final = "_tracking"
 """The parent root, and the one string this programme wants written once.
 
-Also the name a user-content scan must never descend into (item 8.1's exclusion
-clause), which is why it is a bare component name rather than a path: the check
-is against ``Path.parts``, since a directory exclusion cannot be expressed as a
-basename pattern.
+Also the name a user-content scan must never descend into, which is why it is a
+bare component name rather than a path: the check is against ``Path.parts``,
+since a directory exclusion cannot be expressed as a basename pattern.
 """
 
 ToolReads = Literal["one-file", "entry-files", "in-process"]
@@ -84,13 +81,13 @@ in frame rate.
 """
 
 RetentionClass = Literal["tracker", "inference", "conversion"]
-"""Which retention window an intermediate falls under (item 8.4).
+"""Which retention window an intermediate falls under.
 
 ``tracker`` is the expensive, reusable, correctable output -- a ``.pv`` and its
 settings, a ``.slp``, a predictions CSV. Its window is long and is ended by
-promotion (item 8.6) rather than by age. ``inference`` is audit-only: neither
-reused nor edited, kept so someone can see what a detector emitted before schema
-coercion, and evicted on a shorter clock.
+promotion rather than by age. ``inference`` is audit-only: neither reused nor
+edited, kept so someone can see what a detector emitted before schema coercion,
+and evicted on a shorter clock.
 
 ``conversion`` is the *input* to a tracker run rather than its output: a
 detection pass shared by every run that tracks the same pixels under the same
@@ -99,9 +96,9 @@ several runs read at once, so age alone must not reclaim it -- a slot still
 named by a surviving tracker directory is refused whatever its age, and the
 window only decides how long it lingers after its last reader is itself gone.
 
-A closed alias rather than a bare ``str``, because the window a class maps to is
-a policy decision and an unrecognized value must not silently fall through to the
-longer one.
+A closed alias rather than a bare ``str``, because the window a class maps to
+is a policy decision and an unrecognized value must not silently fall through
+to the longer one.
 """
 
 
@@ -352,26 +349,27 @@ def _trex_tail_loss(header: StreamHeader) -> int:
 class TrackingRoot:
     """One tool's intermediate root, and what the sweeper needs to know about it.
 
-    ``outputs`` are the globs that identify *real* output inside an entry working
-    directory. They are not a completeness test -- a completion marker is, and
-    that is item 8.2's -- but they are what distinguishes a directory a tracker
-    wrote from a directory something else left behind.
+    ``outputs`` are the globs that identify *real* output inside an entry
+    working directory. A completion marker is the completeness test, not these.
+    They distinguish a directory a tracker wrote from a directory something
+    else left behind.
 
     ``path_columns`` are this root's path-bearing index columns *beyond*
-    ``abs_path``. They live here rather than in a table beside ``default_roots``
-    because that table is what a new tracker forgets: a column missing from it
-    silently stops being portable, and the add-a-tracker recipe had to carry a
-    checklist item asking people to remember. One row per tracker, and the
-    portability passes read it.
+    ``abs_path``. They live here rather than in a table beside
+    ``default_roots`` because that table is what a new tracker forgets: a
+    column missing from it silently stops being portable, and the add-a-tracker
+    recipe had to carry a checklist item asking people to remember. One row per
+    tracker, and the portability passes read it.
 
     ``phase_outputs`` is every gated phase this producer completes, in order,
-    with what each one owns. The sweeper needs *all* of them before it will call
-    a directory finished: without that, a TREx run whose conversion completed and
-    whose tracking was killed reads as complete on the convert marker alone, and
-    gets reclaimed at its age, taking a conversion someone is still using. The
-    per-phase globs are here for the same reason the phase names are -- "what
-    does this tool leave, and when" is producer knowledge, and this is where the
-    machinery is allowed to have it without importing the producer.
+    with what each one owns. The sweeper needs *all* of them before it will
+    call a directory finished: without that, a TREx run whose conversion
+    completed and whose tracking was killed reads as complete on the convert
+    marker alone, and gets reclaimed at its age, taking a conversion someone is
+    still using. The per-phase globs are here for the same reason the phase
+    names are -- "what does this tool leave, and when" is producer knowledge,
+    and this is where the machinery is allowed to have it without importing the
+    producer.
 
     ``output_schema`` is the track schema this producer's bridged tables answer
     to -- the tracker-side counterpart of ``TrackConverter.output_schema``, and
@@ -380,17 +378,18 @@ class TrackingRoot:
     tracked table and a tracker whose columns genuinely differed had nowhere to
     say so. One row per producer, and the bridge reads it.
 
-    ``model_sets`` is whether this producer runs several models as one set, named
-    by a digest over all of them that equals no member's. SLEAP's top-down pair
-    is the one such set. A variant of any other producer is named by each model's
-    own identity, so a record of one that predates the recorded models is still
-    decided by comparing a model's digest with the one it names.
+    ``model_sets`` is whether this producer runs several models as one set,
+    named by a digest over all of them that equals no member's. SLEAP's
+    top-down pair is the one such set. A variant of any other producer is named
+    by each model's own identity, so a record of one that predates the recorded
+    models is still decided by comparing a model's digest with the one it
+    names.
 
     ``tail_loss`` is how many frames short of the end of a file this producer's
-    tool is known to stop reading, as a rule of the file, or ``None`` for a tool
-    that reads every file to its end. A tracks row records what the rule gives
-    the file its tool read, and a shortfall within that is reported as a known
-    tail loss rather than as a frame-axis mismatch
+    tool is known to stop reading, as a rule of the file, or ``None`` for a
+    tool that reads every file to its end. A tracks row records what the rule
+    gives the file its tool read, and a shortfall within that is reported as a
+    known tail loss rather than as a frame-axis mismatch
     (:func:`~mosaic.core.pipeline.tracks_index.frame_axis_verdict`). A count
     cannot show where the missing frames were, so the report says so.
 
@@ -595,18 +594,18 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             ),
             path_columns=("video_abs_path", "predictions_path"),
         ),
-        # Model inference (item 8.7). Audit-only: the parquet is what a detector
-        # emitted *before* schema coercion, which is what you want when debugging
-        # a bad model -- and nothing reads it back, so it is a byproduct on a
-        # shorter clock rather than a cache. One root per inference kind, because
-        # each is a separate op with its own identifiers.
+        # Model inference. Audit-only: the parquet is what a detector emitted
+        # *before* schema coercion, which is what you want when debugging a bad
+        # model -- and nothing reads it back, so it is a byproduct on a shorter
+        # clock rather than a cache. One root per inference kind, because each
+        # is a separate op with its own identifiers.
         #
         # The two Ultralytics ops additionally exchange a JSON request and
         # response with the environment their model runs in, and those are
         # byproducts of one attempt: cleared when the phase re-runs so a stale
         # request cannot sit beside fresh output, and kept out of `outputs`,
-        # which is the sweeper's evidence of real output. `infer-localizer` runs
-        # in mosaic's own process and exchanges nothing.
+        # which is the sweeper's evidence of real output. `infer-localizer`
+        # runs in mosaic's own process and exchanges nothing.
         TrackingRoot(
             key="infer-pose",
             decoder=ToolDecoder(

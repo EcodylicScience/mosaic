@@ -1,32 +1,33 @@
-"""Which track-shaped artifact to read -- item 9.4's widening.
+"""Which track-shaped artifact to read.
 
-M2 built the narrow half: ``tracks_run_id`` selects one variant *within*
-``tracks/``, routed through the single decider ``select_variant_rows``. What was
-left is that a track-shaped table can also live in ``features/`` -- a smoothed or
-subsampled track is still a track -- and nothing enumerated those.
+``tracks_run_id`` selects one variant *within* ``tracks/``, routed through the
+single decider ``select_variant_rows``. A track-shaped table can also live in
+``features/`` -- a smoothed or subsampled track is still a track -- and this
+module enumerates those.
 
-**The default is the leaf of the chain, never the newest by modification time.**
-That phrase names a live default rather than a hypothetical:
-``latest_feature_run_root`` sorts on the ``finished_at`` / ``started_at`` strings,
-which is wall-clock ordering and is not reproducible across a synced dataset --
-two machines that ran the same work in a different order disagree about which
-table is current. The leaf is a property of the *data*: the track-shaped node no
-other run consumed.
+**The default is the leaf of the chain, never the newest by modification
+time.** That phrase names a live default rather than a hypothetical:
+``latest_feature_run_root`` sorts on the ``finished_at`` / ``started_at``
+strings, which is wall-clock ordering and is not reproducible across a synced
+dataset -- two machines that ran the same work in a different order disagree
+about which table is current. The leaf is a property of the *data*: the
+track-shaped node no other run consumed.
 
-**Two leaves is a refusal, not a tiebreak.** Two smoothing chains off one tracks
-variant is a legitimate arrangement and there is no defensible way to pick
-between them -- exactly the position ``select_variant_rows`` already takes when
-one entry has two genuine recipes. Guessing would serve a silent wrong answer;
-raising names both and asks.
+**Two leaves is a refusal, not a tiebreak.** Two smoothing chains off one
+tracks variant is a legitimate arrangement and there is no defensible way to
+pick between them -- exactly the position ``select_variant_rows`` already takes
+when one entry has two genuine recipes. Guessing would serve a silent wrong
+answer; raising names both and asks.
 
-**Membership is truth-based, not registry-based.** A run is track-shaped iff its
-parquet carries the position columns, which is the test ``build_manifest`` already
-performs -- so no producer registry is needed (``core`` must not import
-``behavior``) and a new track producer joins by producing. Two consequences worth
-knowing: it needs an output *materialized* on disk, so a cold run cannot be
-classified at all; and it reads one file per run rather than all of them, so a
-run whose outputs disagree about their schema is described by whichever the walk
-saw first. Neither is a change from how ``build_manifest`` has always decided.
+**Membership is truth-based, not registry-based.** A run is track-shaped iff
+its parquet carries the position columns, which is the test ``build_manifest``
+already performs -- so no producer registry is needed (``core`` must not import
+``behavior``) and a new track producer joins by producing. Two consequences
+worth knowing: it needs an output *materialized* on disk, so a cold run cannot
+be classified at all; and it reads one file per run rather than all of them, so
+a run whose outputs disagree about their schema is described by whichever the
+walk saw first. Neither is a change from how ``build_manifest`` has always
+decided.
 """
 
 from __future__ import annotations
@@ -159,23 +160,25 @@ def run_carries_z(ds: Dataset, storage: str, run_id: str) -> bool:
 def consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[str]:
     """The track-shaped run identifiers this run read, from its ``params.json``.
 
-    Both edges live in the same record and both matter: ``inputs[tracks]`` names a
-    tracks variant, and a ``Result`` input names an upstream feature run. Reading
-    only the first would make every feature-on-feature chain look like a leaf.
+    Both edges live in the same record and both matter: ``inputs[tracks]``
+    names a tracks variant, and a ``Result`` input names an upstream feature
+    run. Reading only the first would make every feature-on-feature chain look
+    like a leaf.
 
-    ``params.json`` rather than an index column because there is no index column:
-    ``FeatureIndexRow`` records no upstream. ``provenance._consumed_variants``
-    reads the same file for the blast-radius walk; this reads more of it.
+    ``params.json`` rather than an index column because there is no index
+    column: ``FeatureIndexRow`` records no upstream.
+    ``provenance._consumed_variants`` reads the same file for the blast-radius
+    walk; this reads more of it.
 
-    **An empty ``run_id`` on a tracks edge is kept, and that is not an oversight.**
-    Item 3.4 defines an unlabelled tracks row -- every row written before
-    variants existed -- as *unknown recipe*, and its ``run_id`` is ``""``. A
-    feature that consumed one records ``""`` here, so discarding falsy values
-    would leave the unlabelled variant looking unconsumed and therefore a leaf
+    **An empty ``run_id`` on a tracks edge is kept, and that is not an
+    oversight.** An unlabelled tracks row -- every row written before variants
+    existed -- is an *unknown recipe*, and its ``run_id`` is ``""``. A feature
+    that consumed one records ``""`` here, so discarding falsy values would
+    leave the unlabelled variant looking unconsumed and therefore a leaf
     forever, on exactly the legacy datasets where a chain is most likely to
-    already exist. The tracks edge is identified by its ``where`` marker instead,
-    which is what distinguishes "consumed the unlabelled variant" from "recorded
-    no upstream at all".
+    already exist. The tracks edge is identified by its ``where`` marker
+    instead, which is what distinguishes "consumed the unlabelled variant" from
+    "recorded no upstream at all".
     """
     read = read_linked_run_params(ds, storage, run_id)
     if read.params is None:
@@ -214,7 +217,7 @@ def track_universe(ds: Dataset) -> list[TrackSource]:
 
 
 def track_leaf(ds: Dataset) -> TrackSource:
-    """The track-shaped artifact nothing else consumed -- item 9.4's default.
+    """The track-shaped artifact nothing else consumed, the default read.
 
     A dataset with only converted tables has exactly one leaf per variant, so on
     the ordinary dataset this answers the tracks variant and the widening costs

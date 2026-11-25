@@ -46,11 +46,11 @@ Two consequences of mutating rather than copying, both intended:
   ``feature.inputs.model_dump()`` and the worker rebuilds it), because ``run_id``
   is a plain field of the dump.
 
-**The ``"tracks"`` literal is deliberately untouched.** There is no tracks
-identity to pin yet; implementation item 3.3 resolves it once ``tracks/`` is
-variant-addressed. Pinning it to anything that varies with which sequences are on
-disk would move a scope-free feature's identifier every time a sequence is added,
-which is exactly what workflow H5 forbids.
+**The ``"tracks"`` literal is deliberately untouched.** The tracks
+variants a run read enter its identifier through the ``_tracks`` term, so there
+is no tracks identity to pin here. Pinning it to anything that varies with
+which sequences are on disk would move a scope-free feature's identifier every
+time a sequence is added.
 
 **A reference to a feature that has not run yet stays unpinned**, and is reported
 as ``run_id=None``. Resolution does not raise for it: an upstream with no index
@@ -134,7 +134,7 @@ def resolve_references(ds: Dataset, feature: Feature) -> tuple[Resolution, ...]:
     resolutions: list[Resolution] = []
 
     for position, item in enumerate(feature.inputs.root):
-        # The other member of the union is the "tracks" literal (item 3.3).
+        # The other member of the union is the "tracks" literal.
         if isinstance(item, Result):
             record = _pin(ds, item, f"inputs[{position}]")
             if record is not None:
@@ -158,8 +158,8 @@ def resolution_payload(
 
     Provenance, never identity: it records what the identifier already covers,
     so hashing it would be redundant, and it is written to the save payload
-    rather than the hash payload. It is what a reverse-dependency walk (item
-    6.1) reads to answer "which templates run did this classifier train on".
+    rather than the hash payload. A reverse-dependency walk (``provenance``)
+    reads it to answer "which templates run did this classifier train on".
     """
     return [
         {"where": r.where, "feature": r.feature, "run_id": r.run_id}

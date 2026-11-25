@@ -1,37 +1,36 @@
-"""Which derived artifacts a source change reaches -- item 6.1's walk.
+"""Which derived artifacts a source change reaches.
 
-Every column this needs was recorded in Stage 5: a tracks table and a feature
-entry each carry the composition they were built from, and ``<root>/sequences.csv``
-carries what that sequence is made of now. What was missing is the join, and this
-is it. ``drifted_entries`` answers the same question for one feature run; this
-answers it across the dataset and follows the edge that run cannot see.
+Every column this needs is recorded: a tracks table and a feature entry each
+carry the composition they were built from, and ``<root>/sequences.csv``
+carries what that sequence is made of now. What was missing is the join, and
+this is it. ``drifted_entries`` answers the same question for one feature run;
+this answers it across the dataset and follows the edge that run cannot see.
 
-**A query, never a stored index.** Item 6.1 calls for a "derived index",
-version-control-ignored and rebuildable. It is neither built nor stored, because
-an edge list is a *join over the present* rather than a baseline: a value
-recomputed from the present agrees with itself by construction, which is the
-argument ``sequence_index`` makes for storing compositions and the same argument
-against storing this. Freezing it would add a staleness class -- index newer than
-projection -- with no reader able to tolerate it.
+**A query, never a stored index.** The walk builds and stores no derived index,
+because an edge list is a *join over the present* rather than a baseline: a
+value recomputed from the present agrees with itself by construction, which is
+the argument ``sequence_index`` makes for storing compositions and the same
+argument against storing this. Freezing it would add a staleness class -- index
+newer than projection -- with no reader able to tolerate it.
 
 **Three arms, and the fourth is deliberately absent.** Tracks and features are
 reached directly, by the composition each recorded. Feature runs are reached
 *transitively*, through a tracks variant that moved under them -- which matters
 because forty-two features declare no source root and reach media only through
-tracks, so a walk without this arm stops at the tracks table and reports nothing
-about everything built on it.
+tracks, so a walk without this arm stops at the tracks table and reports
+nothing about everything built on it.
 
 Extracted frames are **not** walked. They record a ``media_composition`` and a
-reorder does move it, but a frame set is a P4 carve-out that is never destroyed,
-so it cannot appear in a delete set -- and this walk exists to compute one.
+reorder does move it, but a frame set is never destroyed, so it cannot appear
+in a delete set -- and this walk exists to compute one.
 Leaving frames out makes that guarantee structural rather than a filter someone
 can forget. It also keeps ``core`` from importing ``tracking``, which owns the
 frames schema. A caller that wants to *report* affected frame sets reads that
 index itself, above both layers.
 
 **Verdicts, not decisions.** A row says what a change reached and whether the
-recorded value still matches; whether that justifies deleting anything is item
-6.4's, behind an explicit force.
+recorded value still matches; whether that justifies deleting anything is a
+separate decision, behind an explicit force.
 """
 
 from __future__ import annotations
@@ -61,11 +60,11 @@ Verdict = Literal["current", "drifted", "unknown"]
 """What comparing a recorded composition against the present says.
 
 ``unknown`` is not a hedge. It is what either side being empty means, and the
-two empties are different: a recorded ``""`` is a row written before item 5.1 or
-one whose root was not establishable, a current ``""`` is a projection absent or
-unestablishable now. Neither is evidence of change, and neither is evidence of
-safety -- which is why item 6.2 fails closed on it rather than reading it as
-``current``.
+two empties are different: a recorded ``""`` is a row written before
+compositions were recorded or one whose root was not establishable, a current
+``""`` is a projection absent or unestablishable now. Neither is evidence of
+change, and neither is evidence of safety -- which is why a deletion check
+fails closed on it rather than reading it as ``current``.
 """
 
 PROVENANCE_COLUMNS: list[str] = [
@@ -262,13 +261,13 @@ def _consumed_variants(
 ) -> set[str]:
     """The upstream variants a feature run read on edge *where*, from ``params.json``.
 
-    *where* selects the ``_resolved`` edge kind: ``inputs[tracks]`` for the tracks
-    variants (the default), ``inputs[labels]`` for the label variants (item 9.3).
+    *where* selects the ``_resolved`` edge kind: ``inputs[tracks]`` for the
+    tracks variants (the default), ``inputs[labels]`` for the label variants.
     The identifier already carries them -- ``_tracks`` / ``_labels`` are hash
-    terms -- so this is the readable copy persisted for exactly this walk rather
-    than a second source of truth. A run whose file is missing or unreadable
-    contributes nothing, which leaves it out of the blast radius rather than
-    guessing it in.
+    terms -- so this is the readable copy persisted for exactly this walk
+    rather than a second source of truth. A run whose file is missing or
+    unreadable contributes nothing, which leaves it out of the blast radius
+    rather than guessing it in.
 
     ``consumed_variants`` drops a falsy ``run_id`` where ``track_universe``'s
     ``consumed_run_ids`` keeps one. That divergence is deliberate and is stated
@@ -293,12 +292,12 @@ def _transitive_rows(
     """Feature entries reached through an upstream variant that moved under them.
 
     The arm that matters. Forty of the forty-two registered features declare no
-    source root, so their own cell is empty and the direct arm cannot see them --
-    they read media only through tracks, and (item 9.3) labels only through the
+    source root, so their own cell is empty and the direct arm cannot see
+    them -- they read media only through tracks, and labels only through the
     ``labels/<kind>/`` tables their inputs hand them, so a labels_raw change
-    reaches ``extract-labeled-templates`` only along this edge. *where* / *edge*
-    select which upstream: ``inputs[tracks]`` / ``tracks`` or ``inputs[labels]`` /
-    ``labels``.
+    reaches ``extract-labeled-templates`` only along this edge. *where* /
+    *edge* select which upstream: ``inputs[tracks]`` / ``tracks`` or
+    ``inputs[labels]`` / ``labels``.
     """
     if not moved_variants:
         return []

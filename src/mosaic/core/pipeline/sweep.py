@@ -1,19 +1,19 @@
-"""Reclaiming tracker intermediates -- item 8.4, and the milestone's second gate.
+"""Reclaiming tracker intermediates.
 
 `_tracking` holds what a tracking stage produced on the way to a result: a
 `.pv` and its settings, a `.slp`, a predictions CSV, an audit parquet. It is
-generated and safe to delete, and nothing deletes it, so it grows without bound.
-This decides what may go.
+generated and safe to delete, and nothing deletes it, so it grows without
+bound. This decides what may go.
 
-**The whole deletion authority is two frozensets.** Everything a walk classifies
-is reported; only a class named in `_DELETABLE` is unlinked and only one in
-`_ROW_ONLY_DROPS` loses its index row. That is `prune_media`'s shape, and it is
-what makes this milestone's gate -- *the sweeper does not delete in-flight
-work* -- a one-line assertion rather than a review of every branch.
+**The whole deletion authority is two frozensets.** Everything a walk
+classifies is reported; only a class named in `_DELETABLE` is unlinked and only
+one in `_ROW_ONLY_DROPS` loses its index row. That is `prune_media`'s shape,
+and it is what makes the rule that *the sweeper does not delete in-flight work*
+a one-line assertion rather than a review of every branch.
 
 **Three ways a directory can be alive while looking finished**, all present in
-the producers today, and each is why a class exists rather than being folded into
-another:
+the producers today, and each is why a class exists rather than being folded
+into another:
 
 - The `tracks/` bridge runs *after* the in-flight claim is released, so a
   completed-but-unbridged directory reads as free. It is `complete` only once
@@ -22,12 +22,12 @@ another:
   most finished directories are *unrowed*. Unrowed is therefore refused, never
   deleted -- the opposite of what "no row names it" suggests.
 - A claim held on another host cannot be verified at all, only aged out. That is
-  what the marker's self-carried expiry is for (item 8.3), and it is the only
-  cross-host authority this consults.
+  what the marker's self-carried expiry is for, and it is the only cross-host
+  authority this consults.
 
-**Age is the fallback, promotion is the signal.** Item 8.4 puts it that way round
-because a corrected track set in `tracks_raw` makes the run it was corrected from
-reclaimable immediately, whatever its age. `promoted` is that class.
+**Age is the fallback, promotion is the signal.** A corrected track set in
+`tracks_raw` makes the run it was corrected from reclaimable immediately,
+whatever its age. `promoted` is that class.
 
 **Pure.** Nothing here writes; it reads markers, mtimes and rows and returns a
 verdict per directory. `Dataset.sweep_tracking` resolves roots, applies the
@@ -79,7 +79,7 @@ SweepClass = Literal[
     "complete_young",
     # Complete and past its window. The ordinary reclaim.
     "complete_aged",
-    # Superseded by a promoted correction (item 8.6). Age does not apply.
+    # Superseded by a promoted correction. Age does not apply.
     "promoted",
     # No completion marker and no live claim: an attempt that died partway.
     # Deletable -- it is not a result, and re-running rebuilds it.
@@ -106,9 +106,10 @@ _DELETABLE: Final[frozenset[SweepClass]] = frozenset(
 )
 """The only classes whose files are removed.
 
-``inflight`` is absent, and that absence *is* the milestone gate. Asserted
-directly by the suite as well as behaviourally, because the behavioural test can
-only prove the paths it exercises and this states the rule for all of them.
+``inflight`` is absent, and that absence is what keeps in-flight work safe.
+Asserted directly by the suite as well as behaviourally, because the
+behavioural test can only prove the paths it exercises and this states the rule
+for all of them.
 """
 
 _ROW_ONLY_DROPS: Final[frozenset[SweepClass]] = frozenset({"orphan_row"})
@@ -144,11 +145,11 @@ _DECLINE_TEXT: Final[Mapping[DeclineReason, str]] = {
     ),
     "root-outside-dataset": (
         "a tracker root resolves outside the dataset directory. Refusing rather "
-        "than deleting: item 9.1 pins roots inside the dataset precisely so a "
+        "than deleting: roots are pinned inside the dataset precisely so a "
         "destructive pass cannot be pointed at somebody else's files."
     ),
     "legacy-layout": (
-        "a tracker root still points inside tracks_raw (the pre-item-8.1 "
+        "a tracker root still points inside tracks_raw (the older "
         "layout), where user uploads live. Deleting under it would delete "
         "source data, so this run does nothing at all."
     ),
@@ -160,10 +161,10 @@ def decline_text(reason: DeclineReason) -> str:
     return _DECLINE_TEXT[reason]
 
 
-# Retention per artifact class, from the registry rather than a branch per tool
-# (item 8.4's table). A tracker's output is expensive, correctable and the thing
-# a promotion supersedes; inference output is audit-only and neither reused nor
-# edited, so it goes sooner.
+# Retention per artifact class, from the registry rather than a branch per
+# tool. A tracker's output is expensive, correctable and the thing a promotion
+# supersedes; inference output is audit-only and neither reused nor edited, so
+# it goes sooner.
 _DEFAULT_RETENTION_DAYS: Final[Mapping[RetentionClass, float]] = {
     "tracker": 14.0,
     "inference": 3.0,

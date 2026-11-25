@@ -7,9 +7,9 @@ sits beside its root's ``index.csv``, one per source root.
 
 **Why a stored row rather than a computed answer.** A composition could be
 recomputed from ``index.csv`` on demand, and for a single lookup that would be
-cheaper. It cannot serve the two things a composition is for: item 5.2's drift
-check needs a *baseline* to compare the present against, and a value recomputed
-from the present agrees with itself by construction; and item 6.2's block check
+cheaper. It cannot serve the two things a composition is for: the drift check
+needs a *baseline* to compare the present against, and a value recomputed from
+the present agrees with itself by construction; and the delete-set block check
 needs one value per sequence without walking the whole root. Storage is what
 makes both of those a read.
 
@@ -18,27 +18,25 @@ sequence, so putting it on every member row means rewriting every row to record
 one change, and leaves no way to tell a stale copy from a current one when they
 disagree.
 
-**Write order, and it must not be inverted.** A writer commits its ``index.csv``
-first, releases, and only then writes ``sequences.csv``. Writing
-``sequences.csv`` first would record a composition for an index state that never
-committed -- a confident value nothing on disk supports. A crash between the two
-leaves the projection absent or stale, which over-reports on the next comparison
-and heals on the next write.
+**Write order, and it must not be inverted.** A writer commits its
+``index.csv`` first, releases, and only then writes ``sequences.csv``. Writing
+``sequences.csv`` first would record a composition for an index state that
+never committed -- a confident value nothing on disk supports. A crash between
+the two leaves the projection absent or stale, which over-reports on the next
+comparison and heals on the next write.
 
 Two files, two locks, and still never nested -- no longer for safety, since
-``index_lock`` holds a sidecar the atomic rename never touches
-(see :mod:`mosaic.core.pipeline.index_lock`), but because nesting two different
+``index_lock`` holds a sidecar the atomic rename never touches (see
+:mod:`mosaic.core.pipeline.index_lock`), but because nesting two different
 paths' locks is a lock-ordering hazard with no upside here, and ``index_lock``
 is re-entrant per resolved path so it would not catch an accidental one.
 
-**The display name is deliberately not here**, though item 4.4 says all three
-per-sequence facts share one row. A composition is a property of
-``(sequence, root)``; a label is a property of the sequence alone. On one row per
-root, a sequence with both media and tracks would carry two display names with no
-rule saying which wins, and ``Dataset.set_display_name`` would have to pick a
-root it has no basis to pick. The label lives in a dataset-level
-``sequences.csv`` instead (item 4.1), and this deviation from the plan's wording
-is recorded rather than left to be rediscovered.
+**The display name is not stored here**, although it is a per-sequence fact
+like the compositions. A composition is a property of ``(sequence, root)``; a
+label is a property of the sequence alone. On one row per root, a sequence with
+both media and tracks would carry two display names with no rule saying which
+wins, and ``Dataset.set_display_name`` would have to pick a root it has no
+basis to pick. The label lives in a dataset-level ``sequences.csv`` instead.
 """
 
 from __future__ import annotations
@@ -83,17 +81,17 @@ SourceRoot = Literal["media_raw", "tracks_raw", "labels_raw"]
 """A root holding what cannot be recomputed, and therefore has a composition.
 
 A closed alias, unlike ``TracksIndexRow.producer`` which is deliberately a bare
-``str`` because converters register at runtime. This set is closed by rule P1 --
-nothing else in the dataset is a *source* -- so the claim is one this module can
+``str`` because converters register at runtime. This set is closed because
+nothing else in the dataset is a *source*, so the claim is one this module can
 keep, and it makes "which composition function applies" exhaustively checkable
 rather than a dict lookup that can miss.
 
-``labels_raw`` holds the raw label files a kind is converted from -- uploaded, or
-in a later milestone projected from the Dolt scoring store. It is not a partition
-of ``tracks_raw``: a format like ``calms21_npy`` is registered as both a track
-converter and a label converter, so one raw file is at once a track source and a
-label source. Membership is therefore by index, not by directory, and the two
-roots hold overlapping files without either owning the other.
+``labels_raw`` holds the uploaded raw label files a kind is converted from. It
+is not a partition of ``tracks_raw``: a format like ``calms21_npy`` is
+registered as both a track converter and a label converter, so one raw file is
+at once a track source and a label source. Membership is therefore by index,
+not by directory, and the two roots hold overlapping files without either
+owning the other.
 """
 
 _SCHEME_BY_ROOT: Final[dict[str, str]] = {
@@ -144,11 +142,11 @@ SEQUENCE_INDEX_COLUMNS: Final[list[str]] = [
 SEQUENCE_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ()
 """Path-bearing columns: none, deliberately.
 
-Recorded as an empty tuple rather than omitted so rule P7's "any new
-path-bearing column joins the portability rewrite lists in the same change" has
-somewhere to be added. Both of ``Dataset``'s rewrite passes hard-code
-``<root>/index.csv`` and would skip ``sequences.csv`` anyway; this says that is
-correct rather than forgotten.
+Recorded as an empty tuple rather than omitted so a new path-bearing column
+joins the portability rewrite lists in the same change, and has somewhere to be
+added. Both of ``Dataset``'s rewrite passes hard-code ``<root>/index.csv`` and
+would skip ``sequences.csv`` anyway; this says that is correct rather than
+forgotten.
 """
 
 
@@ -226,7 +224,7 @@ def read_sequence_index(ds: Dataset, root: SourceRoot) -> pd.DataFrame:
     """Read *root*'s per-sequence index, projected onto the current schema.
 
     The single reader. An absent index -- or an unset root, which is the state
-    every dataset predating this milestone is in -- reads as an *empty* one:
+    every dataset that never recorded one is in -- reads as an *empty* one:
     absence and emptiness are two spellings of "this root has recorded no
     compositions", and answering them differently is what left the tracks index
     with four policies across six callers.
@@ -284,24 +282,22 @@ def write_sequence_compositions(
 class SequenceLabelRow(SchemaRowBase):
     """One row of the dataset-level ``sequences.csv``: what a sequence is called.
 
-    Separate from :class:`SequenceIndexRow`, and separate for a reason worth
-    stating because item 4.4's wording says otherwise. A composition is a
+    Separate from :class:`SequenceIndexRow`, because a composition is a
     property of ``(sequence, root)`` -- a sequence has one per root and they
-    change independently. A label is a property of the sequence alone. Put it on
-    the per-root row and a sequence with both media and tracks carries two
+    change independently. A label is a property of the sequence alone. Put it
+    on the per-root row and a sequence with both media and tracks carries two
     display names that can disagree, with no rule saying which wins, and
     ``Dataset.set_display_name`` has to pick a root it has no basis to pick.
 
     ``group``/``sequence`` are the stable **token**: minted once, part of every
     filename and every index join key, and never rewritten. ``display_group``
     and ``display_name`` are the label: relabelled freely, read by humans, and
-    touching nothing on disk. An empty label means "no label recorded", and every
-    reader falls back to the token -- so a dataset that never names anything
-    behaves exactly as it did before this file existed.
+    touching nothing on disk. An empty label means "no label recorded", and
+    every reader falls back to the token -- so a dataset that never names
+    anything behaves exactly as it did before this file existed.
 
-    ``derived_from`` is reserved for item 8.6, where a promoted manual correction
-    records the tracker run it was corrected from. Declared now rather than added
-    later so the schema does not move once datasets hold rows.
+    ``derived_from`` records the tracker run that a promoted manual correction
+    was corrected from.
     """
 
     group: str = ""
@@ -359,9 +355,9 @@ def adopt_label_columns(df: pd.DataFrame) -> pd.DataFrame:
 def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
     """Read a dataset's sequence labels, projected onto the current schema.
 
-    The single reader. Absent reads as the full-schema empty frame -- which every
-    dataset predating item 4.1 is, and which is why the fallback to the token has
-    to be the ordinary path rather than an error case.
+    The single reader. Absent reads as the full-schema empty frame -- which
+    every dataset without a label file is, and which is why the fallback to the
+    token has to be the ordinary path rather than an error case.
     """
     path = sequence_label_path(ds)
     if not path.exists():
@@ -424,35 +420,36 @@ def encode_entry_composition(recorded: Mapping[str, str], roots: Iterable[str]) 
     """Encode one entry's recorded compositions into a single index cell.
 
     The one minter for that cell, shared by the feature row and the tracks row,
-    because two spellings of one answer would be two answers to item 6.2's walk.
+    because two spellings of one answer would be two answers to the delete-set
+    block check.
 
     One root is the whole of today's reality -- two features declare
-    ``media_raw``, a converted tracks table reads ``tracks_raw`` -- so the common
-    forms are a bare digest and ``""``. Several roots join as ``root=digest``
-    pairs, sorted, so the cell says which value came from where without a second
-    column to keep in step.
+    ``media_raw``, a converted tracks table reads ``tracks_raw`` -- so the
+    common forms are a bare digest and ``""``. Several roots join as
+    ``root=digest`` pairs, sorted, so the cell says which value came from where
+    without a second column to keep in step.
 
     **The shape follows what was declared, not what was found.** A consumer
     declaring two roots writes a labelled pair for each even where one recorded
     nothing (``tracks_raw=abc,media_raw=``), because the alternative -- emitting
     only what was present -- collapses "two roots, one recorded" onto the same
     bare digest as "one root, recorded", and a reader comparing the two cannot
-    tell which root the digest came from. That is the honest-empty rule one level
-    up: an empty needs a companion saying which kind of empty it is, and here the
-    declaration is the companion.
+    tell which root the digest came from. That is the honest-empty rule one
+    level up: an empty needs a companion saying which kind of empty it is, and
+    here the declaration is the companion.
 
     Empty means **nothing recorded**, never "recorded as empty". It covers a
     consumer that declares no source root and one whose every declared root has
-    recorded nothing, and a reader must draw no conclusion from it -- two entries
-    whose compositions are both unrecorded are not known to be alike.
+    recorded nothing, and a reader must draw no conclusion from it -- two
+    entries whose compositions are both unrecorded are not known to be alike.
 
-    Only the labelled branch changes shape, and no consumer takes it today: both
-    tracks bridges filter to exactly one source root (a TREx run reads
-    ``media_raw`` and ``trex``, an inference run ``media_raw`` and ``models``, and
-    the derived halves drop out), and the two features that declare a root declare
-    one. Item 8.6 is what takes it -- a promoted correction lands in ``tracks_raw``
-    beside a video in ``media_raw`` -- so this is settled before the milestone that
-    would otherwise settle it by accident.
+    Only the labelled branch changes shape, and no consumer takes it today:
+    both tracks bridges filter to exactly one source root (a TREx run reads
+    ``media_raw`` and ``trex``, an inference run ``media_raw`` and ``models``,
+    and the derived halves drop out), and the two features that declare a root
+    declare one. The branch exists for a consumer that declares several roots,
+    such as a promoted correction in ``tracks_raw`` beside a video in
+    ``media_raw``.
     """
     declared = sorted({root for root in roots if root})
     found = [(root, recorded.get(root, "")) for root in declared]
@@ -469,17 +466,18 @@ def read_entry_compositions(
 ) -> dict[tuple[str, str], dict[str, str]]:
     """Every source root's recorded composition, for each of *entries*.
 
-    Two levels -- entry, then root -- rather than one flattened value per entry.
-    Flattening is what item 4.4's H3 case 2 exists to rule out: a track-only
-    sequence gaining its first video would move a tracks-only identifier, and one
-    combined hash cannot tell that apart from a change that mattered.
+    Two levels -- entry, then root -- rather than one flattened value per
+    entry. A track-only sequence gaining its first video would move a
+    tracks-only identifier under a flattened value, and one combined hash cannot
+    tell that apart from a change that mattered.
 
     Reads at most one ``sequences.csv`` per declared source root, once, rather
-    than once per entry. A root with no index, an entry with no row in it, and an
-    unestablishable composition all contribute **nothing** -- not an empty string.
-    That distinction is the mechanism the omission rule rests on: an absent key
-    digests differently from a key whose value is empty, which is what keeps an
-    identifier still on a dataset that has recorded no compositions yet.
+    than once per entry. A root with no index, an entry with no row in it, and
+    an unestablishable composition all contribute **nothing** -- not an empty
+    string. That distinction is the mechanism the omission rule rests on: an
+    absent key digests differently from a key whose value is empty, which is
+    what keeps an identifier still on a dataset that has recorded no
+    compositions yet.
     """
     wanted = set(entries)
     if not wanted:

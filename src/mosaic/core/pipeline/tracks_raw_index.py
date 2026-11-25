@@ -2,12 +2,11 @@
 
 Named ``tracks_raw_index`` rather than ``tracks_index``, because this is the
 index of the *raw* uploads under ``tracks_raw/``, not of the converted tables
-under ``tracks/``. The two were one filename apart until Stage 2 gave
-``tracks/index.csv`` a typed row of its own, at which point one of them had to
-say which root it meant. Every public name here carries ``tracks_raw`` for the
-same reason: a bare ``read_tracks_raw_index`` beside a real converted-tracks index
-reads as the one the caller probably wanted, and picking the wrong one is a
-silent wrong answer rather than an import error.
+under ``tracks/``. ``tracks/index.csv`` has a typed row of its own, so each
+index has to say which root it means. Every public name here carries
+``tracks_raw`` for the same reason: a bare ``read_tracks_raw_index`` beside a
+real converted-tracks index reads as the one the caller probably wanted, and
+picking the wrong one is a silent wrong answer rather than an import error.
 
 The raw-tracks index (``tracks_raw/index.csv``) is a mosaic-defined artifact
 with invariants mosaic owns: the ``TRACKS_RAW_INDEX_COLUMNS`` schema, an
@@ -38,14 +37,15 @@ Reserved axes (additive, not built): multi-camera / time-chunked raw tracks
 would add ``camera`` and ``sync_uuid`` as within-sequence *columns* -- as the
 media index did in its multi-camera phase, where ``camera`` is a column (like
 ``id``) and identity stays the ``(group, sequence)`` 2-tuple, not a
-``camera``-widened key. A per-file time-order would number chunks via the shared
-``assign_video_order`` ranker per ``(group, sequence, camera)`` (as
+``camera``-widened key. A per-file time-order would number chunks via the
+shared ``assign_video_order`` ranker per ``(group, sequence, camera)`` (as
 ``densify_video_order`` does). One asymmetry to carry forward: imgstore media
-*probes* ``camera``/``sync_uuid`` from store metadata, but raw track files carry
-none, so tracks-``camera`` must be *assigned* through the scope, never probed.
+*probes* ``camera``/``sync_uuid`` from store metadata, but raw track files
+carry none, so tracks-``camera`` must be *assigned* through the scope, never
+probed.
 These land as new ``TRACKS_RAW_INDEX_COLUMNS`` entries plus new keyword scope
-fields; ``write_tracks_raw_index_rows`` already drops any column outside the schema,
-so nothing here needs a redesign when they arrive.
+fields; ``write_tracks_raw_index_rows`` already drops any column outside the
+schema, so nothing here needs a redesign when they arrive.
 """
 
 from __future__ import annotations
@@ -326,24 +326,24 @@ def iter_track_files(
     :class:`SourceFileFilter` accepts for *patterns*: a match of any glob,
     skipping macOS resource forks (``._*``) and any basename matching
     *exclude_patterns*. A file matched by several patterns appears once
-    (deduped by resolved path), and the result is sorted by resolved path so the
-    written index is order-stable regardless of filesystem iteration order. The
-    identity-free scan shared by :meth:`Dataset.index_tracks_raw` (scan-and-
-    derive) and :meth:`Dataset.write_tracks_raw_index` (assignment-driven).
+    (deduped by resolved path), and the result is sorted by resolved path so
+    the written index is order-stable regardless of filesystem iteration order.
+    The identity-free scan shared by :meth:`Dataset.index_tracks_raw`
+    (scan-and-derive) and :meth:`Dataset.write_tracks_raw_index`
+    (assignment-driven).
 
     An entry of *search_dirs* that is a file is a listed file, which a file
-    source hands over in place of a directory. A listed file is claimed whatever
-    a glob says, so *patterns* do not apply to it. It is kept unless a rule
-    below skips it, and a skipped one is appended to *listed_skipped*, so the caller can
-    say that a listed file was not indexed.
+    source hands over in place of a directory. A listed file is claimed
+    whatever a glob says, so *patterns* do not apply to it. It is kept unless a
+    rule below skips it, and a skipped one is appended to *listed_skipped*, so
+    the caller can say that a listed file was not indexed.
 
-    **``_tracking`` is never descended into** -- item 8.1's exclusion clause, and
-    half of M5's gate. A tracker writes per-individual ``data/*.npz`` and
-    predictions CSVs into its working directory, and this scan looks for exactly
-    those extensions; reaching them would index generated intermediates as user
-    raw tracks and fold their checksums into a sequence's ``tracks_raw``
-    composition, silently invalidating every downstream cache on each tracker
-    re-run.
+    **``_tracking`` is never descended into**. A tracker writes per-individual
+    ``data/*.npz`` and predictions CSVs into its working directory, and this
+    scan looks for exactly those extensions; reaching them would index
+    generated intermediates as user raw tracks and fold their checksums into a
+    sequence's ``tracks_raw`` composition, silently invalidating every
+    downstream cache on each tracker re-run.
 
     It is a *component* test rather than an ``exclude_patterns`` entry, because
     ``exclude_patterns`` matches basenames and a directory exclusion cannot be
@@ -351,18 +351,18 @@ def iter_track_files(
     would match nothing while the walk descended anyway. That is not a gap
     callers could have worked around; it was unexpressible.
 
-    **A label series is never descended into either**, for the sibling reason. A
-    series holds an editor's saved revisions, indexed one row per revision under
-    their own rule. Read as uploaded label files, a projected scoring export
-    would become a second, conflicting source for its sequence, and its checksum
-    would move that sequence's composition on every save. It is recognized by
-    the marker the series writer leaves, not by a directory name, so a folder a
-    user happened to call ``keypoints`` is still walked.
+    **A label series is never descended into either**, for the sibling reason.
+    A series holds an editor's saved revisions, indexed one row per revision
+    under their own rule. Read as uploaded label files, a projected scoring
+    export would become a second, conflicting source for its sequence, and its
+    checksum would move that sequence's composition on every save. It is
+    recognized by the marker the series writer leaves, not by a directory name,
+    so a folder a user happened to call ``keypoints`` is still walked.
 
-    Skips are counted rather than announced per file: on a real tracker root that
-    would be thousands of lines. The count goes to stderr in one line, because a
-    scan that quietly returns less than the caller expected is the thing worth
-    noticing.
+    Skips are counted rather than announced per file: on a real tracker root
+    that would be thousands of lines. The count goes to stderr in one line,
+    because a scan that quietly returns less than the caller expected is the
+    thing worth noticing.
     """
     walk = _walk_track_files(
         search_dirs,
