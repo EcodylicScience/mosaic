@@ -225,8 +225,10 @@ The count changes neither a run's identity nor its outputs, so a run with four w
 is a cache hit for one with one, and a recipe never carries it. `--parallel-mode thread`
 is the default. Choose `process` for a feature whose per-entry work is a Python loop,
 which holds the interpreter lock in threads. Each worker is a separate interpreter that
-imports the feature libraries and receives a pickled copy of each entry's table, so it
-uses much more memory. A worker that the host stops ends the step with
+imports the feature libraries, so it uses much more memory. A worker reads each entry's
+input itself, except with overlap, a feature that widens an individual-level input onto
+the pair rows of another input, a nearest-neighbor pair filter or the cross join, whose
+input the run reads and hands to it. A worker that the host stops ends the step with
 `WorkerProcessDied`. Run the request again with fewer workers or in thread mode. The
 entries already written are kept.
 
@@ -327,15 +329,16 @@ cost.levels      # per mode and count of entries in flight: seconds, rows, cpu_s
 
 A level's throughput is its `rows` over its `seconds`, so the speedup of a second thread
 is the throughput at level 2 over the throughput at level 1. A level counts only entries
-whose output was written, and spreads an entry's rows evenly over its flight, from the
-start of its load to its output written. A log written before levels were recorded has
-them rebuilt from its entries on the same rule, and `rebuilt` says so. `cost.entries`
-lists each measured entry with its mode, times, CPU and covariates, and
-`cost.skipped_lines` counts the lines of the log that could not be read.
-`cost.peak_points` holds the largest memory sample of each mode, with the rows and pair
-frames in flight (`pair_frames_bound` is true when one of those entries carried a lower
-bound). `cost.params_digest`, `cost.params_default` and `cost.emits` identify the
-feature's params and the level it emits.
+whose output was written, and spreads an entry's rows evenly over its flight. The flight
+runs from the entry's dispatch to its output written, or from the run's load of its
+input when the run loads it. A log written before levels were recorded has them rebuilt
+from its entries on the same rule, and `rebuilt` says so. `cost.entries` lists each
+measured entry with its mode, times, CPU and covariates, and `cost.skipped_lines` counts
+the lines of the log that could not be read. `cost.peak_points` holds the largest memory
+sample of each mode, with the rows and pair frames in flight (`pair_frames_bound` is
+true when one of those entries carried a lower bound). `cost.params_digest`,
+`cost.params_default` and `cost.emits` identify the feature's params and the level it
+emits.
 
 `cost.machine` names the machine the job ran on: its CPU model, logical CPUs, threads per
 core and memory. Set the environment variable `MOSAIC_MACHINE_CLASS` to a name of your own

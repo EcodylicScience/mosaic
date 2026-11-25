@@ -167,7 +167,7 @@ ParallelModeOption = Annotated[
         help=(
             "With more than one worker, 'thread' (the default) shares one copy of the "
             "feature. 'process' uses every core but spawns an interpreter per "
-            "worker and copies each entry's table to it, so it uses far more memory."
+            "worker, each holding an entry's table, so it uses far more memory."
         ),
     ),
 ]

@@ -1276,6 +1276,16 @@ def _frame_window(
     return None if window.empty else window
 
 
+def print_progress(label: str, done: int, total: int, interval: int = 10) -> None:
+    """Print ``[<label>] Processed <done>/<total> sequences`` to standard error.
+
+    The line is printed every *interval* entries and at the last one, and never
+    without a *label*.
+    """
+    if label and (done % interval == 0 or done == total):
+        print(f"[{label}] Processed {done}/{total} sequences", file=sys.stderr)
+
+
 def skip_pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
     """An ``on_pairs_missing`` that skips the entry, for a read beside the apply loop.
 
@@ -1421,8 +1431,4 @@ def iter_manifest(
         del df
         release_arrow_memory()
 
-        if progress_label and ((i + 1) % progress_interval == 0 or i == n_entries - 1):
-            print(
-                f"[{progress_label}] Processed {i + 1}/{n_entries} sequences",
-                file=sys.stderr,
-            )
+        print_progress(progress_label, i + 1, n_entries, progress_interval)

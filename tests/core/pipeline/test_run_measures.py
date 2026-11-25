@@ -26,7 +26,8 @@ from pydantic import TypeAdapter
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
-from mosaic.core.pipeline import manifest as manifest_module
+from mosaic.core.filter_bounds import TimeWindow
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import memory_watch
 from mosaic.core.pipeline.memory_watch import MemorySample, MemoryWatch
 from mosaic.core.pipeline import entry_task as entry_task_module
@@ -42,7 +43,7 @@ from mosaic.core.pipeline.admission import (
     WorkerMeasure,
 )
 from mosaic.core.pipeline.entry_pool import EntryFailure
-from mosaic.core.pipeline.entry_task import EntryReport, EntryTask
+from mosaic.core.pipeline.entry_task import EntryLoad, EntryReport, EntryTask
 from mosaic.core.pipeline.input_size import EntryCovariates, entry_covariates
 from mosaic.core.pipeline.params_facts import (
     params_equal_defaults,
@@ -54,7 +55,7 @@ from mosaic.core.pipeline.run import (
     process_apply_worker,
     run_feature,
 )
-from mosaic.core.pipeline._loaders import LoadSpec
+from mosaic.core.pipeline._loaders import LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline.types import DependencyLookup
 from mosaic.runlog import (
     FlightSpan,
@@ -70,11 +71,13 @@ from tests.helpers import (
     FittingFeature,
     HoldsUntilReleased,
     ParallelFeature,
+    add_tracks_table,
     add_tracks_variant,
     logged_events,
     make_dataset,
     report_of,
     run_fresh,
+    track_table,
     wrapped_write,
 )
 
@@ -163,6 +166,67 @@ def test_every_computed_entry_records_its_cost(
         assert in_flight == [1, 1, 1]
     else:
         assert all(least_in_flight <= count <= workers + 1 for count in in_flight)
+
+
+class _SleepsHalfASecond(ParallelFeature):
+    """Holds each entry for half a second in ``apply``."""
+
+    name = "prov-parallel-sleeps-half"
+    apply_sleep_seconds = 0.5
+
+    @override
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        time.sleep(self.apply_sleep_seconds)
+        return df
+
+
+class _SleepsASecond(_SleepsHalfASecond):
+    """Holds each entry for a second in ``apply``."""
+
+    name = "prov-parallel-sleeps-second"
+    apply_sleep_seconds = 1.0
+
+
+@pytest.mark.parametrize("mode", ["thread", "process"])
+def test_no_more_entries_than_workers_are_in_flight(tmp_path: Path, mode: str) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, VARIANT, *_SEQUENCES, "seq_d", std_format="mosaic_v1")
+    execution_id = f"TESTATMOSTWORKERS{mode.upper()}"
+
+    _ = run_feature(
+        ds,
+        _SleepsHalfASecond(),
+        parallel_workers=2,
+        parallel_mode=mode,
+        execution_id=execution_id,
+    )
+
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
+    assert [end["mode"] for end in ends] == [mode] * (len(_SEQUENCES) + 1)
+    counts = [int(_number(end, "in_flight")) for end in ends]
+    assert max(counts) <= 2, counts
+    levels = [level.in_flight for level in _written_levels(ds, execution_id)]
+    assert max(levels) <= 2, levels
+
+
+def test_an_entrys_flight_leaves_out_its_wait_for_a_worker(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+
+    _ = run_feature(
+        ds,
+        _SleepsASecond(),
+        parallel_workers=2,
+        parallel_mode="thread",
+        execution_id="TESTFLIGHTFROMDISPATCH",
+    )
+
+    ends = logged_events(ds.base_dir, "TESTFLIGHTFROMDISPATCH", "entry_end")
+    assert len(ends) == len(_SEQUENCES)
+    # What the flight holds beyond the dispatch to the end of ``apply`` is the
+    # write. An entry that waited for a worker inside its flight holds that wait
+    # too, about the length of the sleep.
+    for end in ends:
+        assert _number(end, "wall_seconds") - _number(end, "apply_seconds") < 0.5
 
 
 def test_a_cache_hit_records_no_cost(tmp_path: Path) -> None:
@@ -383,7 +447,7 @@ def _on_seq_b(
     monkeypatch: pytest.MonkeyPatch, answer: Callable[[], pd.DataFrame | None]
 ) -> None:
     """Make loading ``seq_b`` return or raise what *answer* gives."""
-    real = manifest_module.load_entry_data
+    real = entry_task_module.load_entry_data
 
     def load(
         file_specs: list[tuple[Path, LoadSpec]],
@@ -403,7 +467,7 @@ def _on_seq_b(
             projection=projection,
         )
 
-    monkeypatch.setattr(manifest_module, "load_entry_data", load)
+    monkeypatch.setattr(entry_task_module, "load_entry_data", load)
 
 
 def _raise_pairs_missing() -> pd.DataFrame | None:
@@ -484,6 +548,49 @@ def test_an_apply_that_raises_leaves_the_record(
     )
 
     assert len(result.failed_entries) == 1
+    (record,) = recorded_in_flight
+    assert record.count() == 0
+
+
+_LATE_START_FRAME = 100
+"""The first frame of ``seq_b`` in the fixture of an entry with no rows."""
+
+
+def _seq_b_after_the_bounds(tmp_path: Path) -> Dataset:
+    """A dataset whose ``seq_b`` starts after the frames of ``seq_a`` and ``seq_c``."""
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, VARIANT, "seq_a", "seq_c", std_format="mosaic_v1")
+    late = track_table("", "seq_b", n_ids=2, start_frame=_LATE_START_FRAME)
+    add_tracks_table(ds, VARIANT, late, std_format="mosaic_v1")
+    return ds
+
+
+@pytest.mark.parametrize(
+    ("workers", "mode"),
+    [(1, "thread"), (2, "thread"), (2, "process")],
+    ids=["serial", "thread", "process"],
+)
+def test_an_entry_with_no_rows_in_its_bounds_leaves_the_record(
+    tmp_path: Path,
+    recorded_in_flight: list[EntriesInFlight],
+    workers: int,
+    mode: str,
+) -> None:
+    ds = _seq_b_after_the_bounds(tmp_path)
+    execution_id = f"TESTNOROWS{workers}{mode.upper()}"
+
+    result = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=workers,
+        parallel_mode=mode,
+        filter_end_frame=_LATE_START_FRAME // 2,
+        execution_id=execution_id,
+    )
+
+    assert result.entries_written == 2
+    assert result.failed_entries == ()
+    assert logged_events(ds.base_dir, execution_id, "entry_error") == []
     (record,) = recorded_in_flight
     assert record.count() == 0
 
@@ -640,9 +747,9 @@ def test_a_high_water_mark_that_rises_during_the_fit_raises_its_peak(
 # --- a process worker's own memory --------------------------------------------
 
 
-def _task(run_root: Path, table: pd.DataFrame) -> EntryTask:
-    """The task of ``seq_a`` with *table*, writing its output under *run_root*."""
-    return EntryTask(meta=build_feature_meta("", "seq_a", run_root), table=table)
+def _task(run_root: Path, source: pd.DataFrame | EntryLoad) -> EntryTask:
+    """The task of ``seq_a`` from *source*, writing its output under *run_root*."""
+    return EntryTask(meta=build_feature_meta("", "seq_a", run_root), source=source)
 
 
 def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> None:
@@ -663,30 +770,29 @@ def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> No
     }
 
 
-def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
-    tmp_path: Path,
-) -> None:
-    """The base of a worker handed a table is the base of one handed none.
+_BIG_ROWS = 5_000_000
+"""The rows of a table whose bytes stand out of a worker's base."""
 
-    A process worker receives its entry's table as an argument, so the table is
-    resident before ``apply``. Counted in the base, it would be read as memory
-    every worker holds, and the probe's figure, measured without a table, would
-    mean something else.
-    """
+
+def _big_table() -> pd.DataFrame:
+    import numpy as np
+
+    return pd.DataFrame(
+        {
+            "X": np.arange(_BIG_ROWS, dtype=np.float64),
+            "Y": np.arange(_BIG_ROWS, dtype=np.float64),
+            "sequence": pd.Categorical(["seq_a"] * _BIG_ROWS),
+        }
+    )
+
+
+def _spawned_worker_bases(
+    run_root: Path, source: pd.DataFrame | EntryLoad
+) -> tuple[WorkerBase, WorkerMeasure | None]:
+    """The base of a spawned worker handed nothing, and its measure of *source*'s task."""
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor
 
-    import numpy as np
-
-    rows = 5_000_000
-    table = pd.DataFrame(
-        {
-            "X": np.arange(rows, dtype=np.float64),
-            "Y": np.arange(rows, dtype=np.float64),
-            "sequence": pd.Categorical(["seq_a"] * rows),
-        }
-    )
-    table_bytes = int(table.memory_usage(deep=True).sum())
     feature = ParallelFeature()
     module, name = type(feature).__module__, type(feature).__name__
     inputs, params = feature.inputs.model_dump(), feature.params.model_dump()
@@ -700,7 +806,7 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
             name,
             inputs,
             params,
-            str(tmp_path),
+            str(run_root),
             paths,
             lookups,
         ).result()
@@ -711,12 +817,55 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
                 name,
                 inputs,
                 params,
-                str(tmp_path),
+                str(run_root),
                 paths,
                 lookups,
-                _task(tmp_path, table),
+                _task(run_root, source),
             ).result()
         ).worker
+    return empty, measure
+
+
+def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
+    tmp_path: Path,
+) -> None:
+    """The base of a worker handed a table is the base of one handed none.
+
+    A process worker receives its entry's table as an argument, so the table is
+    resident before ``apply``. Counted in the base, it would be read as memory
+    every worker holds, and the probe's figure, measured without a table, would
+    mean something else.
+    """
+    table = _big_table()
+    table_bytes = int(table.memory_usage(deep=True).sum())
+
+    empty, measure = _spawned_worker_bases(tmp_path, table)
+
+    assert measure is not None
+    assert empty.rss_bytes > 0
+    assert abs(measure.base_rss_bytes - empty.rss_bytes) < table_bytes // 4
+
+
+def test_a_process_worker_that_loads_its_input_reads_its_base_before_the_load(
+    tmp_path: Path,
+) -> None:
+    """A worker given a load holds no table before it, and its base is its own."""
+    table = _big_table()
+    table_bytes = int(table.memory_usage(deep=True).sum())
+    tracks = tmp_path / "tracks.parquet"
+    table.to_parquet(tracks)
+    del table
+    load = EntryLoad(
+        entry_key=make_entry_key("", "seq_a"),
+        file_specs=((tracks, ParquetLoadSpec()),),
+        projection=None,
+        frame_start=None,
+        frame_end=None,
+        time_window=TimeWindow(),
+        footers=(),
+    )
+
+    empty, measure = _spawned_worker_bases(tmp_path, load)
 
     assert measure is not None
     assert empty.rss_bytes > 0
@@ -773,7 +922,7 @@ class HoldsMemory(ParallelFeature):
     while only it is in flight is noise.
 
     Where the environment names a directory, a worker marks each sequence there
-    once it has applied it, so the run's loads can wait for it.
+    once it has applied it, so the run's submissions can wait for it.
     """
 
     name = "prov-parallel-holds"
@@ -796,46 +945,29 @@ import sys
 import time
 from pathlib import Path
 
-from mosaic.core.pipeline import manifest
 from mosaic.core.pipeline import run
 from mosaic.core.pipeline.admission import RowCostEstimate
 from tests.core.pipeline import test_run_measures as stand_ins
 
 mode = sys.argv[2]
 applied = Path(sys.argv[3]) if len(sys.argv) > 3 else None
-real = manifest.load_entry_data
+real = run.EntryPool.submit
 
 
 PREVIOUS = {"seq_b": "seq_a", "seq_c": "seq_b"}
 
 
-def load(
-    file_specs,
-    filters=(),
-    *,
-    cross_join=False,
-    expands_individuals=False,
-    projection=None,
-):
-    # Each load waits for the sequence before it to have been applied, so the pool
-    # finds its one worker idle at every submission and never starts a second.
-    waits = [
-        before
-        for sequence, before in PREVIOUS.items()
-        if any(sequence in str(path) for path, _ in file_specs)
-    ]
-    if applied is not None and waits:
+def submit(self, tag, fn, *args):
+    # Each submission waits for the sequence before it to have been applied, so
+    # the pool finds its one worker idle at every submission and never starts a
+    # second.
+    before = PREVIOUS.get(tag.sequence)
+    if applied is not None and before is not None:
         deadline = time.monotonic() + 60
-        while not (applied / waits[0]).exists() and time.monotonic() < deadline:
+        while not (applied / before).exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         time.sleep(0.5)
-    return real(
-        file_specs,
-        filters,
-        cross_join=cross_join,
-        expands_individuals=expands_individuals,
-        projection=projection,
-    )
+    real(self, tag, fn, *args)
 
 
 live_workers = [0]
@@ -847,7 +979,7 @@ class Recording(RowCostEstimate):
         super().observe(measured_bytes, in_flight_rows, live_workers_now)
 
 
-manifest.load_entry_data = load
+run.EntryPool.submit = submit
 run.RowCostEstimate = Recording
 run.run_feature(
     stand_ins._dataset(Path(sys.argv[1])),
@@ -865,8 +997,8 @@ def _learn_per_row(tmp_path: Path, mode: str) -> tuple[dict[str, object], int, i
 
     In a fresh interpreter, so the measured tree holds this run alone. A test
     process carries the memory and the child processes of earlier tests, which may
-    shrink or exit while the run measures. In process mode each load waits for the
-    entry before it to have been applied, so the pool keeps one worker.
+    shrink or exit while the run measures. In process mode each submission waits
+    for the entry before it to have been applied, so the pool keeps one worker.
 
     Returns:
         The run's last ``resources`` event, the largest input rows of an entry and

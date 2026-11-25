@@ -22,7 +22,6 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.entry import parse_entry_key
 from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline import entry_task as entry_task_module
-from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.admission import RowCostEstimate
@@ -357,9 +356,9 @@ def test_the_floor_applies_to_a_run_with_several_workers_only(
 
 
 def _recorded_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Record the sequence of every table the run loads, in the order loaded."""
+    """Record the sequence of every table the entry tasks load, in the order loaded."""
     loads: list[str] = []
-    real = manifest_module.load_entry_data
+    real = entry_task_module.load_entry_data
 
     def load(
         file_specs: list[tuple[Path, LoadSpec]],
@@ -382,8 +381,34 @@ def _recorded_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             projection=projection,
         )
 
-    monkeypatch.setattr(manifest_module, "load_entry_data", load)
+    monkeypatch.setattr(entry_task_module, "load_entry_data", load)
     return loads
+
+
+_RunPool = entry_pool.EntryPool[FeatureMeta, object]
+"""The pool of a feature run, as a wrapper of its submission sees it."""
+
+
+def _recorded_dispatches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the sequence of every entry the run dispatches, in the order dispatched.
+
+    A pool thread's load runs after its dispatch, so the order of the loads is not
+    the order of the dispatches.
+    """
+    dispatched: list[str] = []
+    real = _RunPool.submit
+
+    def submit(
+        self: _RunPool,
+        tag: FeatureMeta,
+        fn: Callable[..., object],
+        *args: object,
+    ) -> None:
+        dispatched.append(tag.sequence)
+        real(self, tag, fn, *args)
+
+    monkeypatch.setattr(entry_pool.EntryPool, "submit", submit)
+    return dispatched
 
 
 def test_the_memory_floor_holds_the_load_and_not_only_the_apply(
@@ -600,7 +625,7 @@ def test_with_a_margin_the_first_entry_runs_alone_and_the_largest_starts_first(
 ) -> None:
     ds = _dataset(tmp_path)
     _rows(monkeypatch, {"seq_a": 10, "seq_b": 30, "seq_c": 20})
-    loads = _recorded_loads(monkeypatch)
+    dispatched = _recorded_dispatches(monkeypatch)
 
     result = run_feature(
         ds,
@@ -612,7 +637,7 @@ def test_with_a_margin_the_first_entry_runs_alone_and_the_largest_starts_first(
     )
 
     assert result.entries_written == len(_SEQUENCES)
-    assert loads == ["seq_b", "seq_c", "seq_a"]
+    assert dispatched == ["seq_b", "seq_c", "seq_a"]
     assert _in_flight(ds, "TESTGATEORDER")["seq_b"] == 1
     resources = logged_events(ds.base_dir, "TESTGATEORDER", "resources")[-1]
     assert resources["admission_margin"] == 1.5
@@ -623,11 +648,11 @@ def test_without_a_margin_the_entries_keep_their_order(
 ) -> None:
     ds = _dataset(tmp_path)
     _rows(monkeypatch, {"seq_a": 10, "seq_b": 30, "seq_c": 20})
-    loads = _recorded_loads(monkeypatch)
+    dispatched = _recorded_dispatches(monkeypatch)
 
     _ = run_feature(ds, ParallelFeature(), parallel_workers=2, parallel_mode="thread")
 
-    assert loads == list(_SEQUENCES)
+    assert dispatched == list(_SEQUENCES)
 
 
 @_MEASURES
@@ -760,7 +785,7 @@ def test_an_entry_without_a_table_never_stalls_the_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ds = _dataset(tmp_path)
-    real = manifest_module.load_entry_data
+    real = entry_task_module.load_entry_data
 
     def load(
         file_specs: list[tuple[Path, LoadSpec]],
@@ -780,7 +805,7 @@ def test_an_entry_without_a_table_never_stalls_the_gate(
             projection=projection,
         )
 
-    monkeypatch.setattr(manifest_module, "load_entry_data", load)
+    monkeypatch.setattr(entry_task_module, "load_entry_data", load)
 
     result = run_feature(
         ds,

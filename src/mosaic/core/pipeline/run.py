@@ -27,11 +27,7 @@ from pydantic import BaseModel
 from mosaic.runlog import EntryMeasure, ProbeRecord, ResourceReport
 from mosaic.version import installed_version
 from mosaic.core.filter_bounds import TimeWindow, check_one_filter_per_boundary
-from mosaic.core.helpers import (
-    UNLABELED,
-    filter_time_range,
-    make_entry_key,
-)
+from mosaic.core.helpers import UNLABELED, make_entry_key
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 from mosaic.core.stored_paths import stored_form
@@ -118,6 +114,7 @@ from .inventory.params import (
 from .loading import (
     CROSS_JOIN_FEATURES,
     PairRowsMissing,
+    entry_bounds_filters,
     expands_individuals,
     input_projection,
     stacks_inputs,
@@ -133,6 +130,7 @@ from .manifest import (
     OverlapUnsupported,
     build_manifest,
     iter_manifest,
+    print_progress,
     skip_pairs_missing,
     tracks_variants_for,
     unrun_feature_input,
@@ -161,7 +159,7 @@ from .sequence_index import SourceRoot, encode_entry_composition
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
 from .tag_reads import ResolvedTagTable, feature_tag_read
 from .tracks_index import tracklets_by_entry, tracks_compositions
-from .types.data_config import COLUMNS, META_COLS
+from .types.data_config import META_COLS
 from .ops import IdentityDeferred
 from .types.feature import BindsRunRoot, ReadsTags, ResumesFits, SetsTracklets
 from mosaic.core.entry import Entry
@@ -184,7 +182,13 @@ from .types.inputs import InputsLike
 from .label_series import LabelRevisionRef
 from .job import CancelToken, JobContext, job_context
 from .entry_pool import EntryFailure, EntryPool
-from .entry_task import EntryReport, EntryTask, run_entry, run_entry_in_process
+from .entry_task import (
+    EntryLoad,
+    EntryReport,
+    EntryTask,
+    run_entry,
+    run_entry_in_process,
+)
 from .memory_watch import (
     MemorySample,
     MemoryWatch,
@@ -688,18 +692,21 @@ def process_apply_worker(
     """Rebuild a feature in a worker process, compute one entry, then close the feature.
 
     The feature is rebuilt for each task, as :func:`_rebuilt_feature` describes. The
-    worker writes the entry's output
+    worker loads the entry's input unless the task contains a table, writes the
+    entry's output
     (:func:`~mosaic.core.pipeline.entry_task.run_entry_in_process`), and reads its
     memory measure after the write.
 
     Returns:
-        The report of the output written, with the worker's own memory, or the
-        failure of the trim or the write. The report's ``seconds_after_apply`` runs
-        to this function's return, the close of the feature included.
+        The report of the output written or of a load of no rows, with the
+        worker's own memory, or the failure of the load (an input failure), the
+        trim or the write (an output failure). The report's
+        ``seconds_after_apply`` runs to this function's return, the close of the
+        feature included.
 
     Raises:
-        Exception: The entry's error: a missing input column, an arena-blind
-            input that spans arenas, or whatever ``apply`` raises.
+        Exception: The entry's error: missing pair rows, a missing input column,
+            an arena-blind input that spans arenas, or whatever ``apply`` raises.
     """
     with _rebuilt_feature(
         module_name,
@@ -788,31 +795,9 @@ def _make_filter_factory(
             nn_filter = _build_nn_filter(ds, group, sequence, pair_filter_spec)
             if nn_filter is not None:
                 filters.append(nn_filter)
-        if has_frame_filter:
-
-            def frame_filter(df: pd.DataFrame) -> pd.DataFrame:
-                return filter_time_range(
-                    df, filter_start_frame=frame_start, filter_end_frame=frame_end
-                )
-
-            filters.append(frame_filter)
-        if time_window.is_set:
-
-            def window_filter(df: pd.DataFrame) -> pd.DataFrame:
-                if COLUMNS.time_col not in df.columns:
-                    raise ValueError(
-                        f"a time filter reads the {COLUMNS.time_col!r} column, and "
-                        f"the rows of {entry_key!r} have none. Filter by frame "
-                        "with filter_start_frame and filter_end_frame"
-                    )
-                return filter_time_range(
-                    df,
-                    filter_start_time=time_window.start,
-                    filter_end_time=time_window.end,
-                    time_col=COLUMNS.time_col,
-                )
-
-            filters.append(window_filter)
+        filters.extend(
+            entry_bounds_filters(entry_key, frame_start, frame_end, time_window)
+        )
         return filters
 
     return factory
@@ -2332,7 +2317,7 @@ class _PhaseState:
     closed: bool = False
 
     def apply_wall_seconds(self) -> float:
-        """From the phase's first load start to its last output written, 0 before both."""
+        """From the phase's first flight start to its last output written, else 0."""
         if self.apply_started is None or self.apply_ended is None:
             return 0.0
         return max(0.0, self.apply_ended - self.apply_started)
@@ -2653,7 +2638,7 @@ def run_feature(
         reads the phase of that mode. The fit, the memory and CPU of the process
         tree and the admission waits span the attempt, and the peak resident
         memory never falls below an earlier report's. ``apply_wall_seconds`` is the
-        phase's own, from its first entry's load start to its last output written. A
+        phase's own, from its first entry's flight start to its last output written. A
         later phase runs after the earlier phase's pool has closed. An entry lost
         in any phase is in ``Result.failed_entries``, :class:`AllEntriesFailed`
         is raised only when every entry the run computed was lost, and an
@@ -2768,13 +2753,15 @@ def run_feature(
             try:
                 if probe is not None and ctx.run_log is not None:
                     probe.write(ctx.run_log)
-                with memoized_footers(ParquetFooterMemo()):
+                footers = ParquetFooterMemo()
+                with memoized_footers(footers):
                     return _run_feature_impl(
                         ds,
                         feature,
                         ctx,
                         storage_feature_name,
                         scratch,
+                        footers=footers,
                         scope=scope,
                         tracks_run_id=tracks_run_id,
                         labels_run_id=labels_run_id,
@@ -2809,6 +2796,7 @@ def _run_feature_impl(
     storage_feature_name: str,
     scratch: _RefitScratch,
     *,
+    footers: ParquetFooterMemo,
     scope: Scope | None = None,
     tracks_run_id: str | None = None,
     labels_run_id: str | None = None,
@@ -2835,7 +2823,8 @@ def _run_feature_impl(
     JSONL run-log). What-ran and cache state live in ``index.csv`` + the parquet
     outputs on disk, the permanent source of truth. A fit run again, for
     changed inputs or on request (*refit*), offers ``load_state`` the empty
-    directory of *scratch*.
+    directory of *scratch*. *footers* is the footer memo the run entered, whose
+    records of an entry's inputs go with each entry its worker loads.
     """
     # The frame-only-merge escape, for the one feature that declares it.
     cross_join = feature.name in CROSS_JOIN_FEATURES
@@ -3514,8 +3503,10 @@ def _run_feature_impl(
             Entries with a valid output on disk are recorded without loading their
             input. The rest are computed through a pool built from the settings of
             *state*, and their measures go to *state*. Each computed entry's task
-            writes its output, and the run records the row from the task's report.
-            Rows are flushed periodically.
+            loads its input, unless overlap, widening, a pair filter or the cross
+            join has the run load it, and writes its output, and the run records
+            the row from the task's report. A load of no rows leaves the entry
+            without a row. Rows are flushed periodically.
             When the apply stops early they are flushed, the entries in flight are
             waited for and their outputs recorded, and they are flushed again. The pool
             is closed on every exit after it is built, which writes the phase's final
@@ -3965,6 +3956,18 @@ def _run_feature_impl(
             # One switch for every process-mode branch below: the dispatch, the
             # pool's ``on_computed`` and the recording of a result.
             in_processes = settings.entry_mode == "process"
+            # The shapes whose input the run loads in its own process and hands to
+            # the task as a table. Every other entry's task loads its own input.
+            # Widening needs an individual input after input 0: with one input the
+            # flag only marks input 0 as missing its pair rows, which no later
+            # input turns into a raise, so the task's load without the flag reads
+            # the same table.
+            parent_loads = (
+                apply_overlap is not None
+                or (widens_individuals and len(feature.inputs.root) > 1)
+                or pair_filter_spec is not None
+                or cross_join
+            )
             # The garbage collection of the run's own process, which computes the
             # entries in serial and thread mode. A process worker keeps its own.
             collector = PacedCollector()
@@ -3978,6 +3981,12 @@ def _run_feature_impl(
                 if isinstance(outcome, EntryFailure):
                     outcome.reraise()
                 key = make_entry_key(meta.group, meta.sequence)
+                if not outcome.written:
+                    # A load of no rows: the entry leaves the in-flight record
+                    # without a row, and nothing else is recorded.
+                    _ = state.in_flight.leave(key)
+                    _ = outcome_set.pop(key, None)
+                    return
                 if in_processes:
                     # The worker reports the seconds from the end of its apply to
                     # its return, the write included, so the apply ended that long
@@ -4041,7 +4050,7 @@ def _run_feature_impl(
                     )
                 )
                 if not in_processes:
-                    _ = collector.finished(outcome.output_bytes)
+                    _ = collector.finished(outcome.input_bytes + outcome.output_bytes)
 
             def _record_failure(meta: FeatureMeta, exc: Exception) -> None:
                 _entry_failed(meta.group, meta.sequence, exc)
@@ -4061,12 +4070,16 @@ def _run_feature_impl(
                     make_entry_key(meta.group, meta.sequence), time.monotonic()
                 )
 
-            # The pool holds an entry back for a free worker after its table is loaded.
-            # The memory floor and the admission gate hold it back before the load
-            # (``_before_load``), so a table is never loaded while memory is under the
-            # floor, and the floor does not end a run on the memory a loaded table takes.
-            # Each call writes its entry's output and returns a report, from which
-            # ``_record_result`` records the row.
+            # An entry whose task loads it is checked for a cancel, waits for a free
+            # worker, is held back by the admission gate and then the memory floor,
+            # enters the in-flight record and is dispatched, so the parent holds no
+            # table while it waits and at most ``workers`` entries are in flight. An
+            # entry the run loads itself is held back by the gate and the floor and
+            # enters the record before its load (``_before_load``), and waits for a
+            # free worker after it. Either way no input is loaded while memory is
+            # under the floor, and the floor does not end a run on the memory a
+            # loaded table takes. Each call writes its entry's output and returns a
+            # report, from which ``_record_result`` records the row.
             active: EntryPool[FeatureMeta, EntryReport | EntryFailure] = EntryPool(
                 workers=settings.workers,
                 mode=settings.mode,
@@ -4171,22 +4184,19 @@ def _run_feature_impl(
                         parallel_mode=settings.mode,
                     )
 
-            def _before_load(entry_key: str) -> None:
-                """Admit the entry, then count it in flight from the start of its load.
+            def _hold_for_memory(key: str, rows: int) -> None:
+                """Hold the entry *key* of *rows* input rows back while memory asks.
 
-                With several workers the gate and then the floor run here, before the
-                table is loaded, so a table is never loaded while memory is under the
-                floor. The wait for a free slot stays after the load, so loading the
-                next table overlaps the entries computing.
+                With several workers the gate runs when a margin is set, and then the
+                floor.
                 """
-                _lower_unhanded()
-                group, sequence = resolve_sequence_identity(entry_key, entry_map)
-                key = make_entry_key(group, sequence)
-                rows = _rows_of(entry_key)
                 if active.workers > 1:
                     if settings.admission_margin > 0.0:
                         _admit(key, rows)
                     active.wait_for_memory()
+
+            def _enter(key: str, rows: int) -> None:
+                """Count the entry *key* of *rows* input rows in flight from now."""
                 started = time.monotonic()
                 if state.apply_started is None:
                     state.apply_started = started
@@ -4199,6 +4209,30 @@ def _run_feature_impl(
                     started=started,
                     cpu=watch.cpu_seconds(),
                 )
+
+            def _admit_and_enter(entry_key: str) -> tuple[str, str, str]:
+                """Hold the entry *entry_key* back while memory asks, then enter it.
+
+                Returns:
+                    The entry's group, sequence and key.
+                """
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                key = make_entry_key(group, sequence)
+                rows = _rows_of(entry_key)
+                _hold_for_memory(key, rows)
+                _enter(key, rows)
+                return group, sequence, key
+
+            def _before_load(entry_key: str) -> None:
+                """Admit an entry the run loads, then count it in flight from its load.
+
+                The gate and the floor run before the table is loaded, so a table is
+                never loaded while memory is under the floor. The wait for a free
+                worker comes after the load, so loading the next table overlaps the
+                entries computing.
+                """
+                _lower_unhanded()
+                _, _, key = _admit_and_enter(entry_key)
                 unhanded.append(key)
 
             def _after_apply(key: str) -> Callable[[], None]:
@@ -4219,38 +4253,25 @@ def _run_feature_impl(
                 group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 _entry_failed(group, sequence, exc)
 
-            def _process_entry(
-                entry_key: str,
-                df: pd.DataFrame,
-                selector: CoreSelector | None,
-            ) -> None:
-                unhanded.clear()
-                # Cooperative cancel checkpoint: covers both apply loops and both the
-                # executor and inline branches. Completed entries are already durable.
-                ctx.check_cancel()
-                group, sequence = resolve_sequence_identity(entry_key, entry_map)
-                meta = build_feature_meta(group, sequence, run_root)
-                # The task checks the entry's merged frame against the feature's
-                # declared columns, and refuses an arena-blind input that spans
-                # arenas. Each fails the entry with one message, before apply reads
-                # anything.
-                task = EntryTask(
-                    meta=meta,
-                    table=df,
-                    selector=selector,
-                    arena_count=(
-                        None
-                        if blind_arena_rows is None
-                        else entry_arena_count(ds, group, sequence, blind_arena_rows)
-                    ),
-                )
+            def _arena_count(group: str, sequence: str) -> int | None:
+                """The arenas of the entry's recording, for an arena-blind feature."""
+                if blind_arena_rows is None:
+                    return None
+                return entry_arena_count(ds, group, sequence, blind_arena_rows)
 
-                # Cache hits are resolved up-front in the pre-pass; any entry reaching
-                # here needs (re)computation.
+            def _submit(task: EntryTask) -> None:
+                """Dispatch *task* to the pool, in a worker process or in this one.
+
+                The task checks the entry's merged frame against the feature's
+                declared columns, and refuses an arena-blind input that spans
+                arenas. Each fails the entry with one message, before apply reads
+                anything. Cache hits are resolved up-front in the pre-pass, so every
+                task needs (re)computation.
+                """
                 if in_processes:
                     artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
                     active.submit(
-                        meta,
+                        task.meta,
                         process_apply_worker,
                         feature.__module__,
                         type(feature).__name__,
@@ -4265,15 +4286,71 @@ def _run_feature_impl(
                     )
                 else:
                     active.submit(
-                        meta, run_entry, feature, task, _after_apply(task.key)
+                        task.meta, run_entry, feature, task, _after_apply(task.key)
                     )
 
-            # Iterate manifest entries. A cooperative cancel (raised at the top of
-            # _process_entry) stops dispatch; completed entries stay recorded in
-            # index.csv + on disk, so a later identical run resumes from the entries whose
+            def _submit_entry(
+                group: str,
+                sequence: str,
+                source: pd.DataFrame | EntryLoad,
+                selector: CoreSelector | None = None,
+            ) -> None:
+                """Dispatch the entry of *group* and *sequence* with its *source*."""
+                _submit(
+                    EntryTask(
+                        meta=build_feature_meta(group, sequence, run_root),
+                        source=source,
+                        selector=selector,
+                        arena_count=_arena_count(group, sequence),
+                    )
+                )
+
+            def _process_entry(
+                entry_key: str,
+                df: pd.DataFrame,
+                selector: CoreSelector | None,
+            ) -> None:
+                """Dispatch the entry *entry_key*, whose table the run loaded."""
+                unhanded.clear()
+                # Cooperative cancel checkpoint. Completed entries are already
+                # durable.
+                ctx.check_cancel()
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                _submit_entry(group, sequence, df, selector)
+
+            def _dispatch_load(index: int, entry_key: str) -> None:
+                """Dispatch the entry *entry_key*, whose task loads its input.
+
+                The entry's footers, which ``_rows_of`` read, go with the load, keyed
+                by the paths as the load spells them.
+                """
+                # Cooperative cancel checkpoint. Completed entries are already
+                # durable.
+                ctx.check_cancel()
+                active.wait_for_worker()
+                group, sequence, _ = _admit_and_enter(entry_key)
+                entry = compute_manifest[entry_key]
+                load = EntryLoad(
+                    entry_key=entry_key,
+                    file_specs=tuple(entry.file_specs),
+                    projection=entry.projection,
+                    frame_start=frame_start,
+                    frame_end=frame_end,
+                    time_window=time_window,
+                    footers=footers.records(path for path, _ in entry.file_specs),
+                )
+                _submit_entry(group, sequence, load)
+                print_progress(storage_feature_name, index + 1, len(compute_manifest))
+
+            # Iterate manifest entries. A cooperative cancel (raised before each
+            # dispatch) stops dispatch; completed entries stay recorded in index.csv
+            # + on disk, so a later identical run resumes from the entries whose
             # output parquet is already present (the cache-hit pre-pass above).
             try:
-                if apply_overlap is not None:
+                if not parent_loads:
+                    for index, entry_key in enumerate(compute_manifest):
+                        _dispatch_load(index, entry_key)
+                elif apply_overlap is not None:
                     for entry_key, df, selector in iter_manifest(
                         compute_manifest,
                         filter_factory=filter_factory,

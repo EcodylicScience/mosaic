@@ -244,7 +244,7 @@ def scored_in_a_worker(
     feature: XgboostFeature, run_root: Path, entry: tuple[str, str], frame: pd.DataFrame
 ) -> pd.DataFrame:
     """The output a process worker writes for *entry* from *run_root*, read back."""
-    task = EntryTask(meta=build_feature_meta(*entry, run_root), table=frame)
+    task = EntryTask(meta=build_feature_meta(*entry, run_root), source=frame)
     outcome = process_apply_worker(
         feature.__module__,
         type(feature).__name__,

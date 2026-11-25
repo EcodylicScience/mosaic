@@ -19,18 +19,20 @@ killed, for the tests of a cancel that reaches a run's workers.
 :class:`HoldsUntilReleased` stops in the entries it names until the test releases them,
 and can make the write or the trim of an entry fail, slow or end in the worker process
 that computes it, for the tests of how a run ends with entries in flight and of what it
-measures.
+measures. Its ``unreadable-input`` fault fails the load of an entry in the worker
+process that loads it.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import multiprocessing
 import os
 import signal
 import threading
 import time
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable, Collection, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +46,7 @@ from mosaic.core.entry import parse_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import Params
 from mosaic.core.pipeline import entry_task, writers
+from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline._utils import FeatureMeta, atomic_write
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -53,6 +56,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.loading import ColumnProjection
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.writers import FeatureOutput
 from tests.helpers.entry_writes import wrapped_write
@@ -196,12 +200,19 @@ class HoldsOnSequences(ParallelFeature):
 _RELEASE_POLL_SECONDS = 0.02
 
 type InWorkerFault = Literal[
-    "full-disk", "trim", "slow-write", "kill-in-write", "kill-after-rename"
+    "full-disk",
+    "trim",
+    "slow-write",
+    "kill-in-write",
+    "kill-after-rename",
+    "unreadable-input",
 ]
 """A fault :class:`HoldsUntilReleased` installs in the worker process it runs in.
 
 ``full-disk`` makes the write of an entry raise ``OSError``, as a full disk does,
 and ``trim`` makes the trim of an overlapped entry raise ``ValueError``.
+``unreadable-input`` makes the load of an entry in its task raise
+``OSError(errno.EIO)``, as an unreadable disk does.
 ``slow-write`` waits ``write_seconds`` before the write of an entry.
 ``kill-in-write`` ends the worker with SIGKILL once the write of an entry has filled
 its temporary file and before the rename, and ``kill-after-rename`` once the write
@@ -244,12 +255,34 @@ def _install_fault(
 
     The fault replaces a module global of ``entry_task`` or ``writers``, which the
     entry task and ``write_parquet_atomic`` look up at the call, so it takes effect
-    for the write or the trim of the entry being applied.
+    for the load, the write or the trim of the entry being computed.
     """
     if fault in _INSTALLED_FAULTS:
         return
     _INSTALLED_FAULTS.add(fault)
-    if fault in ("full-disk", "slow-write"):
+    if fault == "unreadable-input":
+        real_load = entry_task.load_entry_data
+
+        def load_entry_data(
+            file_specs: list[tuple[Path, LoadSpec]],
+            filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = (),
+            *,
+            cross_join: bool = False,
+            expands_individuals: bool = False,
+            projection: ColumnProjection | None = None,
+        ) -> pd.DataFrame | None:
+            if any(path.stem in sequences for path, _ in file_specs):
+                raise OSError(errno.EIO, "input/output error")
+            return real_load(
+                file_specs,
+                filters,
+                cross_join=cross_join,
+                expands_individuals=expands_individuals,
+                projection=projection,
+            )
+
+        entry_task.load_entry_data = load_entry_data
+    elif fault in ("full-disk", "slow-write"):
 
         def before(meta: FeatureMeta) -> None:
             if meta.sequence in sequences:
@@ -314,12 +347,14 @@ class HoldsUntilReleased(ParallelFeature):
     without one. It holds in serial, thread and process mode alike, and the names
     are a class attribute for the reason ``kill_on`` is.
 
-    A subclass that names a ``fault`` makes the write or the trim of the entries
-    of ``fault_on`` fail, slow or end in the worker process that computes them,
-    where a test's monkeypatch does not reach. ``write_seconds`` is the wait of
-    ``slow-write``, and ``kill_once_computed`` the sequences whose computed marks a
-    kill waits for. Its ``apply`` installs the fault once per process, and raises
-    outside a spawned worker, so the fault never reaches the test's own process.
+    A subclass that names a ``fault`` makes the load, the write or the trim of the
+    entries of ``fault_on`` fail, slow or end in the worker process that computes
+    them, where a test's monkeypatch does not reach. ``write_seconds`` is the wait
+    of ``slow-write``, and ``kill_once_computed`` the sequences whose computed marks
+    a kill waits for. In a spawned worker ``load_state`` installs the fault once per
+    process, before the task loads, and so does ``apply``. Outside a spawned worker
+    ``load_state`` installs nothing and ``apply`` raises, so the fault never reaches
+    the test's own process.
     """
 
     name = "prov-parallel-released"
@@ -329,17 +364,33 @@ class HoldsUntilReleased(ParallelFeature):
     write_seconds: float = 0.0
     kill_once_computed: tuple[str, ...] = ()
 
+    def _install(self) -> None:
+        """Install the fault in this process, which must be a spawned worker."""
+        if self.fault is None:
+            return
+        _install_fault(
+            self.fault,
+            frozenset(self.fault_on),
+            write_seconds=self.write_seconds,
+            once_computed=self.kill_once_computed,
+        )
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        if multiprocessing.parent_process() is not None:
+            self._install()
+        return super().load_state(run_root, artifact_paths, dependency_lookups)
+
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.fault is not None:
             if multiprocessing.parent_process() is None:
                 message = f"the fault {self.fault} runs only in a spawned worker"
                 raise RuntimeError(message)
-            _install_fault(
-                self.fault,
-                frozenset(self.fault_on),
-                write_seconds=self.write_seconds,
-                once_computed=self.kill_once_computed,
-            )
+            self._install()
         sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
         marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
         (marks / f"applied-{sequence}").touch()

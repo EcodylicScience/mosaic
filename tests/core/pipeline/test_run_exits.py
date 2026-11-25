@@ -6,14 +6,18 @@ exception that ended the loop. A rerun then serves every output on disk and comp
 only the rest.
 
 The parallel runs below hold ``seq_b`` and ``seq_c`` in their workers until the
-exit's settle releases them, and end the loop while they are held: from the load of
-``seq_d``, from the drain before its submission, or from ``apply`` itself. A serial
-run holds nothing, and ends the loop at the load of ``seq_d``. A worker that dies
-ends the loop at the submission of ``seq_d`` or ends the settle, and a second
+exit's settle releases them, and end the loop while they are held: once the dispatch
+of ``seq_c`` returns, from the wait for a worker before ``seq_d``'s dispatch, from
+the load of ``seq_d`` in its task, or from ``apply`` itself. A serial run holds
+nothing, and ends the loop once ``seq_c`` is computed. Under overlap the run loads
+``seq_d`` in its own process, and an input that fails there ends the loop after
+``seq_c``'s dispatch, with ``seq_a`` to ``seq_c`` recorded. A worker that dies
+ends the loop at the dispatch of ``seq_d`` or ends the settle, and a second
 interrupt abandons the settle. A worker killed in its write leaves its temporary
 file, and one killed after its rename an output without a row. A SIGTERM or SIGINT
-sent to the process group of a child running the run ends the loop at the load of
-``seq_d``, and a SIGKILL of the child alone ends its process workers with it.
+sent to the process group of a child running the run ends the loop once the
+dispatch of ``seq_c`` returns, and a SIGKILL of the child alone ends its process
+workers with it.
 
 The run's own threads alone write the index and the run-log, and a pool's threads
 do not.
@@ -134,6 +138,13 @@ class HoldsBCWithOverlapUntrimmable(HoldsBCWithOverlap):
     fault_on = ("seq_a",)
 
 
+class HoldsBCUnreadableSeqD(HoldsBC):
+    """A :class:`HoldsBC` whose process workers fail the load of ``seq_d``."""
+
+    fault = "unreadable-input"
+    fault_on = ("seq_d",)
+
+
 class HoldsBCWritingNoneOfThem(HoldsBC):
     """A :class:`HoldsBC` whose process workers fail the writes of the held entries."""
 
@@ -165,12 +176,18 @@ type Mode = Literal["serial", "thread", "process"]
 _PARALLEL: tuple[Mode, ...] = ("thread", "process")
 _EVERY_MODE: tuple[Mode, ...] = ("serial", "thread", "process")
 
+type Site = Literal["worker", "parent"]
+"""Where ``seq_d``'s input is loaded: in its task, or in the run's own process under
+overlap."""
+
+_SITES: tuple[Site, ...] = ("worker", "parent")
+
 
 def _holding(mode: Mode) -> HoldsUntilReleased:
     """The feature that holds ``seq_b`` and ``seq_c`` in a parallel run.
 
-    A serial run computes each entry before it loads the next, so a held entry
-    would never let it reach the load of ``seq_d``.
+    A serial run computes each entry before it takes the next, so a held entry
+    would never let it reach ``seq_d``.
     """
     return HoldsUntilReleased() if mode == "serial" else HoldsBC()
 
@@ -289,6 +306,41 @@ def exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Exits]:
 type Load = Callable[[], pd.DataFrame | None]
 """The real load of one entry's table."""
 
+type Fault = Callable[[], None]
+"""What a test does once the dispatch of ``seq_c`` has returned."""
+
+
+def _once_seq_c_is_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+    exits: Exits,
+    mode: Mode,
+    fault: Fault,
+    *,
+    holding: bool = True,
+) -> None:
+    """Call *fault* once ``seq_c``'s dispatch returns, ``seq_b`` and ``seq_c`` held.
+
+    It is the last step of the run's process before the turn of ``seq_d``, whose
+    first step is the check for a cancel. A serial run, or a call that is not
+    *holding*, holds nothing, and its fault fires at once.
+    """
+    real = RunPool.submit
+
+    def submit(
+        self: RunPool,
+        tag: FeatureMeta,
+        fn: Callable[..., RunOutcome],
+        *args: object,
+    ) -> None:
+        real(self, tag, fn, *args)
+        if tag.sequence != "seq_c":
+            return
+        if holding and mode != "serial":
+            wait_for(exits.held, CHILD_TIMEOUT_SECONDS, "seq_b and seq_c never held")
+        fault()
+
+    monkeypatch.setattr(EntryPool, "submit", submit)
+
 
 def _on_load_of_seq_d(
     monkeypatch: pytest.MonkeyPatch,
@@ -296,14 +348,17 @@ def _on_load_of_seq_d(
     mode: Mode,
     fault: Callable[[Load], pd.DataFrame | None],
     *,
-    holding: bool = True,
+    site: Site = "parent",
 ) -> None:
-    """Hand the load of ``seq_d`` to *fault*, once ``seq_b`` and ``seq_c`` are held.
+    """Hand the load of ``seq_d``'s input at *site* to *fault*.
 
-    *fault* receives the real load. A serial run, or a run that is not *holding*,
-    holds nothing, and its fault fires at once.
+    *fault* receives the real load. At the parent site the run's process loads
+    ``seq_d``, and a parallel run's fault fires once ``seq_b`` and ``seq_c`` are
+    held. At the worker site ``seq_d``'s task loads it, and the fault fires at
+    once. The patch reaches a serial or thread task and not a process worker.
     """
-    real = manifest_module.load_entry_data
+    module = manifest_module if site == "parent" else entry_task_module
+    real = module.load_entry_data
 
     def load(
         file_specs: list[tuple[Path, LoadSpec]],
@@ -324,23 +379,26 @@ def _on_load_of_seq_d(
 
         if not any(path.stem == "seq_d" for path, _ in file_specs):
             return load_now()
-        if holding and mode != "serial":
+        if site == "parent" and mode != "serial":
             wait_for(exits.held, CHILD_TIMEOUT_SECONDS, "seq_b and seq_c never held")
         return fault(load_now)
 
-    monkeypatch.setattr(manifest_module, "load_entry_data", load)
+    monkeypatch.setattr(module, "load_entry_data", load)
 
 
-def _cancel_then_load(exits: Exits) -> Callable[[Load], pd.DataFrame | None]:
-    def fault(load_now: Load) -> pd.DataFrame | None:
+def _cancel(exits: Exits) -> Fault:
+    def fault() -> None:
         exits.token.cancel()
-        return load_now()
 
     return fault
 
 
-def _interrupt(load_now: Load) -> pd.DataFrame | None:
+def _interrupt() -> None:
     raise KeyboardInterrupt
+
+
+def _nothing() -> None:
+    pass
 
 
 def _unreadable(load_now: Load) -> pd.DataFrame | None:
@@ -485,7 +543,7 @@ def test_a_cancel_records_the_outputs_of_the_entries_in_flight(
     exits: Exits, capsys: pytest.CaptureFixture[str], mode: Mode
 ) -> None:
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _cancel_then_load(exits))
+        _once_seq_c_is_dispatched(faults, exits, mode, _cancel(exits))
         with pytest.raises(Cancelled):
             _ = exits.run(_holding(mode), mode, "TESTEXITCANCEL")
 
@@ -507,7 +565,7 @@ def test_an_interrupt_records_the_outputs_of_the_entries_in_flight(
     exits: Exits, mode: Mode
 ) -> None:
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _interrupt)
+        _once_seq_c_is_dispatched(faults, exits, mode, _interrupt)
         with pytest.raises(KeyboardInterrupt):
             _ = exits.run(_holding(mode), mode, "TESTEXITINTERRUPT")
 
@@ -529,14 +587,83 @@ def _tracks_of_seq_d(exits: Exits) -> Path:
     return exits.ds.get_root("tracks") / VARIANT / "seq_d.parquet"
 
 
+@dataclass(frozen=True)
+class InputSite:
+    """How an input-failure test runs at one site.
+
+    Attributes:
+        feature: The feature of the run.
+        options: The options of the run and of its rerun.
+        rerun: The feature of the rerun, ``None`` for the default.
+    """
+
+    feature: HoldsUntilReleased
+    options: RunOptions
+    rerun: HoldsUntilReleased | None
+
+
+def _input_site(
+    site: Site,
+    mode: Mode,
+    *,
+    time_window: tuple[float, float] | None = None,
+    unreadable: bool = False,
+) -> InputSite:
+    """The run of an input-failure test at *site*.
+
+    At the worker site ``seq_d``'s task fails its load, and a process run's
+    *unreadable* input comes from :class:`HoldsBCUnreadableSeqD`. At the parent
+    site the run loads ``seq_d`` in its own process, because overlap is asked, and
+    the load fails there. Either way the exit settles ``seq_b`` and ``seq_c``.
+    """
+    if site == "worker":
+        return InputSite(
+            feature=HoldsBCUnreadableSeqD()
+            if unreadable and mode == "process"
+            else _holding(mode),
+            options=RunOptions(time_window=time_window),
+            rerun=None,
+        )
+    return InputSite(
+        feature=ReleasedWithOverlap() if mode == "serial" else HoldsBCWithOverlap(),
+        options=RunOptions(overlap_frames=1, time_window=time_window),
+        rerun=ReleasedWithOverlap(),
+    )
+
+
+def _fail_at(
+    monkeypatch: pytest.MonkeyPatch,
+    exits: Exits,
+    site: Site,
+    mode: Mode,
+    fault: Callable[[Load], pd.DataFrame | None],
+) -> None:
+    """Have the first load of ``seq_d`` at *site* go through *fault*.
+
+    At the worker site the run waits after the dispatch of ``seq_c`` until
+    ``seq_b`` and ``seq_c`` are held, and at the parent site the load waits. The
+    fault is patched into a serial or thread
+    task, and a process worker's fault comes from its feature.
+    """
+    if site == "parent":
+        _on_load_of_seq_d(monkeypatch, exits, mode, fault)
+        return
+    _once_seq_c_is_dispatched(monkeypatch, exits, mode, _nothing)
+    if mode != "process":
+        _on_load_of_seq_d(monkeypatch, exits, mode, fault, site="worker")
+
+
+@pytest.mark.parametrize("site", _SITES)
 @pytest.mark.parametrize("mode", _EVERY_MODE)
 def test_an_input_error_ends_the_run_with_the_outputs_in_flight_recorded(
-    exits: Exits, mode: Mode
+    exits: Exits, mode: Mode, site: Site
 ) -> None:
+    run = _input_site(site, mode, unreadable=True)
+
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _unreadable)
+        _fail_at(faults, exits, site, mode, _unreadable)
         with pytest.raises(OSError, match="input/output error") as raised:
-            _ = exits.run(_holding(mode), mode, "TESTEXITEIO")
+            _ = exits.run(run.feature, mode, "TESTEXITEIO", run.options)
 
     assert raised.value.errno == errno.EIO
     _check_exit(
@@ -546,22 +673,26 @@ def test_an_input_error_ends_the_run_with_the_outputs_in_flight_recorded(
         failed=set(),
         rows=_COMPUTED_BEFORE_THE_EXIT,
         mode=mode,
+        rerun=run.rerun,
+        options=run.options,
     )
     assert exits.settles == [True]
 
 
+@pytest.mark.parametrize("site", _SITES)
 @pytest.mark.parametrize("mode", _EVERY_MODE)
 def test_a_corrupt_input_ends_the_run_with_the_outputs_in_flight_recorded(
-    exits: Exits, mode: Mode
+    exits: Exits, mode: Mode, site: Site
 ) -> None:
     tracks = _tracks_of_seq_d(exits)
     table = tracks.read_bytes()
     _ = tracks.write_bytes(b"not a parquet file")
+    run = _input_site(site, mode)
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _load)
+        _fail_at(faults, exits, site, mode, _load)
         with pytest.raises(ValueError, match="magic bytes not found") as raised:
-            _ = exits.run(_holding(mode), mode, "TESTEXITCORRUPT")
+            _ = exits.run(run.feature, mode, "TESTEXITCORRUPT", run.options)
 
     _ = tracks.write_bytes(table)
     snapshot = read_run(run_log_dir(exits.ds.base_dir), "TESTEXITCORRUPT")
@@ -574,6 +705,8 @@ def test_a_corrupt_input_ends_the_run_with_the_outputs_in_flight_recorded(
         failed=set(),
         rows=_COMPUTED_BEFORE_THE_EXIT,
         mode=mode,
+        rerun=run.rerun,
+        options=run.options,
     )
     assert exits.settles == [True]
 
@@ -582,15 +715,17 @@ def test_a_corrupt_input_ends_the_run_with_the_outputs_in_flight_recorded(
 def test_a_time_window_over_rows_without_time_ends_the_run_with_the_outputs_in_flight_recorded(
     exits: Exits, mode: Mode
 ) -> None:
+    # A time window and overlap exclude each other, so the window's error arises
+    # only where the task loads.
     tracks = _tracks_of_seq_d(exits)
     table = tracks.read_bytes()
     _ = write_parquet_atomic(pd.read_parquet(tracks).drop(columns=["time"]), tracks)
-    options = RunOptions(time_window=_EVERY_ROW)
+    run = _input_site("worker", mode, time_window=_EVERY_ROW)
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _load)
+        _fail_at(faults, exits, "worker", mode, _load)
         with pytest.raises(ValueError, match="a time filter reads"):
-            _ = exits.run(_holding(mode), mode, "TESTEXITWINDOW", options)
+            _ = exits.run(run.feature, mode, "TESTEXITWINDOW", run.options)
 
     _ = tracks.write_bytes(table)
     _check_exit(
@@ -600,7 +735,8 @@ def test_a_time_window_over_rows_without_time_ends_the_run_with_the_outputs_in_f
         failed=set(),
         rows=_COMPUTED_BEFORE_THE_EXIT,
         mode=mode,
-        options=options,
+        rerun=run.rerun,
+        options=run.options,
     )
     assert exits.settles == [True]
 
@@ -671,10 +807,11 @@ def test_a_trim_error_ends_the_run_with_the_outputs_in_flight_recorded(
 def test_a_refusal_from_apply_records_the_outputs_of_the_entries_in_flight(
     exits: Exits, mode: Mode
 ) -> None:
-    # The refusal cancels the calls not yet started, so seq_d's load waits until
-    # seq_b and seq_c are held, before its submission drains the refusal.
+    # The refusal cancels the calls not yet started, so the run waits after the
+    # dispatch of seq_c until seq_b and seq_c are held, before the wait for a
+    # worker for seq_d drains the refusal.
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _load)
+        _once_seq_c_is_dispatched(faults, exits, mode, _nothing)
         with pytest.raises(ToolUnavailable):
             _ = exits.run(RefusesSeqA(), mode, "TESTEXITREFUSED")
 
@@ -734,7 +871,7 @@ def test_a_failed_flush_is_a_note_on_the_exception_that_ended_the_run(
     rows: frozenset[str],
 ) -> None:
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _cancel_then_load(exits))
+        _once_seq_c_is_dispatched(faults, exits, mode, _cancel(exits))
         _fail_appends(faults, failures)
         with pytest.raises(Cancelled) as raised:
             _ = exits.run(_holding(mode), mode, "TESTEXITFLUSH")
@@ -761,7 +898,7 @@ def test_a_settle_that_raises_is_a_note_on_the_exception_that_ended_the_run(
     exits.settle_error = RuntimeError("the pool broke")
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _cancel_then_load(exits))
+        _once_seq_c_is_dispatched(faults, exits, mode, _cancel(exits))
         with pytest.raises(Cancelled) as raised:
             _ = exits.run(_holding(mode), mode, "TESTEXITSETTLE")
 
@@ -786,7 +923,7 @@ def test_the_writes_a_settle_drops_are_one_note_on_the_exception_that_ended_the_
     feature = HoldsBC() if mode == "thread" else HoldsBCWritingNoneOfThem()
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, mode, _cancel_then_load(exits))
+        _once_seq_c_is_dispatched(faults, exits, mode, _cancel(exits))
         if mode == "thread":
             _fail_writes(
                 faults,
@@ -911,21 +1048,20 @@ def _no_spawned_worker_alive() -> bool:
     return True
 
 
-def _once_the_workers_are_gone(load_now: Load) -> pd.DataFrame | None:
+def _once_the_workers_are_gone() -> None:
     wait_for(_no_spawned_worker_alive, CHILD_TIMEOUT_SECONDS, "the workers never ended")
-    return load_now()
 
 
 def test_a_worker_death_hands_back_the_calls_that_finished_before_it(
     exits: Exits, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Four workers, so seq_d's submission finds a free slot and meets the broken
+    # Four workers, so seq_d's dispatch finds a free worker and meets the broken
     # pool, with seq_a and seq_b computed and not yet handed back.
     options = RunOptions(workers=4)
     _wrap_pools(monkeypatch, exits.marks)
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(
+        _once_seq_c_is_dispatched(
             faults, exits, "process", _once_the_workers_are_gone, holding=False
         )
         with pytest.raises(WorkerProcessDied):
@@ -949,7 +1085,7 @@ def test_a_worker_death_during_the_settle_ends_it_with_the_results_handed_back(
     _wrap_pools(monkeypatch, exits.marks)
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(faults, exits, "process", _cancel_then_load(exits))
+        _once_seq_c_is_dispatched(faults, exits, "process", _cancel(exits))
         with pytest.raises(Cancelled):
             _ = exits.run(HoldsBCThenDiesOnSeqC(), "process", "TESTEXITSETTLEDIED")
 
@@ -999,7 +1135,7 @@ def test_a_worker_killed_in_its_write_leaves_a_temporary_file_or_an_output_witho
     unrecorded: frozenset[str],
     temporary: frozenset[str],
 ) -> None:
-    # Four workers, so seq_d's submission finds a free slot and meets the broken
+    # Four workers, so seq_d's dispatch finds a free worker and meets the broken
     # pool, with seq_a and seq_b computed and not yet handed back. A worker killed
     # before its rename leaves seq_c's temporary file and no output, and one killed
     # after it seq_c's output, which the rerun serves.
@@ -1007,7 +1143,7 @@ def test_a_worker_killed_in_its_write_leaves_a_temporary_file_or_an_output_witho
     _wrap_pools(monkeypatch, exits.marks)
 
     with pytest.MonkeyPatch.context() as faults:
-        _on_load_of_seq_d(
+        _once_seq_c_is_dispatched(
             faults, exits, "process", _once_the_workers_are_gone, holding=False
         )
         with pytest.raises(WorkerProcessDied):
@@ -1077,7 +1213,7 @@ def _interrupt_twice(exits: Exits, execution_id: str) -> KeyboardInterrupt:
     threads = threading.enumerate()
     with pytest.MonkeyPatch.context() as faults:
         _wrap_pools(faults, exits.marks, _interrupt_after_seq_a_in_the_settle(exits))
-        _on_load_of_seq_d(faults, exits, "thread", _interrupt)
+        _once_seq_c_is_dispatched(faults, exits, "thread", _interrupt)
         with pytest.raises(KeyboardInterrupt) as raised:
             _ = exits.run(HoldsBC(), "thread", execution_id)
         held = _pool_threads(threads)
@@ -1139,7 +1275,8 @@ def test_a_failed_flush_after_an_abandoned_settle_is_a_note_on_the_second_interr
 # --- Signals to the process group -----------------------------------------------
 
 _WAITING_AT_SEQ_D = "waiting-seq_d"
-"""The mark a signalled child touches once its load of ``seq_d`` waits for the signal."""
+"""The mark a signalled child touches once it waits for the signal after the dispatch
+of ``seq_c``."""
 
 _CANCELLED_EXIT = 3
 """The exit status of a signalled child whose run raised :class:`Cancelled`."""
@@ -1160,24 +1297,22 @@ run_signalled(sys.argv[1:])
 """
 
 
-def _waiting_for_the_cancel(exits: Exits) -> Callable[[Load], pd.DataFrame | None]:
-    def fault(load_now: Load) -> pd.DataFrame | None:
+def _waiting_for_the_cancel(exits: Exits) -> Fault:
+    def fault() -> None:
         (exits.marks / _WAITING_AT_SEQ_D).touch()
         wait_for(
             exits.token.is_cancelled,
             CHILD_TIMEOUT_SECONDS,
             "the run was never cancelled",
         )
-        return load_now()
 
     return fault
 
 
-def _waiting_for_the_interrupt(exits: Exits) -> Callable[[Load], pd.DataFrame | None]:
-    def fault(load_now: Load) -> pd.DataFrame | None:
+def _waiting_for_the_interrupt(exits: Exits) -> Fault:
+    def fault() -> None:
         (exits.marks / _WAITING_AT_SEQ_D).touch()
         wait_for(lambda: False, CHILD_TIMEOUT_SECONDS, "the run was never interrupted")
-        return load_now()
 
     return fault
 
@@ -1187,12 +1322,12 @@ def run_signalled(arguments: Sequence[str]) -> None:
 
     *arguments* are the dataset's manifest, the mode, the :data:`Handler` and the
     execution id. The pools mark their computed calls and their settles release the
-    held entries, as in the tests of this module, and the load of ``seq_d`` waits
-    for the signal. With ``install-handler`` the signals cancel the run's token, and
-    the child exits with :data:`_CANCELLED_EXIT` once the run raises
-    :class:`Cancelled`. Otherwise SIGINT raises ``KeyboardInterrupt``, which ends
-    the child. The release is touched again on the way out, so a run that never
-    settles leaves no thread holding.
+    held entries, as in the tests of this module, and the run waits for the signal
+    once the dispatch of ``seq_c`` returns. With ``install-handler`` the signals
+    cancel the run's token, and the child exits with :data:`_CANCELLED_EXIT` once
+    the run raises :class:`Cancelled`. Otherwise SIGINT raises
+    ``KeyboardInterrupt``, which ends the child. The release is touched again on
+    the way out, so a run that never settles leaves no thread holding.
     """
     manifest, mode_name, handler, execution_id = arguments
     modes: dict[str, Mode] = {candidate: candidate for candidate in _PARALLEL}
@@ -1212,7 +1347,7 @@ def run_signalled(arguments: Sequence[str]) -> None:
         fault = _waiting_for_the_cancel(exits)
     else:
         fault = _waiting_for_the_interrupt(exits)
-    _on_load_of_seq_d(patches, exits, mode, fault)
+    _once_seq_c_is_dispatched(patches, exits, mode, fault)
     try:
         _ = exits.run(HoldsBC(), mode, execution_id)
     except Cancelled:
@@ -1233,8 +1368,8 @@ def _signal_held_child(
     """Run :func:`run_signalled` in its own process group, and signal the group.
 
     The signal goes out once ``seq_b`` and ``seq_c`` are held, ``seq_a`` is
-    computed and the load of ``seq_d`` waits. With *child_only* it goes to the
-    child's process alone.
+    computed and the run waits after the dispatch of ``seq_c``. With *child_only* it
+    goes to the child's process alone.
     """
     return signal_group_when(
         [
@@ -1326,8 +1461,8 @@ _WORKERS_GONE_AFTER_THE_PARENT_SECONDS = 2.0
 def test_a_sigkill_of_the_runs_process_ends_its_process_workers(
     exits: Exits,
 ) -> None:
-    # seq_a's worker wrote its output, and its result waits to be drained at the
-    # submission of seq_d, whose load waits until the kill. No row is flushed
+    # seq_a's worker wrote its output, and its result waits to be drained before
+    # the dispatch of seq_d, which waits until the kill. No row is flushed
     # before then, so seq_a's output is left without a row. seq_b and seq_c are
     # held in apply and write nothing.
     child = _signal_held_child(

@@ -985,7 +985,7 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
     table = _drop_cells(_pose_table(n_frames=30, ids=(0, 1, 2)), 0.2)
     lookup = _scale_run(tmp_path, [9.0, 11.0])
     feature = OrientationRelativeFeature(params={"nearest_k": 4})
-    task = EntryTask(meta=build_feature_meta("", "s", tmp_path), table=table)
+    task = EntryTask(meta=build_feature_meta("", "s", tmp_path), source=table)
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=1, mp_context=multiprocessing.get_context("spawn")

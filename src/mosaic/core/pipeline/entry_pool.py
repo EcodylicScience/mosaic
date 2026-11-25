@@ -107,9 +107,9 @@ class EntryPool[Tag, Result]:
         watch: The memory watch to measure with, for a caller that began measuring
             before the pool exists. The pool makes its own when there is none.
         floor_at_submit: Whether :meth:`submit` holds a call back for the memory
-            floor. A caller that holds its own entries back before it loads them
-            with :meth:`wait_for_memory` sets it false, so that the memory a loaded
-            table takes does not end the run.
+            floor. A caller that holds its own entries back with
+            :meth:`wait_for_memory` before it dispatches or loads them sets it
+            false, so that the memory a loaded table takes does not end the run.
         on_dispatch: Called as ``on_dispatch(tag)`` when a call is about to start,
             after it has a worker and the floor allows it.
         on_computed: Called as ``on_computed(tag)`` when a call has finished
@@ -216,8 +216,7 @@ class EntryPool[Tag, Result]:
             self._on_result(tag, result)
             self.report()
             return
-        while len(self._pending) >= self.workers:
-            self.drain_one()
+        self.wait_for_worker()
         if self._floor_at_submit:
             self.wait_for_memory()
         if self._on_dispatch is not None:
@@ -237,6 +236,21 @@ class EntryPool[Tag, Result]:
         if self._walks_at_start is not None:
             self.watch.sight_workers(since=self._walks_at_start, running=not_done + 1)
         self.report()
+
+    def wait_for_worker(self) -> None:
+        """Return once a worker is free, handing back the outcomes that arrive meanwhile.
+
+        A pool of one worker computes each call inside :meth:`submit`, so it is
+        always free.
+
+        Raises:
+            WorkerProcessDied: A process worker ended without returning and no cancel
+                was requested.
+        """
+        if self._executor is None:
+            return
+        while len(self._pending) >= self.workers:
+            self.drain_one()
 
     @property
     def in_flight(self) -> int:

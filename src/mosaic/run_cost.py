@@ -59,9 +59,11 @@ class EntryCost:
             ``parallel_mode``, with an empty one read as ``thread``.
         ended_at: When the event was written, in seconds since the epoch, ``None``
             where its time does not parse.
-        wall_seconds: From the start of the entry's input load to its output
-            written.
-        apply_seconds: From its dispatch to the end of its apply.
+        wall_seconds: From the start of the entry's flight to its output written:
+            its dispatch when its worker loads its input, else the run's load of
+            it.
+        apply_seconds: From its dispatch to the end of its apply, which contains
+            the load when its worker loads its input.
         cpu_seconds: The CPU time of the process tree over its flight, which
             counts every entry in flight with it.
         input_rows: The rows of its input files.

@@ -268,7 +268,7 @@ class _WorkerClosingFeature(_ClosingFeature):
 
 def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
     """Run the worker on *df*, and read back the output it wrote."""
-    task = EntryTask(meta=build_feature_meta("", "seq_a", tmp_path), table=df)
+    task = EntryTask(meta=build_feature_meta("", "seq_a", tmp_path), source=df)
     outcome = process_apply_worker(
         __name__,
         "_WorkerClosingFeature",

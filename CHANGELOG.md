@@ -8,6 +8,24 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature run's workers read each entry's input
+
+No run id or output moves. A feature run's workers read each entry's input
+themselves, in every mode, except for overlap, a feature that widens individual
+inputs onto pair rows (more than one input), a nearest-neighbor pair filter and
+the cross join, which the run's process still loads. In process mode the input
+no longer crosses to the worker, which cuts the bytes sent to each worker per
+entry from the input's size to a description of the load: in the step-cost
+bench, from 2,162,061 bytes to 2,294. An input that cannot be read still fails
+the run with the same error.
+
+An entry's `entry_end` measures shift for an entry its worker loads. Its flight
+starts at its dispatch, so at most the worker count of entries are in flight at
+once, and its `apply_seconds` contains its load. A process worker's peak and
+growth contain its load. The `started` event of a run-log records
+`mosaic_version`, which separates the sizing records of this engine from those
+of an earlier one.
+
 ## Unreleased: a feature run's workers write each entry's output
 
 No run id or output moves. A feature run's workers write each entry's output

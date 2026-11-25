@@ -54,11 +54,12 @@ type ParallelMode = Literal["thread", "process"]
     grows by about one in-flight table per worker. Work that holds the interpreter
     lock gains little.
 ``process``
-    Each worker is a spawned interpreter that imports the feature stack and receives
-    a pickled copy of each entry's table. It uses every core, and memory grows by a
-    whole interpreter and several copies of a table per worker. Choose it for a
-    feature whose per-entry work is a Python loop, which holds the interpreter lock
-    in threads.
+    Each worker is a spawned interpreter that imports the feature stack and reads
+    each entry's input itself, or receives a pickled copy of the table for overlap,
+    a widening onto another input's pair rows, a nearest-neighbor pair filter and
+    the cross join. It uses every core, and memory grows by a whole interpreter and
+    several copies of a table per worker. Choose it for a feature whose per-entry
+    work is a Python loop, which holds the interpreter lock in threads.
 """
 
 MAX_WORKERS_CEILING: Final = 32

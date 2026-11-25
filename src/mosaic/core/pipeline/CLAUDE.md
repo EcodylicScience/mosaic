@@ -399,25 +399,39 @@ are in `graph/CLAUDE.md`.
 - The per-row estimate is `RowCostEstimate` (`admission.py`). `bytes_per_row`
   is `None` until an observation exceeds the fixed part, and the gate reads
   `None` as no estimate. A process worker samples its own `RssAnon + RssShmem`
-  from before `apply` to after its write (`peak_nonreclaimable_while`).
-- Every exit of an entry lowers `EntriesInFlight`: an output written, a failure, a
-  skip without a table, and missing pair rows. An exit that does not would stall the
-  gate (`tests/core/pipeline/test_run_measures.py`).
+  from before its load, or before `apply` when handed a table, to after its
+  write (`peak_nonreclaimable_while`).
+- Every exit of an entry lowers `EntriesInFlight`: an output written, a load of no rows,
+  a failure, a skip without a table, and missing pair rows. An exit that does not would
+  stall the gate (`tests/core/pipeline/test_run_measures.py`).
 - Each computed entry runs as an `EntryTask` through `run_entry`
-  (`entry_task.py`) in every mode. The worker checks the columns, refuses an
-  arena-blind input, applies, trims and writes the output with
-  `create_parent=False`, and the parent records the row from the report. A
-  process worker runs it through `run_entry_in_process` after its per-entry
-  build. A trim or write failure returns as an `EntryFailure`, and the run
-  raises it. An entry error raises in the task and is recorded as an
-  `entry_error`. Every input shape loads in the parent. `entry_task.py` names
-  no index module, the run-log or `job` in its own imports
-  (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
-  `tests/meta/test_entry_task_imports.py`).
-- `apply_seconds` ends at the end of `apply`. `after_apply` stamps it in serial
-  and thread mode, and in process mode it is the moment the outcome was set
-  less the worker's `seconds_after_apply`, which runs from the end of `apply`
-  to the worker's return.
+  (`entry_task.py`) in every mode. The task's `source` is the table the parent
+  loaded or an `EntryLoad`, which the worker loads through `load_entry_data`
+  and `entry_bounds_filters` inside a memo that
+  `ParquetFooterMemo.from_records` builds from the parent's `FooterRecord`s,
+  keyed by the path as the load spells it. The worker checks the columns,
+  refuses an arena-blind input, applies, trims and writes the output with
+  `create_parent=False`, and the parent records the row from the report. A load
+  that returns no table reports `written=False`, and the entry leaves the
+  in-flight record without a row. A process worker runs it through
+  `run_entry_in_process` after its per-entry build, reads its base before the
+  load, and subtracts only a handed table. An input failure (any load error but
+  `PairRowsMissing`) and a trim or write failure return as an `EntryFailure`,
+  and the run raises it. `PairRowsMissing` and any other entry error raise in
+  the task and are recorded as an `entry_error`. The task loads its entry's
+  input unless the run asks for overlap, the feature widens individual inputs
+  onto pair rows (`expands_individuals` with more than one input, since a
+  single input has nothing to widen and loads alike without the flag), a pair
+  filter applies or the feature is the cross join. Those shapes load in the
+  parent through `iter_manifest`, which hands the task the table. Both sites
+  call `load_entry_data`. `entry_task.py` names no index module, the run-log or
+  `job` in its own imports (`tests/core/pipeline/test_entry_task.py`,
+  `test_entry_errors.py`, `tests/meta/test_entry_task_imports.py`).
+- `apply_seconds` runs from the dispatch, so it contains the load of an entry
+  whose worker loads it, and ends at the end of `apply`. `after_apply` stamps it
+  in serial and thread mode, and in process mode it is the moment the outcome
+  was set less the worker's `seconds_after_apply`, which runs from the end of
+  `apply` to the worker's return.
 - Every exit of `run_feature`'s apply loop, a cancel, an interrupt or an error,
   flushes the index rows, prints one stderr line when entries are in flight,
   and settles the pool with `settle(results_only=True)`: a call that returns
@@ -445,11 +459,15 @@ are in `graph/CLAUDE.md`.
   after its rename and before it returned. A rerun serves such an output when
   its provenance is blank on both sides and recomputes it otherwise. A process
   worker killed while it writes leaves a hidden temporary file and no output.
-- With several workers the gate (`admission_margin` above 0) and then the floor run in
-  `before_load`, before the table is read, through `EntryPool.drain_one` and
-  `wait_for_memory`, and `run_feature` builds its pool with `floor_at_submit=False` and
-  its own `MemoryWatch`. The slot wait stays after the load. Until an entry with input
-  rows is written the gate runs each entry alone. Its budget (`admission_budget`) is the
+- For an entry whose task loads it, the parent checks for a cancel, waits for a free
+  worker (`EntryPool.wait_for_worker`), runs the gate (`admission_margin` above 0) and
+  then the floor when there are several workers, enters the entry in flight and
+  dispatches it, so at most `workers` entries are in flight. For an entry the parent
+  loads, the gate and the floor run in `before_load`, before the table is read, and the
+  wait for a free worker comes after the load. Both hold back through
+  `EntryPool.drain_one` and `wait_for_memory`, and `run_feature` builds its pool with
+  `floor_at_submit=False` and its own `MemoryWatch`. Until an entry with input rows is
+  written the gate runs each entry alone. Its budget (`admission_budget`) is the
   limit's available memory plus the run's tree in the run's measure, capped at the
   limit, less the floor. `EntryOverMemoryLimit` compares the unmargined prediction with
   the limit less the floor, never with what is available now
@@ -465,12 +483,13 @@ are in `graph/CLAUDE.md`.
   Consecutive phases that run alike (`_ApplySettings.runs_like`) are one phase, because
   two phases that read as one mode would leave that mode's levels and peak to the later
   phase's last event (`tests/core/pipeline/test_apply_phases.py`).
-- A run keeps each written entry's flight, from the start of its load to its output
-  written, and `in_flight_levels` of the `resources` event is the time, rows and tree CPU
-  at each count of entries in flight together. An entry's rows spread evenly over its
-  flight, an entry whose output was not written adds neither rows nor time, and level 0 is
-  not written, so `RunCost` rebuilds the same levels from the `entry_end` events of a log
-  that wrote none. The peak sample sums the covariates of the entries in flight into
+- A run keeps each written entry's flight, from its dispatch, or from the parent's load
+  of an entry the parent loads, to its output written, and `in_flight_levels` of the
+  `resources` event is the time, rows and tree CPU at each count of entries in flight
+  together. An entry's rows spread evenly over its flight, an entry whose output was
+  not written adds neither rows nor time, and level 0 is not written, so `RunCost`
+  rebuilds the same levels from the `entry_end` events of a log that wrote none. The
+  peak sample sums the covariates of the entries in flight into
   `peak_in_flight_pair_frames`, flagged by `peak_in_flight_pair_frames_bound` when any
   carries the lower bound of a blank cell. An entry's covariates are read once, from the
   tracks and media indexes (`tracks_covariates`), before the first entry loads, so the

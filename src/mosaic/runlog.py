@@ -328,8 +328,8 @@ class ResourceReport:
             measured.
         worker_base_nonreclaimable_bytes: One process worker's own anonymous and
             shared memory, the largest seen, 0 when not measured.
-        apply_wall_seconds: The wall time from the first entry's load start to the
-            last output written, within the phase the event reports.
+        apply_wall_seconds: The wall time from the start of the first entry's
+            flight to the last output written, within the phase the event reports.
         nonreclaimable_bytes: The memory the kernel cannot reclaim at the latest
             sample, 0 when not measured. The cgroup's figure where one limit
             applies, else the sum over the process tree.
@@ -402,14 +402,18 @@ class EntryMeasure:
     """What one computed entry cost, written with its ``entry_end`` event.
 
     Attributes:
-        wall_seconds: From the start of its input load to its output written.
-        apply_seconds: From its dispatch to the end of its apply.
+        wall_seconds: From the start of its flight to its output written. The
+            flight of an entry whose worker loads its input starts at its dispatch,
+            after the wait for a free worker. That of an entry the run loads itself
+            starts at the run's load, and contains the wait.
+        apply_seconds: From its dispatch to the end of its apply, which contains
+            the load when its worker loads its input.
         input_rows: The rows of its input files.
-        in_flight: The most entries loaded or computing at once during its span,
-            itself included. One means it ran alone, so its ``cpu_seconds`` are its
-            own.
-        cpu_seconds: The CPU time of the process tree between its load start and
-            its output written.
+        in_flight: The most entries in flight at once during its span, itself
+            included, at most the workers when every entry's worker loads it. One
+            means it ran alone, so its ``cpu_seconds`` are its own.
+        cpu_seconds: The CPU time of the process tree over its flight, a load in
+            its worker included.
         mode: ``process`` when a worker process computed the entry, else
             ``thread``, which is also what a log without the field reads as.
         peak_grown_bytes: The memory the kernel cannot reclaim that the entry added

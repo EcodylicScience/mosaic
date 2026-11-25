@@ -15,7 +15,13 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from ..helpers import RowEvents, events_for_frames, load_labels_for_feature_frames
+from ..filter_bounds import TimeWindow
+from ..helpers import (
+    RowEvents,
+    events_for_frames,
+    filter_time_range,
+    load_labels_for_feature_frames,
+)
 from ..schema import ARENA_COLUMN
 from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
@@ -567,6 +573,57 @@ def _merge_parquet_inputs(
     if merged.empty:
         return None
     return merged
+
+
+def entry_bounds_filters(
+    entry_key: str,
+    frame_start: int | None,
+    frame_end: int | None,
+    time_window: TimeWindow,
+) -> list[Callable[[pd.DataFrame], pd.DataFrame]]:
+    """The filters of an entry's frame bounds and time window, in that order.
+
+    An unset bound adds no filter. The run's filter factory and a worker that
+    loads its entry both filter through these.
+
+    Args:
+        entry_key: The manifest key of the entry, which the time window's error
+            names.
+        frame_start: The first frame kept, ``None`` for no lower bound.
+        frame_end: The frame after the last kept, ``None`` for no upper bound.
+        time_window: The window of ``time`` kept.
+
+    Returns:
+        The filters. The time window's filter raises :class:`ValueError` for a
+        table without a ``time`` column.
+    """
+    filters: list[Callable[[pd.DataFrame], pd.DataFrame]] = []
+    if frame_start is not None or frame_end is not None:
+
+        def frame_filter(df: pd.DataFrame) -> pd.DataFrame:
+            return filter_time_range(
+                df, filter_start_frame=frame_start, filter_end_frame=frame_end
+            )
+
+        filters.append(frame_filter)
+    if time_window.is_set:
+
+        def window_filter(df: pd.DataFrame) -> pd.DataFrame:
+            if COLUMNS.time_col not in df.columns:
+                raise ValueError(
+                    f"a time filter reads the {COLUMNS.time_col!r} column, and "
+                    f"the rows of {entry_key!r} have none. Filter by frame "
+                    "with filter_start_frame and filter_end_frame"
+                )
+            return filter_time_range(
+                df,
+                filter_start_time=time_window.start,
+                filter_end_time=time_window.end,
+                time_col=COLUMNS.time_col,
+            )
+
+        filters.append(window_filter)
+    return filters
 
 
 def _holds_pair_rows(path: Path, load_spec: LoadSpec) -> bool:

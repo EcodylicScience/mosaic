@@ -8,6 +8,7 @@ into place nothing it does may raise.
 
 from __future__ import annotations
 
+import errno
 import pickle
 import time
 from collections.abc import Callable, Generator
@@ -19,8 +20,10 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline import entry_task
+from mosaic.core.filter_bounds import TimeWindow
+from mosaic.core.helpers import filter_time_range, make_entry_key
+from mosaic.core.pipeline import entry_task, parquet_reader
+from mosaic.core.pipeline._loaders import LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.admission import WorkerMeasure
 from mosaic.core.pipeline.arena_guard import ArenaBlindFeature
@@ -31,18 +34,27 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.entry_pool import EntryFailure
 from mosaic.core.pipeline.entry_task import (
+    EntryLoad,
     EntryReport,
     EntryTask,
     run_entry,
     run_entry_in_process,
 )
+from mosaic.core.pipeline.loading import (
+    ColumnProjection,
+    PairRowsMissing,
+    load_entry_data,
+)
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.memory_watch import NonreclaimablePeak
+from mosaic.core.pipeline.parquet_reader import FooterRecord, ParquetFooterMemo
 from mosaic.core.pipeline.writers import FeatureOutput, write_output
 from mosaic.core.timebase import IrregularNotice, uniform_grid_rate
 from tests.helpers import (
     ParallelFeature,
     dropped_frame_tracks,
+    observed,
+    record_path_calls,
     report_of,
     wrapped_write,
 )
@@ -87,10 +99,56 @@ def _task(
     meta = FeatureMeta(group="g", sequence="s", out_path=run_root / "g__s.parquet")
     return EntryTask(
         meta=meta,
-        table=dropped_frame_tracks() if table is None else table,
+        source=dropped_frame_tracks() if table is None else table,
         selector=selector,
         arena_count=arena_count,
     )
+
+
+def _table_of(task: EntryTask) -> pd.DataFrame:
+    assert isinstance(task.source, pd.DataFrame), task.source
+    return task.source
+
+
+def _inputs(directory: Path, table: pd.DataFrame | None = None) -> tuple[Path, Path]:
+    """Two tracks files under *directory* that merge back into *table*'s rows.
+
+    The first holds every column but ``ANGLE``, the second the frame, the
+    individual and ``ANGLE``.
+    """
+    whole = dropped_frame_tracks(sequence="s") if table is None else table
+    directory.mkdir(exist_ok=True)
+    first, second = directory / "first.parquet", directory / "second.parquet"
+    whole.drop(columns=["ANGLE"]).to_parquet(first)
+    whole[["frame", "id", "ANGLE"]].to_parquet(second)
+    return first, second
+
+
+def _specs(paths: tuple[Path, ...]) -> tuple[tuple[Path, LoadSpec], ...]:
+    return tuple((path, ParquetLoadSpec()) for path in paths)
+
+
+def _load_task(
+    run_root: Path,
+    paths: tuple[Path, ...],
+    *,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
+    time_window: TimeWindow = TimeWindow(),
+    projection: ColumnProjection | None = None,
+    footers: tuple[FooterRecord, ...] = (),
+) -> EntryTask:
+    meta = FeatureMeta(group="g", sequence="s", out_path=run_root / "g__s.parquet")
+    load = EntryLoad(
+        entry_key=make_entry_key("g", "s"),
+        file_specs=_specs(paths),
+        projection=projection,
+        frame_start=frame_start,
+        frame_end=frame_end,
+        time_window=time_window,
+        footers=footers,
+    )
+    return EntryTask(meta=meta, source=load)
 
 
 def _frames(count: int) -> pd.DataFrame:
@@ -126,13 +184,13 @@ def test_a_task_writes_the_bytes_the_writer_writes_and_reports_them(
 ) -> None:
     task = _task(run_root)
     expected = FeatureMeta(group="g", sequence="s", out_path=tmp_path / "x.parquet")
-    _ = write_output(expected, task.table)
+    _ = write_output(expected, _table_of(task))
 
     report = report_of(run_entry(_NotesUnevenTime(), task, None))
 
     assert task.meta.out_path.read_bytes() == expected.out_path.read_bytes()
-    assert report.rows == len(task.table)
-    assert report.output_bytes == int(task.table.memory_usage(index=True).sum())
+    assert report.rows == len(_table_of(task))
+    assert report.output_bytes == int(_table_of(task).memory_usage(index=True).sum())
     [notice] = report.notices
     assert notice.who == _NotesUnevenTime.name
     assert report.worker is None
@@ -320,8 +378,191 @@ def test_a_failed_release_after_the_rename_keeps_the_report_and_the_output(
 
     report = report_of(run_entry(ParallelFeature(), task, None))
 
-    assert report.rows == len(task.table)
+    assert report.rows == len(_table_of(task))
     assert task.meta.out_path.exists()
+
+
+# --- a task that loads its input ------------------------------------------------------
+
+
+def test_a_load_task_writes_what_a_table_task_holding_its_loaded_table_writes(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    loaded = load_entry_data(list(_specs(paths)))
+    assert loaded is not None
+    table_root = tmp_path / "table"
+    table_root.mkdir()
+
+    from_load = report_of(
+        run_entry(ParallelFeature(), _load_task(run_root, paths), None)
+    )
+    from_table = report_of(
+        run_entry(ParallelFeature(), _task(table_root, loaded), None)
+    )
+
+    out = "g__s.parquet"
+    assert (run_root / out).read_bytes() == (table_root / out).read_bytes()
+    assert from_load.input_bytes == int(loaded.memory_usage(index=True).sum()) > 0
+    assert from_table.input_bytes == 0
+    assert from_load.written and from_table.written
+    assert from_load.rows == from_table.rows == len(loaded)
+
+
+def test_frame_bounds_and_a_time_window_filter_the_rows_as_the_run_filters_them(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    loaded = load_entry_data(list(_specs(paths)))
+    assert loaded is not None
+    window = TimeWindow(0.2, 1.0)
+    expected = filter_time_range(
+        filter_time_range(loaded, filter_start_frame=3, filter_end_frame=20),
+        filter_start_time=window.start,
+        filter_end_time=window.end,
+    )
+    assert 0 < len(expected) < len(loaded)
+
+    task = _load_task(run_root, paths, frame_start=3, frame_end=20, time_window=window)
+    report = report_of(run_entry(ParallelFeature(), task, None))
+
+    pd.testing.assert_frame_equal(pd.read_parquet(task.meta.out_path), expected)
+    assert report.rows == len(expected)
+
+
+def test_a_time_window_over_rows_without_time_returns_the_runs_error(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _inputs(
+        tmp_path / "tracks", dropped_frame_tracks(sequence="s").drop(columns=["time"])
+    )
+
+    failure = _failure(
+        run_entry(
+            ParallelFeature(),
+            _load_task(run_root, paths, time_window=TimeWindow(0.0, 1.0)),
+            None,
+        )
+    )
+
+    assert failure.key == make_entry_key("g", "s")
+    assert isinstance(failure.error, ValueError)
+    assert str(failure.error) == (
+        "a time filter reads the 'time' column, and the rows of 'g__s' have none. "
+        "Filter by frame with filter_start_frame and filter_end_frame"
+    )
+    assert list(run_root.iterdir()) == []
+
+
+def _raise_eio(*_: object, **__: object) -> NoReturn:
+    raise OSError(errno.EIO, "input/output error")
+
+
+@pytest.mark.parametrize("fault", ["corrupt-input", "os-error"])
+def test_an_input_failure_returns_a_failure_and_writes_nothing(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    if fault == "corrupt-input":
+        _ = paths[1].write_bytes(b"not a parquet file")
+    else:
+        monkeypatch.setattr(entry_task, "load_entry_data", _raise_eio)
+
+    failure = _failure(run_entry(ParallelFeature(), _load_task(run_root, paths), None))
+
+    assert failure.key == make_entry_key("g", "s")
+    if fault == "os-error":
+        assert isinstance(failure.error, OSError)
+        assert failure.error.errno == errno.EIO
+    assert list(run_root.iterdir()) == []
+
+
+def test_missing_pair_rows_raise_as_the_entrys_error(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def pairs_missing(*_: object, **__: object) -> NoReturn:
+        msg = "input 0 holds no pair rows"
+        raise PairRowsMissing(msg)
+
+    monkeypatch.setattr(entry_task, "load_entry_data", pairs_missing)
+
+    with pytest.raises(PairRowsMissing):
+        _ = run_entry(
+            ParallelFeature(), _load_task(run_root, _inputs(tmp_path / "t")), None
+        )
+
+    assert list(run_root.iterdir()) == []
+
+
+def test_a_load_of_no_rows_reports_nothing_written_and_skips_after_apply(
+    run_root: Path, tmp_path: Path
+) -> None:
+    calls: list[bool] = []
+    task = _load_task(run_root, _inputs(tmp_path / "tracks"), frame_start=10**6)
+
+    report = report_of(run_entry(ParallelFeature(), task, lambda: calls.append(True)))
+
+    assert report == EntryReport(
+        written=False,
+        rows=0,
+        output_bytes=0,
+        input_bytes=0,
+        notices=(),
+        seconds_after_apply=0.0,
+    )
+    assert calls == []
+    assert list(run_root.iterdir()) == []
+
+
+# --- footers handed to the task --------------------------------------------------------
+
+
+_PROJECTION = ColumnProjection(frozenset({"frame", "time", "id", "X", "sequence"}))
+"""A projection, so that the load reads each input's footer to select columns."""
+
+
+def _crossed_records(paths: tuple[Path, ...]) -> tuple[FooterRecord, ...]:
+    """The records of a memo that read every input, passed through ``pickle``."""
+    memo = ParquetFooterMemo()
+    for path in paths:
+        _ = memo.footer(path)
+    return _crossed(memo.records(paths))
+
+
+def test_a_task_handed_the_footers_parses_no_input_whose_stamp_did_not_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    records = _crossed_records(paths)
+    assert len(records) == len(paths)
+    handed, unhanded = tmp_path / "handed", tmp_path / "unhanded"
+    handed.mkdir()
+    unhanded.mkdir()
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    task = _load_task(handed, paths, projection=_PROJECTION, footers=records)
+    _ = report_of(run_entry(ParallelFeature(), task, None))
+    assert parsed == []
+
+    bare = _load_task(unhanded, paths, projection=_PROJECTION)
+    _ = report_of(run_entry(ParallelFeature(), bare, None))
+    assert parsed == list(paths)
+    assert task.meta.out_path.read_bytes() == bare.meta.out_path.read_bytes()
+
+
+def test_a_task_handed_the_footers_parses_an_input_rewritten_since_they_were_read(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    records = _crossed_records(paths)
+    rewritten = dropped_frame_tracks(sequence="s", n_rows=12)
+    rewritten[["frame", "id", "ANGLE"]].to_parquet(paths[1])
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    task = _load_task(run_root, paths, projection=_PROJECTION, footers=records)
+    _ = report_of(run_entry(ParallelFeature(), task, None))
+
+    assert parsed == [paths[1]]
 
 
 # --- a process worker's memory ---------------------------------------------------------
@@ -353,7 +594,7 @@ def test_a_process_worker_measures_its_base_less_the_table_and_its_peak_after_th
     run_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task = _task(run_root)
-    handed = int(task.table.memory_usage(deep=True).sum())
+    handed = int(_table_of(task).memory_usage(deep=True).sum())
     seen: list[bool] = []
     monkeypatch.setattr(
         entry_task, "process_nonreclaimable_bytes", lambda: handed + 5_000
@@ -427,7 +668,7 @@ def test_a_failed_measure_after_the_write_keeps_the_report_without_a_worker(
     report = report_of(run_entry_in_process(ParallelFeature(), task))
 
     assert report.worker is None
-    assert report.rows == len(task.table)
+    assert report.rows == len(_table_of(task))
     assert task.meta.out_path.exists()
 
 
@@ -446,7 +687,7 @@ def test_a_task_survives_pickle(run_root: Path) -> None:
     crossed = _crossed(task)
 
     assert crossed.meta == task.meta
-    pd.testing.assert_frame_equal(crossed.table, task.table)
+    pd.testing.assert_frame_equal(_table_of(crossed), _table_of(task))
     assert crossed.selector == task.selector
     assert crossed.arena_count == task.arena_count
     assert crossed.key == task.key == make_entry_key("g", "s")
@@ -493,3 +734,70 @@ def test_a_failure_of_each_kind_survives_pickle(
         assert type(crossed.error) is type(failure.error)
         assert crossed.error.args == failure.error.args
         assert crossed.trace == failure.trace
+
+
+def test_a_load_task_and_its_report_survive_pickle(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _inputs(tmp_path / "tracks")
+    task = _load_task(
+        run_root,
+        paths,
+        frame_start=1,
+        frame_end=30,
+        time_window=TimeWindow(0.0, 2.0),
+        projection=_PROJECTION,
+        footers=_crossed_records(paths),
+    )
+    load = task.source
+    assert isinstance(load, EntryLoad)
+
+    crossed = _crossed(task)
+    crossed_load = crossed.source
+    report = report_of(run_entry_in_process(ParallelFeature(), crossed))
+
+    assert crossed.meta == task.meta
+    assert crossed.selector is None
+    assert crossed.arena_count is None
+    assert isinstance(crossed_load, EntryLoad)
+    assert crossed_load.entry_key == load.entry_key
+    assert crossed_load.file_specs == load.file_specs
+    assert crossed_load.projection == load.projection
+    assert crossed_load.frame_start == load.frame_start
+    assert crossed_load.frame_end == load.frame_end
+    assert crossed_load.time_window == load.time_window
+    assert crossed_load.footers == load.footers
+    assert crossed_load == load
+    assert report.written
+    assert report.input_bytes > 0
+    assert _crossed(report) == report
+
+
+def test_a_process_worker_given_a_load_reads_its_base_before_it_and_subtracts_nothing(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+
+    def resident() -> int:
+        order.append("base")
+        return 7_000
+
+    def on_load(*_: object, **__: object) -> None:
+        order.append("load")
+
+    monkeypatch.setattr(entry_task, "process_rss_bytes", resident)
+    monkeypatch.setattr(entry_task, "process_nonreclaimable_bytes", lambda: 5_000)
+    monkeypatch.setattr(
+        entry_task, "load_entry_data", observed(load_entry_data, on_load)
+    )
+
+    report = report_of(
+        run_entry_in_process(
+            ParallelFeature(), _load_task(run_root, _inputs(tmp_path / "tracks"))
+        )
+    )
+
+    assert order == ["base", "load"]
+    assert report.worker is not None
+    assert report.worker.base_rss_bytes == 7_000
+    assert report.worker.base_nonreclaimable_bytes == 5_000

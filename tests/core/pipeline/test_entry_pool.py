@@ -161,6 +161,36 @@ def test_no_more_calls_are_in_flight_than_workers() -> None:
     assert peak == 2
 
 
+def test_a_wait_for_a_worker_returns_once_a_call_is_handed_back() -> None:
+    heard = _Heard()
+    releases = {tag: threading.Event() for tag in (1, 2)}
+
+    def held(value: int) -> int:
+        _ = releases[value].wait(CHILD_TIMEOUT_SECONDS)
+        return value
+
+    pool = _pool(heard, workers=2)
+    for value in (1, 2):
+        pool.submit(value, held, value)
+    releases[2].set()
+
+    pool.wait_for_worker()
+
+    assert heard.results == [(2, 2)]
+    assert pool.in_flight == 1
+    releases[1].set()
+    pool.finish()
+
+
+def test_a_wait_for_a_worker_without_an_executor_returns_at_once() -> None:
+    heard = _Heard()
+    pool = _pool(heard)
+
+    pool.wait_for_worker()
+
+    assert pool.in_flight == 0
+
+
 def test_a_dead_worker_ends_the_pool_with_the_memory_it_used() -> None:
     heard = _Heard()
     pool = _pool(heard, workers=2, mode="process")

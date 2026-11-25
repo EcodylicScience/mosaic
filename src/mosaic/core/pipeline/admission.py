@@ -434,14 +434,15 @@ def admission_budget(
 
 @dataclass(frozen=True, slots=True)
 class EntrySpan:
-    """One entry's time in flight, from the start of its load to its exit.
+    """One entry's time in flight, from the start of its flight to its exit.
 
     Attributes:
         rows: Its input rows.
         most_in_flight: The most entries in flight at any moment of its span,
             itself included.
-        load_started: The monotonic time its load began.
-        cpu_at_load: The run's CPU seconds when its load began.
+        load_started: The monotonic time its flight began: its dispatch when its
+            worker loads its input, else the run's load of it.
+        cpu_at_load: The run's CPU seconds when its flight began.
         apply_seconds: From its dispatch to the end of its apply, 0 when either
             was not stamped.
         peak_nonreclaimable_bytes: The largest non-reclaimable memory of any sample
@@ -502,9 +503,12 @@ class _WrittenFlight:
 
 
 class EntriesInFlight:
-    """The entries of a run from the start of their load to their exit, with their rows.
+    """The entries of a run from the start of their flight to their exit, with their rows.
 
-    Every exit of an entry, an output written, a failure or a skip, calls
+    An entry whose worker loads its input enters at its dispatch, after the wait for
+    a free worker, the gate and the floor. An entry the run loads itself enters
+    before its load. Every exit of an entry, an output written, a load of no rows, a
+    failure or a skip, calls
     :meth:`leave`, and leaving twice is harmless. Every method holds the record's
     lock, because an apply ends on a worker thread. An entry that leaves with its
     output written keeps its span and rows, which :meth:`levels` reads.
@@ -537,15 +541,18 @@ class EntriesInFlight:
         cpu: float,
         pair_frames_bound: bool = False,
     ) -> None:
-        """Record that the entry *key* of *rows* input rows starts to load.
+        """Record that the entry *key* of *rows* input rows starts its flight.
+
+        An entry enters at its dispatch when its worker loads its input, and before
+        the run's own load otherwise.
 
         Args:
             key: The entry's key.
             rows: Its input rows.
             pair_frames: Its ordered pairs summed over frames, ``None`` where it
                 has no figure.
-            started: When its load began, on the clock of this record.
-            cpu: The tree's CPU seconds when its load began.
+            started: When its flight began, on the clock of this record.
+            cpu: The tree's CPU seconds when its flight began.
             pair_frames_bound: Whether *pair_frames* is a lower bound in place of a
                 measured figure.
         """
