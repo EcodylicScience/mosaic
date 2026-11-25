@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pickle
 import sys
 import threading
 from collections.abc import Iterator
@@ -14,6 +15,7 @@ import pytest
 
 from mosaic.core.pipeline import parquet_reader
 from mosaic.core.pipeline.parquet_reader import (
+    FooterRecord,
     ParquetFooterMemo,
     ParquetUnreadable,
     memoized_footers,
@@ -313,3 +315,113 @@ def test_read_footer_reports_a_path_that_cannot_be_examined_as_unreadable(
 
     with memoized_footers(ParquetFooterMemo()), pytest.raises(ParquetUnreadable):
         _ = read_footer(unsearchable_file)
+
+
+def _memo_that_read(*paths: Path) -> ParquetFooterMemo:
+    memo = ParquetFooterMemo()
+    for path in paths:
+        _ = memo.footer(path)
+    return memo
+
+
+def test_a_memo_built_from_records_reads_their_footers_without_a_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "a.parquet"
+    second = tmp_path / "b.parquet"
+    _write(first, {"x": [1, 2]})
+    _write(second, {"y": [3], "z": [4]})
+    records = _memo_that_read(first, second).records([first, second])
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    with memoized_footers(ParquetFooterMemo.from_records(records)):
+        assert read_footer(first).n_rows == 2
+        assert read_footer(second).n_rows == 1
+        assert read_parquet_column_names(first) == ("x",)
+        assert read_parquet_column_names(second) == ("y", "z")
+
+    assert [record.path for record in records] == [first, second]
+    assert parsed == []
+
+
+def test_records_follow_the_order_named_and_read_no_file(tmp_path: Path) -> None:
+    first = tmp_path / "a.parquet"
+    second = tmp_path / "b.parquet"
+    _write(first, {"x": [1]})
+    _write(second, {"x": [2, 3]})
+    memo = _memo_that_read(first, second)
+    first.unlink()
+    second.unlink()
+
+    records = memo.records([second, first])
+
+    assert [(record.path, record.footer.n_rows) for record in records] == [
+        (second, 2),
+        (first, 1),
+    ]
+
+
+def test_a_rewrite_with_another_size_after_the_export_is_parsed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.parquet"
+    _write(path, {"x": [1]})
+    records = _memo_that_read(path).records([path])
+    stamp = path.stat()
+    _write(path, {"x": list(range(500))})
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    with memoized_footers(ParquetFooterMemo.from_records(records)):
+        assert read_footer(path).n_rows == 500
+
+    assert parsed == [path]
+
+
+def test_a_rewrite_with_another_modification_time_after_the_export_is_parsed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.parquet"
+    _write(path, {"x": [1, 2]})
+    records = _memo_that_read(path).records([path])
+    stamp = path.stat()
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    with memoized_footers(ParquetFooterMemo.from_records(records)):
+        assert read_footer(path).n_rows == 2
+
+    assert parsed == [path]
+
+
+def test_a_path_scanned_torn_or_unseen_has_no_record(tmp_path: Path) -> None:
+    scanned_root = tmp_path / "scanned"
+    scanned_root.mkdir()
+    scanned = scanned_root / "a.parquet"
+    _write(scanned, {"x": [1]})
+    torn = tmp_path / "torn.parquet"
+    _ = torn.write_bytes(b"torn")
+    unseen = tmp_path / "unseen.parquet"
+    _write(unseen, {"x": [1]})
+    memo = ParquetFooterMemo()
+    assert memo.whole_stems(scanned_root) == {"a"}
+    with pytest.raises(ParquetUnreadable):
+        _ = memo.footer(torn)
+
+    assert memo.records([scanned, torn, unseen]) == ()
+
+
+def test_a_record_survives_pickle_and_its_memo_parses_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "a.parquet"
+    _write(path, {"x": [1, 2, 3]})
+    records = _memo_that_read(path).records([path])
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    unpickled: tuple[FooterRecord, ...] = pickle.loads(pickle.dumps(records))
+
+    assert unpickled == records
+    with memoized_footers(ParquetFooterMemo.from_records(unpickled)):
+        assert read_footer(path) == records[0].footer
+    assert parsed == []

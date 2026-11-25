@@ -7,9 +7,12 @@ release of pyarrow's unused memory after an entry, so its callers type-check in
 full. The file-level directives below cover the unknown types of pyarrow alone.
 
 A footer read opens the file, unless the thread entered :func:`memoized_footers`,
-which reads each file's footer once until the file changes. Every other read
-opens the file and reads only the columns it names. None of them builds a
-pandas frame. A file that pyarrow cannot read raises :class:`ParquetUnreadable`.
+which reads each file's footer once until the file changes. A memo hands the
+footers it parsed to another thread or process as :class:`FooterRecord` values,
+and a memo built from them trusts each footer while its file's stamp holds.
+Every other read opens the file and reads only the columns it names. None of
+them builds a pandas frame. A file that pyarrow cannot read raises
+:class:`ParquetUnreadable`.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -29,7 +32,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterable, Sequence
     from typing import Any
 
     import numpy.typing as npt
@@ -37,6 +40,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ArrowKind",
     "FooterColumn",
+    "FooterRecord",
     "NumericSummary",
     "ParquetFooter",
     "ParquetFooterMemo",
@@ -197,6 +201,30 @@ class _Known:
         return (self.inode, self.size, self.mtime_ns) == (inode, size, mtime_ns)
 
 
+@dataclass(frozen=True, slots=True)
+class FooterRecord:
+    """The hand-over of one parsed footer to a worker, with the stamp it was read at.
+
+    A memo built from records (:meth:`ParquetFooterMemo.from_records`) returns
+    the footer without a parse while the file's stamp matches. A file whose
+    stamp moved is parsed again.
+
+    Attributes:
+        path: The file, as the memo that parsed it was asked for it.
+        inode: The file's inode when the footer was read.
+        size: The file's size in bytes when the footer was read.
+        mtime_ns: The file's modification time in nanoseconds when the footer
+            was read.
+        footer: The parsed footer.
+    """
+
+    path: Path
+    inode: int
+    size: int
+    mtime_ns: int
+    footer: ParquetFooter
+
+
 class ParquetFooterMemo:
     """The parquet files of a directory that parsed, and their footers, by stamp.
 
@@ -216,6 +244,47 @@ class ParquetFooterMemo:
     def __init__(self) -> None:
         self._known: dict[Path, dict[str, _Known]] = {}
         self._columns: dict[tuple[FooterColumn, ...], tuple[FooterColumn, ...]] = {}
+
+    @classmethod
+    def from_records(cls, records: Iterable[FooterRecord]) -> ParquetFooterMemo:
+        """A memo that knows each record's footer by the stamp the record holds.
+
+        :meth:`footer` returns a record's footer without a parse while the
+        file's inode, size and modification time match the record's.
+        """
+        memo = cls()
+        for record in records:
+            memo._known.setdefault(record.path.parent, {})[record.path.name] = _Known(
+                inode=record.inode,
+                size=record.size,
+                mtime_ns=record.mtime_ns,
+                parsed=True,
+                footer=record.footer,
+            )
+        return memo
+
+    def records(self, paths: Iterable[Path]) -> tuple[FooterRecord, ...]:
+        """The records of the footers this memo parsed among *paths*, in their order.
+
+        A path the memo only scanned, failed to parse or never saw has no
+        record. A path matches only as spelled when the memo read it, so
+        another spelling of the same file has no record. No file is read.
+        """
+        found: list[FooterRecord] = []
+        for path in paths:
+            known = self._known.get(path.parent, {}).get(path.name)
+            if known is None or known.footer is None:
+                continue
+            found.append(
+                FooterRecord(
+                    path=path,
+                    inode=known.inode,
+                    size=known.size,
+                    mtime_ns=known.mtime_ns,
+                    footer=known.footer,
+                )
+            )
+        return tuple(found)
 
     def whole_stems(self, root: Path) -> set[str]:
         """The stems of the parquet files of *root* whose footer parses.
