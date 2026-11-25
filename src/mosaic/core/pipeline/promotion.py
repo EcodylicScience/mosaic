@@ -1,27 +1,26 @@
-"""Promoting a manual correction into ``tracks_raw`` -- item 8.6.
+"""Promoting a manual correction into ``tracks_raw``.
 
-A corrected track set cannot be recomputed. That makes it *source*, not a derived
-variant, and rule P1 says source lives under a source root -- so promotion is a
-copy from a tracker working directory into ``tracks_raw/<sequence>/``, after
-which the ordinary machinery does the rest: item 4.5's checksums are already on
-by default, item 4.4's composition already covers that sequence, and every
-artifact built from ``tracks_raw`` is invalidated by the composition moving.
-There is no new identity machinery here, which is what the item promised.
+A corrected track set cannot be recomputed. That makes it *source*, not a
+derived variant, and rule P1 says source lives under a source root -- so
+promotion is a copy from a tracker working directory into
+``tracks_raw/<sequence>/``, after which the ordinary machinery does the rest:
+checksums are on by default, the composition already covers that sequence, and
+every artifact built from ``tracks_raw`` is invalidated by the composition
+moving. There is no new identity machinery here.
 
-**Open item O1, resolved: an append-only revision series.** A second correction of
-the same sequence is not a conflict requiring a force every time; it is the next
-revision of a source file. This is the one place a revision counter earns its
-place, and it earns it where O1 said it might -- on the source file, not on the
-recipe. Nothing is overwritten, every earlier correction stays addressable, and
-each one moves the composition, which is what invalidates downstream artifacts
-correctly rather than silently.
+**An append-only revision series.** A second correction of the same sequence is
+not a conflict requiring a force every time; it is the next revision of a
+source file. This is the one place a revision counter earns its place, and it
+earns it on the source file, not on the recipe. Nothing is overwritten, every
+earlier correction stays addressable, and each one moves the composition, which
+is what invalidates downstream artifacts correctly rather than silently.
 
 **What blocks is derivatives, not history.** P4's rule is that a source change
 blocks while derivatives exist and forcing it proceeds; the preview is
-``reached_by``, which is documented as answering *membership* when run before the
-change. So the block is "these artifacts were built from this sequence's
-``tracks_raw`` and will be stale", and forcing does not delete them -- deleting is
-``delete_set``'s gesture, behind its own force. Promotion refuses to be two
+``reached_by``, which is documented as answering *membership* when run before
+the change. So the block is "these artifacts were built from this sequence's
+``tracks_raw`` and will be stale", and forcing does not delete them -- deleting
+is ``delete_set``'s gesture, behind its own force. Promotion refuses to be two
 destructive operations wearing one name.
 """
 

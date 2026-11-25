@@ -71,19 +71,18 @@ def frames_index_path(ds: Dataset, method: str) -> Path:
 class FramesIndexRow(RunIndexRowBase):
     """Typed row for the frames index CSV.
 
-    ``video_uuids`` and ``media_composition`` are item 5.1's frames half: what
-    this frame set was cut from, recorded and never hashed. The extraction
-    identifier is frozen (see :func:`frames_run_id`), so this is the only place
-    the answer can be written down.
+    ``video_uuids`` and ``media_composition`` record what this frame set was
+    cut from. Neither is hashed. The extraction identifier is frozen (see
+    :func:`frames_run_id`), so this is the only place the answer can be
+    written down.
 
-    **Both, not either.** ``video_uuids`` names the individual files, which is
-    what item 5.1's table asks for and what survives the sequence being
-    rearranged around them. ``media_composition`` names the arrangement, and it
-    is the one that matters here: ``_extract_frames_multi`` pools candidates
-    across a camera's clips using *global* frame indices, so a frame set is per
-    camera over an ordered clip list and a reorder genuinely changes what a
-    stored index refers to. Item 5.1's "extracted frames are already per-video on
-    disk" is true only of a single-clip camera.
+    **Both, not either.** ``video_uuids`` names the individual files, which
+    survives the sequence being rearranged around them. ``media_composition``
+    names the arrangement, and it is the one that matters here:
+    ``_extract_frames_multi`` pools candidates across a camera's clips using
+    *global* frame indices, so a frame set is per camera over an ordered clip
+    list and a reorder genuinely changes what a stored index refers to.
+    Extracted frames are per-video on disk only for a single-clip camera.
 
     ``video_uuids`` is in ``video_order`` and is **never sorted** -- it is the
     arrangement, and sorting it would make two orderings record alike. Contrast
@@ -173,8 +172,7 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
             # all-digit cell as int64 and an empty one as NaN, so a numeric-looking
             # ``video_uuids`` or ``params_hash`` would come back as a number and a
             # blank as the float NaN that ``adopt_frames_columns`` exists to keep
-            # off this frame. The same defect item 0.2 fixed for four other
-            # readers, in the one that was missed.
+            # off this frame.
             dfs.append(frames_index(idx_path).read())
     if not dfs:
         return pd.DataFrame(columns=FRAMES_INDEX_COLUMNS)

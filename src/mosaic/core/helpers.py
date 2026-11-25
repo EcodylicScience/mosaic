@@ -74,21 +74,20 @@ def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Pat
 
 
 def entry_directory(root: Path, group: str, sequence: str) -> Path:
-    """Where one entry's files live under *root* -- item 9.2's declared layout.
+    """Where one entry's files live under *root*, the declared layout.
 
-    **One level, named by the entry key, not ``<group>/<sequence>``.** ``group``
-    is an optional namespace and is legitimately empty, which two levels cannot
-    express: ``Path(root) / "" / "seq"`` silently collapses to ``root/seq``, and
-    then entry ``("", "a")`` and entry ``("a", "b")`` both want ``root/a`` -- one
-    as a sequence directory, one as a group directory. The entry key has no such
-    collision (``a`` versus ``a__b``), and item 2.5's entry-name rule guarantees
-    it is a single path component.
+    **One level, named by the entry key, not ``<group>/<sequence>``.**
+    ``group`` is an optional namespace and is legitimately empty, which two
+    levels cannot express: ``Path(root) / "" / "seq"`` silently collapses to
+    ``root/seq``, and then entry ``("", "a")`` and entry ``("a", "b")`` both
+    want ``root/a`` -- one as a sequence directory, one as a group directory.
+    The entry key has no such collision (``a`` versus ``a__b``), and the
+    entry-name rule guarantees it is a single path component.
 
     It is also the spelling ``tracks/``, ``features/``, ``labels/`` and every
-    tracker working directory already use, so declaring the layout introduces no
-    second convention to learn. Open item O3 decided the same shape for
-    ``tracks_raw``, which is why this takes the root as an argument rather than
-    living on one.
+    tracker working directory already use, so declaring the layout introduces
+    no second convention to learn. ``tracks_raw`` has the same shape, which is
+    why this takes the root as an argument rather than living on one.
     """
     return root / make_entry_key(group, sequence)
 

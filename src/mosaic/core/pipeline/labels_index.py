@@ -13,7 +13,7 @@ rename, no run identity.
 namespace a consumer selects by (``behavior``, ``id_tags``, ...), unlike a tracks
 variant, which is an anonymous recipe. The variant lives one directory below, at
 ``labels/<kind>/<run_id>/``, so two recipes for one kind coexist rather than
-overwrite -- the central defect item 9.3 closes.
+overwrite.
 
 **Two provenances, one root.** A label kind can arrive scored (converted from
 ``labels_raw``, ``consumed_source_roots=("labels_raw",)``, source side the
@@ -298,7 +298,7 @@ def select_label_variant_rows(
 
     ``run_id`` given selects that variant exactly. ``""`` names the *unlabelled*
     rows -- a flat ``labels/<kind>/`` written before variants existed -- which is
-    how a pre-9.3 layout stays addressable.
+    how a layout from before variants stays addressable.
 
     ``run_id`` of ``None`` means "whichever variant this entry has". On rows that
     :func:`labels_rows` merged, which carry a ``link_id`` and come in lookup
@@ -364,7 +364,7 @@ def legacy_labels_view(df: pd.DataFrame) -> pd.DataFrame:
 
     ``group_safe``/``sequence_safe`` are re-derived from ``group``/``sequence``,
     and ``kind`` from ``label_kind`` -- so a typed index reads back as the old
-    twelve-column CSV when item 9.3's ``[break]`` is rolled back. Never written by
+    twelve-column CSV when the typed index is rolled back. Never written by
     the forward path.
     """
     out = df.copy()
@@ -637,6 +637,6 @@ def _file_entry(loaded: np.lib.npyio.NpzFile, path: Path) -> Entry:
     return group, sequence
 
 
-# Item 6.1: reconciled through the shared registry, so ``reindex`` and the sweep
+# Reconciled through the shared registry, so ``reindex`` and the sweep
 # cover every ``labels/<kind>/index.csv`` the way they cover ``tracks/index.csv``.
 register_reconcilable_index("labels", labels_index)

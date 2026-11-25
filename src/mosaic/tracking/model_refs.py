@@ -407,7 +407,7 @@ class ResolvedModel:
         move, and it already names a directory a human can go and look at. The
         weights digest otherwise. **Never the path** -- a path names a location,
         and two locations hold different weights as readily as the same ones,
-        which is the whole defect item 4.6 exists to close.
+        which is the defect this identity closes.
         """
         return self.run_id or self.digest
 
@@ -669,7 +669,7 @@ def _identity(artifacts: Sequence[ModelArtifact], spec: ModelKindSpec) -> str:
 
     Two spellings, and the split is what keeps every existing identifier where it
     is. With no ``payload_prefix`` the identity *is* the weights digest,
-    unwrapped -- what a single-file model has minted since item 4.6. With one, it
+    unwrapped, as a single-file model mints it. With one, it
     is ``hash_params`` over ``<prefix>_<role>`` keys, which is what the SLEAP and
     Lightning Pose resolvers already minted, down to the list-valued weights key
     SLEAP uses even for a single directory.

@@ -5,7 +5,7 @@ same two reasons. A label converter used to be a duck-typed class with no
 ``version``, no typed ``Params`` and no registered op name, whose ``convert``
 both wrote the ``.npz`` files and returned the index rows -- so a re-conversion
 overwrote in place and nothing about *which recipe* produced a kind reached any
-identity. Item 9.3 gives labels the tracks treatment:
+identity. Labels get the tracks treatment:
 
 - A typed ``Params`` per converter, so validation and throughput knobs sit apart
   from the parameters that determine the labels, and a label variant identity is

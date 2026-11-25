@@ -1,4 +1,4 @@
-"""Whether a reader would accept a sequence's clips -- item 6.5's precheck.
+"""Whether a reader would accept a sequence's clips, as a precheck.
 
 ``MultiVideoReader`` refuses a sequence whose clips disagree on displayed
 dimensions or frame rate, and the frame-rate arm compares every clip against

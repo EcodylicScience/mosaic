@@ -488,7 +488,7 @@ def list_litpose_runs(ds: Dataset) -> pd.DataFrame:
     return list_tracker_runs(ds, LITPOSE_KIND, LitposeIndexRow)
 
 
-# Item 6.1: the reconciler opens this root's index through the registry, so
+# The reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(LITPOSE_KIND, litpose_index)
 register_frames_read_reader(LITPOSE_KIND, _frames_read_of_table)

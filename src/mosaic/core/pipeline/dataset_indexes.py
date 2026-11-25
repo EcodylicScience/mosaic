@@ -1,4 +1,4 @@
-"""Every index in a dataset, enumerated once -- item 6.1's second paragraph.
+"""Every index in a dataset, enumerated once.
 
 Three passes want the same list and each had its own copy: the two path passes
 (``rewrite_index_paths`` and ``make_portable``) enumerated it in parallel sets of

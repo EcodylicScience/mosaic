@@ -7,7 +7,7 @@ extract -> train -> infer -> tracks loop. The ``model`` param is a weights path
 OR a prior training ``run_id`` (resolved via the model index). Heavy backends
 import lazily inside ``run()``.
 
-**The parquet is an audit artifact, not a cache** (item 8.7). Inference re-runs
+**The parquet is an audit artifact, not a cache.** Inference re-runs
 unconditionally: what the file is for is showing what a detector emitted *before*
 schema coercion, which is what you want when debugging a bad model. It has no
 index of its own -- it used to, and that index was written, never read, and
@@ -119,7 +119,7 @@ if TYPE_CHECKING:
 
 
 def infer_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
-    """``_tracking/<infer-kind>/<run_id>/`` -- item 8.7's relocation.
+    """``_tracking/<infer-kind>/<run_id>/``, the root of one inference run.
 
     Formerly ``predictions/<kind>/<run_id>/`` under a root of its own. That root
     was written and never read: no resolver, no CLI command, no reindex, prune or
@@ -137,8 +137,8 @@ def infer_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
     its ``source_abs_path``. Only ``video_abs_path`` had no survivor, and it was
     the wrong one.
 
-    The parquet stays as an audit artifact under the shorter retention window of
-    item 8.4: it is what shows what a detector emitted before schema coercion,
+    The parquet stays as an audit artifact under a shorter retention window: it
+    is what shows what a detector emitted before schema coercion,
     which is exactly what a bad model needs to be diagnosed against.
     """
     return ds.get_root(kind) / run_id

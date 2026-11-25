@@ -28,10 +28,10 @@ that needs no schema change.
 named by a hash over *every* setting, so a track-only parameter change already
 moves the whole working directory. Within this layout the split therefore buys
 resume-after-interruption -- a convert that finished and a track that was
-killed re-runs only the track -- and not cross-run reuse of a conversion. That
-is item 8.5, which keys the conversion cache on ``(video uid, convert-params
-hash)``; the convert marker records both so 8.5 inherits a correct gate rather
-than bolting one on.
+killed re-runs only the track -- and not cross-run reuse of a conversion. A
+conversion cache would key on ``(video uid, convert-params hash)``; the convert
+marker records both so such a cache inherits a correct gate rather than bolting
+one on.
 """
 
 from __future__ import annotations
@@ -1341,7 +1341,7 @@ def _several_clips(row: Mapping[str, str]) -> list[str]:
     return clips if count > 1 and len(clips) == count else []
 
 
-# Item 6.1: the reconciler opens this root's index through the registry, so
+# The reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(TREX_KIND, trex_index)
 register_frames_read_reader(TREX_KIND, _frames_read_of_table)

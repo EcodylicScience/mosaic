@@ -95,8 +95,8 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     # How this row learned its (group, sequence) -- see AssignmentSource. Not a
     # measured fact and never hashed: it says how much to trust the identity the
     # other columns are keyed on, which is what lets the per-sequence composition
-    # (item 4.4) refuse to compute a value for a guessed partition rather than
-    # record a confident wrong one.
+    # refuse to compute a value for a guessed partition rather than record a
+    # confident wrong one.
     "assignment_source",
     # Centimetres per pixel for this recording: how far apart two adjacent pixels
     # are in the world. A property of the camera and the rig, which is why it
@@ -130,9 +130,9 @@ AssignmentSource = Literal[
 - ``"scan-stem"`` -- no track matched, so the file's own stem became its
   sequence. Stable only as long as the filename is.
 - ``"scan-keymap"`` -- matched against a keymap built from ``tracks/index.csv``,
-  which makes a *source* row's identity a function of a *derived* root. Item 4.7
-  calls that backwards and it is why a composition over such a sequence is not
-  well defined: converting more tracks would silently repartition media.
+  which makes a *source* row's identity a function of a *derived* root. That is
+  backwards, and it is why a composition over such a sequence is not well
+  defined: converting more tracks would silently repartition media.
 - ``"scan-imgstore-sync"`` -- a store's directory name, minus its camera-serial
   suffix, grouped with the other cameras sharing its ``sync_uuid``.
 - ``"scan-imgstore-division"`` -- one division of a store: its recording's name
@@ -464,7 +464,7 @@ def store_facts(
     *video_uuid* and *identity_scheme* are **required** rather than defaulted,
     following this module's rule that every field is a claim the caller states
     rather than one it inherits. A store's uuid is a mint read from its
-    metadata, not a measurement (open item O5), so the scheme is what tells a
+    metadata, not a measurement, so the scheme is what tells a
     reader which kind of value it is holding -- and a defaulted pair would let a
     caller ship an unmarked mint by omission. ``""`` for both is the honest
     answer for a store whose metadata carries no uuid.

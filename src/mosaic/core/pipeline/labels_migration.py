@@ -1,23 +1,23 @@
-"""One-shot migrations for item 9.3: the ``labels_raw`` root and the typed
-labels index.
+"""One-shot migrations for the ``labels_raw`` root and the typed labels index.
 
-Two directions, because 9.3 is a ``[break]`` and the programme's rollback rule
-asks every break to ship its reverse:
+Two directions, because moving labels to a ``labels_raw`` root and a typed
+index is a ``[break]``, and every break ships its reverse:
 
 - :func:`migrate_labels_raw` is additive and safe to re-run. It copies the
   label-format rows out of ``tracks_raw/index.csv`` into a new
-  ``labels_raw/index.csv`` and writes the composition. **Files are never moved**
-  -- a format registered as both a track and a label converter (``calms21_npy``)
-  keeps its one physical file, referenced from both indexes. A dataset that
-  predates ``labels_raw`` needs this once before a conversion can read the root.
+  ``labels_raw/index.csv`` and writes the composition. **Files are never
+  moved** -- a format registered as both a track and a label converter
+  (``calms21_npy``) keeps its one physical file, referenced from both indexes.
+  A dataset that predates ``labels_raw`` needs this once before a conversion
+  can read the root.
 
-- :func:`revert_labels` undoes both halves of the break: it flattens each kind's
-  resolved variant back to ``labels/<kind>/<entry>.npz``, rewrites the per-kind
-  index in the pre-9.3 untyped twelve-column shape, removes the variant
-  directories, and drops the ``labels_raw`` index and composition. Lossless for
-  the resolved variant, because the ``.npz`` payloads never changed; a second,
-  superseded variant's files are the state 9.3 introduced and are removed with
-  its directory.
+- :func:`revert_labels` undoes both halves of the break: it flattens each
+  kind's resolved variant back to ``labels/<kind>/<entry>.npz``, rewrites the
+  per-kind index in the untyped twelve-column shape, removes the variant
+  directories, and drops the ``labels_raw`` index and composition. Lossless
+  for the resolved variant, because the ``.npz`` payloads never changed; a
+  second, superseded variant's files exist only because variants exist and are
+  removed with its directory.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from .tracks_raw_index import (
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-# The pre-9.3 untyped labels index, in the order ``_ensure_labels_index`` wrote.
+# The untyped labels index, in the order ``_ensure_labels_index`` wrote.
 # Kept here rather than imported because the constant it names was deleted with
 # the writer; the reverse migration is the only code that still needs the shape.
 _LEGACY_LABEL_COLUMNS = [
@@ -94,7 +94,7 @@ def migrate_labels_raw(ds: Dataset) -> dict[str, int]:
 
 
 def revert_labels(ds: Dataset) -> dict[str, int]:
-    """Undo item 9.3's labels break: flatten variants, restore the untyped index.
+    """Undo the labels break: flatten variants, restore the untyped index.
 
     Returns ``{"kinds": k, "labels_raw_removed": 0 or 1}``.
     """
@@ -133,8 +133,8 @@ def revert_labels(ds: Dataset) -> dict[str, int]:
                     "label_names": str(row.get("label_names", "")),
                 }
             )
-        # Remove the variant directories 9.3 introduced (the flat files have been
-        # moved out of them already).
+        # Remove the variant directories (the flat files have been moved out of
+        # them already).
         for child in kind_root.iterdir():
             if child.is_dir():
                 shutil.rmtree(child)

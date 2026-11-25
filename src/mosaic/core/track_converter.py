@@ -2,7 +2,7 @@
 
 A converter used to be a bare ``Callable[[Path, dict], pd.DataFrame]`` handed an
 untyped dict that the caller had **mutated with the entry's group and sequence**
-just before the call. Two consequences, both fatal to item 3.1's tracks hash:
+just before the call. Two consequences, both fatal to a tracks hash:
 
 - Hashing "the conversion params" would hash the sequence name, so one recipe
   applied to two hundred sequences would mint two hundred variants -- exactly

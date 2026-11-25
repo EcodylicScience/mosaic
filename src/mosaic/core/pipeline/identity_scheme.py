@@ -1,8 +1,8 @@
 """The identity-scheme marker: which hashing contract produced a run.
 
 ``run_id`` carries the *feature's* declared version, never the version of the
-hashing contract that built it. So two runs whose identifiers differ because the
-payload shape changed are indistinguishable from two runs whose parameters
+hashing contract that built it. So two runs whose identifiers differ because
+the payload shape changed are indistinguishable from two runs whose parameters
 differed -- and nothing, script or human or control plane, can tell a
 pre-change directory from a post-change one.
 
@@ -19,17 +19,18 @@ same sense as ``mosaic-media``'s ``identity_scheme`` and ``prober_version``
 beside a ``video_uuid``.
 
 **Scope: feature runs, and now op runs.** The retrofit hazard applies to an
-identifier that already exists *and* is about to move. That was feature identity
-alone until item 4.6, which moves the ``train`` and ``infer`` digests by folding
-a weights digest into them -- so an op run root now records its family's scheme
-too, and it records it *before* the digest moves rather than after, because a
-marker cannot be retrofitted onto identifiers already on disk.
+identifier that already exists *and* is about to move. That was feature
+identity alone until the ``train`` and ``infer`` digests moved by folding a
+weights digest into them -- so an op run root also records its family's scheme,
+and it records it *before* the digest moves rather than after, because a marker
+cannot be retrofitted onto identifiers already on disk.
 
 The constants stay per family (``FEATURE_IDENTITY_SCHEME``,
 ``OP_IDENTITY_SCHEME``, ``TRACKS_IDENTITY_SCHEME``, the two composition ones)
 rather than collapsing into one number. Six independent hash functions cannot
-honestly share a marker: bumping it for a feature change would falsely mark every
-model and tracker run as re-minted, and a marker that lies is worse than none.
+honestly share a marker: bumping it for a feature change would falsely mark
+every model and tracker run as re-minted, and a marker that lies is worse than
+none.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ second run was served the first's parquet. Omitted at zero, which every run
 before this one was, so the golden corpus moves no line and no directory is
 re-addressed. The marker still moves, because what the digest *covers* changed.
 
-Scheme 5 (item 9.3): the payload gains ``_labels``, the label recipes behind the
+Scheme 5: the payload gains ``_labels``, the label recipes behind the
 ``labels/<kind>/`` tables a run reads, present only when a resolved labels variant
 exists. The exact label analog of ``_tracks``, and closing the same hole labels
 had that tracks closed in scheme 3: a run over different label content used to
@@ -66,7 +67,7 @@ reads no labels -- a dataset with no labels variant digests exactly as it did
 under scheme 4, and the golden corpus moves only for the labels-consuming
 features. The marker still moves, because what the digest *covers* changed.
 
-Scheme 3 (item 3.3): the payload gains ``_tracks``, the tracks recipes behind
+Scheme 3: the payload gains ``_tracks``, the tracks recipes behind
 the tables a run reads, present only when the index names any. The other input
 kind was already covered -- a ``Result`` carries its upstream ``run_id`` -- so
 this closes the last consumed artifact whose identity the digest omitted.
@@ -74,7 +75,7 @@ Because the term is omitted when absent, a dataset whose tracks predate variant
 identities digests exactly as it did under scheme 2; the marker still moves,
 because what the digest *covers* changed even where its value did not.
 
-Scheme 4 (item 4.4): a ``scope_dependent`` feature's scope term carries, per
+Scheme 4: a ``scope_dependent`` feature's scope term carries, per
 entry, the recorded composition of each source root that feature declares it
 opens. The shape is unchanged for an entry with no recorded composition -- the
 third element is *omitted*, not empty -- so a dataset holding no per-sequence
@@ -90,11 +91,11 @@ sequence to the scope is. The values themselves are written unhashed into
 inferred. What a marker must never do is claim contract 4 for a run minted under
 3, and it does not.
 
-Scheme 3 (item 3.3): the digest gained a ``_tracks`` term naming which tracks
+Scheme 3: the digest gained a ``_tracks`` term naming which tracks
 recipes a run read, resolved from the index rather than from the ``"tracks"``
 literal the caller wrote.
 
-Scheme 2 (item 1.1): every ``Result``-shaped reference is pinned to a concrete
+Scheme 2: every ``Result``-shaped reference is pinned to a concrete
 ``run_id`` before the payload is built, so ``_inputs`` carries the upstream run
 rather than a ``None`` standing for "latest, whichever that turns out to be".
 The payload's *shape* is unchanged -- one field's value stopped being null --

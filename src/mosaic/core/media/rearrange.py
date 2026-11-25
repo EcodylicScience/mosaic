@@ -1,23 +1,25 @@
-"""Rearranging a sequence's clips -- item 6.3, and the gestures that guard it.
+"""Rearranging a sequence's clips, and the gestures that guard it.
 
 A reorder is metadata-only on the filesystem: ``video_order`` is a column, and
-after Stage 7 every derivative is named for the video it came from, so nothing is
-renamed and nothing re-encodes. It is emphatically not *inert*, because
+after Stage 7 every derivative is named for the video it came from, so nothing
+is renamed and nothing re-encodes. It is emphatically not *inert*, because
 ``video_order`` is a term of the media composition and the composition is what
-says a source moved. That is the point of the gesture rather than a side effect.
+says a source moved. That is the point of the gesture rather than a side
+effect.
 
 **Preview by default.** ``apply`` is off, so calling this answers "what would
-happen" and touches nothing. The preview and the change run the same enumeration
-over the same arrangement, which is what P4's enumerate-twice asks for: the
-second pass happens inside the lock ``write_media_index`` already takes.
+happen" and touches nothing. The preview and the change run the same
+enumeration over the same arrangement, which is what P4's enumerate-twice asks
+for: the second pass happens inside the lock ``write_media_index`` already
+takes.
 
 **Both endpoints are constructed here, never accepted from a caller.**
 ``MediaIndexScope`` names a *directory*, and ``write_media_index`` preserves
 verbatim every row not under a passed scope -- so a cross-sequence move that
 passed only the destination would leave the source holding a row pointing at a
 file that is gone and a hole in its order. The one production caller builds its
-scopes from imported paths, which is right for an upload and silently wrong for a
-move. Building them here is how the requirement is enforced rather than
+scopes from imported paths, which is right for an upload and silently wrong for
+a move. Building them here is how the requirement is enforced rather than
 documented.
 
 **What blocks, and what does not.** A block is a refusal a caller can override
@@ -25,20 +27,20 @@ with ``force``; the two that exist are the ones where proceeding silently
 destroys something no recipe can rebuild:
 
 - *Converted labels.* Their frame indices are sequence-global, so a reorder
-  shifts every index past the change point. Item 9.3 has since given converted
-  labels a source side (``labels_raw``) they could be re-derived from, but the
-  frame-index remap over it is not built, so this still refuses rather than
-  shipping an inexact rewrite over human-authored scoring.
+  shifts every index past the change point. Converted labels have a source
+  side (``labels_raw``) they could be re-derived from, but the frame-index
+  remap over it is not built, so this refuses rather than shipping an inexact
+  rewrite over human-authored scoring.
 - *A readability regression.* If the proposed order would make a sequence one
   the reader refuses **and the committed order is one it accepts**, that is a
-  break the gesture is introducing. A sequence already unreadable does not block:
-  refusing there would strand it, and reordering may be exactly how a user fixes
-  it.
+  break the gesture is introducing. A sequence already unreadable does not
+  block: refusing there would strand it, and reordering may be exactly how a
+  user fixes it.
 
-A scope directory holding another sequence's files is a hard refusal rather than
-a block, because ``write_media_index`` would assign *every* file under it to the
-scope's identity -- merging two sequences into one, which no force flag should be
-able to ask for by accident.
+A scope directory holding another sequence's files is a hard refusal rather
+than a block, because ``write_media_index`` would assign *every* file under it
+to the scope's identity -- merging two sequences into one, which no force flag
+should be able to ask for by accident.
 """
 
 from __future__ import annotations
@@ -271,8 +273,8 @@ def _blocks(
             reasons.append(
                 f"{item.entry!r} has converted labels ({listed}) whose frame "
                 f"indices are sequence-global, so this reorder shifts every index "
-                f"past the change point. The labels now have a source side to be "
-                f"re-derived from (labels_raw, item 9.3), but the frame-index remap "
+                f"past the change point. The labels have a source side to be "
+                f"re-derived from (labels_raw), but the frame-index remap "
                 f"over that source is not built yet; forcing leaves the labels "
                 f"describing different frames"
             )

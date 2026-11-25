@@ -1095,6 +1095,6 @@ def list_sleap_runs(ds: Dataset) -> pd.DataFrame:
     return list_tracker_runs(ds, SLEAP_KIND, SleapIndexRow)
 
 
-# Item 6.1: the reconciler opens this root's index through the registry, so
+# The reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(SLEAP_KIND, sleap_index)

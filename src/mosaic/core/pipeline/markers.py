@@ -5,7 +5,7 @@ questions on re-entry: *did this work already finish*, and *is someone else
 doing it right now*. Directory existence answers neither. TREx creates the
 directory before the first subprocess starts, so a timeout, cancellation or
 eviction leaves one behind that makes every later identical run a silent no-op
-reporting success with zero individuals (implementation item 8.2).
+reporting success with zero individuals.
 
 These markers answer both, per phase:
 
@@ -13,7 +13,7 @@ These markers answer both, per phase:
   normally, and deleted immediately before the phase is re-run. So the marker
   is present exactly when that phase completed with the inputs it records.
 * ``<work_dir>/.mosaic-inflight.json`` -- written on entry, cleared in a
-  ``finally``. Names the execution that holds the directory (item 8.3).
+  ``finally``. Names the execution that holds the directory.
 
 Three properties are load-bearing.
 
@@ -120,10 +120,10 @@ PhaseName = Literal["convert", "track", "infer"]
 PHASE_NAMES: Final[tuple[PhaseName, ...]] = ("convert", "track", "infer")
 """Every gated phase any producer under ``_tracking`` can be in.
 
-``infer`` joined when item 8.7 moved model inference under that root. It is not a
-tracker phase and shares nothing with the other two beyond this protocol -- which
-is the point: the sweeper reads markers, not producers, so a fourth kind of
-output joins by writing one rather than by teaching the sweeper about itself.
+``infer`` runs model inference under that root. It is not a tracker phase and
+shares nothing with the other two beyond this protocol -- which is the point:
+the sweeper reads markers, not producers, so a fourth kind of output joins by
+writing one rather than by teaching the sweeper about itself.
 """
 
 
@@ -260,16 +260,15 @@ class PhaseMarker(BaseModel):
         run_id: Run whose directory this is.
         params_hash: Digest of *this phase's* parameter subset. Today a run
             root already keys on every parameter, so this can only agree --
-            it is recorded so a future cross-run conversion cache (item 8.5)
-            inherits a correct gate rather than bolting one on.
+            it is recorded so a future cross-run conversion cache inherits a
+            correct gate rather than bolting one on.
         execution_id: Attempt that completed the phase.
         completed_at: ISO-8601 UTC timestamp.
         source: Dataset-root-relative source the phase consumed. Empty means
             *unknown*, not *mismatched* -- a marker written by the one-time
             adoption of a directory that predates markers cannot know it.
         source_uid: Content identity of that source, when the media index
-            carries one. Advisory: recorded so items 4.2 / 8.5 have it, not
-            yet compared.
+            carries one. Advisory: recorded, not yet compared.
         recorded_output: Dataset-root-relative primary output, when the phase
             has one whose location is not derivable from *work_dir*.
         backfilled: True when adopted from a pre-marker directory rather than

@@ -4,8 +4,8 @@ The label sibling of :mod:`mosaic.core.pipeline.tracks_identity`. A label kind
 used to be written into a flat ``labels/<kind>/`` directory behind an
 ``exists()`` skip, so a re-conversion with different parameters overwrote the
 first and nothing recorded *which recipe* produced the labels a model trained on.
-Item 9.3 gives labels the tracks treatment: a params-only, scope-free identity
-names one recipe across every sequence it covers, and Stage 9.3 promotes it into
+Labels get the tracks treatment: a params-only, scope-free identity
+names one recipe across every sequence it covers, and it is promoted into
 a directory level (``labels/<kind>/<op>.<version>-<digest>/``), so two recipes
 coexist rather than clobber.
 
@@ -84,7 +84,7 @@ def labels_run_id(
             from, when a producer chains. Omitted from the digest entirely when
             None -- see the module docstring for why that is not the same as
             hashing an empty value. No derived-label producer exists yet; this is
-            the reserved seam for one (item 9.3's Derived provenance).
+            the reserved seam for one.
     """
     terms: dict[str, object] = dict(payload)
     if upstream is not None:
