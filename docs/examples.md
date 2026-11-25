@@ -34,10 +34,24 @@ In a clone of the repository the notebooks are tracked files, so running one in 
 rewrites its outputs and execution counts, and `git pull` then refuses to update it.
 Copy it out and run the copy there as well.
 
-Each notebook unpacks its data into `~/mosaic-examples/<name>-example/` wherever it is
-run from, so copies started in different places share one download. `DOWNLOAD_DIR` in
-the setup cell overrides that, and `SOURCE = "local"` skips the download to build from
-data you already have.
+Each notebook fetches its data with `mosaic.examples` and unpacks it into
+`~/mosaic-examples/<name>/` wherever it is run from, so copies started in different
+places share one download. `DOWNLOAD_DIR` in the setup cell overrides that, and
+`SOURCE = "local"` skips the download to build from data you already have.
+
+## Download an example dataset without a notebook
+
+The command line fetches the same data, into the same directory:
+
+```bash
+mosaic examples list
+mosaic examples fetch shiners
+```
+
+`list` shows each example, its download size and the notebook that uses it. `fetch`
+downloads one, checks it, unpacks it into `~/mosaic-examples/<name>/` (`--dir` names
+another directory) and prints the path of its manifest. A complete download is reused.
+[Try mosaic with Claude](try-with-claude.md) serves one to Claude.
 
 ## Start here
 

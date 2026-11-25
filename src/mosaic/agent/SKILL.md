@@ -1027,8 +1027,11 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 
 ## Mosaic's MCP tools
 
-When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for the
-work they cover (https://ecodylicscience.github.io/mosaic/agents/).
+When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for the work
+they cover (https://ecodylicscience.github.io/mosaic/agents/). A user whose client lacks
+them registers the server with `mosaic agent install --mcp` for Claude Code, in the
+project directory, or `mosaic agent install --desktop` for Claude Desktop
+(https://ecodylicscience.github.io/mosaic/try-with-claude/).
 
 - Find step types with `describe_step_types`, which lists them by category with a
   summary each, or with a query. Search by the measure's common name first, since step
@@ -1249,3 +1252,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 The repository's `notebooks/` on GitHub are end-to-end examples that download their
 data (https://ecodylicscience.github.io/mosaic/examples/). A pip install does not carry
 them, so download one from the repository and run the copy in the user's project.
+
+For a user who asks for sample data, `mosaic examples list` shows the example datasets
+and `mosaic examples fetch NAME` downloads one into `~/mosaic-examples/NAME/` and prints
+its manifest path. CalMS21's raw files load only with `MOSAIC_TRUST_PICKLED_FILES=1`,
+which only the user sets (https://ecodylicscience.github.io/mosaic/try-with-claude/).

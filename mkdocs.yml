@@ -145,6 +145,7 @@ nav:
   - Getting Started:
       - Install mosaic: installation.md
       - Work with an AI coding agent: agents.md
+      - Try mosaic with Claude: try-with-claude.md
       - The mosaic dataset: dataset.md
       - Worked examples: examples.md
       - Citing mosaic: citing.md

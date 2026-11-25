@@ -8,6 +8,25 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: example downloads and Claude Desktop registration
+
+No run id or output moves. `mosaic examples list` and `mosaic examples fetch` download
+the example datasets of the notebooks from Hugging Face, verify them and unpack them
+into `~/mosaic-examples/<name>/`, and `mosaic agent install --desktop` registers
+`mosaic agent serve` in Claude Desktop's configuration file, with `--desktop-config` and
+`--trust-pickled-files`.
+
+The notebooks fetch through `mosaic.examples`, so they no longer need `huggingface_hub`,
+and their download directory moves from `~/mosaic-examples/<name>-example/` to
+`~/mosaic-examples/<name>/`. The notebooks do not adopt a download in the old directory:
+they download again into the new one, and the old directory can be deleted to free its
+space. The `calms21-template` notebook joins its labels on the `perspective` column as
+well, so each pair row keeps its own label.
+
+`mosaic pipeline cleanup` and `mosaic pipeline retire` print sizes in decimal units (1
+MB is 1,000,000 bytes), as `mosaic examples` does, where they printed powers of 1024
+under the same unit names.
+
 ## Unreleased: `id-tag-columns` attaches text and other non-integer values
 
 No run id moves, and `id-tag-columns` keeps version `0.1`. The feature now

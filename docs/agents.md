@@ -80,10 +80,52 @@ entry and drops it.
 
 ### Registration in Claude Desktop
 
-Claude Desktop reads its servers from `claude_desktop_config.json`: on macOS in
-`~/Library/Application Support/Claude/`, on Windows in `%APPDATA%\Claude\`. Settings,
-Developer, Edit Config opens it. Add a `mosaic` entry. Its `command` is the full path of
-your `mosaic` executable, as `which mosaic` prints it in the activated environment:
+Quit Claude Desktop, then run:
+
+```bash
+mosaic agent install --desktop --dataset PATH
+```
+
+`--dataset` names a dataset's manifest or directory, once per dataset, as for `--mcp`.
+Without it the command serves the datasets in and below the project directory
+(`DIRECTORY`, default the working directory), else the dataset that encloses it. It
+writes the `mosaic` entry of Claude Desktop's configuration file and keeps the file's
+other servers. The entry names your `mosaic` executable by its full path and sets `env`
+from the environment you ran the command in. The command prints the entry's `env`, drops
+the `env` keys this run does not set and names each one. Start Claude Desktop again
+afterward, and check Settings, Developer for the `mosaic` server.
+[Try mosaic with Claude](try-with-claude.md) walks through it with an example dataset.
+
+The command finds the file by platform:
+
+| Platform | File                                                              |
+| -------- | ----------------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux    | `~/.config/Claude/claude_desktop_config.json`                     |
+| Windows  | `%APPDATA%\Claude\claude_desktop_config.json`                     |
+
+On macOS and Linux the file's directory must exist: open Claude Desktop once. On Windows
+the Microsoft Store build can read one of two other files instead,
+`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json`
+or `%LOCALAPPDATA%\Claude-Data\Claude_*\claude_desktop_config.json`. The command writes
+the one that exists, and refuses with the list when several do. Name the file with
+`--desktop-config FILE` when the command cannot choose or Desktop reads another one.
+
+`--trust-pickled-files` writes `MOSAIC_TRUST_PICKLED_FILES=1` into the entry, so the
+server unpickles raw files such as CalMS21 `.npy` in every dataset it serves. Unpickling
+can run code in the file: give it only datasets from sources you trust. A shell that
+exports `MOSAIC_TRUST_PICKLED_FILES=1` when you run the command has the same effect, and
+a run without either leaves the setting out of the entry. The command also copies the
+`MOSAIC_<TOOL>_CONDA_ENV`, `MOSAIC_<TOOL>_BIN` and `MOSAIC_<TOOL>_PYTHON` variables that
+your shell sets, and warns about a tool that your shell finds on `PATH` but the server's
+`PATH` does not.
+
+`--desktop` does not combine with `--mcp`. Run the two commands separately.
+
+To register the server by hand, or to keep an `env` key that the command drops, edit the
+file instead: Settings, Developer, Edit Config opens it. Add a `mosaic` entry. Its
+`command` is the full path of your `mosaic` executable, as `which mosaic` prints it in
+the activated environment:
 
 ```json
 {
