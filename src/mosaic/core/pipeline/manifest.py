@@ -206,8 +206,8 @@ def _ensure_track_shaped(
     import ``behavior``) and self-maintains as new track producers are added. It is
     a no-op when nothing resolved (empty upstream -> empty manifest, as before).
 
-    The predicate itself lives in ``track_universe.is_track_shaped``, because item
-    9.4's enumerator needs the same question in boolean form. Two spellings of
+    The predicate itself lives in ``track_universe.is_track_shaped``, because
+    ``run_is_track_shaped`` asks the same question in boolean form. Two spellings of
     "what is a track" would eventually disagree, and the way they would show it is
     a table the selector offers and this then rejects.
     """

@@ -46,9 +46,7 @@ def reindex_command(
     """Drop index rows whose files no longer exist, in every root or one.
 
     Covers ``tracks``, ``features``, and each tracker and inference root under
-    ``_tracking`` -- which until item 6.1 were reached by no reindex, prune or
-    portability pass at all, so a working directory removed by hand left a row
-    naming it forever.
+    ``_tracking``, including a working directory removed by hand.
 
     Relocated-but-present rows (a moved or synced dataset) are kept -- use
     ``make_portable`` / ``rewrite_index_paths`` for those. Never deletes output

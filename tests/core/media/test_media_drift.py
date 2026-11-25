@@ -428,7 +428,7 @@ class TestTheRefusalInRunFeature:
         ds = scenario_dataset_with_media
         first = run_feature(ds, _CropLike())
 
-        # Blank the recorded cell the way a pre-item-5.1 row carries it, leaving
+        # Blank the recorded cell the way an older row carries it, leaving
         # the projection in place so exactly one side is unknown.
         index = feature_index(feature_index_path(ds, "drift-crop-probe__from__tracks"))
         frame = index.read()

@@ -4873,11 +4873,9 @@ class Dataset:
                 df.to_csv(idx_path, index=False)
             return changed
 
-        # Which files are indexes is one question, answered in one place (item
-        # 6.1). This pass and ``make_portable`` each used to enumerate them in
-        # their own closures, and the tracker roots had to be appended to both by
-        # hand -- so a new tracker was portable in one pass and not the other,
-        # with nothing failing to say so.
+        # Which files are indexes is one question, answered in one place
+        # (``dataset_indexes``). This pass and ``make_portable`` both read it,
+        # so a new tracker root is portable in both passes or in neither.
         results: dict[str, int] = {}
         for index in iter_dataset_indexes(self, _INDEX_PATH_COLUMNS):
             count = rewrite_index(index.path, index.path_columns)
@@ -7465,7 +7463,7 @@ class Dataset:
         Three gates decline before anything is read, each returning a report with
         ``considered=False`` rather than raising. The third is the one that
         matters most: a dataset whose tracker root still points inside
-        ``tracks_raw`` (the pre-item-8.1 layout) is refused outright, because
+        ``tracks_raw`` (an older layout) is refused outright, because
         deleting under it would delete user uploads.
 
         Root resolution and the writes live here; the decisions live in
@@ -10259,8 +10257,8 @@ class Dataset:
     ) -> Path:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
-        The label sibling of :meth:`index_tracks_raw`, and the source side item
-        9.3 gives converted labels. ``src_format`` must name a registered *label*
+        The label sibling of :meth:`index_tracks_raw`, and the source side of
+        converted labels. ``src_format`` must name a registered *label*
         converter (e.g. ``boris_aggregated_csv``), the column a later
         :meth:`convert_all_labels` filters on; it is checked here, because a
         format nothing claims writes an index whose rows that filter then skips

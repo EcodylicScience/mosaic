@@ -751,9 +751,8 @@ def _media_empty() -> str:
 
 
 # train_run_id, infer_run_id and trex_settings mint identifiers that nothing in
-# either corpus pinned -- the module docstring already confessed the gap. Item
-# 4.6 changes what their model term *means*, which is the moment to close it.
-# Literal model ids, so these stay filesystem-free.
+# either corpus pinned otherwise. Their model term is a model's identity, and
+# these goldens pin it. Literal model ids, so these stay filesystem-free.
 
 
 def _train_run_id() -> str:

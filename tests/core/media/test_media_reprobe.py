@@ -1667,8 +1667,8 @@ def test_an_applied_reprobe_projects_the_composition_it_minted(
 
     A legacy index carries no identity, so the projection over it is
     unestablishable. Re-probing mints the uuids -- and until the projection is
-    rewritten, ``media_raw/sequences.csv`` still says unestablishable, which item
-    6.2 would read as "no evidence of change" for as long as the dataset exists.
+    rewritten, ``media_raw/sequences.csv`` still says unestablishable, which the drift
+    check would read as "no evidence of change" for as long as the dataset exists.
     """
     write_cfr_mp4(dataset.base_dir / "media_raw" / "seq" / "a.mp4")
     _ = _seed_legacy(
