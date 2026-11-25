@@ -1,6 +1,6 @@
-"""Item 6.1's walk: which derived artifacts a source change reaches.
+"""The provenance walk: which derived artifacts a source change reaches.
 
-Every column the walk reads was recorded in Stage 5 and is asserted elsewhere.
+Every column the walk reads is recorded by the writers and asserted elsewhere.
 What is asserted here is the *join* -- and above all its two edges: that a change
 under one root does not reach what consumed another (H3 case 2's whole point),
 and that it does reach a feature run through the tracks table it read, which no

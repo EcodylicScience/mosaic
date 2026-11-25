@@ -1,8 +1,8 @@
-"""Promoting a manual correction -- item 8.6, with open item O1 resolved.
+"""Promoting a manual correction.
 
-O1 asked whether a second correction of the same sequence is a conflict needing
-a force every time, or the next revision of a source file. These pin the second
-answer, and pin that the block is about *derivatives* rather than about history.
+A second correction of the same sequence is the next revision of a source file,
+not a conflict that needs a force every time. These tests pin that, and pin
+that the block is about *derivatives* rather than about history.
 """
 
 from __future__ import annotations
@@ -112,8 +112,8 @@ def test_the_revision_series_is_read_from_disk(tmp_path: Path) -> None:
 def test_a_promotion_moves_the_sequence_composition(tmp_path: Path) -> None:
     """The whole point: no new identity machinery, the existing hash moves.
 
-    Item 4.5's checksums are on by default and item 4.4's composition already
-    covers this root, so a corrected file arriving is enough to invalidate every
+    Checksums are on by default and the sequence composition already covers
+    this root, so a corrected file arriving is enough to invalidate every
     artifact built from it -- which is what makes promotion a *source* change
     rather than a new kind of thing.
     """

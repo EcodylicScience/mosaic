@@ -1,6 +1,6 @@
-"""The widened "which tracks" selector -- item 9.4.
+"""The widened "which tracks" selector.
 
-M2 built the narrow half (one variant within ``tracks/``). These pin the
+The selector picks one variant within ``tracks/``. These tests pin the
 widening: a track-shaped table in ``features/`` is enumerated too, the default is
 the leaf of the chain rather than the newest run, and two leaves refuse.
 """

@@ -281,10 +281,10 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
 
 
 def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> None:
-    """``source_abs_path`` was empty here; it now names the prediction directory.
+    """``source_abs_path`` names the prediction directory.
 
-    That pointer is what item 8.7 needs in order to retire the ``predictions``
-    root -- the tracks row records which model run produced the table.
+    That pointer makes a separate ``predictions`` root unnecessary -- the tracks
+    row records which model run produced the table.
     """
     from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 
@@ -387,12 +387,11 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         _ = select_variant_rows(rows)
 
 
-# --- item 5.1's tracks half: the composition a table consumed ---------------
+# --- the composition a table consumed ---------------------------------------
 #
 # ``consumed_source_roots`` says which root a change would have to be under;
-# only ``consumed_composition`` says whether it has changed. Until this cell
-# existed, a ``tracks_raw`` change moved nothing downstream -- the one dated gap
-# in the Stage 4 design, named at items 4.4 and 5.1.
+# only ``consumed_composition`` says whether it has changed. Without that cell,
+# a ``tracks_raw`` change would move nothing downstream.
 
 
 def test_a_converted_table_records_the_composition_it_consumed(
@@ -422,11 +421,11 @@ def test_a_converted_table_records_the_composition_it_consumed(
 def test_a_changed_source_moves_the_composition_a_reconversion_records(
     tmp_path: Path,
 ) -> None:
-    """The dated gap, closed: a ``tracks_raw`` change is now visible downstream.
+    """A ``tracks_raw`` change is visible downstream.
 
     Nothing about the *recipe* changes here -- same converter, same version, same
     params -- so the variant identity is deliberately unmoved. What moves is the
-    recorded edge, which is exactly the split item 3.1 fixes: the name says how a
+    recorded edge, which is the split between name and row: the name says how a
     table was produced, the row says what it was produced from.
     """
     ds = _dataset(tmp_path)

@@ -1,4 +1,4 @@
-"""Tests for model-weight fingerprinting (item 4.6).
+"""Tests for model-weight fingerprinting.
 
 A bare weights path is a mutable key: swap the file and every consumer reuses
 output produced by different weights, reporting a cache hit. These pin the digest
@@ -48,7 +48,7 @@ def test_the_digest_spans_chunk_boundaries(tmp_path: Path) -> None:
 
 
 def test_a_bare_path_is_named_by_its_bytes_not_its_location(tmp_path: Path) -> None:
-    """The defect item 4.6 closes, stated as a test.
+    """A model identifier follows the weights' bytes, not their path.
 
     Two different weights files at one path used to mint one identifier, and
     unchanged weights at two paths used to mint two.

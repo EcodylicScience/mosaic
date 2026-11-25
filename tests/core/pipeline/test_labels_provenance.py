@@ -1,4 +1,4 @@
-"""The labels arms of the reverse-dependency walk (item 9.3 / 6.2)."""
+"""The labels arms of the reverse-dependency walk."""
 
 from __future__ import annotations
 

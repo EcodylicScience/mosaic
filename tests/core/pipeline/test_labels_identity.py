@@ -1,4 +1,4 @@
-"""Unit tests for the label variant identity (item 9.3).
+"""Unit tests for the label variant identity.
 
 The label sibling of ``test_tracks_identity``: pin the shape of the minter and
 the payload wrapper, and the domain separation that keeps a label variant from

@@ -68,7 +68,7 @@ class Case:
             ``build_manifest`` would have read, never for a real one. Affects a
             ``scope_dependent`` feature that declares the matching root, and is
             omitted from the payload otherwise -- which is why every pre-existing
-            case is unaffected by item 4.4.
+            case is unaffected.
         label_revisions: The label series revisions a run read. Omitted from the
             payload when empty, so no pre-existing case is affected.
         overlap_frames: The neighbour-context width an overlapped run read.
@@ -387,7 +387,7 @@ CASES: tuple[Case, ...] = (
         params={"model": _PCA_MODEL_REF},
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
-    # The item 4.4 guard, and it is a guard rather than coverage: this feature
+    # The composition guard, and it is a guard rather than coverage: this feature
     # declares consumed_roots = (), so a composition in scope must reach nothing.
     # Its identifier must equal `pair-posedistance-pca/scope-ab` exactly -- if it
     # ever differs, a composition leaked into a feature that does not read the
@@ -908,7 +908,7 @@ CASES: tuple[Case, ...] = (
         feature="label-predictions",
         labels_variants=("convert-labels-predictions_table.0.1-dddddddddd",),
     ),
-    # --- the resolved tracks variant (item 3.3) ---
+    # --- the resolved tracks variant ---
     #
     # ``speed-angvel/default`` above is the same feature with no variants
     # resolved, so the four together pin the whole rule: absent differs from
@@ -931,7 +931,7 @@ CASES: tuple[Case, ...] = (
         feature="speed-angvel",
         tracks_variants=("trex.0.1-bbbbbbbbbb", "convert-trex_npz.0.1-aaaaaaaaaa"),
     ),
-    # --- the resolved labels variant (item 9.3) ---
+    # --- the resolved labels variant ---
     #
     # id-tag-columns reads labels, so a resolved label recipe must move its
     # identifier. The pair pins the whole rule: the two are the same feature and

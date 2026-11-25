@@ -16,8 +16,8 @@ only mosaic identifier pinned outside mosaic: ``mosaic-api`` writes it to
 Dolt-tracked rows carrying keypoint annotation labor, where ``image_path`` is
 additionally a restorable value column. Moving it -- by widening the digest or
 by adding a field to ``ExtractFramesParams`` that reaches ``identity_dump()`` --
-orphans every annotated frame path, recoverable only by re-annotating. Item 1.2
-folds ``Op.version`` into op run identity and must carve this op out.
+orphans every annotated frame path, recoverable only by re-annotating. Op run
+identity includes ``Op.version``, and this op is carved out of that.
 
 The other families stay at 40 bits today and may be widened later, but only
 inside their own minter, behind a scheme-marker bump, and riding an identity
@@ -29,8 +29,8 @@ params field moves a line here. It does **not** pin the dict literal each op
 wraps its params in at the mint site (``{"params": ..., "data": ..., "base":
 ...}`` in ``ops/train.py:150-158``, and the equivalents in ``convert.py`` and
 ``infer.py``): those are built inline inside op run bodies rather than in a
-named function, so there is nothing to call. Extracting them is follow-up work,
-and item 1.2 needs it anyway.
+named function, so there is nothing to call. Extracting them into named
+functions would let this corpus pin them.
 
 Regenerating after a deliberate change::
 
@@ -710,12 +710,12 @@ def _litpose_run_id_settings(media: str = "") -> str:
     return litpose_run_id(litpose_settings(params, model_id="0123456789abcdef"))
 
 
-# The per-sequence composition hashes (item 4.4). Function cases for the same
-# reason the tracks variants above are: what has to be pinned is the payload
-# *wrapper*, because renaming a key inside one would move every stored
-# composition and a corpus that called ``hash_params`` with a hand-built dict
-# would stay green straight through it. The reordered case is beside the ordered
-# one deliberately -- a pair that agreed would be the defect, visible in the data
+# The per-sequence composition hashes. Function cases for the same reason the
+# tracks variants above are: what has to be pinned is the payload *wrapper*,
+# because renaming a key inside one would move every stored composition and a
+# corpus that called ``hash_params`` with a hand-built dict would stay green
+# straight through it. The reordered case is beside the ordered one
+# deliberately -- a pair that agreed would be the defect, visible in the data
 # file rather than only in a test.
 
 
@@ -772,8 +772,8 @@ def _train_run_id() -> str:
 
 
 def _train_run_id_from_a_bare_path() -> str:
-    # The population item 4.6 moves: a base with no run to name it now
-    # contributes its weights digest where it used to contribute "".
+    # A base with no run to name it contributes its weights digest to the
+    # identifier.
     return train_run_id(
         "train-pose",
         OPS["train-pose"].version,
@@ -988,9 +988,9 @@ def _labels_raw_two_files() -> str:
 # The frame-extraction identifier, minted through its own function rather than
 # recomputed here. The OpCase above pins the *payload* -- a field added to
 # ``ExtractFramesParams`` moves it -- but nothing pinned ``frames_run_id``
-# itself, so a term added inside the minter moved the one identifier this file
-# calls permanently frozen while every line stayed green. Item 6.4's revision
-# term is exactly such a term, which is what made the gap worth closing.
+# itself, so a term added inside the minter could move the one identifier this
+# file calls permanently frozen while every line stayed green. The revision
+# term is exactly such a term.
 #
 # The revision case sits beside the default one deliberately: a pair that agreed
 # would be the defect, and it is visible in the data file rather than only here.

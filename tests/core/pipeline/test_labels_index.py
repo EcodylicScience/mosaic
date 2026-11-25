@@ -1,4 +1,4 @@
-"""The typed per-kind labels index, its resolver, and the conversion flow (item 9.3)."""
+"""The typed per-kind labels index, its resolver, and the conversion flow."""
 
 from __future__ import annotations
 

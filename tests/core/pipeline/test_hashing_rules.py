@@ -215,7 +215,7 @@ def test_features_that_open_video_declare_media_raw() -> None:
 
     Not a style rule. ``egocentric-crop`` concatenates a sequence's videos
     through ``MultiVideoReader``, so reordering them changes its pixels -- and
-    item 6.2's per-entry delete set reads this declaration, so an undeclared
+    the per-entry delete set reads this declaration, so an undeclared
     reader is a stale crop nothing deletes.
 
     Name-based and therefore imperfect: it cannot see a path carried in through
@@ -553,12 +553,12 @@ def test_chain_runner_prediction_honours_the_tracks_selector(tmp_path: Path) -> 
 
 
 def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None:
-    """The remaining half of P2e, owned by 1.1 rather than 0.1.
+    """The preview of a cold chain names the directories that execution produces.
 
-    The preview used to hash ``Result(run_id=None)`` for an uncached upstream
-    while execution hashed the concrete identifier, so a cold chain predicted
-    directories it then did not produce. Item 1.1 pins the prediction into the
-    downstream step's inputs, which is what execution does.
+    The preview pins the prediction for an uncached upstream into the
+    downstream step's inputs, as execution does. Hashing
+    ``Result(run_id=None)`` instead would predict directories that execution
+    does not produce.
 
     ``TemporalStackingFeature`` is the registry key; the earlier spelling of
     this test asked for ``"TemporalStack"`` and died on a ``KeyError`` before

@@ -1,11 +1,11 @@
-"""The tracker sweeper -- item 8.4, and M5's second gate.
+"""The tracker sweeper.
 
-The gate is *the sweeper does not delete in-flight work*, and it is asserted
-twice on purpose: once as the rule (``inflight`` is not in the deletable set,
-which covers every path) and once as behaviour (a live claim survives
-``apply=True`` with the window set to zero, which proves the rule is wired to
-something). Neither alone is enough -- the first cannot see a bug in the walk,
-the second only covers the arrangement it builds.
+The sweeper must not delete in-flight work. That is asserted twice on purpose:
+once as the rule (``inflight`` is not in the deletable set, which covers every
+path) and once as behaviour (a live claim survives ``apply=True`` with the
+window set to zero, which proves the rule is wired to something). Neither alone
+is enough -- the first cannot see a bug in the walk, the second only covers the
+arrangement it builds.
 """
 
 from __future__ import annotations
@@ -594,7 +594,7 @@ def test_a_legacy_layout_declines_rather_than_deleting(tmp_path: Path) -> None:
 
 
 def test_a_root_outside_the_dataset_declines(tmp_path: Path) -> None:
-    """Item 9.1's rule, enforced where being wrong costs files."""
+    """The sweeper refuses a root outside the dataset, where a mistake costs files."""
     ds = make_dataset(tmp_path / "ds", name="sweep")
     outside = tmp_path / "elsewhere"
     outside.mkdir()
@@ -607,7 +607,7 @@ def test_a_root_outside_the_dataset_declines(tmp_path: Path) -> None:
 
 
 def test_inference_output_is_kept_for_less_time_than_tracker_output() -> None:
-    """Item 8.4's table is data on the registry, not a branch per tool."""
+    """The retention table is data on the registry, not a branch per tool."""
     assert retention_days("infer-pose") < retention_days("trex")
 
 
@@ -644,16 +644,15 @@ def test_every_refused_class_is_reported_to_the_operator(verdict: SweepClass) ->
     assert not deletable(verdict)
 
 
-# --- 8.6's signal: promotion outranks age ------------------------------------
+# --- promotion outranks age --------------------------------------------------
 
 
 def test_a_promoted_run_is_reclaimable_before_its_window(tmp_path: Path) -> None:
-    """Item 8.4's "promotion is the primary signal, age is the fallback".
+    """Promotion is the primary signal, age is the fallback.
 
     Once a corrected track set is in ``tracks_raw``, the tracker output it was
     corrected from has served its purpose -- so its retention window stops being
-    the question. Without this the class existed with no producer and the design's
-    ordering was aspirational.
+    the question.
     """
     ds = make_dataset(tmp_path / "ds", name="sweep")
     recent = _entry(ds, finished_days_ago=1.0)

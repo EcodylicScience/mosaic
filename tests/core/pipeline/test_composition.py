@@ -1,4 +1,4 @@
-"""Tests for the per-sequence composition hashes (item 4.4's pure half).
+"""Tests for the per-sequence composition hashes.
 
 No fixture and no filesystem: ``composition`` turns already-read rows into a
 digest and nothing else, which is what lets these values be pinned as literals.

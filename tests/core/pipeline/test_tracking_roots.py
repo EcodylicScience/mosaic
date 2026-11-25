@@ -1,9 +1,8 @@
-"""The tracking-root registry and the backfill a pre-item-8.1 dataset needs.
+"""The tracking-root registry and the backfill a dataset with no ``_tracking`` needs.
 
-Item 8.1 asked for the ``_tracking`` literal collapsed into one constant. These
-assert the collapse held -- that no module spells the path itself -- and that
-loading a manifest written before the relocation neither crashes nor silently
-rewrites what is already on disk.
+The ``_tracking`` literal lives in one constant. These tests assert that no
+module spells the path itself, and that loading a manifest written before the
+relocation neither crashes nor silently rewrites what is already on disk.
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def test_the_tracking_root_test_is_component_wise_not_a_prefix() -> None:
 
 
 def test_no_module_spells_the_tracker_root_path_itself() -> None:
-    """Item 8.1's actual request: one edit, not six.
+    """The path has one definition: one edit, not six.
 
     Asserted over the source rather than over behaviour, because the defect it
     rejects is duplication and duplication is invisible to a passing test. The
@@ -236,7 +235,7 @@ def test_the_media_scanner_does_not_descend_into_tracking(
 
 
 def _legacy_manifest(tmp_path: Path) -> Path:
-    """A manifest as written before item 8.1: trex under tracks_raw, no _tracking."""
+    """A manifest from before the relocation: trex under tracks_raw, no _tracking."""
     base = tmp_path / "legacy"
     base.mkdir()
     payload = {

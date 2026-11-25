@@ -1,4 +1,4 @@
-"""The item 9.3 migrations: populate labels_raw, and the reverse break rollback."""
+"""The labels migrations: populate labels_raw, and the reverse break rollback."""
 
 from __future__ import annotations
 

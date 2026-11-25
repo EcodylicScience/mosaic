@@ -1,8 +1,8 @@
-"""Item 1.2: an op run identifier names its producer's declared version.
+"""An op run identifier names its producer's declared version.
 
-``Op.version`` was metadata that reached no identifier, so two producer versions
-were indistinguishable on disk: re-run a tracker whose output semantics changed
-and the new run landed in the old run's directory, behind an existence check,
+Without ``Op.version`` in the identifier, two producer versions would be
+indistinguishable on disk: re-running a tracker whose output semantics changed
+would land the new run in the old run's directory, behind an existence check,
 reported as a reuse.
 
 The version is a **visible segment**, mirroring ``compute_run_id``'s
@@ -172,12 +172,12 @@ def test_op_runs_are_born_under_a_named_scheme() -> None:
 
 
 def test_an_op_run_root_records_the_scheme_that_minted_it(tmp_path: Path) -> None:
-    """Item 0.4's owed reach, and it must land before item 4.6 moves a digest.
+    """An op run root records its family's identity scheme.
 
     A scheme marker cannot be retrofitted onto identifiers already on disk --
     doing so requires knowing which contract produced each of them, which is
     exactly the provenance that does not exist. So an op run root records its
-    family's scheme *before* the train and infer digests move, not after.
+    family's scheme from the start, before any digest of the family moves.
     """
     run_root = tmp_path / "train-pose.0.1-abcdef0123"
     run_root.mkdir()

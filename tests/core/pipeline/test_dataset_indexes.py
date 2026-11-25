@@ -1,9 +1,8 @@
-"""The shared index enumeration, and the root-agnostic reconciler -- item 6.1.
+"""The shared index enumeration, and the root-agnostic reconciler.
 
-Three passes used to enumerate "which files are indexes" separately. These pin
-that there is now one answer, that the two path passes and the reconciler all
-read it, and that the tracker roots -- reached by no pass at all before this --
-are in it.
+These tests pin that one enumeration answers "which files are indexes", that
+the two path passes and the reconciler all read it, and that it includes the
+tracker roots.
 """
 
 from __future__ import annotations
@@ -158,10 +157,10 @@ def test_tracker_path_columns_come_from_the_registry(tmp_path: Path) -> None:
 
 
 def test_a_tracker_row_naming_a_deleted_directory_is_dropped(tmp_path: Path) -> None:
-    """The gap item 6.1 leaves the sweeper: everything removed by hand.
+    """The reconciler covers what the sweeper cannot: everything removed by hand.
 
-    Before this, the ``_tracking`` indexes were reached by no reconcile pass, so
-    a working directory deleted by hand left its row naming it forever.
+    The ``_tracking`` indexes are in the reconcile pass, so a working directory
+    deleted by hand does not leave its row naming it forever.
     """
     ds = make_dataset(tmp_path / "ds", name="reconcile")
     gone = ds.get_root("trex") / "trex.1.0-aaaa" / "seq_a"

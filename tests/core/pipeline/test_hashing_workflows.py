@@ -199,7 +199,7 @@ def test_h1_tracking_intermediates_are_separated_from_results(
     assert not reached, f"the raw-tracks scanner walked into _tracking: {reached}"
 
     assert not dataset.has_root("predictions"), (
-        "inference still declares a top-level predictions/ root (item 8.7)"
+        "inference still declares a top-level predictions/ root"
     )
 
 
@@ -303,7 +303,7 @@ def test_h2_tracks_identity_changes_the_run_id_not_the_directory() -> None:
     """The same invariant for the other input kind, which had no test at all.
 
     ``storage_suffix()`` reads the ``"tracks"`` literal out of ``Inputs.root``,
-    and item 3.3 leaves that literal in place precisely so this holds. Had the
+    and the literal stays in place precisely so this holds. Had the
     resolved variant been written into ``Inputs`` instead -- the obvious reading
     of "resolve the literal" -- ``features/<name>__from__tracks/`` would have
     become one directory per tracks recipe, silently, with every test still
@@ -408,7 +408,7 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
     are named by source uid, so nothing moves and nothing re-encodes.
 
     "Go" is answered by the delete set. The survivals are answered one level up,
-    by item 6.1's walk never enumerating those kinds -- so this asserts the
+    by the walk never enumerating those kinds -- so this asserts the
     delete set's membership is exactly ``{tracks, features}`` rather than
     checking each survivor by name, which would pass just as well if the walk
     grew an arm and the deleter filtered it out.
@@ -494,15 +494,13 @@ def test_h4_a_promoted_correction_lands_in_a_source_root_with_lineage(
 
     The three halves of the claim, asserted separately because each could hold
     without the others: it lands under a **source** root (rule P1), it carries
-    the **lineage** of the run it was corrected from (item 4.1's reserved
-    column, written at last), and it moves that sequence's **composition** --
-    which is what makes every artifact built from it stale, with no new identity
-    machinery involved.
+    the **lineage** of the run it was corrected from (the ``derived_from``
+    column), and it moves that sequence's **composition** -- which is what makes
+    every artifact built from it stale, with no new identity machinery
+    involved.
 
-    Interactive correction still does not exist; the editor is what was missing,
-    and the library half needs none. Open item O1 resolved in M5 to an
-    append-only revision series, so the file is ``corrected.rev1`` rather than
-    the sequence's name.
+    Corrections form an append-only revision series, so the file is
+    ``corrected.rev1`` rather than the sequence's name.
     """
     import numpy as np
 
@@ -549,7 +547,7 @@ def test_h4_annotated_frames_and_labels_are_never_in_a_delete_set(
     regardless of which sequence the image came from. Converted labels shift with
     the cumulative frame offsets and are remapped rather than destroyed.
 
-    **Both guarantees are structural rather than filtered.** Item 6.1's walk
+    **Both guarantees are structural rather than filtered.** The walk
     enumerates tracks and features and nothing else, so no branch in the deleter
     can forget a carve-out -- there is none to forget. The assertion is written
     against the delete set anyway, because that is the surface a future change
@@ -557,10 +555,9 @@ def test_h4_annotated_frames_and_labels_are_never_in_a_delete_set(
     labels arm without one.
 
     The labels half of the promise is kept at the *gesture* rather than here: a
-    reorder over a sequence with converted labels is blocked until item 9.3 gives
-    the remap a source side to be checked against. Deleting them was never on the
-    table; shipping an inexact rewrite over human-authored scoring was the thing
-    to refuse.
+    reorder over a sequence with converted labels is blocked unless the remap
+    has a source side to be checked against. Deleting the labels is not an
+    option, and an inexact rewrite over human-authored scoring is refused.
     """
     from mosaic.core.pipeline.delete_set import delete_set
     from mosaic.core.pipeline.media_index import MediaIndexScope
@@ -709,7 +706,7 @@ def test_h5_scope_term_carries_composition_hashes() -> None:
     # `hash_params` rather than by ==, because that is where the claim lives:
     # `identity_ready` maps tuples and lists alike, so the term this builds is
     # byte-identical to the `sorted(scope.entries)` the payload carried before
-    # item 4.4, even though a list and a tuple are not `==`.
+    # composition term, even though a list and a tuple are not `==`.
     assert hash_params(_scope_term(reader, bare)) == hash_params(sorted(bare.entries))
     assert _scope_term(reader, distinct) == [
         ["", "seq_a", [["media_raw", "aaaaaaaaaa"]]],
@@ -769,14 +766,14 @@ class _MediaReader(_PerFrame):
 def test_a_feature_row_records_the_composition_it_consumed(
     scenario_dataset_with_media: Dataset,
 ) -> None:
-    """Item 5.1's features half: on the row, never in the identifier.
+    """A feature row records the composition it consumed, never the identifier.
 
     A per-frame identifier names a directory holding *every* entry, so a
     per-entry fact in it would rename the directory that holds another
     sequence's already-correct output (rule P2d). The composition each entry
-    consumed belongs beside that entry's row, which is what item 6.2 turns into a
-    per-entry delete set -- H3 case 1's "tracks and features **go**", deleted
-    rather than re-identified.
+    consumed belongs beside that entry's row, which the per-entry delete set
+    reads -- H3 case 1's "tracks and features **go**", deleted rather than
+    re-identified.
     """
     ds = scenario_dataset_with_media
     result = run_feature(ds, _MediaReader())

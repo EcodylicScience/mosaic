@@ -1,4 +1,4 @@
-"""Tests for the per-sequence composition index (item 4.4's storage half).
+"""Tests for the per-sequence composition index.
 
 The round trip a writer performs: commit an ``index.csv``, then project it into
 ``<root>/sequences.csv``. ``rebuild_sequence_index`` recomputes the same value
@@ -389,7 +389,7 @@ def test_the_projection_survives_a_csv_round_trip_with_integer_counts(
     assert list(raw["member_count"].astype(str)) == ["2"]
 
 
-# --- the cell encoding (item 6.2 reads it, so its shape is load-bearing) -------
+# --- the cell encoding (the per-entry delete set reads it) --------------------
 
 
 class TestEncodeEntryComposition:

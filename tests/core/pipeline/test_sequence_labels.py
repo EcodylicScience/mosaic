@@ -1,4 +1,4 @@
-"""Tests for the token / display-label split (item 4.1's mosaic half).
+"""Tests for the token / display-label split.
 
 The token is what every filename, directory and index join key is built from.
 The label is what a human reads. The whole point is that changing the second

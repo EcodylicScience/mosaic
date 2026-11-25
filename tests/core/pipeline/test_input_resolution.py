@@ -1,16 +1,15 @@
-"""Item 1.1: an unpinned upstream is pinned before identity is computed.
+"""An unpinned upstream is pinned before identity is computed.
 
-``Result.run_id=None`` means "the latest run". Until this landed, that ``None``
-is what ``compute_run_id`` hashed, and the resolution to a concrete run happened
-afterwards, in four places, into a local that was discarded. Two runs consuming
-two *different* upstream runs therefore shared one identifier and one directory,
-and the second was reported as a cache hit.
+``Result.run_id=None`` means "the latest run". The resolution to a concrete run
+happens before ``compute_run_id`` hashes the reference. Hashing the ``None``
+would give two runs that consume two *different* upstream runs one identifier
+and one directory, and the second would be reported as a cache hit.
 
 The sharpest case is not the feature graph but the model graph: ``ArtifactSpec``
 extends ``Result``, so a ``GlobalModelParams`` feature's ``templates`` reference
--- which *is* its training set -- inherited the same unpinned default. That is
-what ``test_a_downstream_identifier_moves_when_its_unpinned_templates_move``
-covers, and it is the single assertion that proves M1's invariant.
+-- which *is* its training set -- has the same unpinned default. That is what
+``test_a_downstream_identifier_moves_when_its_unpinned_templates_move`` covers,
+and it is the single assertion that proves the invariant.
 
 The mock features are deliberately trivial. These are tests about identity, not
 about what a feature computes.
@@ -303,8 +302,8 @@ def test_a_downstream_identifier_moves_when_its_unpinned_templates_move(
 ) -> None:
     """Re-fit the training set, re-run unpinned, get a different classifier.
 
-    Before item 1.1 both runs minted the same identifier and the same run root,
-    so the second was served from cache -- a model reported as trained on the
+    Were both runs to mint the same identifier and the same run root, the
+    second would be served from cache -- a model reported as trained on the
     new templates while holding the state fitted from the old ones. Six global
     features sit on this path (global-scaler, global-tsne, global-kmeans,
     global-ward, xgboost, lightning-action).
@@ -356,7 +355,7 @@ def test_resolution_does_not_move_the_storage_directory(
 
 
 def test_the_tracks_literal_is_untouched(scenario_dataset: Dataset) -> None:
-    """There is no tracks identity to pin yet; item 3.3 resolves it.
+    """The ``tracks`` literal is not pinned here; the scope resolves it.
 
     Pinning it to anything that varies with which sequences are on disk would
     move a scope-free feature's identifier whenever a sequence is added, which
@@ -394,7 +393,7 @@ def test_a_pinned_reference_survives_the_process_worker_round_trip(
 def test_the_resolved_edges_are_recorded_in_params_json(
     scenario_dataset: Dataset,
 ) -> None:
-    """Readable provenance, so an edge walk need not re-derive it (item 6.1)."""
+    """Readable provenance, so an edge walk need not re-derive it."""
     upstream = _upstream_run_id(scenario_dataset)
     result = run_feature(scenario_dataset, _Downstream(templates=_templates_ref()))
     assert result.run_id is not None

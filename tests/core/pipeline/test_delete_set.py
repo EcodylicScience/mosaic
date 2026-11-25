@@ -1,9 +1,9 @@
-"""Item 6.4: the scoped delete set, and the two carve-outs it can never contain.
+"""The scoped delete set, and the two carve-outs it can never contain.
 
 The carve-outs are asserted as properties of the *walk* rather than of a filter:
-item 6.1 does not enumerate frames or labels, so no branch here can forget them.
-Asserting it at this layer is what makes that structural guarantee visible to
-whoever changes the walk later.
+the walk does not enumerate frames or labels, so no branch here can forget them.
+Asserting it at this layer makes that structural guarantee visible to whoever
+changes the walk later.
 """
 
 from __future__ import annotations
@@ -275,7 +275,7 @@ class TestUnknownIsNeverDeleted:
         output = ds.get_root("features") / storage / result.run_id / "seq_a.parquet"
 
         # Blank the recorded side while the declaration stays, the shape a row
-        # written before item 5.1 carries.
+        # written before rows recorded their consumed composition carries.
         index = feature_index(feature_index_path(ds, storage))
         frame = index.read(validate_paths=False)
         frame["consumed_composition"] = ""
