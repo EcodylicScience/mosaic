@@ -32,8 +32,8 @@ archive is unpacked into staging and moved into place with one ``os.rename``, an
 only then recorded, so an interruption never leaves a recorded directory that is
 incomplete.
 
-This module imports the standard library, ``mosaic.user_paths`` and ``mosaic.version``
-only.
+This module imports the standard library, ``mosaic.byte_sizes``, ``mosaic.user_paths``
+and ``mosaic.version`` only.
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO, Final, Literal, TypeGuard, TypeVar
 from urllib.parse import urljoin, urlsplit
 
+from mosaic.byte_sizes import format_size
 from mosaic.examples import catalog as catalog_module
 from mosaic.examples.catalog import Example, ExampleArchive
 from mosaic.user_paths import user_path
@@ -81,6 +82,7 @@ __all__ = [
     "download_archive",
     "fetch_checksums",
     "fetch_example",
+    "find_example",
     "parse_checksums",
 ]
 
@@ -384,16 +386,6 @@ def fetch_checksums(example: Example) -> dict[str, str]:
     return parse_checksums(body.decode("utf-8", errors="replace"), example.revision)
 
 
-def _format_size(size: int) -> str:
-    """*size* in bytes as ``12 B``, ``3.4 KB``, ``12.6 MB`` or ``1.9 GB``."""
-    value = float(size)
-    for unit in ("B", "KB", "MB"):
-        if value < 1000:
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1000
-    return f"{value:.1f} GB"
-
-
 class _Progress:
     """Progress lines on standard error for one archive.
 
@@ -414,7 +406,7 @@ class _Progress:
         """Announce the archive and its size."""
         if not self._enabled:
             return
-        print(f"fetching {self._file} ({_format_size(self._total)})", file=sys.stderr)
+        print(f"fetching {self._file} ({format_size(self._total)})", file=sys.stderr)
         self._last_tenth = self._percent(received) // 10 * 10
 
     def restart(self) -> None:
@@ -861,6 +853,28 @@ def _fetch_locked(example: Example, directory: Path, quiet: bool) -> FetchedExam
     )
 
 
+def find_example(name: str, catalog: Sequence[Example] | None = None) -> Example:
+    """The catalog entry called *name*.
+
+    Args:
+        name: The example's catalog name.
+        catalog: The entries to look the name up in. ``None`` reads the catalog's
+            ``CATALOG`` when called.
+
+    Returns:
+        The entry.
+
+    Raises:
+        UnknownExample: *name* is not in the catalog. The message lists the names.
+    """
+    entries = catalog_module.CATALOG if catalog is None else catalog
+    for entry in entries:
+        if entry.name == name:
+            return entry
+    names = ", ".join(entry.name for entry in entries)
+    raise UnknownExample(f"unknown example {name!r}; the examples are: {names}")
+
+
 def fetch_example(
     name: str,
     directory: str | Path | None = None,
@@ -898,11 +912,7 @@ def fetch_example(
         UnsafeArchive: An archive has a member that would leave its directory.
         ArchiveWithoutDataset: The dataset archive holds no ``dataset.yaml``.
     """
-    entries = catalog_module.CATALOG if catalog is None else catalog
-    example = next((entry for entry in entries if entry.name == name), None)
-    if example is None:
-        names = ", ".join(entry.name for entry in entries)
-        raise UnknownExample(f"unknown example {name!r}; the examples are: {names}")
+    example = find_example(name, catalog)
     target = user_path(
         f"~/mosaic-examples/{name}" if directory is None else directory
     ).absolute()

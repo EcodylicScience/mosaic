@@ -219,6 +219,7 @@ src/mosaic/
   runlog.py                     append-only JSONL run-log; stdlib-only leaf
   run_cost.py                   what a run-log says an attempt cost; stdlib-only
   lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
+  byte_sizes.py                 a byte count as `12.6 MB`; imports nothing
   examples/                     the example catalog and its download; stdlib-only
   core/                         Dataset, manifest, schema, Params, Scope, converters
   core/pipeline/                run_feature, indexes, locks, inventory, ops, placement

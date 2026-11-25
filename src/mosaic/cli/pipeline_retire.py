@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from mosaic.byte_sizes import format_size
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._io import (
     EntriesOption,
@@ -38,7 +39,6 @@ from mosaic.cli.pipeline import (
     JsonOption,
     ManifestOption,
     fail_unrunnable,
-    human_size,
     keep_newest_option,
     min_age_option,
     recipe_argument,
@@ -105,7 +105,7 @@ def _render_plan(wire: RetirementPlanWire) -> None:
                     "run_id": run.run_id,
                     "removable": "yes" if run.removable else "kept",
                     "reason": run.reason,
-                    "size": human_size(run.bytes),
+                    "size": format_size(run.bytes),
                 }
                 for run in wire.runs
             ],
@@ -122,8 +122,8 @@ def _render_plan(wire: RetirementPlanWire) -> None:
         )
     log(
         f"retirement: {wire.removable_runs} run(s) removable "
-        f"({human_size(wire.removable_bytes)}), {wire.kept_runs} kept "
-        f"({human_size(wire.kept_bytes)}); dry run, nothing removed: --apply "
+        f"({format_size(wire.removable_bytes)}), {wire.kept_runs} kept "
+        f"({format_size(wire.kept_bytes)}); dry run, nothing removed: --apply "
         "removes the removable runs"
     )
 

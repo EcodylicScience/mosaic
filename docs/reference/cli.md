@@ -49,6 +49,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
 * `agent`: Print or install the guide for an AI agent...
+* `examples`: Download example datasets to try mosaic on.
 * `sources`: Declare and inspect the directories and...
 * `selection`: Save, list, show and delete named entry...
 * `notes`: Read and write the dataset's free-text notes.
@@ -1803,6 +1804,63 @@ $ mosaic agent confirm-hook [OPTIONS]
 * `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed, hard_cancel, create_dataset, add_source or replace_sequence_tags. Repeatable.
 * `--otherwise <ask|cancel|decline>`: What to answer a confirmation with a condition not approved: decline it, cancel it, or ask (print nothing and leave it to the dialog). decline keeps any other hook from accepting it.  [default: decline]
 * `--server <str>`: The name under which the client lists mosaic's server.  [default: mosaic]
+* `--help`: Show this message and exit.
+
+## `mosaic examples`
+
+Download example datasets to try mosaic on.
+
+**Usage**:
+
+```console
+$ mosaic examples [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `list`: List the example datasets that `mosaic...
+* `fetch`: Download an example dataset and unpack it.
+
+### `mosaic examples list`
+
+List the example datasets that `mosaic examples fetch` downloads.
+
+**Usage**:
+
+```console
+$ mosaic examples list [OPTIONS]
+```
+
+**Options**:
+
+* `--json`: Print the catalog as a JSON list.
+* `--help`: Show this message and exit.
+
+### `mosaic examples fetch`
+
+Download an example dataset and unpack it. Prints the path of its manifest.
+
+Without NAME on a terminal, asks which example. Running it again reuses a
+complete download.
+
+**Usage**:
+
+```console
+$ mosaic examples fetch [OPTIONS] [NAME]
+```
+
+**Arguments**:
+
+* `[NAME]`: A name that `mosaic examples list` shows.
+
+**Options**:
+
+* `--dir <path>`: The directory the archives unpack into. Default: ~/mosaic-examples/<NAME>/.
+* `--json`: Print the directory, the manifest and what was done to each archive as JSON, instead of the manifest path.
 * `--help`: Show this message and exit.
 
 ## `mosaic sources`

@@ -40,6 +40,7 @@ from mosaic.examples.fetch import (
     download_archive,
     fetch_checksums,
     fetch_example,
+    find_example,
     parse_checksums,
 )
 from mosaic.version import installed_version
@@ -837,6 +838,22 @@ class TestFirstFetch:
 
         assert example_server.requests == []
         assert not (tmp_path / "x").exists()
+
+    def test_find_example_returns_the_entry_or_lists_the_names(self) -> None:
+        first = example_fixture(name="first").example
+        second = example_fixture(name="second").example
+
+        assert find_example("second", [first, second]) is second
+        with pytest.raises(UnknownExample, match=r"'nope'.*first, second"):
+            find_example("nope", [first, second])
+
+    def test_find_example_reads_the_catalog_when_given_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = example_fixture(name="only").example
+        monkeypatch.setattr(catalog, "CATALOG", (entry,))
+
+        assert find_example("only") is entry
 
     def test_progress_goes_to_standard_error_unless_quiet(
         self,

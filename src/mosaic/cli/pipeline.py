@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 import typer
 from typer.models import OptionInfo
 
+from mosaic.byte_sizes import format_size
 from mosaic.cli._context import definitions_of, load_dataset
 from mosaic.cli._io import (
     EntriesOption,
@@ -1695,7 +1696,7 @@ def render_cleanup_status(cleanup: CleanupStatusWire) -> None:
     typer.echo(
         f"cleanup {cleanup.execution_id}: {cleanup.status}, removed "
         f"{cleanup.removed_runs} of {cleanup.approved_runs} approved run(s) "
-        f"({human_size(cleanup.removed_bytes)}), kept {cleanup.kept_runs}, failed "
+        f"({format_size(cleanup.removed_bytes)}), kept {cleanup.kept_runs}, failed "
         f"{cleanup.failed_runs}, interrupted {cleanup.interrupted_runs}"
     )
     if cleanup.kept:
@@ -1711,16 +1712,6 @@ def render_cleanup_status(cleanup: CleanupStatusWire) -> None:
             ],
             ["storage", "run_id", "reason", "detail"],
         )
-
-
-def human_size(size: int) -> str:
-    """*size* bytes in the largest unit that keeps it at least 1."""
-    amount = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if amount < 1024 or unit == "GB":
-            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
-        amount /= 1024
-    return f"{amount:.1f} GB"
 
 
 def list_command(
@@ -1847,7 +1838,7 @@ def _emit_plan(
                         "run_id": run.run_id,
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
-                        "size": human_size(run.bytes),
+                        "size": format_size(run.bytes),
                         "recipe": run.retired or "-",
                     }
                     for step in wire.steps
@@ -1866,7 +1857,7 @@ def _emit_plan(
                         "run_id": run.run_id,
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
-                        "size": human_size(run.bytes),
+                        "size": format_size(run.bytes),
                     }
                     for run in wire.cleanup.retired_runs
                 ],
@@ -1878,8 +1869,8 @@ def _emit_plan(
         )
         log(
             f"cleanup: {wire.cleanup.removable_runs} superseded run(s) removable "
-            f"({human_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
-            f"kept ({human_size(wire.cleanup.kept_bytes)})"
+            f"({format_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
+            f"kept ({format_size(wire.cleanup.kept_bytes)})"
             + (f"; {omitted} not listed" if omitted else "")
         )
         if wire.retirable:

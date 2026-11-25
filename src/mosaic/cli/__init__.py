@@ -19,6 +19,7 @@ from mosaic.cli.release import release_command
 from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
 from mosaic.cli.describe import describe_command
+from mosaic.cli.examples import examples_app
 from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
 from mosaic.cli.inventory import inventory_app
@@ -109,6 +110,7 @@ _ = pipeline_app.command(name="score")(score_command)
 _ = pipeline_app.command(name="retire")(retire_command)
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(agent_app, name="agent")
+app.add_typer(examples_app, name="examples")
 
 # Dataset prep.
 _ = app.command(name="init")(init_command)
