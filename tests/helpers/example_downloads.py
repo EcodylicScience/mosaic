@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import socket
+import struct
 import tarfile
 import threading
 from collections.abc import Generator, Mapping, Sequence
@@ -71,12 +73,15 @@ class Reply:
         headers: Extra response headers.
         cut_after: When set, the headers declare the whole body but only this many
             bytes are sent before the connection closes.
+        reset: Whether the connection ends with a reset instead of a close, which the
+            client sees as a connection error while it reads the body.
     """
 
     status: int = 200
     body: bytes = b""
     headers: Mapping[str, str] = field(default_factory=dict[str, str])
     cut_after: int | None = None
+    reset: bool = False
 
 
 @dataclass(frozen=True)
@@ -352,6 +357,10 @@ class ExampleServer(ThreadingHTTPServer):
         handler.wfile.write(body)
         if reply.cut_after is not None:
             handler.wfile.flush()
+            if reply.reset:
+                handler.connection.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
             handler.close_connection = True
 
 

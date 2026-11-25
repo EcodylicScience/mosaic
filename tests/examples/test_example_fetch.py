@@ -8,19 +8,23 @@ go through the module's ``_sleep``, which the tests record instead of sleeping.
 from __future__ import annotations
 
 import dataclasses
+import errno
+import http.client
 import io
 import itertools
 import json
 import os
 import shutil
 import socket
+import ssl
 import tarfile
 import time
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Buffer, Callable, Mapping
 from email.utils import formatdate
 from http.client import HTTPMessage
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -37,6 +41,7 @@ from mosaic.examples.fetch import (
     UnknownExample,
     UnsafeArchive,
     archive_url,
+    default_directory,
     download_archive,
     fetch_checksums,
     fetch_example,
@@ -466,6 +471,134 @@ class TestFailures:
             download(fixture, tmp_path)
 
 
+def fail_first_read(monkeypatch: pytest.MonkeyPatch, error: OSError) -> None:
+    """Make the first body read of a response raise *error*; the rest read normally."""
+    original = http.client.HTTPResponse.read
+    attempts: list[int] = []
+
+    def read(self: http.client.HTTPResponse, size: int | None = None) -> bytes:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise error
+        return original(self, size)
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read", read)
+
+
+class TestBodyReadFailures:
+    def test_a_reset_while_reading_the_body_is_retried(
+        self,
+        fixture: ExampleFixture,
+        example_server: ExampleServer,
+        sleeps: list[float],
+        tmp_path: Path,
+    ) -> None:
+        data = fixture.archives[ARCHIVE_FILE]
+        path = cdn_path(fixture.example, ARCHIVE_FILE)
+        example_server.script(path, Reply(200, data, cut_after=100, reset=True))
+
+        assert download(fixture, tmp_path).read_bytes() == data
+        assert sleeps == [2]
+
+    @pytest.mark.parametrize(
+        "error",
+        [ssl.SSLError("[SSL: DECRYPTION_FAILED]"), OSError(errno.EIO, "I/O error")],
+        ids=["ssl", "oserror"],
+    )
+    def test_an_archive_read_that_fails_is_retried(
+        self,
+        fixture: ExampleFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        sleeps: list[float],
+        tmp_path: Path,
+        error: OSError,
+    ) -> None:
+        checksums = fetch_checksums(fixture.example)
+        fail_first_read(monkeypatch, error)
+
+        part = download_archive(
+            fixture.example, fixture.example.archives[0], tmp_path, checksums
+        )
+
+        assert part.read_bytes() == fixture.archives[ARCHIVE_FILE]
+        assert sleeps == [2]
+
+    @pytest.mark.parametrize(
+        "error",
+        [ssl.SSLError("[SSL: DECRYPTION_FAILED]"), OSError(errno.EIO, "I/O error")],
+        ids=["ssl", "oserror"],
+    )
+    def test_a_checksums_read_that_fails_is_retried(
+        self,
+        fixture: ExampleFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        sleeps: list[float],
+        error: OSError,
+    ) -> None:
+        fail_first_read(monkeypatch, error)
+
+        assert set(fetch_checksums(fixture.example)) == {ARCHIVE_FILE}
+        assert sleeps == [2]
+
+    def test_a_read_that_keeps_failing_ends_as_a_download_failure(
+        self,
+        fixture: ExampleFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        sleeps: list[float],
+        tmp_path: Path,
+    ) -> None:
+        checksums = fetch_checksums(fixture.example)
+
+        def read(self: http.client.HTTPResponse, size: int | None = None) -> bytes:
+            raise ssl.SSLError("[SSL: DECRYPTION_FAILED]")
+
+        monkeypatch.setattr(http.client.HTTPResponse, "read", read)
+
+        with pytest.raises(DownloadFailed, match="SSLError"):
+            download_archive(
+                fixture.example, fixture.example.archives[0], tmp_path, checksums
+            )
+
+        assert sleeps == [2, 4, 8, 16]
+
+    def test_a_failure_to_write_the_partial_file_is_not_retried(
+        self,
+        fixture: ExampleFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        sleeps: list[float],
+        tmp_path: Path,
+    ) -> None:
+        checksums = fetch_checksums(fixture.example)
+
+        class FullDisk(io.BytesIO):
+            def write(self, buffer: Buffer, /) -> int:
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        original = Path.open
+
+        def open_part(
+            self: Path,
+            mode: str = "r",
+            buffering: int = -1,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> IO[bytes]:
+            if self.suffix == ".part" and mode in {"wb", "ab"}:
+                return FullDisk()
+            return original(self, mode, buffering, encoding, errors, newline)
+
+        monkeypatch.setattr(Path, "open", open_part)
+
+        with pytest.raises(OSError, match="No space left") as raised:
+            download_archive(
+                fixture.example, fixture.example.archives[0], tmp_path, checksums
+            )
+
+        assert not isinstance(raised.value, ExampleFetchError)
+        assert sleeps == []
+
+
 class TestChecksums:
     def test_the_parser_reads_text_and_binary_lines_and_skips_blank_ones(self) -> None:
         digest_a, digest_b = "a" * 64, "B" * 64
@@ -798,6 +931,14 @@ class TestFirstFetch:
 
         assert fetched.directory == tmp_path / "mosaic-examples" / "tiny"
         assert fetched.manifest.is_file()
+
+    def test_default_directory_names_the_example_under_mosaic_examples(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        assert default_directory("tiny") == tmp_path / "mosaic-examples" / "tiny"
 
     def test_a_directory_with_a_tilde_is_expanded(
         self,

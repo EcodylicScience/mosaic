@@ -10,6 +10,7 @@ standard output empty.
 from __future__ import annotations
 
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -23,6 +24,7 @@ from mosaic.examples.fetch import (
     ExampleFetchError,
     FetchedExample,
     UnknownExample,
+    default_directory,
     fetch_example,
     find_example,
 )
@@ -45,6 +47,11 @@ _INTERRUPTED = 130
 def stdin_is_terminal() -> bool:
     """Whether standard input is a terminal that can answer a prompt."""
     return sys.stdin.isatty()
+
+
+def is_windows() -> bool:
+    """Whether the hint is for ``cmd.exe``, which the Miniforge prompts run."""
+    return sys.platform == "win32"
 
 
 def _example_json(example: Example) -> dict[str, object]:
@@ -120,7 +127,12 @@ def _ask_which() -> str:
 
 def _hint_lines(example: Example, manifest: Path) -> list[str]:
     """The two registration commands for *manifest*, with what conversion needs."""
-    path = shlex.quote(str(manifest))
+    windows = is_windows()
+    path = (
+        subprocess.list2cmdline([str(manifest)])
+        if windows
+        else shlex.quote(str(manifest))
+    )
     desktop = "mosaic agent install --desktop"
     if example.raw_needs_unpickling:
         desktop += " --trust-pickled-files"
@@ -132,9 +144,8 @@ def _hint_lines(example: Example, manifest: Path) -> list[str]:
         "In Claude Code, from a project directory:",
     ]
     if example.raw_needs_unpickling:
-        lines += [
-            "  export MOSAIC_TRUST_PICKLED_FILES=1",
-        ]
+        verb = "set" if windows else "export"
+        lines.append(f"  {verb} MOSAIC_TRUST_PICKLED_FILES=1")
     lines.append(f"  mosaic agent install --mcp --dataset {path}")
     if example.raw_needs_unpickling:
         lines += ["", _PICKLE_REASON]
@@ -200,7 +211,7 @@ def fetch_command(
     except ExampleFetchError as error:
         fail(str(error))
     except OSError as error:
-        target = directory if directory is not None else f"~/mosaic-examples/{name}"
+        target = directory if directory is not None else default_directory(name)
         fail(f"Cannot write {target}: {error}")
     if as_json:
         emit_json(_fetched_json(example, fetched))

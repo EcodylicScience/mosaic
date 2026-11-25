@@ -28,6 +28,7 @@ from mosaic.examples.fetch import (
     ExampleFetchError,
     FetchConflict,
     UnsafeArchive,
+    default_directory,
     fetch_example,
 )
 from tests.helpers import ExampleServer, example_fixture, serve_example
@@ -45,12 +46,17 @@ def tiny(example_server: ExampleServer, monkeypatch: pytest.MonkeyPatch) -> Exam
     """The generated example, served locally and the only entry of the CLI's catalog."""
     fixture = example_fixture()
     serve_example(example_server, fixture)
-    catalog = (fixture.example,)
+    catalog_of(monkeypatch, fixture.example)
+    return fixture.example
+
+
+def catalog_of(monkeypatch: pytest.MonkeyPatch, example: Example) -> None:
+    """Make *example* the only entry of the CLI's catalog, fetched from the server."""
+    catalog = (example,)
     monkeypatch.setattr(examples_cli, "CATALOG", catalog)
     monkeypatch.setattr(
         examples_cli, "fetch_example", functools.partial(fetch_example, catalog=catalog)
     )
-    return fixture.example
 
 
 def at_terminal(monkeypatch: pytest.MonkeyPatch, *, is_terminal: bool) -> None:
@@ -166,13 +172,7 @@ class TestFetch:
         tmp_path: Path,
     ) -> None:
         raw = dataclasses.replace(tiny, raw_needs_unpickling=True)
-        catalog = (raw,)
-        monkeypatch.setattr(examples_cli, "CATALOG", catalog)
-        monkeypatch.setattr(
-            examples_cli,
-            "fetch_example",
-            functools.partial(fetch_example, catalog=catalog),
-        )
+        catalog_of(monkeypatch, raw)
         directory = tmp_path / "out"
         result = runner.invoke(
             app, ["examples", "fetch", raw.name, "--dir", str(directory)]
@@ -189,6 +189,94 @@ class TestFetch:
         assert lines.index(export) < lines.index(f"  {mcp}")
         assert PICKLE_REASON in lines
         assert result.stdout == f"{directory / raw.manifest_relative}\n"
+
+    def test_on_windows_the_manifest_is_quoted_for_cmd_and_the_variable_is_set(
+        self,
+        tiny: Example,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        raw = dataclasses.replace(tiny, raw_needs_unpickling=True)
+        catalog_of(monkeypatch, raw)
+        monkeypatch.setattr(examples_cli, "is_windows", lambda: True)
+        directory = tmp_path / "my out"
+        result = runner.invoke(
+            app, ["examples", "fetch", raw.name, "--dir", str(directory)]
+        )
+        assert result.exit_code == 0, result.stderr
+        quoted = f'"{directory / raw.manifest_relative}"'
+        lines = result.stderr.splitlines()
+        mcp = f"  mosaic agent install --mcp --dataset {quoted}"
+        assert (
+            f"  mosaic agent install --desktop --trust-pickled-files --dataset {quoted}"
+            in lines
+        )
+        assert lines.index("  set MOSAIC_TRUST_PICKLED_FILES=1") < lines.index(mcp)
+        assert "export" not in result.stderr
+        assert "'" not in result.stderr
+
+    def test_on_windows_a_plain_example_has_no_variable_line(
+        self,
+        tiny: Example,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(examples_cli, "is_windows", lambda: True)
+        result = runner.invoke(
+            app, ["examples", "fetch", tiny.name, "--dir", str(tmp_path / "my out")]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "MOSAIC_TRUST_PICKLED_FILES" not in result.stderr
+        assert f'--dataset "{tmp_path / "my out" / tiny.manifest_relative}"' in (
+            result.stderr
+        )
+
+    def test_elsewhere_a_path_with_a_space_is_quoted_for_a_posix_shell(
+        self, tiny: Example, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(examples_cli, "is_windows", lambda: False)
+        directory = tmp_path / "my out"
+        result = runner.invoke(
+            app, ["examples", "fetch", tiny.name, "--dir", str(directory)]
+        )
+        assert result.exit_code == 0, result.stderr
+        quoted = shlex.quote(str(directory / tiny.manifest_relative))
+        assert quoted.startswith("'")
+        assert f"mosaic agent install --mcp --dataset {quoted}" in result.stderr
+
+    @pytest.mark.parametrize("raw_needs_unpickling", [False, True])
+    def test_the_hint_commands_are_accepted_by_mosaic_agent_install(
+        self,
+        tiny: Example,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        raw_needs_unpickling: bool,
+    ) -> None:
+        monkeypatch.delenv("MOSAIC_TRUST_PICKLED_FILES", raising=False)
+        example = dataclasses.replace(tiny, raw_needs_unpickling=raw_needs_unpickling)
+        catalog_of(monkeypatch, example)
+        fetched = runner.invoke(
+            app, ["examples", "fetch", example.name, "--dir", str(tmp_path / "out")]
+        )
+        assert fetched.exit_code == 0, fetched.stderr
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        configuration = tmp_path / "claude_desktop_config.json"
+        commands = [
+            shlex.split(line)
+            for line in fetched.stderr.splitlines()
+            if line.startswith("  mosaic agent install")
+        ]
+        assert len(commands) == 2
+        for command in commands:
+            arguments = command[1:]
+            if "--desktop" in arguments:
+                arguments += ["--desktop-config", str(configuration)]
+            result = runner.invoke(app, arguments)
+            assert result.exit_code == 0, (command, result.output)
+        assert configuration.is_file()
+        assert (project / ".mcp.json").is_file()
 
     def test_json_prints_the_paths_and_actions_alone(
         self, tiny: Example, tmp_path: Path
@@ -223,6 +311,7 @@ class TestFetch:
         assert result.exit_code == 0, result.stderr
         expected = tmp_path / "mosaic-examples" / tiny.name / tiny.manifest_relative
         assert result.stdout == f"{expected}\n"
+        assert default_directory(tiny.name) == tmp_path / "mosaic-examples" / tiny.name
 
     def test_a_second_fetch_reports_the_reuse_and_prints_the_same_path(
         self, tiny: Example, tmp_path: Path
@@ -330,12 +419,7 @@ class TestFailures:
         self, tiny: Example, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         absent = dataclasses.replace(tiny, revision="f" * 40)
-        monkeypatch.setattr(examples_cli, "CATALOG", (absent,))
-        monkeypatch.setattr(
-            examples_cli,
-            "fetch_example",
-            functools.partial(fetch_example, catalog=(absent,)),
-        )
+        catalog_of(monkeypatch, absent)
         result = runner.invoke(
             app, ["examples", "fetch", absent.name, "--dir", str(tmp_path / "out")]
         )
@@ -367,6 +451,18 @@ class TestFailures:
         assert result.exit_code == 1
         assert result.stdout == ""
         assert str(blocker) in result.stderr
+
+    def test_a_disk_error_under_the_default_directory_names_that_directory(
+        self, tiny: Example, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        home.write_text("a file, not a directory")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        result = runner.invoke(app, ["examples", "fetch", tiny.name])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert str(home / "mosaic-examples" / tiny.name) in result.stderr
 
     def test_ctrl_c_exits_130_and_removes_the_lock(
         self, tiny: Example, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

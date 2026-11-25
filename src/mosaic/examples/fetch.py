@@ -20,8 +20,8 @@ The download resumes and retries:
   verification.
 * Hugging Face answers 429 with ``Retry-After``. The wait is that many seconds, at
   most 300, or 60 without the header.
-* A 5xx, a reset connection, a timeout or a short body is retried after 2, 4, 8 and
-  16 seconds, resuming from the bytes received.
+* A 5xx, a reset connection, a TLS or other socket error, a timeout or a short body
+  is retried after 2, 4, 8 and 16 seconds, resuming from the bytes received.
 * A request gets five attempts, the rate-limited ones included. Any other 4xx raises
   at once.
 
@@ -79,6 +79,7 @@ __all__ = [
     "UnknownExample",
     "UnsafeArchive",
     "archive_url",
+    "default_directory",
     "download_archive",
     "fetch_checksums",
     "fetch_example",
@@ -112,12 +113,12 @@ PARTIAL_DIRECTORY: Final = ".mosaic-example-partial"
 
 _STAGING_DIRECTORY: Final = "unpack"
 
-_NETWORK_ERRORS: Final = (
-    urllib.error.URLError,
-    TimeoutError,
-    ConnectionError,
-    http.client.HTTPException,
-)
+_NETWORK_ERRORS: Final = (OSError, http.client.HTTPException)
+"""What a request or a read of the response can raise when the network fails.
+
+``OSError`` covers ``URLError``, timeouts, resets and ``ssl.SSLError``. Only a call
+that touches the response uses it, never one that writes a file.
+"""
 
 _sleep: Callable[[float], None] = time.sleep
 """Waits between attempts. Tests replace it to record the waits."""
@@ -163,6 +164,18 @@ class ArchiveWithoutDataset(ExampleFetchError):
 def _endpoint() -> str:
     """The Hugging Face endpoint, read when called so a mirror or a test can set it."""
     return os.environ.get("HF_ENDPOINT", "").rstrip("/") or DEFAULT_ENDPOINT
+
+
+def default_directory(name: str) -> Path:
+    """The directory an example unpacks into when none is given.
+
+    Args:
+        name: The example's catalog name.
+
+    Returns:
+        ``~/mosaic-examples/<name>``, with the ``~`` expanded.
+    """
+    return user_path(f"~/mosaic-examples/{name}")
 
 
 def archive_url(example: Example, file: str) -> str:
@@ -304,6 +317,24 @@ def _open(
     return response
 
 
+def _read_chunk(
+    response: http.client.HTTPResponse, size: int | None = _CHUNK_BYTES
+) -> bytes:
+    """Read from *response*, turning a network failure into a retryable one.
+
+    Args:
+        response: The open response.
+        size: Bytes to read, or ``None`` for the rest of the body.
+
+    Raises:
+        _Transient: The read failed, including by a TLS error or a reset.
+    """
+    try:
+        return response.read(size)
+    except _NETWORK_ERRORS as error:
+        raise _Transient(f"{type(error).__name__}: {error}") from error
+
+
 def _with_attempts(
     example: Example, file: str, attempt: Callable[[], _Result]
 ) -> _Result:
@@ -377,10 +408,7 @@ def fetch_checksums(example: Example) -> dict[str, str]:
 
     def attempt() -> bytes:
         with _open(example, CHECKSUMS_FILE, {}) as response:
-            try:
-                return response.read()
-            except _NETWORK_ERRORS as error:
-                raise _Transient(f"{type(error).__name__}: {error}") from error
+            return _read_chunk(response, None)
 
     body = _with_attempts(example, CHECKSUMS_FILE, attempt)
     return parse_checksums(body.decode("utf-8", errors="replace"), example.revision)
@@ -481,15 +509,12 @@ class _Transfer:
             expected = int(declared) if declared and declared.isdigit() else None
             written = 0
             with self._part.open(mode) as out:
-                try:
-                    while chunk := response.read(_CHUNK_BYTES):
-                        out.write(chunk)
-                        self.digest.update(chunk)
-                        self.size += len(chunk)
-                        written += len(chunk)
-                        self._progress.update(self.size)
-                except _NETWORK_ERRORS as error:
-                    raise _Transient(f"{type(error).__name__}: {error}") from error
+                while chunk := _read_chunk(response):
+                    out.write(chunk)
+                    self.digest.update(chunk)
+                    self.size += len(chunk)
+                    written += len(chunk)
+                    self._progress.update(self.size)
             if expected is not None and written < expected:
                 raise _Transient(f"short body: {written} of {expected} bytes")
 
@@ -913,8 +938,8 @@ def fetch_example(
         ArchiveWithoutDataset: The dataset archive holds no ``dataset.yaml``.
     """
     example = find_example(name, catalog)
-    target = user_path(
-        f"~/mosaic-examples/{name}" if directory is None else directory
+    target = (
+        default_directory(name) if directory is None else user_path(directory)
     ).absolute()
     target.mkdir(parents=True, exist_ok=True)
     lock = target / LOCK_FILE
