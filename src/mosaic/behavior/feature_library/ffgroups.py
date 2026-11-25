@@ -361,12 +361,22 @@ class FFGroups:
             if padded.shape[0] >= win:
                 # windows shape: (T, N, N, win) when sliding along time axis only
                 windows = sliding_window_view(padded, window_shape=win, axis=0)
-                # Chunked nanmean to reduce peak memory usage
+                # The mean of each window's finite distances, in chunks to bound
+                # peak memory. A window without one, such as every self-distance
+                # on the diagonal, is NaN. Summing and counting here gives the
+                # same values as `np.nanmean` without its "Mean of empty slice"
+                # warning on each such window.
                 chunk_size = 1000
                 pairwise_smooth = np.empty((T, N, N), dtype=np.float32)
                 for i in range(0, T, chunk_size):
                     end = min(i + chunk_size, T)
-                    pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
+                    chunk = windows[i:end]
+                    seen = ~np.isnan(chunk)
+                    count = seen.sum(axis=-1)
+                    total = np.where(seen, chunk, np.float32(0)).sum(axis=-1)
+                    pairwise_smooth[i:end] = np.where(
+                        count > 0, total / np.maximum(count, 1), np.nan
+                    )
                 del windows
             else:
                 pairwise_smooth = pairwise

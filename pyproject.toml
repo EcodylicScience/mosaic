@@ -344,10 +344,6 @@ filterwarnings = [
     # joblib assigns to `ndarray.shape` when unpickling, which NumPy 2.5 deprecated.
     # Third party, reached by every feature that saves a model.
     "ignore:Setting the shape on a NumPy array:DeprecationWarning",
-    # `ffgroups` smooths a padded pairwise-distance stack with a sliding `nanmean`,
-    # so a window lying entirely in the NaN pad has nothing to average. NaN is the
-    # right answer there, and the warning is numpy narrating it.
-    "ignore:Mean of empty slice:RuntimeWarning",
 ]
 
 [tool.setuptools]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -161,7 +163,13 @@ def _apply_reference(feature: FFGroups, df: pd.DataFrame) -> pd.DataFrame:
             pairwise_smooth = np.empty((T, N, N), dtype=np.float32)
             for i in range(0, T, chunk_size):
                 end = min(i + chunk_size, T)
-                pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
+                # The reference keeps numpy's own `nanmean`, which warns on each
+                # window without a finite distance, the diagonal's among them.
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", "Mean of empty slice", RuntimeWarning
+                    )
+                    pairwise_smooth[i:end] = np.nanmean(windows[i:end], axis=-1)
             del windows
         else:
             pairwise_smooth = pairwise
@@ -334,3 +342,13 @@ class TestEventColumnDtype:
         out = feature.apply(df)
         assert out["event"].dtype == np.int64
         assert (out["event"] == -1).all()
+
+
+class TestSmoothingWarnings:
+    """Smoothing reads windows without a finite distance and stays silent."""
+
+    def test_apply_emits_no_runtime_warning(self, feature: FFGroups) -> None:
+        df = _make_track_data(n_frames=60, n_ids=5, missing_fraction=0.3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            feature.apply(df)
