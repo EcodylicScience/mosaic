@@ -8,6 +8,20 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `id-tag-columns` attaches text and other non-integer values
+
+No run id moves, and `id-tag-columns` keeps version `0.1`. The feature now
+attaches a NumPy string, float or bool as it is stored. It used to convert
+every NumPy value to `int`: a string raised and dropped the entry's tags, a
+numeric-looking string such as `000004395862` became `4395862`, a float was
+truncated, and a bool became `0` or `1`.
+
+Only a file written by a direct `save_id_labels` call with NumPy values
+changes. `convert_id_tags_from_csv` stores Python scalars, so its files, the
+archived guppies analysis included, give the same output. A cached run over a
+NumPy-valued file keeps its earlier output until it is rerun with
+`--overwrite`.
+
 ## Unreleased: a feature run's workers read each entry's input
 
 No run id or output moves. A feature run's workers read each entry's input

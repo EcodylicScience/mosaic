@@ -12164,13 +12164,13 @@ class Dataset:
         )
         return len(new_rows or [])
 
-    def save_id_labels(
+    def save_id_labels[K](
         self,
         kind: str,
         group: str,
         sequence: str,
-        per_id_labels: dict,
-        metadata: Optional[dict] = None,
+        per_id_labels: Mapping[K, Mapping[str, object] | None],
+        metadata: Optional[Mapping[str, object]] = None,
         overwrite: bool = False,
     ) -> Path:
         """
@@ -12233,7 +12233,7 @@ class Dataset:
         self,
         csv_path: str | Path,
         csv_type: str = "focal",
-        all_ids: Optional[list] = None,
+        all_ids: Optional[Sequence[object]] = None,
         overwrite: bool = False,
         # Type-specific options:
         focal_id_column: str = "focal_id",

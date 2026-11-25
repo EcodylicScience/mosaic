@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, final
+from typing import Annotated, Any, ClassVar, cast, final
 
 import numpy as np
 import pandas as pd
@@ -48,6 +48,20 @@ _FIELD_RENAMES_DESCRIPTION = (
     "A mapping from a label field's original name to its output column "
     "name. Unset, every field keeps its original name."
 )
+
+
+def _stored_value(value: object) -> object:
+    """Return *value* as the Python object that a label file stored.
+
+    A NumPy integer becomes ``int``, any other NumPy scalar its ``.item()``, and
+    any other object stays as it is, so text keeps its zeros and a float or a bool
+    keeps its kind.
+    """
+    if isinstance(value, np.integer):
+        return int(cast("np.integer[Any]", value))
+    if isinstance(value, np.generic):
+        return cast("object", value.item())
+    return value
 
 
 @final
@@ -136,12 +150,8 @@ class IdTagColumns:
                     fields = [k for k in data.keys() if k not in ("ids", "id")]
                     labels: dict = {}
                     for idx, fid in enumerate(ids):
-                        fid_key = int(fid) if hasattr(fid, "item") else fid
-                        labels[fid_key] = {
-                            f: int(data[f][idx])
-                            if hasattr(data[f][idx], "item")
-                            else data[f][idx]
-                            for f in fields
+                        labels[_stored_value(fid)] = {
+                            f: _stored_value(data[f][idx]) for f in fields
                         }
                     self._labels[(group, sequence)] = labels
                 elif path.suffix == ".json":
