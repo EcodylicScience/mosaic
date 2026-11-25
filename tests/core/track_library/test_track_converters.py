@@ -1,4 +1,4 @@
-"""Item 1.3: entry identity cannot reach a conversion recipe.
+"""Entry identity cannot reach a conversion recipe.
 
 A converter used to be a bare callable handed an untyped dict that the caller
 had just mutated with the entry's group and sequence. Hashing "the conversion

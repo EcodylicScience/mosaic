@@ -263,8 +263,8 @@ def test_a_video_replaced_in_place_forces_a_recompute(
 
     Same sequence, same filename, different bytes. Comparing resolved paths
     calls this unchanged, so the second run reused inference over content that
-    no longer exists. TREx has compared the uid first since item 8.5; SLEAP
-    recorded ``source_uid`` on its markers and never read it back.
+    no longer exists. TREx compares the uid first. SLEAP recorded ``source_uid``
+    on its markers and never read it back.
     """
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-aaa"})
     run_id = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))

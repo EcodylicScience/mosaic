@@ -698,14 +698,13 @@ def test_a_reorder_produces_zero_re_encodes(
 def test_reverting_the_break_leaves_every_other_cell_and_link_intact(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
-    """The reverse migration for item 7.1's ``[break]``, which is: revert the code.
+    """The reverse migration for the derivative rename's ``[break]``: revert the code.
 
-    7.1 renamed and relocated every derivative, and the rollback rule says a
-    ``[break]`` ships its reverse migration with a test. The migration the
-    milestone sketched -- carrying the old positional name in a column -- is not
-    what shipped, and should not: it would be dead weight on the one index the
-    pruner has to classify. What shipped is additive, and this is the check that
-    says so.
+    The rename relocated every derivative, and the rollback rule says a
+    ``[break]`` ships its reverse migration with a test. A migration that carries
+    the old positional name in a column is not what shipped, and should not be:
+    it would be dead weight on the one index the pruner has to classify. What
+    shipped is additive, and this is the check that says so.
 
     Reverted code reads this index through a schema with no ``recipe_hash``, so
     a round-trip through it drops that cell and nothing else. Every other cell
@@ -716,8 +715,8 @@ def test_reverting_the_break_leaves_every_other_cell_and_link_intact(
     What a revert does *not* undo is the files: they keep their content-addressed
     names, which reverted code will not produce. `scripts/clear_transcode_
     derivatives.py` plus a re-run is the migration in that direction, and a
-    revert also reintroduces 7.2's path-keyed link matching -- a known defect,
-    which is the one way this differs from the additive break in M2.
+    revert also reintroduces path-keyed link matching, a known defect. That is
+    the one way this differs from an additive break.
     """
     ds = make_media_dataset((tmp_path / "dataset").resolve())
     transcode_root = ds.get_root("media") / "transcode"

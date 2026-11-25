@@ -1,4 +1,4 @@
-"""Item 6.3: the rearrangement gesture, and what it refuses.
+"""The rearrangement gesture, and what it refuses.
 
 The gesture is preview-first, so most of what is asserted here is what a caller
 learns *before* anything moves. The two blocks are the cases where proceeding
@@ -79,7 +79,7 @@ class TestThePreviewCarriesTheBlastRadius:
     def test_a_reached_feature_is_named_before_anything_moves(
         self, scenario_dataset_with_media: Dataset
     ) -> None:
-        """The preview is item 6.1's walk, run against the sequences about to move."""
+        """The preview walks the features downstream of the sequences about to move."""
 
         from mosaic.core.pipeline.run import run_feature
 
@@ -109,7 +109,7 @@ class TestBlocks:
     def test_converted_labels_block_a_reorder(
         self, scenario_dataset_with_media: Dataset
     ) -> None:
-        """Their frame indices are sequence-global; the remap is item 9.3's."""
+        """Their frame indices are sequence-global and the remap is not built."""
         ds = scenario_dataset_with_media
         _ = self._add_labels(ds)
         before = _order(ds)

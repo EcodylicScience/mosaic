@@ -1,4 +1,4 @@
-"""The declared per-entry layout -- item 9.2, and the empty group it must survive.
+"""The declared per-entry layout, and the empty group it must survive.
 
 ``group`` is an optional namespace and is empty on every dataset the control
 plane creates, so the empty-group case is the *common* one rather than an edge.

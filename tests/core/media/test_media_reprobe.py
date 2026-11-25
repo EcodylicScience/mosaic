@@ -1648,7 +1648,7 @@ def test_an_imgstore_row_is_detected_without_a_media_type_cell(
     assert _by_name(dataset)[store_dir.name]["media_facts"]
 
 
-# --- the projection the audit owed (item 6.2's baseline) ---------------------
+# --- the composition projection after a reprobe ------------------------------
 
 
 def _composition(ds: Dataset, sequence: str) -> str:

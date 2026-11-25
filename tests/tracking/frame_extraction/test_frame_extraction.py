@@ -206,7 +206,7 @@ class TestSelectKmeansFrames:
         assert a.tolist() == b.tolist()
 
 
-# --- item 5.1's frames half: what a frame set was cut from -------------------
+# --- what a frame set was cut from -------------------------------------------
 
 
 class TestSourceIdentity:
@@ -424,7 +424,7 @@ def _spec(*, seq_dir, overwrite: bool):
     )
 
 
-# --- item 6.4's first carve-out: frames a rearrangement must not destroy -------
+# --- frames a rearrangement must not destroy -----------------------------------
 
 
 class TestOverwriteRefuses:

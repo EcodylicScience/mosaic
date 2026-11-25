@@ -1,10 +1,9 @@
-"""Roots live inside the dataset; ``abs_path`` does not -- item 9.1, rule P7.
+"""Roots live inside the dataset; ``abs_path`` does not (rule P7).
 
 The two halves are one paragraph in the rule and two different guarantees, and
-the second is the one worth protecting from a later tidy-up. Open item O2
-resolved against shared membership *because* a file elsewhere can be referenced
-by absolute ``abs_path`` from an index that is inside -- so removing that would
-not tighten P7, it would delete the mechanism O2 chose.
+the second is the one worth protecting from a later tidy-up. A file elsewhere
+can be referenced by absolute ``abs_path`` from an index that is inside, so
+removing that would not tighten P7. It would delete that mechanism.
 """
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ def test_a_traversal_out_of_the_dataset_is_refused(tmp_path: Path) -> None:
 
 
 def test_creating_a_manifest_with_an_outside_root_is_refused(tmp_path: Path) -> None:
-    """The other write boundary, and the branch item 9.1 names.
+    """The other write boundary, and the branch the rule names.
 
     ``new_dataset_manifest`` used to keep an outside root absolute -- the one
     mechanism by which a root, and therefore its index, could live outside the
@@ -70,7 +69,7 @@ def test_creating_a_manifest_with_an_outside_root_is_refused(tmp_path: Path) -> 
 
 
 def test_a_legacy_outside_root_still_resolves(tmp_path: Path) -> None:
-    """Validated on write, tolerated on read -- item 2.5's boundary rule.
+    """Validated on write, tolerated on read.
 
     A dataset that already holds an outside root must keep loading, or looking at
     a legacy dataset raises. What refuses to *act* on one is the sweeper, which

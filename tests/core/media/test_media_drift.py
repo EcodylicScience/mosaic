@@ -1,10 +1,9 @@
-"""Item 5.2: an ordinary index write reports a source that moved under it.
+"""An ordinary index write reports a source that moved under it.
 
-Drift detection existed only as the operator command ``mosaic reprobe-media``.
-This is the other half of milestone M3's gate -- "drift detected at reindex" --
-and the tests here are about *which* path notices, and at what cost, rather than
-about the comparison itself (that is ``classify_identity``, exercised through the
-reprobe suite).
+The operator command ``mosaic reprobe-media`` is one way to detect drift. The
+other is detection at reindex. The tests here are about *which* path notices,
+and at what cost, rather than about the comparison itself (that is
+``classify_identity``, exercised through the reprobe suite).
 """
 
 from __future__ import annotations
@@ -162,7 +161,7 @@ class TestClassifierIsShared:
         assert reprobe.classify_identity is classify_identity
 
 
-# --- item 5.2's other half: the chain runner shows a source that moved --------
+# --- the chain runner shows a source that moved -------------------------------
 
 
 class _CropLike:
@@ -256,7 +255,7 @@ def test_the_status_display_reports_a_source_that_moved(
     )
 
 
-# --- item 6.2: a cache hit does not erase the signal above ---------------------
+# --- a cache hit does not erase the signal above -------------------------------
 
 
 def _reorder_seq_a(ds: Dataset) -> None:
@@ -366,7 +365,7 @@ class TestACacheHitDoesNotLaunderTheBaseline:
         )
 
 
-# --- item 6.2: the refusal's three answers ------------------------------------
+# --- the refusal's three answers ----------------------------------------------
 
 
 class TestCachedEntryDisposition:
@@ -389,7 +388,7 @@ class TestCachedEntryDisposition:
         assert cached_entry_disposition("abc", "def") == "recompute"
 
     def test_one_known_side_is_recomputed_and_converges(self) -> None:
-        """Either the row predates item 5.1 or the projection has gone.
+        """Either the row predates its composition column or the projection has gone.
 
         Recomputing resolves it -- the new row records what is true now -- so the
         next run serves. One wrong cache miss, by construction.
@@ -404,8 +403,8 @@ class TestCachedEntryDisposition:
     def test_neither_side_known_is_undetectable_rather_than_recomputed(self) -> None:
         """The case that would otherwise defeat the cache permanently.
 
-        A dataset whose media was indexed before item 4.4 records no composition
-        on either side. Recomputing teaches nothing and would repeat forever, so
+        A dataset whose media was indexed before the sequence projection existed
+        records no composition on either side. Recomputing teaches nothing and would repeat forever, so
         the entry is served and the gap is reported instead.
         """
         from mosaic.core.pipeline.composition import cached_entry_disposition

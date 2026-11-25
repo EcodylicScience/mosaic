@@ -1,4 +1,4 @@
-"""Item 6.5: would a reader open this sequence, under the order about to be committed.
+"""Whether a reader would open this sequence under the order about to be committed.
 
 The hazard is narrow and worth stating precisely, because a precheck that fired
 more widely would be noise. ``uniform_properties`` compares each clip against
@@ -96,7 +96,7 @@ class TestTheDimensionArm:
     def test_the_dimension_arm_cannot_flip_on_a_reorder(self) -> None:
         """Exact equality against a reference is order-independent.
 
-        Asserted rather than assumed: it is the half of item 6.5's hazard that
+        Asserted rather than assumed: it is the half of the hazard that
         does *not* exist, and a precheck reporting it would fire on sequences a
         reorder cannot affect.
         """

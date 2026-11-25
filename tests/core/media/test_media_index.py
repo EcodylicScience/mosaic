@@ -536,11 +536,10 @@ def test_write_media_index_carries_forward_derivative_links(tmp_path: Path) -> N
 def test_a_row_records_how_it_learned_its_name(tmp_path: Path) -> None:
     """Assigned, keymap-matched and stem-derived identities are distinguishable.
 
-    Item 4.7's question -- whether the scan path may be authoritative -- is
-    answered per row rather than by a break: a sequence whose rows say
-    ``scan-keymap`` derived a *source* root's identity from a *derived* one, so
-    the per-sequence composition can decline to compute a value for it instead of
-    recording a confident wrong one.
+    Whether the scan path may be authoritative is answered per row: a sequence
+    whose rows say ``scan-keymap`` derived a *source* root's identity from a
+    *derived* one, so the per-sequence composition can decline to compute a value
+    for it instead of recording a confident wrong one.
 
     This is also the suite's first coverage of a keymap *hit*: every other media
     test has an empty or absent tracks index and takes the fallback path.

@@ -463,7 +463,7 @@ def test_the_reuse_path_reports_the_video_that_produced_the_data(
 
 
 def test_two_cameras_produce_one_work_item(ds: Dataset, trex: FakeTrex) -> None:
-    """Both cameras of a sequence resolve to one seq_dir until item 8.1 splits them.
+    """Both cameras of a sequence resolve to one seq_dir.
 
     Left alone, the second work item would see the first's source, call it a
     change, recompute over the first's outputs, replace its index row -- and do
@@ -577,7 +577,7 @@ def test_a_partial_run_still_records_its_index_row(ds: Dataset, trex: FakeTrex) 
     )
 
 
-# --- 8.5: the reuse comparison is uid-first, with the path as fallback -------
+# --- the reuse comparison is uid-first, with the path as fallback ------------
 
 
 def test_a_video_replaced_in_place_forces_a_recompute(
@@ -586,9 +586,8 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     """The case the path compare cannot see at all.
 
     Same sequence, same filename, different bytes. ``_same_video`` compares
-    resolved paths and calls this unchanged, so before item 8.5 the second run
-    reused a conversion of content that no longer existed. The uid is what
-    notices.
+    resolved paths and calls this unchanged, so a path-only comparison reuses a
+    conversion of content that no longer exists. The uid is what notices.
     """
     write_media_index(
         ds, [MediaClip(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
@@ -607,7 +606,7 @@ def test_a_video_replaced_in_place_forces_a_recompute(
 def test_the_same_video_under_a_new_name_is_not_a_recompute(
     ds: Dataset, trex: FakeTrex
 ) -> None:
-    """The other direction, and the one item 8.5 exists for.
+    """The other direction, and the one the uid comparison exists for.
 
     A rearrangement can change which file a sequence resolves to without
     changing the bytes. The path compare calls that a source change and throws
@@ -630,7 +629,7 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
 def test_an_absent_uid_still_falls_back_to_the_path(
     ds: Dataset, trex: FakeTrex
 ) -> None:
-    """Item 8.8's protection survives for the datasets it was written for.
+    """The path comparison still protects datasets whose media carries no uid.
 
     Media indexed before the identity columns carries no uid, and neither does a
     marker adopted from a pre-marker directory. Dropping the path compare would

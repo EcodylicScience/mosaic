@@ -1,6 +1,6 @@
 """The identity models' pre-fitted ``model`` artifact, and their fit scope.
 
-Item 1.4: a feature whose ``fit()`` reads its input stream has the scope as its
+A feature whose ``fit()`` reads its input stream has the scope as its
 training set, so the scope must be in its identifier (P2f). Flipping the flag
 alone would make every new apply scope retrain a network, so each feature first
 gains a params-level pre-fitted ``model`` reference -- after which fit and apply
