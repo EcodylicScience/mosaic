@@ -82,7 +82,8 @@ a subprocess, where the checker can refuse it here.
 """
 
 _PYTHON: Final = "python"
-_YOLO_SCRIPT: Final = "yolo"
+YOLO_SCRIPT: Final = "yolo"
+"""Name of the script that runs Ultralytics and POLO in their environments."""
 _RUNNER_SCRIPT: Final = "ultralytics_runner.py"
 
 ULTRALYTICS_BOOTSTRAP: Final = (
@@ -163,7 +164,7 @@ ULTRALYTICS_ENV: Final = ToolEnv(
     bin_var="MOSAIC_ULTRALYTICS_BIN",
     bin_mode="sibling",
     not_found=UltralyticsNotFoundError,
-    locator=_YOLO_SCRIPT,
+    locator=YOLO_SCRIPT,
 )
 
 # Identical in shape, and deliberately not the same value. The fork installs the
@@ -177,7 +178,7 @@ POLO_ENV: Final = ToolEnv(
     bin_var="MOSAIC_POLO_BIN",
     bin_mode="sibling",
     not_found=PoloNotFoundError,
-    locator=_YOLO_SCRIPT,
+    locator=YOLO_SCRIPT,
 )
 
 
@@ -525,6 +526,7 @@ __all__ = [
     "PREDICT_IDLE_SECONDS",
     "ULTRALYTICS_BOOTSTRAP",
     "ULTRALYTICS_ENV",
+    "YOLO_SCRIPT",
     "PoloError",
     "PoloNotFoundError",
     "ModelLoadError",

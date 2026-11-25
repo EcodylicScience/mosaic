@@ -52,6 +52,7 @@ __all__ = [
     "DEFAULT_EMBEDDING_OBJECTIVE",
     "PREPARED_EMBEDDING_OBJECTIVE",
     "SLEAP_LOADER_WORKER_KEYS",
+    "SLEAP_NN_EXECUTABLE",
     "EmbeddingObjective",
     "EmbeddingPositiveScope",
     "EmbeddingSettings",
@@ -71,7 +72,9 @@ __all__ = [
     "train_sleap",
 ]
 
-_SLEAP_NN: Final = "sleap-nn"
+SLEAP_NN_EXECUTABLE: Final = "sleap-nn"
+"""Name of the executable that runs sleap-nn in its environment."""
+
 _TRAIN_SUBCOMMAND: Final = "train"
 
 _ACCELERATOR_FAMILIES: Final = frozenset({"cpu", "gpu", "mps"})
@@ -1249,7 +1252,7 @@ def train_sleap(
     ]
     invocation = tool_invocation(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
-        executable=_SLEAP_NN,
+        executable=SLEAP_NN_EXECUTABLE,
     )
     cmd = [*invocation, *args]
     logger.info("Running: %s", command_summary(cmd))

@@ -82,7 +82,8 @@ logger = logging.getLogger(__name__)
 HIDRA_CONDA_ENV_VAR: Final = "MOSAIC_HIDRA_CONDA_ENV"
 HIDRA_BIN_VAR: Final = "MOSAIC_HIDRA_BIN"
 HIDRA_MODELS_ROOT_VAR: Final = "MOSAIC_HIDRA_MODELS_ROOT"
-_PREDICT_SCRIPT: Final = "hidra-predict"
+HIDRA_PREDICT_SCRIPT: Final = "hidra-predict"
+"""Name of the executable that runs HiDRA prediction in its environment."""
 
 DEFAULT_WEIGHTS_REVISION: Final = "b5b56d316117de5900832de2dea6f2b7fea6f75f"
 """The Hugging Face revision of the weights released in October 2026."""
@@ -319,7 +320,7 @@ class HidraPredictAvailable:
     def missing(self) -> str | None:
         """The install help when ``hidra-predict`` cannot be located, else ``None``."""
         try:
-            _ = locate_tool(HIDRA_ENV, executable=_PREDICT_SCRIPT)
+            _ = locate_tool(HIDRA_ENV, executable=HIDRA_PREDICT_SCRIPT)
         except ToolNotFoundError:
             return _NOT_FOUND_HELP
         return None
@@ -636,7 +637,7 @@ class HidraFeature:
                 frames_path = out / f"{_scene_stem(index)}.frames.parquet"
                 if not frames_path.is_file():
                     raise missing_output_error(
-                        _PREDICT_SCRIPT, frames_path, stdout, stderr
+                        HIDRA_PREDICT_SCRIPT, frames_path, stdout, stderr
                     )
                 predicted.append(pd.read_parquet(frames_path))
 
@@ -649,7 +650,7 @@ class HidraFeature:
         p = self.params
         return locate_tool(
             HIDRA_ENV.placed(conda_env=p.hidra_conda_env, bin_path=p.hidra_bin),
-            executable=_PREDICT_SCRIPT,
+            executable=HIDRA_PREDICT_SCRIPT,
         ).argv
 
     def _record_provenance(

@@ -49,7 +49,8 @@ from mosaic.tracking.trex.params import TrexParams
 
 logger = logging.getLogger(__name__)
 
-_TREX: Final = "trex"
+TREX_EXECUTABLE: Final = "trex"
+"""Name of the executable that runs TRex in its environment."""
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ def _trex_invocation(env: ToolEnv = TREX_ENV) -> list[str]:
     matters more here than for the other tools: TRex relaunches itself, and a
     self-relaunch has to find the real binary rather than a wrapper.
     """
-    return tool_invocation(env, executable=_TREX)
+    return tool_invocation(env, executable=TREX_EXECUTABLE)
 
 
 def _is_nested(value: Sequence[JsonValue]) -> bool:
