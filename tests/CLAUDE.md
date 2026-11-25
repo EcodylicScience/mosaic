@@ -38,6 +38,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   selection by marker.
 - `test_optional_dependency_messages.py`: an install hint or `require` call naming
   an undeclared extra, or a self-referential extra that does not resolve.
+- `test_examples_imports.py`: importing `mosaic.examples.catalog` or
+  `mosaic.examples.fetch` loading `mosaic.core`, numpy, pandas or cv2, or a module
+  under `core`, `behavior`, `tracking` or `agent` importing `mosaic.examples`.
 - `test_helpers_imports.py`: `import tests.helpers` importing the feature library.
 - `test_fresh_interpreter.py`: `run_fresh` not failing a child that outlives its
   timeout.

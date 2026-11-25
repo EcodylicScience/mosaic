@@ -66,6 +66,7 @@ from tests.helpers import (
     CI_REQUIRED_MODULES,
     FFMPEG_TOOLCHAIN,
     SEPARATED_TOOLS,
+    ExampleServer,
     LineChildren,
     MediaClip,
     add_media_sequence,
@@ -75,6 +76,7 @@ from tests.helpers import (
     make_dataset,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
+    serve_example_server,
     write_media_index,
 )
 
@@ -349,6 +351,14 @@ def fresh_catalogs() -> Iterator[None]:
     finally:
         builtin_declaration_catalog.cache_clear()
         builtin_editor_catalog.cache_clear()
+
+
+@pytest.fixture
+def example_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[ExampleServer]:
+    """A local stand-in for Hugging Face, with ``HF_ENDPOINT`` pointed at it."""
+    with serve_example_server() as server:
+        monkeypatch.setenv("HF_ENDPOINT", server.url)
+        yield server
 
 
 @pytest.fixture

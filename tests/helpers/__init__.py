@@ -12,6 +12,9 @@ What lives where:
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``driver_leases``: the lease of a request's driver, live or stale.
+- ``example_downloads``: a local server that answers as Hugging Face does for an
+  example's repository, with scripted replies and a request log, and the small
+  generated archives, ``SHA256SUMS`` body and catalog entry it serves.
 - ``agents``: a stand-in for the detached driver that an MCP submission starts.
 - ``arenas``: a count of the arenas index reads that a run makes, and a damaged
   arenas index.
@@ -214,6 +217,26 @@ from tests.helpers.feature_definitions import (
     plan_refused,
 )
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
+from tests.helpers.example_downloads import (
+    REVISION,
+    ExampleFixture,
+    ExampleServer,
+    GeneratedArchive,
+    RecordedRequest,
+    Reply,
+    archive_path,
+    cdn_path,
+    checksums_path,
+    device_member,
+    example_fixture,
+    hardlink_member,
+    serve_example,
+    serve_example_server,
+    sums_text,
+    symlink_member,
+    tar_gz,
+    tar_gz_with,
+)
 from tests.helpers.failures import quarantine_entry
 from tests.helpers.extracted_frames import (
     extract_entry_camera,
@@ -796,10 +819,13 @@ __all__ = [
     "ParallelFeature",
     "PlainFeature",
     "REPO_ROOT",
+    "REVISION",
     "RUNNER_LINE_SECONDS",
     "ReachedImport",
     "ReadbackRecord",
+    "RecordedRequest",
     "RecordingStarter",
+    "Reply",
     "RunnerJournal",
     "SELF_REFERENCE",
     "SEPARATED_TOOLS",
@@ -829,6 +855,8 @@ __all__ = [
     "VAME_PROTOCOL",
     "VAME_RUNNER",
     "VAME_TOOL",
+    "ExampleFixture",
+    "ExampleServer",
     "FakeInference",
     "FakeLitpose",
     "FakeLitposeFrames",
@@ -839,6 +867,7 @@ __all__ = [
     "FakeTrex",
     "FakeToolPython",
     "FakeUltralytics",
+    "GeneratedArchive",
     "IndexReads",
     "MOTIF_SYNC_UUID",
     "MakeStore",
@@ -861,9 +890,13 @@ __all__ = [
     "add_transcode_derivative",
     "appearance_table",
     "appender_program",
+    "archive_path",
     "calms21_dataset",
+    "cdn_path",
     "chain_recipe",
     "chain_with_sibling_recipe",
+    "checksums_path",
+    "device_member",
     "classifier_recipe",
     "converting_recipe",
     "assert_latents_at_centers",
@@ -899,6 +932,8 @@ __all__ = [
     "entry_predictions",
     "entry_selection",
     "count_process_tree_walks",
+    "example_fixture",
+    "hardlink_member",
     "exited_pid",
     "extract_entry_camera",
     "fail_calms21_sequence",
@@ -1036,6 +1071,8 @@ __all__ = [
     "scope_over",
     "scored_classifier_recipe",
     "self_referenced_extras",
+    "serve_example",
+    "serve_example_server",
     "set_tracks_cell",
     "signal_group_when",
     "sleap_instance",
@@ -1048,6 +1085,10 @@ __all__ = [
     "stub_join",
     "stub_media_dataset",
     "stub_probabilities",
+    "sums_text",
+    "symlink_member",
+    "tar_gz",
+    "tar_gz_with",
     "updating_golden",
     "video_store_maker",
     "wait_for",
