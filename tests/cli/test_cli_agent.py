@@ -248,8 +248,12 @@ class TestInstallMcp:
         result = runner.invoke(
             app, ["agent", "install", str(tmp_path), "--dataset", str(tmp_path)]
         )
-        assert result.exit_code != 0
-        assert "--mcp" in result.output
+        assert result.exit_code == 1
+        assert (
+            "--dataset names the datasets of the MCP server; add --mcp or --desktop."
+            in result.stderr
+        )
+        assert not (tmp_path / SKILL_DIRECTORY).exists()
 
     @pytest.mark.parametrize("config", ["[]", "{not json"])
     def test_a_config_it_cannot_merge_is_refused_before_anything_is_written(
@@ -265,6 +269,273 @@ class TestInstallMcp:
         assert (tmp_path / MCP_CONFIG).read_text(encoding="utf-8") == config
         assert not (tmp_path / SKILL_DIRECTORY).exists()
         assert not (tmp_path / "CLAUDE.md").exists()
+
+
+DESKTOP_CONFIG_NAME = "claude_desktop_config.json"
+
+
+def desktop_servers(path: Path) -> dict[str, dict[str, object]]:
+    """The ``mcpServers`` object of the Desktop configuration at *path*."""
+    document: dict[str, dict[str, dict[str, object]]] = json.loads(
+        path.read_text(encoding="utf-8")
+    )
+    return document["mcpServers"]
+
+
+class TestInstallDesktop:
+    @pytest.fixture(autouse=True)
+    def environment_without_pickle_trust(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Remove the variable that ``tests/conftest.py`` sets for the whole suite."""
+        monkeypatch.delenv("MOSAIC_TRUST_PICKLED_FILES", raising=False)
+
+    def configuration(self, tmp_path: Path) -> Path:
+        directory = tmp_path / "desktop"
+        directory.mkdir()
+        return directory / DESKTOP_CONFIG_NAME
+
+    @pytest.mark.parametrize(
+        ("flags", "message"),
+        [
+            (
+                ["--desktop", "--mcp"],
+                "--desktop writes Claude Desktop's configuration and --mcp the "
+                "project's; run them as two commands.",
+            ),
+            (
+                ["--desktop", "--no-memory"],
+                "--no-memory applies to the project files, which --desktop does "
+                "not write.",
+            ),
+            (
+                ["--desktop-config", "claude.json"],
+                "--desktop-config applies to --desktop.",
+            ),
+            (
+                ["--trust-pickled-files"],
+                "--trust-pickled-files applies to --desktop. For Claude Code, "
+                "export MOSAIC_TRUST_PICKLED_FILES=1 in the shell that starts it.",
+            ),
+        ],
+        ids=["mcp", "no-memory", "config-alone", "trust-alone"],
+    )
+    def test_a_flag_combination_is_refused_with_exit_2(
+        self, tmp_path: Path, flags: list[str], message: str
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        result = runner.invoke(app, ["agent", "install", str(project), *flags])
+        assert result.exit_code == 2
+        assert message in result.stderr
+        assert result.stdout == ""
+        assert list(project.iterdir()) == []
+
+    def test_it_writes_the_entry_and_nothing_in_the_project(
+        self, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        dataset = make_dataset(project / "study", name="study")
+        before = sorted(path.relative_to(project) for path in project.rglob("*"))
+        configuration = self.configuration(tmp_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(project),
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            sorted(path.relative_to(project) for path in project.rglob("*")) == before
+        )
+        entry = desktop_servers(configuration)["mosaic"]
+        assert "type" not in entry
+        args = entry["args"]
+        assert isinstance(args, list)
+        assert args[-4:] == [
+            "agent",
+            "serve",
+            "--dataset",
+            str(dataset.manifest_path.resolve()),
+        ]
+        env = entry["env"]
+        assert isinstance(env, dict)
+        assert "MOSAIC_TRUST_PICKLED_FILES" not in env
+        assert result.stdout.startswith(f"created: {configuration}\n")
+        assert f"env PATH={env['PATH']}" in result.stdout
+        assert (
+            "Quit Claude Desktop and start it again to load the server. To "
+            f"remove it, delete the mosaic entry of {configuration}."
+        ) in result.stdout
+
+    def test_it_keeps_the_other_servers_and_a_second_run_changes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        configuration = self.configuration(tmp_path)
+        existing: JsonValue = {
+            "preferences": {"theme": "dark"},
+            "mcpServers": {"other": {"command": "other-server"}},
+        }
+        _ = configuration.write_text(json.dumps(existing), encoding="utf-8")
+        argv = [
+            "agent",
+            "install",
+            str(tmp_path),
+            "--desktop",
+            "--desktop-config",
+            str(configuration),
+            "--dataset",
+            str(tmp_path / "named"),
+        ]
+
+        first = runner.invoke(app, argv)
+        second = runner.invoke(app, argv)
+
+        assert first.exit_code == second.exit_code == 0, first.output + second.output
+        assert first.stdout.startswith(f"updated: {configuration}\n")
+        assert second.stdout.startswith(f"unchanged: {configuration}\n")
+        document: dict[str, object] = json.loads(configuration.read_text("utf-8"))
+        assert document["preferences"] == {"theme": "dark"}
+        assert desktop_servers(configuration)["other"] == {"command": "other-server"}
+
+    def test_the_trust_flag_writes_the_variable_and_warns(self, tmp_path: Path) -> None:
+        configuration = self.configuration(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(tmp_path),
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+                "--dataset",
+                str(tmp_path),
+                "--trust-pickled-files",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        env = desktop_servers(configuration)["mosaic"]["env"]
+        assert isinstance(env, dict)
+        assert env["MOSAIC_TRUST_PICKLED_FILES"] == "1"
+        assert "env MOSAIC_TRUST_PICKLED_FILES=1" in result.stdout
+        assert "unpickling can run code in the file" in result.stderr
+
+    def test_a_rerun_prints_the_env_key_it_drops(self, tmp_path: Path) -> None:
+        configuration = self.configuration(tmp_path)
+        earlier: JsonValue = {
+            "mcpServers": {"mosaic": {"command": "old", "env": {"HAND_ADDED": "1"}}}
+        }
+        _ = configuration.write_text(json.dumps(earlier), encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(tmp_path),
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+                "--dataset",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "HAND_ADDED" in result.stdout
+        env = desktop_servers(configuration)["mosaic"]["env"]
+        assert isinstance(env, dict)
+        assert "HAND_ADDED" not in env
+
+    def test_a_file_that_is_not_json_is_refused_and_left_alone(
+        self, tmp_path: Path
+    ) -> None:
+        configuration = self.configuration(tmp_path)
+        _ = configuration.write_text("{not json", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(tmp_path),
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+                "--dataset",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 1
+        assert str(configuration) in result.stderr
+        assert "nothing was written" in result.stderr
+        assert configuration.read_text(encoding="utf-8") == "{not json"
+
+    def test_a_missing_configuration_directory_is_refused(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent" / DESKTOP_CONFIG_NAME
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(tmp_path),
+                "--desktop",
+                "--desktop-config",
+                str(missing),
+                "--dataset",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 1
+        assert str(missing.parent) in result.stderr
+        assert not missing.parent.exists()
+
+    def test_a_missing_directory_is_refused_even_with_a_dataset(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = tmp_path / "study"
+        dataset.mkdir()
+        missing = tmp_path / "second-study"
+        configuration = self.configuration(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+                "--dataset",
+                str(dataset),
+                str(missing),
+            ],
+        )
+        assert result.exit_code == 1
+        assert f"Directory not found: {missing.resolve()}" in result.stderr
+        assert not configuration.exists()
+
+    def test_a_directory_without_a_dataset_is_refused(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        configuration = self.configuration(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                str(project),
+                "--desktop",
+                "--desktop-config",
+                str(configuration),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "--dataset" in result.stderr
+        assert not configuration.exists()
 
 
 class TestServerCommand:

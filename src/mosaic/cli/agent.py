@@ -3,7 +3,8 @@
 ``guide`` prints the guide shipped with the installed mosaic, then the paths of
 this installation. ``install`` points a project's agents at that command, which
 keeps the guide they read matched to the mosaic they run, and with ``--mcp``
-registers the MCP server in the project's ``.mcp.json``. ``serve`` runs that
+registers the MCP server in the project's ``.mcp.json``. ``install --desktop``
+registers it in Claude Desktop's configuration instead. ``serve`` runs that
 server for one client over standard input and output. ``confirm-hook`` answers
 the server's confirmations from a Claude Code ``Elicitation`` hook.
 """
@@ -112,12 +113,46 @@ def install_command(
         typer.Option(
             "--dataset",
             help=(
-                "With --mcp, a dataset the server serves: its manifest or its "
-                "directory. Repeatable. Defaults to the datasets in and below the "
-                "project directory, else the one enclosing it."
+                "With --mcp or --desktop, a dataset the server serves: its "
+                "manifest or its directory. Repeatable. Defaults to the datasets "
+                "in and below the project directory, else the one enclosing it."
             ),
         ),
     ] = None,
+    desktop: Annotated[
+        bool,
+        typer.Option(
+            "--desktop",
+            help=(
+                "Register `mosaic agent serve` in Claude Desktop's "
+                "claude_desktop_config.json instead of writing project files. "
+                "Restart Claude Desktop afterward."
+            ),
+        ),
+    ] = False,
+    desktop_config: Annotated[
+        Path | None,
+        typer.Option(
+            "--desktop-config",
+            metavar="FILE",
+            help=(
+                "With --desktop, the Claude Desktop configuration file to write, "
+                "when it is not where mosaic looks."
+            ),
+        ),
+    ] = None,
+    trust_pickled_files: Annotated[
+        bool,
+        typer.Option(
+            "--trust-pickled-files",
+            help=(
+                "With --desktop, let the server load raw files that only "
+                "unpickling reads, such as CalMS21 .npy, in every dataset it "
+                "serves. Unpickling can run code in the file; give it only "
+                "datasets from sources you trust."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Point a project's AI coding agents at `mosaic agent guide`.
 
@@ -125,13 +160,32 @@ def install_command(
     AGENTS.md (creating CLAUDE.md when neither exists). With --mcp, also writes
     the `mosaic` server entry of .mcp.json, which Claude Code reads, and keeps
     the file's other servers. Running it again replaces what it wrote.
+
+    With --desktop it writes no project file. It sets the `mosaic` server entry
+    of Claude Desktop's configuration file instead, with the environment that
+    Desktop does not pass, and keeps the file's other servers. Quit Claude
+    Desktop before running it.
     """
+    if desktop:
+        _refuse_desktop_with_project_options(mcp=mcp, no_memory=no_memory)
+    else:
+        _refuse_desktop_options_without_desktop(
+            desktop_config=desktop_config, trust_pickled_files=trust_pickled_files
+        )
+    if datasets and not (mcp or desktop):
+        fail("--dataset names the datasets of the MCP server; add --mcp or --desktop.")
     target = user_path(directory).resolve()
     if not target.is_dir():
         fail(f"Directory not found: {target}")
-    if datasets and not mcp:
-        fail("--dataset names the datasets of the MCP server; add --mcp.")
     installation = find_installation(Path.cwd())
+    if desktop:
+        _install_desktop(
+            installation,
+            _served_datasets(target, datasets or []),
+            config=None if desktop_config is None else user_path(desktop_config),
+            trust_pickled_files=trust_pickled_files,
+        )
+        return
     try:
         written = install_agent_files(
             target,
@@ -153,6 +207,77 @@ def install_command(
         removal += f", and the {MCP_SERVER_NAME} entry of {target / MCP_CONFIG}"
     typer.echo("")
     typer.echo(f"{removal}.")
+
+
+def _refuse_desktop_with_project_options(*, mcp: bool, no_memory: bool) -> None:
+    """Exit 2 when --desktop is combined with an option for the project's files."""
+    if mcp:
+        fail(
+            "--desktop writes Claude Desktop's configuration and --mcp the "
+            "project's; run them as two commands.",
+            code=2,
+        )
+    if no_memory:
+        fail(
+            "--no-memory applies to the project files, which --desktop does not write.",
+            code=2,
+        )
+
+
+def _refuse_desktop_options_without_desktop(
+    *, desktop_config: Path | None, trust_pickled_files: bool
+) -> None:
+    """Exit 2 when an option of --desktop is given without it."""
+    if desktop_config is not None:
+        fail("--desktop-config applies to --desktop.", code=2)
+    if trust_pickled_files:
+        fail(
+            "--trust-pickled-files applies to --desktop. For Claude Code, export "
+            "MOSAIC_TRUST_PICKLED_FILES=1 in the shell that starts it.",
+            code=2,
+        )
+
+
+def _install_desktop(
+    installation: Installation,
+    datasets: list[Path],
+    *,
+    config: Path | None,
+    trust_pickled_files: bool,
+) -> None:
+    """Register the server in Claude Desktop's configuration and report it."""
+    from mosaic.agent.desktop import (
+        DesktopConfigRefused,
+        desktop_config_path,
+        desktop_server_entry,
+        install_desktop_server,
+    )
+
+    built = desktop_server_entry(
+        installation, datasets, trust_pickled_files=trust_pickled_files
+    )
+    try:
+        path = desktop_config_path(config)
+        installed = install_desktop_server(path, built.entry)
+    except DesktopConfigRefused as exc:
+        fail(str(exc))
+
+    typer.echo(f"{installed.action}: {installed.path}")
+    env = built.entry["env"]
+    if isinstance(env, dict):
+        for key, value in env.items():
+            typer.echo(f"env {key}={value}")
+    for note in built.notes:
+        typer.echo(note)
+    for key in installed.dropped_env_keys:
+        typer.echo(f"dropped env key: {key} (not set by this run)")
+    for warning in built.warnings:
+        log(f"warning: {warning}")
+    typer.echo("")
+    typer.echo(
+        "Quit Claude Desktop and start it again to load the server. To remove "
+        f"it, delete the {MCP_SERVER_NAME} entry of {installed.path}."
+    )
 
 
 def _served_datasets(directory: Path, given: list[Path]) -> list[Path]:

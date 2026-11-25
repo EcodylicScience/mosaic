@@ -1731,6 +1731,11 @@ AGENTS.md (creating CLAUDE.md when neither exists). With --mcp, also writes
 the `mosaic` server entry of .mcp.json, which Claude Code reads, and keeps
 the file's other servers. Running it again replaces what it wrote.
 
+With --desktop it writes no project file. It sets the `mosaic` server entry
+of Claude Desktop's configuration file instead, with the environment that
+Desktop does not pass, and keeps the file's other servers. Quit Claude
+Desktop before running it.
+
 **Usage**:
 
 ```console
@@ -1745,7 +1750,10 @@ $ mosaic agent install [OPTIONS] [directory]
 
 * `--no-memory`: Write the skill only, and leave CLAUDE.md and AGENTS.md alone.
 * `--mcp`: Also register `mosaic agent serve` in the project's .mcp.json.
-* `--dataset <path>`: With --mcp, a dataset the server serves: its manifest or its directory. Repeatable. Defaults to the datasets in and below the project directory, else the one enclosing it.
+* `--dataset <path>`: With --mcp or --desktop, a dataset the server serves: its manifest or its directory. Repeatable. Defaults to the datasets in and below the project directory, else the one enclosing it.
+* `--desktop`: Register `mosaic agent serve` in Claude Desktop's claude_desktop_config.json instead of writing project files. Restart Claude Desktop afterward.
+* `--desktop-config FILE`: With --desktop, the Claude Desktop configuration file to write, when it is not where mosaic looks.
+* `--trust-pickled-files`: With --desktop, let the server load raw files that only unpickling reads, such as CalMS21 .npy, in every dataset it serves. Unpickling can run code in the file; give it only datasets from sources you trust.
 * `--help`: Show this message and exit.
 
 ### `mosaic agent serve`
