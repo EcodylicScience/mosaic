@@ -17,7 +17,10 @@ from mosaic.agent import (
     SKILL_DIRECTORY,
     Installation,
     guide_text,
+    mcp_server_entry,
+    server_command,
     skill_stub,
+    with_mcp_server,
 )
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
@@ -262,6 +265,69 @@ class TestInstallMcp:
         assert (tmp_path / MCP_CONFIG).read_text(encoding="utf-8") == config
         assert not (tmp_path / SKILL_DIRECTORY).exists()
         assert not (tmp_path / "CLAUDE.md").exists()
+
+
+class TestServerCommand:
+    def installation(self, executable: Path | None) -> Installation:
+        return Installation(
+            executable=executable,
+            interpreter=Path(sys.executable),
+            docs=None,
+            manifest=None,
+        )
+
+    def test_an_installation_with_an_executable_starts_it(self, tmp_path: Path) -> None:
+        executable = tmp_path / "bin" / "mosaic"
+        installation = self.installation(executable)
+        dataset = tmp_path / "ds"
+        entry = mcp_server_entry(installation, [dataset])
+        assert entry == {
+            "type": "stdio",
+            "command": str(executable),
+            "args": ["agent", "serve", "--dataset", str(dataset)],
+        }
+        assert server_command(installation, [dataset]) == (
+            entry["command"],
+            entry["args"],
+        )
+
+    def test_an_installation_without_an_executable_starts_the_interpreter(
+        self, tmp_path: Path
+    ) -> None:
+        installation = self.installation(None)
+        dataset = tmp_path / "ds"
+        command, arguments = server_command(installation, [dataset])
+        assert command == sys.executable
+        assert arguments == [
+            "-m",
+            "mosaic",
+            "agent",
+            "serve",
+            "--dataset",
+            str(dataset),
+        ]
+        assert mcp_server_entry(installation, [dataset]) == {
+            "type": "stdio",
+            "command": command,
+            "args": arguments,
+        }
+
+    @pytest.mark.parametrize(
+        ("text", "message"),
+        [
+            ("[]", "claude_desktop_config.json does not hold a JSON object"),
+            (
+                '{"mcpServers": []}',
+                "mcpServers in claude_desktop_config.json is not a JSON object",
+            ),
+        ],
+    )
+    def test_a_refusal_names_the_configuration_it_was_given(
+        self, text: str, message: str
+    ) -> None:
+        entry: dict[str, JsonValue] = {"command": "mosaic", "args": []}
+        with pytest.raises(ValueError, match=message.replace(".", r"\.")):
+            _ = with_mcp_server(text, entry, config_name="claude_desktop_config.json")
 
 
 class TestServe:

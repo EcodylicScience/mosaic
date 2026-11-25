@@ -40,6 +40,7 @@ __all__ = [
     "install_agent_files",
     "mcp_server_entry",
     "pointer_block",
+    "server_command",
     "skill_stub",
     "with_mcp_server",
     "with_pointer_block",
@@ -336,9 +337,34 @@ def install_agent_files(
     if mcp_datasets is not None:
         config = directory / MCP_CONFIG
         entry = mcp_server_entry(installation, mcp_datasets)
-        contents.append((config, with_mcp_server(_read(config), entry)))
+        contents.append(
+            (
+                config,
+                with_mcp_server(_read(config), entry, config_name=MCP_CONFIG),
+            )
+        )
     skill_path.parent.mkdir(parents=True, exist_ok=True)
     return [_write(path, text) for path, text in contents]
+
+
+def server_command(
+    installation: Installation, datasets: Sequence[Path]
+) -> tuple[str, list[JsonValue]]:
+    """The command and arguments that start ``mosaic agent serve`` over *datasets*.
+
+    Args:
+        installation: The mosaic whose server the command starts.
+        datasets: The manifests, or the directories that hold them, to serve.
+            Each is written as given, so pass absolute paths.
+
+    Returns:
+        The program to run and its arguments.
+    """
+    command, *leading = installation.mosaic_command
+    arguments: list[JsonValue] = [*leading, "agent", "serve"]
+    for dataset in datasets:
+        arguments += ["--dataset", str(dataset)]
+    return command, arguments
 
 
 def mcp_server_entry(
@@ -354,21 +380,19 @@ def mcp_server_entry(
     Returns:
         A stdio server entry: its ``type``, ``command`` and ``args``.
     """
-    command, *leading = installation.mosaic_command
-    arguments: list[JsonValue] = [*leading, "agent", "serve"]
-    for dataset in datasets:
-        arguments += ["--dataset", str(dataset)]
+    command, arguments = server_command(installation, datasets)
     return {"type": "stdio", "command": command, "args": arguments}
 
 
-def with_mcp_server(text: str, entry: dict[str, JsonValue]) -> str:
-    """*text*, a ``.mcp.json`` document, with mosaic's server set to *entry*.
+def with_mcp_server(text: str, entry: dict[str, JsonValue], *, config_name: str) -> str:
+    """*text*, an MCP client configuration, with mosaic's server set to *entry*.
 
     Every other key and server is kept. An empty *text* starts a new document.
 
     Args:
-        text: The current contents of ``.mcp.json``.
+        text: The current contents of the configuration file.
         entry: The server entry, as :func:`mcp_server_entry` returns it.
+        config_name: The file's name, as the errors name it.
 
     Returns:
         The new contents, indented JSON ending in a newline.
@@ -378,11 +402,11 @@ def with_mcp_server(text: str, entry: dict[str, JsonValue]) -> str:
     """
     configured: JsonValue = json.loads(text) if text.strip() else {}
     if not isinstance(configured, dict):
-        msg = f"{MCP_CONFIG} does not hold a JSON object"
+        msg = f"{config_name} does not hold a JSON object"
         raise ValueError(msg)
     servers = configured.get("mcpServers", {})
     if not isinstance(servers, dict):
-        msg = f"mcpServers in {MCP_CONFIG} is not a JSON object"
+        msg = f"mcpServers in {config_name} is not a JSON object"
         raise ValueError(msg)
     configured["mcpServers"] = {**servers, MCP_SERVER_NAME: entry}
     return json.dumps(configured, indent=2) + "\n"
