@@ -105,7 +105,7 @@ def test_no_module_spells_the_tracker_root_path_itself() -> None:
     registry module is excluded -- it is where the string is allowed to live.
     """
     hits = run_child(
-        ["grep", "-rn", '"_tracking/', str(SOURCE_ROOT)]
+        ["grep", "-rn", "--exclude-dir=.venv", '"_tracking/', str(SOURCE_ROOT)]
     ).stdout.splitlines()
     stray = [line for line in hits if "tracking_roots.py" not in line]
     assert not stray, (
