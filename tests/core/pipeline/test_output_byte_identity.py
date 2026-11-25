@@ -20,6 +20,9 @@ its own copy of the dataset, and compares the three:
 - ``overlap``: ``SpeedAngvel`` with ``overlap_frames=2`` over continuous groups,
   so that each entry is read with its neighbors' frames, computed, and trimmed
   to its own.
+- ``bounds``: ``SpeedAngvel`` with a start frame that cuts the first sequence of
+  each group and an end time that cuts the last, so that each filter runs
+  wherever the entry loads.
 
 The datasets stay under the test's ``tmp_path`` as ``<mode>-<case>``, so a run
 with a fixed ``--basetemp`` leaves them for
@@ -76,6 +79,12 @@ _ENTRIES: Final = sum(len(names) for names in _GROUPS.values())
 _ROWS: Final = 20
 """The frames of each sequence."""
 
+_CUT_START_FRAME: Final = 5
+"""The first frame the ``bounds`` case keeps."""
+
+_CUT_END_TIME: Final = 34.5 / 30.0
+"""The time the ``bounds`` case keeps rows before: frames up to 34 at 30 fps."""
+
 _PER_ATTEMPT: Final = frozenset({"params.json", "fit_scope.json"})
 """The files of a run root whose bytes carry the attempt or the time that wrote them."""
 
@@ -104,11 +113,17 @@ class _Case:
         build: Returns the feature to run on a copy of the fixture, after
             running whatever that feature reads from an upstream run.
         overlap_frames: The ``overlap_frames`` the run asks for.
+        frame_bounds: The start and end of ``filter_start_frame`` and
+            ``filter_end_frame``, each ``None`` where the run sets none.
+        time_window: The start and end of ``filter_start_time`` and
+            ``filter_end_time``, each ``None`` where the run sets none.
     """
 
     name: str
     build: Callable[[Dataset], Feature]
     overlap_frames: int = 0
+    frame_bounds: tuple[int | None, int | None] | None = None
+    time_window: tuple[float | None, float | None] | None = None
 
 
 def _fixture(base: Path) -> Dataset:
@@ -179,6 +194,17 @@ _CASES: Final = (
     _Case("pair", _pair),
     _Case("definition", _definition),
     _Case("overlap", _per_frame, overlap_frames=2),
+    # The frames of a sequence are 20 * position .. 20 * position + 19 and the
+    # time of a frame is frame / 30. A start frame of 5 cuts frames 0 to 4 from
+    # a1 and b1 and leaves a2 and b2 whole. An end time of 34.5 / 30 s cuts
+    # frames 35 to 39 from a2 and b2 and leaves a1 and b1 whole. A run sets
+    # one filter per boundary, so the start is a frame and the end a time.
+    _Case(
+        "bounds",
+        _per_frame,
+        frame_bounds=(_CUT_START_FRAME, None),
+        time_window=(None, _CUT_END_TIME),
+    ),
 )
 
 
@@ -230,6 +256,39 @@ def _own_frames(ds: Dataset, result: Result) -> None:
         ), output.name
 
 
+def _kept_only_the_bounds(ds: Dataset, result: Result, case: _Case) -> None:
+    """Assert that each output holds the frames its entry has inside the bounds.
+
+    The bounds must cut rows, or the case would compare runs that filter nothing.
+    """
+    root = result_run_root(ds, result)
+    cut = 0
+    for output in sorted(root.glob("*.parquet")):
+        own = pd.read_parquet(
+            ds.get_root("tracks") / output.name, columns=["frame", "time"]
+        )
+        keep = pd.Series(True, index=own.index)
+        if case.frame_bounds is not None:
+            start, end = case.frame_bounds
+            if start is not None:
+                keep &= own["frame"] >= start
+            if end is not None:
+                keep &= own["frame"] < end
+        if case.time_window is not None:
+            start_time, end_time = case.time_window
+            if start_time is not None:
+                keep &= own["time"] >= start_time
+            if end_time is not None:
+                keep &= own["time"] < end_time
+        written = pd.read_parquet(output, columns=["frame"])
+        assert sorted(set(written["frame"].tolist())) == sorted(
+            set(own.loc[keep, "frame"].tolist())
+        ), output.name
+        cut += int((~keep).sum())
+    assert cut > 0
+    assert len(outputs := sorted(root.glob("*.parquet"))) == _ENTRIES, outputs
+
+
 def _ran_every_entry_as_asked(ds: Dataset, mode: _Mode) -> None:
     """Assert that the last attempt computed each entry, in the mode asked for.
 
@@ -250,6 +309,7 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
     another and the fitted case fits in each copy.
     """
     written: dict[str, _Written] = {}
+    bounds, window = case.frame_bounds, case.time_window
     with definitions_forgotten():
         for mode in _MODES:
             ds = _fixture(tmp_path / f"{mode.name}-{case.name}")
@@ -261,11 +321,17 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
                 parallel_workers=mode.workers,
                 parallel_mode=mode.kind,
                 overlap_frames=case.overlap_frames,
+                filter_start_frame=None if bounds is None else bounds[0],
+                filter_end_frame=None if bounds is None else bounds[1],
+                filter_start_time=None if window is None else window[0],
+                filter_end_time=None if window is None else window[1],
             )
             assert result.failed_entries == ()
             _ran_every_entry_as_asked(ds, mode)
             if case.overlap_frames:
                 _own_frames(ds, result)
+            if bounds is not None or window is not None:
+                _kept_only_the_bounds(ds, result, case)
             written[mode.name] = _written(ds, result)
 
     serial = written["serial"]
