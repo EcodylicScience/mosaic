@@ -7,8 +7,9 @@ the shape is checked here without the network.
 
 from __future__ import annotations
 
+import json
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -104,3 +105,44 @@ def test_the_listed_sizes_and_layouts_match_the_published_archives() -> None:
     ]
     assert by_name["calms21-pose"].dataset_archive.download_bytes == 1_940_249_616
     assert by_name["calms21"].revision == "ee1eacd1febed2e2c89a332237d668548f16836a"
+
+
+def _code_cells(notebook: Path) -> list[str]:
+    document = json.loads(notebook.read_text(encoding="utf-8"))
+    return [
+        "".join(cell["source"])
+        for cell in document["cells"]
+        if cell["cell_type"] == "code"
+    ]
+
+
+NOTEBOOKS = sorted((REPO_ROOT / "notebooks").glob("*.ipynb"))
+FETCH_CALL = re.compile(r"""fetch_example\(\s*["']([^"']+)["']""")
+
+
+@pytest.mark.parametrize("notebook", NOTEBOOKS, ids=lambda path: path.name)
+class TestEachNotebook:
+    def test_fetch_calls_name_catalog_entries(self, notebook: Path) -> None:
+        names = {example.name for example in CATALOG}
+        called = [
+            name for cell in _code_cells(notebook) for name in FETCH_CALL.findall(cell)
+        ]
+
+        assert set(called) <= names
+
+    def test_the_notebook_fetches_its_own_example(self, notebook: Path) -> None:
+        owners = {
+            example.name for example in CATALOG if example.notebook == notebook.name
+        }
+        called = {
+            name for cell in _code_cells(notebook) for name in FETCH_CALL.findall(cell)
+        }
+
+        assert called == owners
+
+    def test_no_code_cell_downloads_through_huggingface_hub(
+        self, notebook: Path
+    ) -> None:
+        for cell in _code_cells(notebook):
+            assert "huggingface_hub" not in cell
+            assert "HF_REPO" not in cell
