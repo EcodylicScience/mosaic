@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
 from mosaic import runlog
+from mosaic.version import installed_version
 
 from ._utils import new_execution_id
 from .gpu_lease import leased_card
@@ -523,6 +524,7 @@ def job_context(
             liveness_interval=interval,
             gpu_card=leased_card(),
             machine=current_machine(),
+            mosaic_version=installed_version(),
         )
         if total:
             run_log.set_total(total)

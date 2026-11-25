@@ -16,6 +16,7 @@ from typing import cast
 import pandas as pd
 import pytest
 
+import mosaic.core.pipeline.job as job_module
 import mosaic.runlog as runlog
 from mosaic.runlog import EntryMeasure, ResourceReport
 from mosaic.core.dataset import LinkUnreachableError
@@ -53,6 +54,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
+from mosaic.version import installed_version
 from tests.helpers import (
     MockDataset,
     add_track_sequences,
@@ -851,6 +853,44 @@ def test_a_job_declares_its_liveness_interval_and_boot(tmp_path: Path) -> None:
     assert snap["liveness_interval"] == runlog.LIVENESS_INTERVAL_SECONDS
     assert snap["boot_id"] == current_boot_id()
     assert snap["pid_ns"] == current_pid_namespace()
+
+
+def _started_event(base_dir: Path, execution_id: str) -> dict[str, object]:
+    path = run_log_path(base_dir, execution_id)
+    records = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
+    return next(rec for rec in records if rec["ev"] == "started")
+
+
+def test_an_attempts_started_event_records_the_toolkit_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path)
+    monkeypatch.setattr(job_module, "installed_version", lambda: "9.8.7")
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    assert _started_event(ds.base_dir, ctx.execution_id)["mosaic_version"] == "9.8.7"
+
+
+def test_an_attempt_records_the_installed_version(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    assert _started_event(ds.base_dir, ctx.execution_id).get("mosaic_version") == (
+        installed_version() or None
+    )
+
+
+def test_an_attempt_of_an_unknown_version_leaves_out_the_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path)
+    monkeypatch.setattr(job_module, "installed_version", lambda: "")
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    assert "mosaic_version" not in _started_event(ds.base_dir, ctx.execution_id)
 
 
 def test_a_job_records_the_card_it_was_leased(

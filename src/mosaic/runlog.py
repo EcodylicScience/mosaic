@@ -1015,6 +1015,7 @@ class JsonlRunLog:
         liveness_interval: float = 0.0,
         gpu_card: str = "",
         machine: MachineFacts | None = None,
+        mosaic_version: str = "",
     ) -> None:
         """Bracket the start of the attempt (kind/target/owner/host/pid).
 
@@ -1023,7 +1024,9 @@ class JsonlRunLog:
         process was leased, ``<index>:<uuid>``. Each is written only when set, so
         a record of a process that runs nothing (a refusal, a cache hit) reads as
         before. *machine* is written as a nested ``machine`` object, and only by the
-        process that runs the job.
+        process that runs the job. *mosaic_version* is the toolkit version of that
+        process, written as ``mosaic_version`` only when known, so a sizing reader
+        can separate the records of different engines by it.
         """
         process: dict[str, Any] = {}
         if boot_id:
@@ -1036,6 +1039,8 @@ class JsonlRunLog:
             process["gpu_card"] = gpu_card
         if machine is not None:
             process["machine"] = dataclasses.asdict(machine)
+        if mosaic_version:
+            process["mosaic_version"] = mosaic_version
         self._emit(
             "started",
             kind=kind,
