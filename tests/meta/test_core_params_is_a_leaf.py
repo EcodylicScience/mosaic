@@ -35,6 +35,7 @@ import mosaic.core.params as params_module
 import mosaic.core.region_geometry as region_geometry_module
 import mosaic.core.regions as regions_module
 import mosaic.core.strict_model as strict_model_module
+import mosaic.entry_points as entry_points_module
 from tests.helpers import imports_of, imports_reaching, package_of, source_tree
 
 LEAF_MODULES = (
@@ -116,6 +117,27 @@ def test_individuals_has_no_mosaic_imports() -> None:
 def test_strict_model_has_no_mosaic_imports() -> None:
     """``StrictModel`` imports pydantic and the standard library only."""
     assert _mosaic_imports(Path(strict_model_module.__file__)) == set()
+
+
+def test_entry_points_imports_the_standard_library_only() -> None:
+    """``mosaic.entry_points`` imports no mosaic module and no third-party one.
+
+    ``core`` imports it at module level to find installed plugins, so it carries
+    nothing beyond the standard library. It stays out of ``LEAF_MODULES``, because
+    ``EntryPoint.load`` is a dynamic import by design, which the leaf rule below
+    refuses.
+    """
+    path = Path(entry_points_module.__file__)
+    assert _mosaic_imports(path) == set()
+    outside = sorted(
+        {
+            name.module.split(".", 1)[0]
+            for name in imports_of(path, scope="anywhere", relative=True)
+            if name.module.startswith(".")
+            or name.module.split(".", 1)[0] not in sys.stdlib_module_names
+        }
+    )
+    assert not outside, f"mosaic/entry_points.py imports {outside}."
 
 
 def test_params_imports_only_strict_model() -> None:

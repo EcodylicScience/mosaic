@@ -17,7 +17,6 @@ import json
 import logging
 import zlib
 from collections.abc import Callable, Generator, Mapping, Sequence
-from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -62,7 +61,14 @@ from mosaic.core.pipeline.fit_scope import reported_fit_entries
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.pipeline.types import InputStream, Result
-from tests.helpers import Event, StudyEntry, TemplatesStudy, write_templates_study
+from tests.helpers import (
+    CountingEntryPoint,
+    Event,
+    StudyEntry,
+    TemplatesStudy,
+    install_entry_points,
+    write_templates_study,
+)
 
 pytestmark = pytest.mark.identity
 
@@ -1691,18 +1697,15 @@ LINEAR = HeadSpec(
 def test_a_head_that_a_distribution_installs_fits_and_applies(
     tmp_path: Path, head_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lookups: list[str | None] = []
-    installed = EntryPoint(
-        name="linear",
-        value=f"{__name__}:LINEAR",
-        group=sequence_heads.ENTRY_POINT_GROUP,
+    CountingEntryPoint.loads = 0
+    _ = install_entry_points(
+        monkeypatch,
+        CountingEntryPoint(
+            name="linear",
+            value=f"{__name__}:LINEAR",
+            group=sequence_heads.ENTRY_POINT_GROUP,
+        ),
     )
-
-    def lookup(*, group: str, name: str | None = None) -> tuple[EntryPoint, ...]:
-        lookups.append(name)
-        return (installed,) if name in (None, "linear") else ()
-
-    monkeypatch.setattr(sequence_heads, "entry_points", lookup)
     study, tables = _two_entries(tmp_path)
 
     feature = _fit(study, tables, head="linear", head_config={})
@@ -1710,7 +1713,7 @@ def test_a_head_that_a_distribution_installs_fits_and_applies(
     assert len(feature.apply(tables[C])) == len(tables[C])
     assert _saved(feature, tmp_path / "saved")["head"] == "linear"
     assert HEADS["linear"] is LINEAR
-    assert lookups.count("linear") == 1
+    assert CountingEntryPoint.loads == 1
 
 
 def test_a_model_warns_when_the_code_of_its_head_changed(

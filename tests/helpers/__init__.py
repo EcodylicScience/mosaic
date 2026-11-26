@@ -100,6 +100,9 @@ What lives where:
 - ``runlog`` -- an attempt's recorded run-log events.
 - ``entry_outcomes`` -- an entry task's outcome as a report or a raised error, and
   the output a worker wrote for a task.
+- ``entry_points`` -- the installed entry points a test declares in this process,
+  entry points that count their loads or fail them, and a child process that sees an
+  installed distribution declaring some.
 - ``entry_writes`` -- the write of an entry task, wrapped to fault it or hold it.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
@@ -257,6 +260,12 @@ from tests.helpers.dropped_frames import (
     mean_rate,
 )
 from tests.helpers.entry_outcomes import report_of, written_by_worker
+from tests.helpers.entry_points import (
+    CountingEntryPoint,
+    FailingEntryPoint,
+    install_entry_points,
+    run_with_distribution,
+)
 from tests.helpers.entry_writes import WriteOutput, wrapped_write
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
@@ -1119,6 +1128,10 @@ __all__ = [
     "wait_for",
     "TWO_CARDS",
     "install_fake_nvidia_smi",
+    "CountingEntryPoint",
+    "FailingEntryPoint",
+    "install_entry_points",
+    "run_with_distribution",
     "isolate_card_leases",
     "write_reader_params",
     "window_centers",

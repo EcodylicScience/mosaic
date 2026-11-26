@@ -30,12 +30,16 @@ import hashlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Protocol, Self
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from mosaic.core.params import Declared, DeclaredModel
+from mosaic.entry_points import (
+    InstalledOrigin,
+    installed_entry_points,
+    load_entry_point,
+)
 
 if TYPE_CHECKING:
     from torch import nn
@@ -171,16 +175,11 @@ def head_names() -> list[str]:
 
     An entry point is listed by its name and is not loaded.
     """
-    installed = {found.name for found in entry_points(group=ENTRY_POINT_GROUP)}
-    return sorted(HEADS.keys() | installed)
+    return sorted(HEADS.keys() | installed_entry_points(ENTRY_POINT_GROUP).keys())
 
 
-def _origin(found: EntryPoint) -> str:
-    """Return the entry point and its distribution, as a refusal names them."""
-    distribution = "an unknown distribution"
-    if found.dist is not None:
-        distribution = f"distribution {found.dist.name!r}"
-    return f"entry point {found.name!r} of {distribution}"
+_ANY_HEAD_SPEC: Final[type[HeadSpec[HeadConfig]]] = HeadSpec
+"""``HeadSpec`` read as the class of a head of any options, for the loader's type."""
 
 
 def _load_installed(name: str) -> _Spec | None:
@@ -190,27 +189,21 @@ def _load_installed(name: str) -> _Spec | None:
         ValueError: The entry point cannot be loaded, is not a :class:`HeadSpec`,
             carries another name than its entry point's, or has a twin of its name.
     """
-    found = entry_points(group=ENTRY_POINT_GROUP, name=name)
-    if not found:
+    found = installed_entry_points(ENTRY_POINT_GROUP).get(name)
+    if found is None:
         return None
     if len(found) > 1:
-        origins = ", ".join(_origin(each) for each in found)
+        origins = ", ".join(
+            InstalledOrigin.from_entry_point(each).describe() for each in found
+        )
         msg = f"{len(found)} entry points are named {name!r} in {ENTRY_POINT_GROUP}: {origins}"
         raise ValueError(msg)
-    (installed,) = found
-    try:
-        loaded = installed.load()
-    except Exception as error:
-        msg = (
-            f"{_origin(installed)} could not be loaded: {type(error).__name__}: {error}"
-        )
-        raise ValueError(msg) from error
-    if not isinstance(loaded, HeadSpec):
-        msg = f"{_origin(installed)} is a {type(loaded).__name__}, not a HeadSpec"
-        raise ValueError(msg)
+    installed = next(iter(found))
+    loaded = load_entry_point(installed, _ANY_HEAD_SPEC)
     if loaded.name != name:
+        origin = InstalledOrigin.from_entry_point(installed).describe()
         msg = (
-            f"{_origin(installed)} names its head {loaded.name!r}, and an entry "
+            f"{origin} names its head {loaded.name!r}, and an entry "
             "point carries the name of its head"
         )
         raise ValueError(msg)

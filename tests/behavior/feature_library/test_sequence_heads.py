@@ -7,12 +7,10 @@ default job. The networks and the fit are in ``test_sequence_classifier.py``.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import textwrap
 from importlib.metadata import EntryPoint
-from typing import TYPE_CHECKING, ClassVar, override
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -42,7 +40,13 @@ from mosaic.behavior.feature_library.sequence_training import (
     sub_seed,
 )
 from mosaic.core.pipeline.types import InputStream
-from tests.helpers import run_child, write_templates_study
+from tests.helpers import (
+    CountingEntryPoint,
+    FailingEntryPoint,
+    install_entry_points,
+    run_with_distribution,
+    write_templates_study,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -62,6 +66,10 @@ def _toy_build(config: ToyConfig, n_features: int, n_classes: int) -> nn.Module:
 
 def _other_build(config: ToyConfig, n_features: int, n_classes: int) -> nn.Module:
     raise LookupError
+
+
+class ToyHeadSpec(HeadSpec[ToyConfig]):
+    """A ``HeadSpec`` subclass, which an entry point may not name for an instance."""
 
 
 def _toy() -> HeadSpec[ToyConfig]:
@@ -132,26 +140,6 @@ MISNAMED = HeadSpec(
 )
 
 
-class _CountingEntryPoint(EntryPoint):
-    """An entry point that counts its loads."""
-
-    loads: ClassVar[int] = 0
-
-    @override
-    def load(self) -> object:
-        type(self).loads += 1
-        return super().load()
-
-
-class _FailingEntryPoint(EntryPoint):
-    """An entry point whose load raises."""
-
-    @override
-    def load(self) -> object:
-        msg = "the head module is broken"
-        raise ImportError(msg)
-
-
 def _entry_point(
     name: str, attribute: str, kind: type[EntryPoint] = EntryPoint
 ) -> EntryPoint:
@@ -162,51 +150,41 @@ def _entry_point(
     )
 
 
-def _install(
-    monkeypatch: pytest.MonkeyPatch, *installed: EntryPoint
-) -> list[tuple[str, str | None]]:
-    """Make *installed* the entry points of the group, and record the lookups."""
-    lookups: list[tuple[str, str | None]] = []
-
-    def lookup(*, group: str, name: str | None = None) -> tuple[EntryPoint, ...]:
-        lookups.append((group, name))
-        return tuple(found for found in installed if name is None or found.name == name)
-
-    monkeypatch.setattr(sequence_heads, "entry_points", lookup)
-    return lookups
-
-
 def test_an_installed_head_is_loaded_registered_and_loaded_once(
     head_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _CountingEntryPoint.loads = 0
-    _ = _install(monkeypatch, _entry_point("toy", "TOY", _CountingEntryPoint))
+    CountingEntryPoint.loads = 0
+    _ = install_entry_points(
+        monkeypatch, _entry_point("toy", "TOY", CountingEntryPoint)
+    )
 
     params = _params(head="toy")
 
     assert params.head_options() == ToyConfig()
     assert get_head("toy") is TOY
     assert HEADS["toy"] is TOY
-    assert _CountingEntryPoint.loads == 1
+    assert CountingEntryPoint.loads == 1
     assert get_head("toy") is TOY
-    assert _CountingEntryPoint.loads == 1
+    assert CountingEntryPoint.loads == 1
 
 
 def test_a_registered_head_takes_precedence_over_an_entry_point_of_its_name(
     head_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registered = register_head(_toy())
-    lookups = _install(monkeypatch, _entry_point("toy", "MISNAMED"))
+    groups = install_entry_points(monkeypatch, _entry_point("toy", "MISNAMED"))
 
     assert get_head("toy") is registered
-    assert lookups == []
+    assert groups == []
 
 
 def test_the_names_of_installed_heads_are_listed_without_loading_them(
     head_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _CountingEntryPoint.loads = 0
-    _ = _install(monkeypatch, _entry_point("toy", "TOY", _CountingEntryPoint))
+    CountingEntryPoint.loads = 0
+    _ = install_entry_points(
+        monkeypatch, _entry_point("toy", "TOY", CountingEntryPoint)
+    )
 
     assert head_names() == ["gru", "mlp", "tcn", "toy", "transformer", "unet"]
     with pytest.raises(
@@ -214,7 +192,7 @@ def test_the_names_of_installed_heads_are_listed_without_loading_them(
         match=r"'lstm'.*Registered or installed: gru, mlp, tcn, toy, transformer, unet",
     ):
         get_head("lstm")
-    assert _CountingEntryPoint.loads == 0
+    assert CountingEntryPoint.loads == 0
     assert "toy" not in HEADS
 
 
@@ -222,9 +200,9 @@ def test_the_names_of_installed_heads_are_listed_without_loading_them(
     ("installed", "message"),
     [
         (
-            [_entry_point("toy", "TOY", _FailingEntryPoint)],
+            [_entry_point("toy", "TOY", FailingEntryPoint)],
             r"entry point 'toy'.*distribution.*could not be loaded.*"
-            r"ImportError: the head module is broken",
+            r"ImportError: the module is broken",
         ),
         (
             [_entry_point("toy", "NOT_A_HEAD")],
@@ -238,8 +216,18 @@ def test_the_names_of_installed_heads_are_listed_without_loading_them(
             [_entry_point("toy", "TOY"), _entry_point("toy", "TOY")],
             r"2 entry points are named 'toy'.*distribution",
         ),
+        (
+            [_entry_point("toy", "ToyHeadSpec")],
+            r"entry point 'toy'.*distribution.*is a type, not a HeadSpec",
+        ),
     ],
-    ids=["load-raises", "not-a-spec", "mismatched-name", "two-of-one-name"],
+    ids=[
+        "load-raises",
+        "not-a-spec",
+        "mismatched-name",
+        "two-of-one-name",
+        "a-class-not-an-instance",
+    ],
 )
 def test_a_bad_entry_point_is_refused_and_registers_nothing(
     head_registry: None,
@@ -247,32 +235,11 @@ def test_a_bad_entry_point_is_refused_and_registers_nothing(
     installed: list[EntryPoint],
     message: str,
 ) -> None:
-    _ = _install(monkeypatch, *installed)
+    _ = install_entry_points(monkeypatch, *installed)
 
     with pytest.raises(ValueError, match=message):
         _ = _params(head="toy")
     assert "toy" not in HEADS
-
-
-def _child(
-    tmp_path: Path, entry_points_txt: str, module_source: str, script: str
-) -> subprocess.CompletedProcess[str]:
-    """Run *script* in a fresh interpreter that sees a distribution ``x``."""
-    dist_info = tmp_path / "x.dist-info"
-    dist_info.mkdir()
-    _ = (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: x\nVersion: 1.0\n", encoding="utf-8"
-    )
-    _ = (dist_info / "entry_points.txt").write_text(entry_points_txt, encoding="utf-8")
-    _ = (tmp_path / "x_heads.py").write_text(
-        textwrap.dedent(module_source), encoding="utf-8"
-    )
-    inherited = os.environ.get("PYTHONPATH")
-    path = os.pathsep.join([str(tmp_path), inherited] if inherited else [str(tmp_path)])
-    return run_child(
-        [sys.executable, "-c", textwrap.dedent(script)],
-        env={**os.environ, "PYTHONPATH": path},
-    )
 
 
 _HEAD_MODULE = """
@@ -322,11 +289,11 @@ def test_a_fresh_interpreter_finds_a_head_that_a_distribution_installs(
         print("OK")
     """
 
-    proc = _child(
+    proc = run_with_distribution(
         tmp_path,
         "[mosaic.sequence_heads]\nx-head = x_heads:SPEC\n",
-        _HEAD_MODULE,
-        script,
+        {"x_heads": _HEAD_MODULE},
+        [sys.executable, "-c", textwrap.dedent(script)],
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -343,11 +310,11 @@ def test_a_refusal_names_the_distribution_of_the_entry_point(tmp_path: Path) -> 
             print(error)
     """
 
-    proc = _child(
+    proc = run_with_distribution(
         tmp_path,
         "[mosaic.sequence_heads]\nx-head = x_heads:MISNAMED\n",
-        _HEAD_MODULE,
-        script,
+        {"x_heads": _HEAD_MODULE},
+        [sys.executable, "-c", textwrap.dedent(script)],
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -360,7 +327,7 @@ def test_an_installed_head_enters_the_run_identity_like_a_registered_one(
     by_python = register_head(_toy())
     expected = _params(head="toy", head_revision=2).identity_dump()
     del HEADS[by_python.name]
-    _ = _install(monkeypatch, _entry_point("toy", "TOY"))
+    _ = install_entry_points(monkeypatch, _entry_point("toy", "TOY"))
 
     installed = _params(head="toy", head_revision=2).identity_dump()
 
