@@ -158,42 +158,24 @@ def test_axes_map_source_axes_to_world_axes(tmp_path: Path) -> None:
     np.testing.assert_allclose(first["Z"], source_y.mean(axis=1) * 0.01)
 
 
-@pytest.mark.parametrize(
-    "axes",
-    [
-        ("x", "z", "y"),
-        ("-x", "y", "z"),
-        ("-x", "-y", "-z"),
-    ],
-)
-def test_a_reflection_is_refused_at_construction(axes: tuple[str, str, str]) -> None:
+def test_a_reflection_is_refused_at_construction() -> None:
     with pytest.raises(ValidationError, match="reflection"):
-        _ = Zebrafish3dWorkflowParams(axes=axes)
+        _ = Zebrafish3dWorkflowParams(axes=("x", "z", "y"))
 
 
-@pytest.mark.parametrize("axes", [("x", "-x", "y"), ("x", "y", "y"), ("-z", "x", "z")])
-def test_a_repeated_axis_is_refused_at_construction(axes: tuple[str, str, str]) -> None:
+def test_a_repeated_axis_is_refused_at_construction() -> None:
     with pytest.raises(ValidationError, match="more than once"):
-        _ = Zebrafish3dWorkflowParams(axes=axes)
+        _ = Zebrafish3dWorkflowParams(axes=("x", "-x", "y"))
 
 
-@pytest.mark.parametrize("axes", [("x", "y", "w"), ("x", "y", "--z"), ("x", "y", "")])
-def test_an_unknown_axis_is_refused_at_construction(axes: tuple[str, str, str]) -> None:
+def test_an_unknown_axis_is_refused_at_construction() -> None:
     with pytest.raises(ValidationError, match="axis"):
-        _ = Zebrafish3dWorkflowParams(axes=axes)
+        _ = Zebrafish3dWorkflowParams(axes=("x", "y", "w"))
 
 
-@pytest.mark.parametrize(
-    "axes",
-    [
-        ("x", "y", "z"),
-        ("x", "-z", "y"),
-        ("-x", "-y", "z"),
-        ("y", "-x", "z"),
-        ("y", "x", "-z"),
-    ],
-)
-def test_a_proper_rotation_is_accepted(axes: tuple[str, str, str]) -> None:
+def test_a_proper_rotation_is_accepted() -> None:
+    axes = ("x", "-z", "y")
+
     assert Zebrafish3dWorkflowParams(axes=axes).axes == axes
 
 

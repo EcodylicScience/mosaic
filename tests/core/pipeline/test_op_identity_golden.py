@@ -467,9 +467,8 @@ def _default_convert_variant[P: TrackConvertParams](
 def _zebrafish_3d_convert_variant() -> str:
     """The zebrafish 3D converter's default variant.
 
-    The value was minted before its axes validator and world transform moved to
-    ``world_frame``, so a change to either that moves the converter's params dump
-    or version shows here.
+    It pins the converter's params dump and version, so a change to the shared
+    axes validator or world transform that moves either shows here.
     """
     from mosaic.core.track_library.zebrafish_3d_workflow import (
         Zebrafish3dWorkflowConverter,

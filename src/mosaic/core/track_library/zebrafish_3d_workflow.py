@@ -47,7 +47,7 @@ from typing import Annotated, Final, override
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
@@ -59,6 +59,11 @@ from mosaic.core.track_converter import (
 )
 from mosaic.core.track_library.csv_columns import read_numeric_csv
 from mosaic.core.track_library.helpers import norm_hint
+from mosaic.core.track_library.world_frame import (
+    WorldAxes,
+    complete_keypoint_center,
+    to_world,
+)
 
 _FRAME_COLUMN: Final = "frame_index"
 _COLUMN_PATTERN: Final = re.compile(r"^fish(\d+)_(.+)_([xyz])$")
@@ -76,33 +81,6 @@ _AXES_DESCRIPTION = (
 )
 
 
-def _axis_index_and_sign(axis: str) -> tuple[int, int]:
-    """Return the source axis index and sign that *axis* names.
-
-    Raises:
-        ValueError: If *axis* is not ``x``, ``y`` or ``z`` with an optional
-            leading ``-``.
-    """
-    name = axis[1:] if axis.startswith("-") else axis
-    if name not in _SOURCE_AXES:
-        msg = f"{axis!r} is not an axis: use x, y or z with an optional leading '-'"
-        raise ValueError(msg)
-    return _SOURCE_AXES.index(name), -1 if axis.startswith("-") else 1
-
-
-def _rotation_matrix(axes: tuple[str, str, str]) -> npt.NDArray[np.float64]:
-    """The signed permutation that maps source axes to the world axes *axes* name.
-
-    Row ``i`` selects the source axis of world axis ``i``. A leading ``-`` negates
-    it. Only its determinant is used.
-    """
-    matrix = np.zeros((3, 3), dtype=np.float64)
-    for world, axis in enumerate(axes):
-        source, sign = _axis_index_and_sign(axis)
-        matrix[world, source] = sign
-    return matrix
-
-
 class Zebrafish3dWorkflowParams(TimedTrackConvertParams):
     """Everything that determines the converter's output besides the file."""
 
@@ -111,28 +89,7 @@ class Zebrafish3dWorkflowParams(TimedTrackConvertParams):
         Field(gt=0.0, allow_inf_nan=False),
         Declared(_METERS_PER_UNIT_DESCRIPTION),
     ] = 0.01
-    axes: Annotated[tuple[str, str, str], Declared(_AXES_DESCRIPTION)] = (
-        "x",
-        "y",
-        "z",
-    )
-
-    @field_validator("axes", check_fields=False)
-    @classmethod
-    def _check_axes(cls, axes: tuple[str, str, str]) -> tuple[str, str, str]:
-        """Refuse an unknown axis, an axis used twice, and a reflection."""
-        sources = [_axis_index_and_sign(axis)[0] for axis in axes]
-        if len(set(sources)) != len(sources):
-            msg = f"axes {axes} use a source axis more than once"
-            raise ValueError(msg)
-        if round(float(np.linalg.det(_rotation_matrix(axes)))) < 0:
-            msg = (
-                f"axes {axes} are a reflection, which would mirror the tracks. "
-                "Use a proper rotation: a signed permutation of x, y, z with "
-                "determinant +1"
-            )
-            raise ValueError(msg)
-        return axes
+    axes: Annotated[WorldAxes, Declared(_AXES_DESCRIPTION)] = ("x", "y", "z")
 
 
 class _Header:
@@ -236,7 +193,6 @@ class Zebrafish3dWorkflowConverter(TrackConverter[Zebrafish3dWorkflowParams]):
         rate = conversion_rate(params.fps, params.fallback_fps, hints, str(path))
         cells = read_numeric_csv(path, header.columns, integer_columns=(_FRAME_COLUMN,))
         frames = np.asarray(cells[_FRAME_COLUMN], dtype=np.int64)
-        picks = [_axis_index_and_sign(axis) for axis in params.axes]
 
         group = norm_hint(hints.group) or ""
         sequence = norm_hint(hints.sequence) or path.stem
@@ -249,12 +205,7 @@ class Zebrafish3dWorkflowConverter(TrackConverter[Zebrafish3dWorkflowParams]):
                 for axis, name in enumerate(axis_columns):
                     source[:, keypoint, axis] = cells[name]
             present = ~np.isnan(source).all(axis=(1, 2))
-            scaled = source[present] * params.meters_per_unit
-            # A permutation and a sign, not a matrix product, so a NaN on one
-            # source axis stays on the world axis it maps to.
-            world = np.stack(
-                [sign * scaled[:, :, index] for index, sign in picks], axis=2
-            )
+            world = to_world(source[present], params.meters_per_unit, params.axes)
             per_fish.append(
                 _fish_columns(
                     number,
@@ -295,11 +246,7 @@ def _fish_columns(
     Returns:
         The columns, in the table's order.
     """
-    complete = ~np.isnan(world).any(axis=2)
-    counts = complete.sum(axis=1)
-    totals = np.where(complete[:, :, None], world, 0.0).sum(axis=1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        center = np.where(counts[:, None] > 0, totals / counts[:, None], np.nan)
+    center = complete_keypoint_center(world)
 
     n_rows = len(frames)
     columns: dict[str, npt.NDArray[np.generic]] = {
