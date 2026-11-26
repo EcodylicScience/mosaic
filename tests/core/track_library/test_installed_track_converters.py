@@ -14,7 +14,7 @@ import textwrap
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import override
@@ -29,11 +29,18 @@ from mosaic.core.pipeline.graph.resolve import (
     fill_builtin_registries,
     registry_snapshot,
 )
+from mosaic.core.pipeline.tracks_identity import (
+    convert_variant_payload,
+    converter_op,
+    tracks_run_id,
+)
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import (
     load_tracks_raw_index_frame,
     write_tracks_raw_index_rows,
 )
 from mosaic.core.track_converter import (
+    INSTALLED_STATE,
     TRACK_CONVERTER_GROUP,
     TRACK_CONVERTERS,
     TrackConverter,
@@ -587,6 +594,80 @@ def test_the_built_in_registries_hold_the_installed_formats_before_a_snapshot(
 
         assert ROWS in before["TRACK_CONVERTERS"]
         assert registry_snapshot() == before
+
+
+# --- The distribution a conversion records -----------------------------------
+
+CONVERTING_SOURCE = (
+    "import pandas as pd\n"
+    + HEADER
+    + """
+
+class AcmeConverter(TrackConverter):
+    src_format = "acme__rows"
+    version = "1.0"
+    output_schema = "mosaic_v1"
+    carries_tracklets = True
+
+    def convert(self, path, params, hints):
+        rows = pd.read_csv(path)
+        return rows.assign(
+            group=hints.group, time=rows["frame"] / 30.0, X=1.0, Y=2.0
+        )
+"""
+)
+
+
+def _converted_row(tmp_path: Path, src_format: str) -> pd.Series:
+    """Index a raw file of *src_format*, convert it, and return its tracks row."""
+    dataset = make_dataset(tmp_path / "ds", roots=("tracks_raw", "tracks"))
+    dataset.meta["fps_default"] = 30.0
+    raw = dataset.get_root("tracks_raw")
+    _ = (raw / "s.csv").write_text("frame,id\n0,0\n1,0\n")
+    _ = dataset.index_tracks_raw([raw], patterns="*.csv", src_format=src_format)
+    outcome = dataset.convert_all_tracks()
+    assert (outcome.converted, outcome.failed) == (1, 0)
+    index = read_tracks_index(dataset)
+    assert len(index) == 1
+    return index.iloc[0]
+
+
+def test_a_conversion_records_the_distribution_and_leaves_the_variant_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = plugin_module(tmp_path, monkeypatch, CONVERTING_SOURCE)
+    found = _entry_point(ROWS, module, "AcmeConverter")
+
+    with installed_track_converters(monkeypatch, found):
+        cls = type(get_track_converter(ROWS))
+        minted = tracks_run_id(
+            converter_op(ROWS),
+            cls.version,
+            convert_variant_payload(cls.Params().identity_dump()),
+        )
+
+        first = _converted_row(tmp_path / "first", ROWS)
+        origin = track_converter_origin(ROWS)
+        assert origin is not None
+        INSTALLED_STATE.origins[ROWS] = replace(origin, version="9.9.9")
+        second = _converted_row(tmp_path / "second", ROWS)
+
+    assert first["converter_distribution"] == "acme-tracks 1.2.0"
+    assert second["converter_distribution"] == "acme-tracks 9.9.9"
+    assert first["run_id"] == second["run_id"] == minted
+
+
+def test_a_built_in_conversion_records_a_blank_distribution(tmp_path: Path) -> None:
+    raw = tmp_path / "ds" / "raw"
+    write_trex_npz(raw / "myseq_fish0.npz", individual=0)
+    dataset = make_dataset(tmp_path / "ds", roots=("tracks_raw", "tracks"))
+    dataset.meta["fps_default"] = 30.0
+    _ = dataset.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    _ = dataset.convert_all_tracks()
+
+    row = read_tracks_index(dataset).iloc[0]
+
+    assert row["converter_distribution"] == ""
 
 
 # --- A format no converter holds ---------------------------------------------

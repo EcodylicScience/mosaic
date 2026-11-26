@@ -24,6 +24,7 @@ from mosaic.core.entry import EntryKeyCollisionError, make_entry_key
 from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.scope import Scope
+from mosaic.entry_points import InstalledOrigin
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import (
     AmbiguousTracksVariant,
@@ -186,7 +187,7 @@ def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) ->
 
 def test_the_appearance_cell_precedes_the_tracklets_cell() -> None:
     """The cell joined the end of the header, and an older index lacks only a tail."""
-    assert TRACKS_INDEX_COLUMNS[-4:-2] == ["appearance_abs_path", "carries_tracklets"]
+    assert TRACKS_INDEX_COLUMNS[-5:-3] == ["appearance_abs_path", "carries_tracklets"]
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["appearance_abs_path"].default == ""
 
@@ -1862,17 +1863,46 @@ def _tracklets_row(
     )
 
 
+def _distribution_row(
+    ds: Dataset, sequence: str, converter_origin: InstalledOrigin | None = None
+) -> None:
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence=sequence,
+        out_path=_track_parquet(ds, sequence),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=None,
+        converter_origin=converter_origin,
+    )
+
+
+def _origin(distribution: str, version: str) -> InstalledOrigin:
+    return InstalledOrigin(
+        group="mosaic.track_converters",
+        name="acme__rows",
+        distribution=distribution,
+        version=version,
+        value="acme_tracks:Rows",
+    )
+
+
 def test_the_tracklets_cell_precedes_the_pair_cells() -> None:
     """The pair cells join the end of the header, and an older index lacks only a tail."""
-    assert TRACKS_INDEX_COLUMNS[-3:] == [
+    assert TRACKS_INDEX_COLUMNS[-4:] == [
         "carries_tracklets",
         "pair_frames",
         "ids_per_frame",
+        "converter_distribution",
     ]
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["carries_tracklets"].default == ""
     assert fields["pair_frames"].default == ""
     assert fields["ids_per_frame"].default == ""
+    assert fields["converter_distribution"].default == ""
     assert "carries_tracklets" not in TRACKS_INDEX_PATH_COLUMNS
 
 
@@ -1895,6 +1925,61 @@ def test_an_index_without_the_tracklets_column_reads_and_writes_blank(
     frame = read_tracks_index(ds).set_index("sequence")
     assert str(frame.loc["old", "carries_tracklets"]) == ""
     assert str(frame.loc["new", "carries_tracklets"]) == "false"
+
+
+def test_an_index_without_the_distribution_column_reads_and_writes_blank(
+    tmp_path: Path,
+) -> None:
+    """An index written before the column adopts it on read and on write."""
+    ds = _dataset(tmp_path)
+    _distribution_row(ds, "old")
+    path = tracks_index_path(ds)
+    older = pd.read_csv(path, dtype=str, keep_default_na=False)
+    older.drop(columns=["converter_distribution"]).to_csv(path, index=False)
+    assert "converter_distribution" not in path.read_text().splitlines()[0]
+
+    assert str(read_tracks_index(ds).iloc[0]["converter_distribution"]) == ""
+
+    _distribution_row(ds, "new", _origin("acme-tracks", "1.2.0"))
+    assert path.read_text().splitlines()[0].split(",") == TRACKS_INDEX_COLUMNS
+    frame = read_tracks_index(ds).set_index("sequence")
+    assert str(frame.loc["old", "converter_distribution"]) == ""
+    assert str(frame.loc["new", "converter_distribution"]) == "acme-tracks 1.2.0"
+
+
+@pytest.mark.parametrize(
+    ("origin", "cell"),
+    [
+        (_origin("acme-tracks", "1.2.0"), "acme-tracks 1.2.0"),
+        (_origin("acme-tracks", ""), "acme-tracks"),
+        (_origin("", ""), ""),
+        (None, ""),
+    ],
+    ids=["named", "unversioned", "unknown-distribution", "built-in"],
+)
+def test_the_writer_records_the_converter_distribution_as_text(
+    tmp_path: Path, origin: InstalledOrigin | None, cell: str
+) -> None:
+    ds = _dataset(tmp_path)
+    _distribution_row(ds, "s", origin)
+    assert str(read_tracks_index(ds).iloc[0]["converter_distribution"]) == cell
+
+
+def test_a_draft_carries_the_converter_origin_to_its_row(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    TracksRowDraft(
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=None,
+        converter_origin=_origin("acme-tracks", "1.2.0"),
+    ).write(ds)
+    row = read_tracks_index(ds).iloc[0]
+    assert str(row["converter_distribution"]) == "acme-tracks 1.2.0"
 
 
 @pytest.mark.parametrize(

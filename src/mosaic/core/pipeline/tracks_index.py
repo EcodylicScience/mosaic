@@ -92,6 +92,7 @@ from mosaic.core.pipeline.variant_rows import (
     validated_entries,
 )
 from mosaic.core.schema import ensure_track_schema
+from mosaic.entry_points import InstalledOrigin
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -335,6 +336,13 @@ class TracksIndexRow(RunIndexRowBase):
     ids. Text and blank-is-unknown like the other count cells, and read by
     :func:`read_pair_frames`, :func:`read_ids_per_frame` and
     :func:`records_no_ids`.
+
+    ``converter_distribution`` is the installed package that supplied the
+    converter of a conversion, as the distribution's name and version,
+    ``<name> <version>``. Blank for a built-in converter, for a converter that a
+    caller registered in Python, and for a distribution that is unknown. It is
+    provenance: recorded and never hashed, so a release of the package that
+    leaves the output unchanged keeps the variant.
     """
 
     group: str
@@ -359,6 +367,7 @@ class TracksIndexRow(RunIndexRowBase):
     carries_tracklets: str = ""
     pair_frames: str = ""
     ids_per_frame: str = ""
+    converter_distribution: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -2271,6 +2280,7 @@ class TracksRowDraft:
     first_frame: int | None = None
     consumed_composition: str | None = None
     appearance_path: Path | None = None
+    converter_origin: InstalledOrigin | None = None
 
     def write(self, ds: Dataset) -> None:
         """Write the row, as :func:`write_tracks_row` does."""
@@ -2299,6 +2309,7 @@ def write_tracks_row(
     first_frame: int | None = None,
     consumed_composition: str | None = None,
     appearance_path: Path | None = None,
+    converter_origin: InstalledOrigin | None = None,
 ) -> None:
     """Record one standardized-tracks table.
 
@@ -2347,6 +2358,11 @@ def write_tracks_row(
     records a blank for a producer that cannot say. A caller always passes it,
     so a blank is never an omission.
 
+    ``converter_origin`` is the entry point and distribution of an installed
+    converter, which a conversion passes and every other producer leaves
+    ``None``. It is recorded as the ``converter_distribution`` cell,
+    ``<name> <version>``, and ``None`` records a blank.
+
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
     what that media was, and a re-transcode then shows as drift rather than as a
@@ -2383,6 +2399,7 @@ def write_tracks_row(
                 first_frame=first_frame,
                 consumed_composition=consumed_composition,
                 appearance_path=appearance_path,
+                converter_origin=converter_origin,
             )
         ],
     )
@@ -2636,7 +2653,15 @@ def _tracks_row(
         ),
         pair_frames="" if measures is None else _pair_frames_cell(measures),
         ids_per_frame="" if measures is None else _ids_per_frame_cell(measures),
+        converter_distribution=_converter_distribution_cell(draft.converter_origin),
     )
+
+
+def _converter_distribution_cell(origin: InstalledOrigin | None) -> str:
+    """The ``converter_distribution`` cell of *origin*: ``<name> <version>``, or blank."""
+    if origin is None:
+        return ""
+    return f"{origin.distribution} {origin.version}".strip()
 
 
 # Reconciled through the shared registry, beside the tracker indexes, so one

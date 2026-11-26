@@ -104,6 +104,7 @@ from .track_converter import (
     ensure_track_converters_registered,
     get_track_converter,
     merge_on_column_union,
+    track_converter_origin,
 )
 from .label_converter import (
     LabelConverter,
@@ -10672,6 +10673,7 @@ class Dataset:
                                 source_md5=source_md5,
                                 consumed_source_roots=("tracks_raw",),
                                 carries_tracklets=converter.tracklets(conv_params),
+                                converter_origin=track_converter_origin(src_format),
                             ),
                         )
                     )
@@ -10756,6 +10758,7 @@ class Dataset:
                     source_md5=str(raw_row.get("md5", "")),
                     consumed_source_roots=("tracks_raw",),
                     carries_tracklets=converter.tracklets(conv_params),
+                    converter_origin=track_converter_origin(src_format),
                 ),
             )
         )
@@ -11481,6 +11484,7 @@ class Dataset:
                     source_md5=text_cell(first_row.get("md5", "")),
                     consumed_source_roots=("tracks_raw",),
                     carries_tracklets=converter.tracklets(conv_params),
+                    converter_origin=track_converter_origin(src_format),
                 ),
             )
         )
