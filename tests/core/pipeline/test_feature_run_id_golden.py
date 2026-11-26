@@ -364,6 +364,11 @@ CASES: tuple[Case, ...] = (
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
     Case(
+        case_id="pair-posedistance-pca/dimensions-3",
+        feature="pair-posedistance-pca",
+        params={"dimensions": 3},
+    ),
+    Case(
         case_id="pair-posedistance-pca/scope-a",
         feature="pair-posedistance-pca",
         scope=(("", "seq_a"),),
@@ -1102,6 +1107,28 @@ def test_an_empty_keep_columns_keeps_each_aggregate_run_id(case_id: str) -> None
     assert absent == golden
     assert empty == golden
     assert kept != golden
+
+
+def test_two_dimensions_keep_the_pair_posedistance_pca_run_id() -> None:
+    """Leaving ``dimensions`` out and setting it to 2 are the golden run.
+
+    Three dimensions read other columns, so they are another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(
+        case for case in CASES if case.case_id == "pair-posedistance-pca/default"
+    )
+    golden = read_string_golden(GOLDEN)[case.case_id]
+    params = case.params or {}
+
+    absent = _identifier(case)
+    planar = _identifier(replace(case, params={**params, "dimensions": 2}))
+    spatial = _identifier(replace(case, params={**params, "dimensions": 3}))
+
+    assert absent == golden
+    assert planar == golden
+    assert spatial != golden
 
 
 @pytest.mark.parametrize(

@@ -19,9 +19,11 @@ from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
     Keypoints,
+    ParamIs,
     Prefix,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
@@ -46,7 +48,7 @@ from .helpers import (
     write_bundle,
 )
 from .registry import register_feature
-from .types import INTERPOLATION_CONFIG_DESCRIPTION, InterpolationConfig
+from .types import INTERPOLATION_CONFIG_DESCRIPTION, Dimensions, InterpolationConfig
 
 _INCLUDE_INTRA_A_DESCRIPTION = (
     "Include the pairwise distances between the focal individual's own keypoints."
@@ -74,6 +76,16 @@ _BATCH_SIZE_DESCRIPTION = (
     "doubles the rows each IncrementalPCA partial_fit or transform call "
     "receives."
 )
+
+
+_DIMENSIONS_DESCRIPTION = (
+    "The number of axes the distances are measured in. 2 reads poseX{k} and "
+    "poseY{k}. 3 also reads poseZ{k} of each selected keypoint and measures "
+    "distances in 3D."
+)
+
+_POSE_Z_PREFIX: Final = "poseZ"
+"""The prefix of the third-axis keypoint columns, as in ``mosaic_world_v1``."""
 
 
 _MODEL_DESCRIPTION = (
@@ -177,6 +189,7 @@ class PairPoseDistancePCA:
         Column(C.seq_col),
         ORDER_COLUMN,
         Keypoints(),
+        When(Prefix(_POSE_Z_PREFIX), (ParamIs("dimensions", equals=3),)),
     )
     # One PC column per component, PC0 to PC<n_components - 1>. The frame column
     # contains the order column's values, and is written when the input has frame.
@@ -212,6 +225,7 @@ class PairPoseDistancePCA:
             bool, Declared(_DUPLICATE_PERSPECTIVE_DESCRIPTION)
         ] = True
         n_components: Annotated[int, Declared(_N_COMPONENTS_DESCRIPTION)] = 6
+        dimensions: Annotated[Dimensions, Declared(_DIMENSIONS_DESCRIPTION)] = 2
         batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = Field(
             default=5000, gt=0
         )
@@ -221,14 +235,17 @@ class PairPoseDistancePCA:
 
         @override
         def identity_dump(self) -> dict[str, object]:
-            """The hashed params, with ``model`` left out while it is unset.
+            """The hashed params, with ``model`` and ``dimensions`` left out by default.
 
-            A run that fits has the identity it had before the field existed, so
-            only the version segment of its run id moves.
+            ``model`` is left out while unset and ``dimensions`` while 2. A run
+            that fits in the plane has the identity it had before either field
+            existed, so only the version segment of its run id moves.
             """
             dumped = super().identity_dump()
             if self.model is None:
                 del dumped["model"]
+            if self.dimensions == 2:
+                del dumped["dimensions"]
             return dumped
 
     def __init__(
@@ -426,11 +443,21 @@ class PairPoseDistancePCA:
         """Return the number of pose points being used."""
         return len(self.params.pose.selected_indices())
 
+    def _pose_columns(self) -> list[str]:
+        """The pose columns in axis-major order: x, then y, then in 3D z."""
+        x_cols, y_cols = self.params.pose.keypoint_columns()
+        pose_cols = x_cols + y_cols
+        if self.params.dimensions == 3:
+            pose_cols += [
+                f"{_POSE_Z_PREFIX}{index}"
+                for index in self.params.pose.selected_indices()
+            ]
+        return pose_cols
+
     def _prep_pairs(
         self, df: pd.DataFrame
     ) -> tuple[pd.DataFrame, list[tuple[str, int, int]], np.ndarray, np.ndarray]:
-        x_cols, y_cols = self.params.pose.keypoint_columns()
-        pose_cols = x_cols + y_cols
+        pose_cols = self._pose_columns()
         order_col = resolve_order_col(df)
 
         ensure_columns(df, [C.id_col, C.seq_col, order_col] + pose_cols)
@@ -484,8 +511,7 @@ class PairPoseDistancePCA:
     def _feature_batches(
         self, df: pd.DataFrame, for_fit: bool
     ) -> Iterator[tuple[np.ndarray, _BatchMeta, np.ndarray]]:
-        x_cols, y_cols = self.params.pose.keypoint_columns()
-        pose_cols = x_cols + y_cols
+        pose_cols = self._pose_columns()
         order_col = resolve_order_col(df)
 
         df_small, pairs, tri_i, tri_j = self._prep_pairs(df)
@@ -544,10 +570,7 @@ class PairPoseDistancePCA:
                 yield feat_mat, _BatchMeta(frame_arr, id1, id2), persp
 
     def _pose_to_points(self, row_vals: np.ndarray) -> np.ndarray:
-        N = self._effective_pose_n()
-        xs = row_vals[:N]
-        ys = row_vals[N:]
-        return np.stack([xs, ys], axis=1)
+        return row_vals.reshape(self.params.dimensions, -1).T
 
     @staticmethod
     def intra_lower_tri(
@@ -556,7 +579,7 @@ class PairPoseDistancePCA:
         """Return the distances between one animal's keypoints at the given pairs.
 
         Args:
-            pts: ``(n_keypoints, 2)`` keypoint coordinates.
+            pts: ``(n_keypoints, axes)`` keypoint coordinates.
             tri_i: Row indices of the keypoint pairs, from ``np.tril_indices``.
             tri_j: Column indices of the keypoint pairs.
 
@@ -570,8 +593,8 @@ class PairPoseDistancePCA:
         """Return the distance from every keypoint of A to every keypoint of B.
 
         Args:
-            pts_a: ``(n_keypoints, 2)`` coordinates of the first animal.
-            pts_b: ``(n_keypoints, 2)`` coordinates of the second animal.
+            pts_a: ``(n_keypoints, axes)`` coordinates of the first animal.
+            pts_b: ``(n_keypoints, axes)`` coordinates of the second animal.
 
         Returns:
             The ``n_keypoints * n_keypoints`` distances in row-major order, A's

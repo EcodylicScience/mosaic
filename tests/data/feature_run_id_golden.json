@@ -70,6 +70,7 @@
   "pair-keypoints/heading": "0.3-1875422df6",
   "pair-keypoints/inter-distances": "0.3-bdc199ac90",
   "pair-posedistance-pca/default": "0.4-c217c7a3fd",
+  "pair-posedistance-pca/dimensions-3": "0.4-c6792149b3",
   "pair-posedistance-pca/model-scope-a": "0.4-d3b9776931",
   "pair-posedistance-pca/model-scope-ab": "0.4-d3b9776931",
   "pair-posedistance-pca/scope-a": "0.4-a1ebe3550f",

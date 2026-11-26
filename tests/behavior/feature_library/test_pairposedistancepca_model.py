@@ -7,6 +7,7 @@ run and no entry of the scope is read by a fit, so the identity carries none.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import joblib
@@ -265,3 +266,127 @@ def test_the_intra_distances_are_the_lower_triangle_in_row_major_order() -> None
         for j in range(i)
     ]
     assert got.tolist() == pytest.approx(expected, rel=1e-12)
+
+
+# --- the dimensions param -----------------------------------------------------------
+
+
+def _lifted(sequence: str, *, depth: float = 1.0) -> pd.DataFrame:
+    """The planar table with a ``Z`` column and a ``poseZ`` column per keypoint.
+
+    Each height varies by keypoint, frame and individual, scaled by *depth*.
+    """
+    table = _tracks(sequence)
+    heights = (table["frame"] % 4) + 0.5 * table["id"]
+    table["Z"] = depth * heights
+    for k in range(N_KEYPOINTS):
+        table[f"poseZ{k}"] = depth * (heights + 1.5 * k * (1 + table["frame"] % 2))
+    return table
+
+
+def _norm(*components: float) -> float:
+    return float(np.linalg.norm(components))
+
+
+def _frame_vectors(
+    table: pd.DataFrame, axes: tuple[str, ...], distance: Callable[..., float]
+) -> np.ndarray:
+    """One vector per frame of the pair (0, 1), laid out as the feature lays it out.
+
+    A's lower triangle, B's lower triangle, then A to B in row-major order, with
+    each distance computed by *distance* from the keypoint coordinates.
+    """
+    rows: list[list[float]] = []
+    for frame in range(N_FRAMES):
+        at_frame = table[table["frame"] == frame].set_index("id")
+        points = {
+            individual: np.array(
+                [
+                    [at_frame.loc[individual, f"pose{axis}{k}"] for axis in axes]
+                    for k in range(N_KEYPOINTS)
+                ],
+                dtype=float,
+            )
+            for individual in (0, 1)
+        }
+        lower = [(i, j) for i in range(N_KEYPOINTS) for j in range(i)]
+        rows.append(
+            [float(distance(*(points[0][i] - points[0][j]))) for i, j in lower]
+            + [float(distance(*(points[1][i] - points[1][j]))) for i, j in lower]
+            + [
+                float(distance(*(points[0][i] - points[1][j])))
+                for i in range(N_KEYPOINTS)
+                for j in range(N_KEYPOINTS)
+            ]
+        )
+    return np.array(rows)
+
+
+def _fitted_mean(tmp_path: Path, table: pd.DataFrame, **params: object) -> np.ndarray:
+    """The mean vector of the basis fitted on one pair, one perspective."""
+    feature = PairPoseDistancePCA(
+        params={**BASIS, "duplicate_perspective": False, **params}
+    )
+    feature.fit(InputStream(lambda: iter([("g/fit", table)]), n_entries=1))
+    feature.save_state(tmp_path)
+    return np.asarray(joblib.load(tmp_path / "model.joblib")["ipca"].mean_)
+
+
+def _scored(table: pd.DataFrame, **params: object) -> pd.DataFrame:
+    """Fit on *table* and score it."""
+    feature = PairPoseDistancePCA(params={**BASIS, **params})
+    feature.fit(InputStream(lambda: iter([("g/fit", table)]), n_entries=1))
+    return feature.apply(table)
+
+
+def test_the_dimensions_leave_the_identity_while_they_are_two() -> None:
+    default = PairPoseDistancePCA(params=BASIS).params
+    planar = PairPoseDistancePCA(params={**BASIS, "dimensions": 2}).params
+    spatial = PairPoseDistancePCA(params={**BASIS, "dimensions": 3}).params
+
+    assert "dimensions" not in default.identity_dump()
+    assert "dimensions" not in planar.identity_dump()
+    assert spatial.identity_dump()["dimensions"] == 3
+    assert all(
+        params.model_dump()["dimensions"] == expected
+        for params, expected in ((default, 2), (planar, 2), (spatial, 3))
+    )
+
+
+def test_the_planar_vectors_are_the_distances_in_the_plane(tmp_path: Path) -> None:
+    table = _tracks("fit")
+
+    mean = _fitted_mean(tmp_path, table)
+
+    expected = _frame_vectors(table, ("X", "Y"), np.hypot).mean(axis=0)
+    assert mean.shape == expected.shape
+    assert mean.tolist() == pytest.approx(expected.tolist(), rel=1e-6)
+
+
+def test_the_spatial_vectors_are_the_distances_in_three_axes(tmp_path: Path) -> None:
+    table = _lifted("fit")
+
+    mean = _fitted_mean(tmp_path, table, dimensions=3)
+
+    expected = _frame_vectors(table, ("X", "Y", "Z"), _norm).mean(axis=0)
+    planar = _frame_vectors(table, ("X", "Y"), np.hypot).mean(axis=0)
+    assert mean.shape == expected.shape
+    assert mean.tolist() == pytest.approx(expected.tolist(), rel=1e-6)
+    assert not np.allclose(mean, planar)
+
+
+def test_a_flat_spatial_table_scores_as_the_planar_table_does() -> None:
+    flat = _lifted("fit", depth=0.0)
+
+    spatial = _scored(flat, dimensions=3)
+    planar = _scored(_tracks("fit"), dimensions=2)
+
+    pd.testing.assert_frame_equal(spatial, planar, check_exact=True)
+
+
+def test_two_dimensions_score_as_an_absent_dimensions_does() -> None:
+    table = _tracks("fit")
+
+    pd.testing.assert_frame_equal(
+        _scored(table, dimensions=2), _scored(table), check_exact=True
+    )

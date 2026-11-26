@@ -438,6 +438,7 @@ Principal components of the pose distances between every pair, per frame.
 | `include_inter` | `boolean` | `true` |  | Include the pairwise distances between the focal individual's keypoints and the other individual's keypoints. |
 | `duplicate_perspective` | `boolean` | `true` |  | Emit each pair twice, once with each individual as id1, the focal one. False emits only the row set with the lower-id individual as id1. |
 | `n_components` | `integer` | `6` |  | The number of principal components the PCA retains. |
+| `dimensions` | `2` \| `3` | `2` |  | The number of axes the distances are measured in. 2 reads poseX{k} and poseY{k}. 3 also reads poseZ{k} of each selected keypoint and measures distances in 3D. |
 | `batch_size` | `integer` | `5000` | > `0` | How many pair-frames are read per batch. duplicate_perspective doubles the rows each IncrementalPCA partial_fit or transform call receives. |
 | `model` | `PairPoseDistancePCAModelArtifact` \| `None` | `null` |  | The model.joblib of a pair-posedistance-pca run to apply, such as a fit step scoped to the training groups. Unset, the feature fits a basis on the entries in its scope. Set, nothing is fitted, the entries in scope leave the run id, and n_components, pose, include_intra_A, include_intra_B and include_inter must equal the fit's. |
 

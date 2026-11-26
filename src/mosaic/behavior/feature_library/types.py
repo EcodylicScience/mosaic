@@ -9,6 +9,7 @@ from mosaic.core.params import Declared, DeclaredModel
 __all__ = [
     "INTERPOLATION_CONFIG_DESCRIPTION",
     "PAYLOAD_COLUMNS_DESCRIPTION",
+    "Dimensions",
     "InterpolationConfig",
     "PayloadColumnNames",
     "PoolConfig",
@@ -96,6 +97,10 @@ PAYLOAD_COLUMNS_DESCRIPTION = (
 ``TemporalStackingFeature`` read every numeric payload column of their input
 unless the field names some.
 """
+
+
+type Dimensions = Literal[2, 3]
+"""The number of spatial axes a feature measures in: 2 for the plane, 3 for space."""
 
 
 class InterpolationConfig(DeclaredModel):
