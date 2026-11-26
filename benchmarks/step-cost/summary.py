@@ -6,14 +6,16 @@ Reads OUT/results.tsv, which timed.py appends to, and prints each run's wall
 time. It then prints the target figures: the wall of one cached step process
 (``mosaic run --graph-request`` and ``pipeline settle``), the 61-step recipe
 cached in one process, and the parent's cost per entry of the cold speed-angvel
-step in thread and in process mode at WORKERS (default 8). That cost is the cold
-run's wall less the shorter of the cached runs of the same mode, over ENTRIES
-(default 160). It prints the serial cold wall over the thread-mode cold wall at
-WORKERS, and for the cold process-mode run the mean CPU of its WORKERS busiest
-child processes and the CPU seconds of the parent and of those workers, from its
-``.cpu.txt``. Last it prints the bytes per entry that the process-mode run of
-pipes.py sent to its workers and received from them, from OUT/pipes.tsv. A run
-that is missing leaves its figure out.
+step in thread and in process mode at WORKERS (default 8). That cost is the
+cold run's wall less the shorter of the cached runs of the same mode, over
+ENTRIES (default 160). It prints the serial cold wall over the thread-mode cold
+wall at WORKERS, and for the cold process-mode run the mean CPU of its WORKERS
+busiest child processes and the CPU seconds of the parent and of those workers,
+from its ``.cpu.txt``, and the build and apply seconds of its entries from its
+``.builds.txt``. Last it prints the bytes per entry that the process-mode run
+of pipes.py sent to its workers and received from them, and the mean bytes each
+worker was sent at its spawn, from OUT/pipes.tsv. A run that is missing leaves
+its figure out.
 """
 
 import re
@@ -76,16 +78,25 @@ def main() -> None:
                 f" over {len(children)}, CPU seconds of the parent {parent[0][2]:.1f},"
                 f" of the workers {sum(seconds for _, _, seconds in children):.1f}"
             )
+    builds = out / f"speed-angvel cold, process{workers}.builds.txt"
+    if builds.is_file():
+        for line in builds.read_text().splitlines():
+            print(f"cold process {workers}: {line}")
     pipes = out / "pipes.tsv"
     if pipes.is_file():
         for line in pipes.read_text().splitlines():
-            label, sent, received, wall, status = line.split("\t")
+            label, sent, received, wall, status, spawned, spawn_bytes = line.split("\t")
             marker = "" if status == "0" else f", exit {status}"
             print(
                 f"pipe bytes per entry, {label}: {int(sent) / entries:,.0f} to the"
                 f" workers, {int(received) / entries:,.0f} from them"
                 f" (wall {wall} s{marker})"
             )
+            if int(spawned):
+                print(
+                    f"spawn bytes per worker, {label}:"
+                    f" {int(spawn_bytes) / int(spawned):,.0f} over {spawned} workers"
+                )
 
 
 if __name__ == "__main__":

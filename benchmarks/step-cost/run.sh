@@ -6,8 +6,9 @@
 # WORK holds the datasets (several GB at the default size) and OUT the results.
 # Sections run in the order given; the default runs all but profile:
 #   build        write ENTRIES synthetic track files and convert them (base)
-#   cold         speed-angvel cold at four worker settings, then cached in
-#                thread and in process mode
+#   cold         speed-angvel cold at four worker settings, the build and
+#                apply seconds of the process run, then cached in thread and
+#                in process mode
 #   pipes        speed-angvel cold in process mode, counting the bytes this
 #                process sends to its workers and receives from them
 #   request      the six-step recipe cold and cached, one process per step,
@@ -26,7 +27,7 @@
 set -u
 
 if [ $# -lt 2 ]; then
-    sed -n '2,25p' "$0"
+    sed -n '2,26p' "$0"
     exit 2
 fi
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -83,6 +84,8 @@ section_cold() {
             -m "$WORK/speed_$name/dataset.yaml" --recipe "@$RECIPES/speed.json" \
             --workers "$workers" --parallel-mode "$mode"
     done
+    "$PY" "$here/builds.py" "$WORK/speed_process$WORKERS" \
+        > "$OUT/speed-angvel cold, process$WORKERS.builds.txt"
     for attempt in 1 2; do
         timed "speed-angvel recipe cached, one process, $attempt" "$PY" -m mosaic \
             pipeline run -m "$WORK/speed_thread$WORKERS/dataset.yaml" \

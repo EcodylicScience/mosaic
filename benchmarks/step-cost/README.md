@@ -13,19 +13,20 @@ results. Run it on an idle machine, under `heavy` where installed. The
 sections and the environment variables (`PY`, `ENTRIES`, `WORKERS`) are listed
 at the top of `run.sh`.
 
-| File | Role |
-| --- | --- |
-| `run.sh` | builds the dataset and runs each section |
-| `make_raw.py` | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry |
-| `recipes/` | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60) |
-| `timed.py` | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv` |
-| `summary.py` | prints `results.tsv`, the target figures, the CPU of the process workers and the pipe bytes per entry |
-| `pipes.py` | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, in `OUT/pipes.tsv` |
-| `micro.py` | per-entry operations timed alone |
-| `stacksample.py` | wall-clock stack samples of every thread of one `mosaic` command |
-| `cli_run.py` | runs the `mosaic` CLI in-process for `pipes.py` and `stacksample.py`, with its exit status and wall |
-| `pstat.py` | the costliest functions of a cProfile file |
-| `fingerprint.py` | hashes of a dataset's outputs and index rows |
+| File             | Role                                                                                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run.sh`         | builds the dataset and runs each section                                                                                                                                   |
+| `make_raw.py`    | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry                                                                          |
+| `recipes/`       | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60)                                                                           |
+| `timed.py`       | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv`                                                                                    |
+| `summary.py`     | prints `results.tsv`, the target figures, the CPU of the process workers, their build and apply seconds, the pipe bytes per entry and the spawn bytes per worker           |
+| `pipes.py`       | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, and the bytes each worker is sent at its spawn, in `OUT/pipes.tsv` |
+| `builds.py`      | the build seconds and apply seconds of a dataset's feature runs, from their run-logs                                                                                       |
+| `micro.py`       | per-entry operations timed alone                                                                                                                                           |
+| `stacksample.py` | wall-clock stack samples of every thread of one `mosaic` command                                                                                                           |
+| `cli_run.py`     | runs the `mosaic` CLI in-process for `pipes.py` and `stacksample.py`, with its exit status and wall                                                                        |
+| `pstat.py`       | the costliest functions of a cProfile file                                                                                                                                 |
+| `fingerprint.py` | hashes of a dataset's outputs and index rows                                                                                                                               |
 
 A change that must keep run ids and outputs runs the bench before and after over
 the same `WORK` path and compares the `fingerprint-*.txt` files.
@@ -299,4 +300,89 @@ before and after. So are the fingerprints of the 21 datasets that
 `tests/core/pipeline/test_output_byte_identity.py` leaves under a fixed
 `--basetemp` (seven cases, each in serial, thread 3 and process 3), run at
 `b313f809` and at the commit that adds this section on a second Linux machine:
+270 lines, every one equal.
+
+### Workers built once, before and after
+
+Each process worker builds the feature at its first task and keeps it for the
+pool's life. The build's arguments travel once per worker, in the pickled
+process object of its spawn, as the pool initializer's arguments, and no longer
+with each entry. Measured before (at `a323d870`) and after (at the commit that
+adds this section), back to back on the host and in the containers of the
+workers-write section, over one `WORK` path, 160 entries, 8 workers.
+
+Two serial walls and one thread-8 wall are out of line. The cold serial walls
+of the four runs are 13.11 and 19.96 s before the change and 15.88 and 14.34 s
+after it, against 10.98 to 11.87 s in the earlier sections, so the thread-8
+speed over serial of each pair rests on its serial wall: 1.09 and 1.60 in the
+first pair, 2.04 and 1.48 in the second. The first before run's thread-8 wall,
+12.01 s, is out of line with the other three, 9.68 to 9.90 s, and the first
+pair's thread-8 parent cost of 39.2 ms rests on it. Each after run followed its
+before run directly, on a host that the bench's own earlier runs had warmed.
+
+The host ran 528 to 535 processes and was otherwise idle. Its load average was
+0.00 at the start of the first before run, 2.87 at the start of the first after
+run, and 2.61 and 2.25 at the starts of the second pair of the `cold` and
+`pipes` sections, whose figures are in brackets. The load averages trail the
+bench's own runs and show no other work.
+
+| Figure                                                | Before                  | After                     |
+| ----------------------------------------------------- | ----------------------- | ------------------------- |
+| `speed-angvel` cold, serial (s)                       | 13.11 (19.96)           | 15.88 (14.34)             |
+| `speed-angvel` cold, thread 4 (s)                     | 10.40 (9.68)            | 9.28 (9.89)               |
+| `speed-angvel` cold, thread 8 (s)                     | 12.01 (9.79)            | 9.90 (9.68)               |
+| `speed-angvel` cold, process 8 (s)                    | 12.86 (12.41)           | 12.06 (11.84)             |
+| the same recipe cached, thread 8, shorter of two (s)  | 5.73 (5.75)             | 5.78 (5.88)               |
+| the same recipe cached, process 8, shorter of two (s) | 5.76 (5.92)             | 5.74 (5.74)               |
+| parent cost per entry, cold thread 8 (ms)             | 39.2 (25.2)             | 25.8 (23.8)               |
+| parent cost per entry, cold process 8 (ms)            | 44.4 (40.6)             | 39.5 (38.1)               |
+| cold thread 8, speed over serial                      | 1.09 (2.04)             | 1.60 (1.48)               |
+| bytes per entry to the workers, process 8             | 2,294 (2,294)           | 2,067 (2,067)             |
+| bytes per entry from the workers, process 8           | 364 (364)               | 389 (389)                 |
+| bytes sent to a worker at its spawn, process 8        | 1,725 (1,726)           | 2,165 (2,166)             |
+| process 8, mean CPU of a worker                       | 104.8% (101.6%)         | 101.8% (102.4%)           |
+| process 8, CPU seconds of the parent / the workers    | 9.0 / 51.6 (9.0 / 47.1) | 9.5 / 45.0 (9.2 / 46.3)   |
+| cold process 8, `build_seconds` mean / largest (s)    | none recorded           | 1.86 / 1.98 (1.80 / 1.88) |
+| cold process 8, mean `apply_seconds` of an entry (s)  | 0.222 (0.204)           | about 0.202 (0.200)       |
+| cold process 8, main thread under `wait_for_worker`   | 50.5%                   | 50.5%                     |
+
+The bytes to the workers fall by 227 per entry, from 2,294 to 2,067, over the
+same 168 messages of the call queue's feeder thread: the build's arguments no
+longer travel with each task. Each worker receives them once instead. Its spawn
+carries 742 bytes of preparation data before and after the change (743 in the
+second pair), and a process object of 983 bytes before and 1,423 after. The 440
+bytes more are the pool's initializer and its argument: the process object
+refers to `_guard_then_initialize` in place of `_exit_when_caller_ends`, and
+pickles a reference to `start_feature_worker` and the `FeatureBuild` with its
+class path and field names beside its values. Each task is 227 bytes smaller.
+The two figures differ because the spawn pickles those references and names
+besides the build's values. Over 160 entries and 8 workers the parent sends
+32,800 bytes fewer per run, spawns included, in both pairs. The result grows by
+25 bytes, to 389, with the build's seconds.
+
+Process workers average 101.8% and 102.4% CPU after the change, against 104.8%
+and 101.6% before, above the 60% target in every run. A mean above 100% counts
+more than one of a worker's threads at once. Before the change no entry records
+a build, and the 160 entries' `apply_seconds` average 0.222 s (0.204 s). After
+it, the same mean is about 0.202 s (0.200 s), weighted from the rounded means
+below. One entry per worker records `build_seconds`, eight per run, and its
+`apply_seconds` averages 3.55 s (3.44 s), its build included. Every other
+entry's `apply_seconds` averages 0.026 s (0.030 s). The build contains the
+worker's first import of the feature's module and of the definitions loader;
+`speed-angvel` binds no dataset and loads no state. Each worker's first entry
+paid those imports before the change as well, so the means over all entries are
+close. The workers spend 6.6 s less CPU in the first pair and 0.8 s less in the
+second.
+
+In the stack-sampled cold process-8 run the parent's main thread waits for a
+free worker in 50.5% of its samples before and after the change. After it, the
+pool's watcher thread sleeps between its checks in 99.8% of its samples. In the
+sampled cold thread-8 run, which builds no worker, `wait_for_worker` holds
+40.3% of the main thread before and 40.4% after.
+
+The `fingerprint-*.txt` files of the nine bench datasets are byte-identical
+before and after. So are the fingerprints of the 21 datasets that
+`tests/core/pipeline/test_output_byte_identity.py` leaves under a fixed
+`--basetemp` (seven cases, each in serial, thread 3 and process 3), run at
+`a323d870` and at the commit that adds this section on a second Linux machine:
 270 lines, every one equal.
