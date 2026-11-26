@@ -20,6 +20,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import override
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 from pydantic import TypeAdapter
@@ -50,6 +52,7 @@ from mosaic.core.pipeline.params_facts import (
     params_identity_digest,
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.types import DependencyLookup, InputStream
 from mosaic.core.pipeline.run import (
     FeatureBuild,
     FeatureWorker,
@@ -946,13 +949,28 @@ class HoldsMemory(ParallelFeature):
 
 
 _LEARN_PER_ROW = """
+import dataclasses
 import sys
 import time
 from pathlib import Path
 
-from mosaic.core.pipeline import run
+from mosaic.core.pipeline import memory_watch, run
 from mosaic.core.pipeline.admission import RowCostEstimate
+from mosaic.core.pipeline.memory_limit import read_memory_limit
 from tests.core.pipeline import test_run_measures as stand_ins
+
+
+def host_limit():
+    # A cgroup's figure counts every process in the cgroup, the suite's other
+    # workers included, so the run reads its limit as the host's and sums the
+    # memory of its own processes.
+    limit = read_memory_limit()
+    if limit is None:
+        return None
+    return dataclasses.replace(limit, source="host", nonreclaimable_bytes=0)
+
+
+memory_watch.read_memory_limit = host_limit
 
 mode = sys.argv[2]
 applied = Path(sys.argv[3]) if len(sys.argv) > 3 else None
@@ -1002,8 +1020,11 @@ def _learn_per_row(tmp_path: Path, mode: str) -> tuple[dict[str, object], int, i
 
     In a fresh interpreter, so the measured tree holds this run alone. A test
     process carries the memory and the child processes of earlier tests, which may
-    shrink or exit while the run measures. In process mode each submission waits
-    for the entry before it to have been applied, so the pool keeps one worker.
+    shrink or exit while the run measures. The run reads its memory limit as the
+    host's, so it sums the memory of its own processes: a cgroup's figure also
+    counts the suite's other workers, whose memory may shrink while it measures. In
+    process mode each submission waits for the entry before it to have been applied,
+    so the pool keeps one worker.
 
     Returns:
         The run's last ``resources`` event, the largest input rows of an entry and
@@ -1184,7 +1205,14 @@ def test_the_final_resources_levels_are_those_an_old_log_rebuilds(
         execution_id="TESTLEVELSREBUILT",
     )
 
-    ends = logged_events(ds.base_dir, "TESTLEVELSREBUILT", "entry_end")
+    _assert_the_levels_are_those_its_entries_rebuild(ds, "TESTLEVELSREBUILT")
+
+
+def _assert_the_levels_are_those_its_entries_rebuild(
+    ds: Dataset, execution_id: str
+) -> None:
+    """The run's levels have the counts and totals its ``entry_end`` events rebuild."""
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
     spans = [
         FlightSpan(
             start=_stamp(end) - _number(end, "wall_seconds"),
@@ -1194,7 +1222,7 @@ def test_the_final_resources_levels_are_those_an_old_log_rebuilds(
         for end in ends
     ]
     rebuilt = sweep_levels(spans, lambda _start, _end, _flights: 0.0)
-    written = _written_levels(ds, "TESTLEVELSREBUILT")
+    written = _written_levels(ds, execution_id)
     assert [level.in_flight for level in written] == [
         level.in_flight for level in rebuilt
     ]
@@ -2012,3 +2040,104 @@ def test_the_entry_whose_worker_built_the_feature_records_the_build(
     assert (expected > 0) == (mode == "process")
     for end in built:
         assert 0.0 < _number(end, "build_seconds") <= _number(end, "apply_seconds")
+
+
+# --- a fitted state built outside an entry's growth -----------------------------------
+
+
+_STATE_BYTES = 256 * 1024**2
+"""The bytes of the state :class:`_HoldsALargeState` loads."""
+
+_STATE_SEQUENCES = ("seq_a", "seq_b", "seq_c", "seq_d")
+
+_BUILD_SECONDS = 0.75
+"""How long the build of :class:`_HoldsALargeState` takes at least.
+
+Longer than the tolerance on the seconds of rebuilt levels, so levels that leave
+out the build differ from those that contain it on any host.
+"""
+
+
+class _HoldsALargeState(_Sleeps):
+    """A fitted feature whose loaded state holds 256 MiB.
+
+    Its fit saves a small file, and once that file exists ``load_state`` takes at
+    least ``_BUILD_SECONDS`` and keeps an array of 256 MiB on the instance. The array
+    is filled with ones, so every page of it is resident, which the pages of an array
+    of zeros are not.
+    """
+
+    name = "prov-parallel-large-state"
+    state_file = "large-state.json"
+    state: npt.NDArray[np.uint8] | None = None
+
+    @override
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        if not (run_root / self.state_file).is_file():
+            return False
+        time.sleep(_BUILD_SECONDS)
+        self.state = np.ones(_STATE_BYTES, dtype=np.uint8)
+        return True
+
+    @override
+    def fit(self, inputs: InputStream) -> None:
+        pass
+
+    @override
+    def save_state(self, run_root: Path) -> None:
+        (run_root / self.state_file).write_text("{}")
+
+
+@pytest.fixture(scope="module")
+def large_state_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Dataset, str]:
+    """A dataset and the execution id of a process run of :class:`_HoldsALargeState`."""
+    ds = make_dataset(tmp_path_factory.mktemp("large-state") / "ds")
+    add_tracks_variant(ds, VARIANT, *_STATE_SEQUENCES, std_format="mosaic_v1")
+    execution_id = "TESTLARGESTATE"
+    _ = run_feature(
+        ds,
+        _HoldsALargeState(),
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id=execution_id,
+    )
+    return ds, execution_id
+
+
+@pytest.mark.skipif(
+    memory_watch.process_nonreclaimable_bytes() is None,
+    reason="this host does not give a process's anonymous and shared memory",
+)
+def test_a_workers_fitted_state_is_in_its_base_and_not_in_an_entrys_growth(
+    large_state_run: tuple[Dataset, str],
+) -> None:
+    """The first entry of each worker grows by its own memory, not by the state built.
+
+    A worker builds the feature at its first task, and reads its base after the
+    build, so the loaded state is memory the worker holds for every entry.
+    """
+    ds, execution_id = large_state_run
+
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
+
+    assert len(ends) == len(_STATE_SEQUENCES)
+    built = [end for end in ends if "build_seconds" in end]
+    assert built
+    assert all(end.get("peak_grown_bytes") is not None for end in built)
+    grown = [
+        _number(end, "peak_grown_bytes")
+        for end in ends
+        if end.get("peak_grown_bytes") is not None
+    ]
+    assert all(bytes_ < _STATE_BYTES // 2 for bytes_ in grown), grown
+
+
+def test_a_run_whose_workers_build_a_large_state_has_the_levels_its_entries_rebuild(
+    large_state_run: tuple[Dataset, str],
+) -> None:
+    _assert_the_levels_are_those_its_entries_rebuild(*large_state_run)
