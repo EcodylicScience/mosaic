@@ -31,6 +31,7 @@ from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
     TrackConvertParams,
+    builtin_track_converters,
     get_track_converter,
     register_track_converter,
 )
@@ -88,6 +89,94 @@ def test_registering_a_converter_first_keeps_the_built_ins() -> None:
         _ = TRACK_CONVERTERS.pop("caller_registered_first", None)
 
 
+def test_a_second_class_under_a_registered_format_is_refused() -> None:
+    """Registering another class under a format names both and keeps the first.
+
+    A silent overwrite changes what a format converts to for every later
+    caller while its variant ids stay the same.
+    """
+    src_format = "refused_second_class"
+
+    class FirstConverter(TrackConverter[TrackConvertParams]):
+        version = "0.1"
+
+    class SecondConverter(TrackConverter[TrackConvertParams]):
+        version = "0.1"
+
+    FirstConverter.src_format = SecondConverter.src_format = src_format
+    first, second = FirstConverter, SecondConverter
+    _ = register_track_converter(first)
+    try:
+        with pytest.raises(ValueError, match=src_format) as raised:
+            _ = register_track_converter(second)
+
+        message = str(raised.value)
+        assert f"{first.__module__}.{first.__qualname__}" in message
+        assert f"{second.__module__}.{second.__qualname__}" in message
+        assert TRACK_CONVERTERS[src_format] is first
+    finally:
+        _ = TRACK_CONVERTERS.pop(src_format, None)
+
+
+def test_registering_a_class_again_replaces_it() -> None:
+    """The same class registered twice stays registered."""
+    src_format = "registered_twice"
+
+    class TwiceConverter(TrackConverter[TrackConvertParams]):
+        version = "0.1"
+
+    TwiceConverter.src_format = src_format
+    cls = TwiceConverter
+    try:
+        _ = register_track_converter(cls)
+        _ = register_track_converter(cls)
+
+        assert TRACK_CONVERTERS[src_format] is cls
+    finally:
+        _ = TRACK_CONVERTERS.pop(src_format, None)
+
+
+def test_a_class_built_anew_replaces_the_registered_one() -> None:
+    """A notebook cell run again defines a new class of the same qualified name."""
+    src_format = "cell_run_again"
+
+    def run_cell() -> type[TrackConverter[TrackConvertParams]]:
+        class CellConverter(TrackConverter[TrackConvertParams]):
+            src_format = "cell_run_again"
+            version = "0.1"
+
+        return register_track_converter(CellConverter)
+
+    try:
+        first = run_cell()
+        second = run_cell()
+
+        assert first is not second
+        assert TRACK_CONVERTERS[src_format] is second
+    finally:
+        _ = TRACK_CONVERTERS.pop(src_format, None)
+
+
+def test_the_built_in_set_holds_the_library_and_not_a_registered_test_class() -> None:
+    """``builtin_track_converters`` names the formats under ``mosaic.`` only."""
+    src_format = "not_a_built_in"
+
+    class NotBuiltIn(TrackConverter[TrackConvertParams]):
+        version = "0.1"
+
+    NotBuiltIn.src_format = src_format
+    _ = register_track_converter(NotBuiltIn)
+    try:
+        built_in = builtin_track_converters()
+
+        assert {"trex_npz", "sleap_analysis_h5", "calms21_npy"} <= set(built_in)
+        assert src_format not in built_in
+        assert all(cls.__module__.startswith("mosaic.") for cls in built_in.values())
+        assert all(TRACK_CONVERTERS[name] is cls for name, cls in built_in.items())
+    finally:
+        _ = TRACK_CONVERTERS.pop(src_format, None)
+
+
 # --- The rule -----------------------------------------------------------------
 
 
@@ -116,11 +205,7 @@ def test_every_converter_declares_a_version(src_format: str) -> None:
     assert TRACK_CONVERTERS[src_format].version
 
 
-BUILT_IN_FORMATS = sorted(
-    name
-    for name, cls in TRACK_CONVERTERS.items()
-    if cls.__module__.startswith("mosaic.core.track_library.")
-)
+BUILT_IN_FORMATS = sorted(builtin_track_converters())
 """The formats the library registers, as a test module's own converter is not."""
 
 

@@ -55,6 +55,7 @@ __all__ = [
     "TimedTrackConvertParams",
     "TrackConvertParams",
     "TrackConverter",
+    "builtin_track_converters",
     "conversion_rate",
     "ensure_track_converters_registered",
     "get_track_converter",
@@ -335,11 +336,39 @@ class TrackConverter(Generic[P]):
 TRACK_CONVERTERS: dict[str, type[TrackConverter[Any]]] = {}
 
 
+def _qualified_name(cls: type) -> str:
+    """Return *cls* spelled as ``module.qualname``."""
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
 def register_track_converter[C: type[TrackConverter[Any]]](cls: C) -> C:
-    """Register a converter class under its declared ``src_format``."""
+    """Register a converter class under its declared ``src_format``.
+
+    A format names one converter for the life of the process, because a variant's
+    run id carries the format and the converter's version and nothing of the
+    class: a second class under the same format would write a different table
+    under an id that already names another. A class of another module or
+    qualified name is therefore refused.
+
+    A class of the same module and qualified name replaces the registered one,
+    so a notebook cell that defines and registers its converter keeps working
+    when it is run again, and so does a module reloaded by ``%autoreload``, each
+    of which builds a new class object of the same name.
+
+    Raises:
+        ValueError: when *cls* declares no ``src_format``, or when another class
+            holds it, naming both.
+    """
     src_format = getattr(cls, "src_format", "")
     if not src_format:
         raise ValueError(f"{cls.__name__} must declare a non-empty src_format")
+    registered = TRACK_CONVERTERS.get(src_format)
+    if registered is not None and _qualified_name(registered) != _qualified_name(cls):
+        raise ValueError(
+            f"src_format={src_format!r} is registered to "
+            f"{_qualified_name(registered)}, and {_qualified_name(cls)} cannot "
+            "take it. Give the converter a src_format of its own."
+        )
     TRACK_CONVERTERS[src_format] = cls
     return cls
 
@@ -389,6 +418,22 @@ def ensure_track_converters_registered() -> None:
     "no such format" for a format that is registered.
     """
     _ = import_module("mosaic.core.track_library")
+
+
+def builtin_track_converters() -> dict[str, type[TrackConverter[Any]]]:
+    """Return the converters that ship with mosaic, by ``src_format``.
+
+    A converter counts as built in when its class lives under ``mosaic.``, so a
+    converter that a notebook or a test registers is not one. The generated
+    reference and the README counts read this set, and so do not change with
+    what a process has registered.
+    """
+    ensure_track_converters_registered()
+    return {
+        src_format: cls
+        for src_format, cls in TRACK_CONVERTERS.items()
+        if cls.__module__.startswith("mosaic.")
+    }
 
 
 def merge_on_column_union(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:

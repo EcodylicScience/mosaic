@@ -85,18 +85,14 @@ from typer.main import get_command
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli import app
 from mosaic.core.pipeline.ops import OPS
-from mosaic.core.track_converter import (
-    TRACK_CONVERTERS,
-    ensure_track_converters_registered,
-)
+from mosaic.core.track_converter import builtin_track_converters
 from mosaic.tracking import register_ops
 
 register_ops()
-ensure_track_converters_registered()
 print(json.dumps({
     "features": len(FEATURES),
     "ops": len(OPS),
-    "track_formats": len(TRACK_CONVERTERS),
+    "track_formats": len(builtin_track_converters()),
     "cli_commands": len(get_command(app).commands),
 }))
 """

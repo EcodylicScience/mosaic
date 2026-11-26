@@ -403,20 +403,17 @@ def render_track_formats() -> str:
         ensure_label_converters_registered,
     )
     from mosaic.core.schema import TRACK_SCHEMAS
-    from mosaic.core.track_converter import (
-        TRACK_CONVERTERS,
-        ensure_track_converters_registered,
-    )
+    from mosaic.core.track_converter import builtin_track_converters
 
     ensure_label_converters_registered()
-    ensure_track_converters_registered()
+    track_converters = builtin_track_converters()
 
     lines = [
         BANNER,
         "",
         "# Track formats, schemas and label formats",
         "",
-        f"{len(TRACK_CONVERTERS)} track converters read a tracker's output into one of",
+        f"{len(track_converters)} track converters read a tracker's output into one of",
         f"{len(TRACK_SCHEMAS)} registered schemas, and {len(LABEL_CONVERTERS)} label",
         "converters read manual annotations and external predictions. A converter",
         "declares the schema it emits, in one place, and that declaration is what",
@@ -430,8 +427,8 @@ def render_track_formats() -> str:
         "| `src_format` | Version | Emits | Enumerable | Merges per sequence | What it reads |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for name in sorted(TRACK_CONVERTERS):
-        cls = TRACK_CONVERTERS[name]
+    for name in sorted(track_converters):
+        cls = track_converters[name]
         lines.append(
             f"| `{name}` | `{getattr(cls, 'version', '')}` "
             f"| `{getattr(cls, 'output_schema', '')}` "
@@ -440,8 +437,8 @@ def render_track_formats() -> str:
             f"| {escape_cell(summary_line(cls))} |"
         )
     lines += ["", "### Converter parameters", ""]
-    for name in sorted(TRACK_CONVERTERS):
-        cls = TRACK_CONVERTERS[name]
+    for name in sorted(track_converters):
+        cls = track_converters[name]
         lines += [f"#### `{name}`", ""]
         lines += params_table(cls.Params.model_json_schema())
 
@@ -589,15 +586,11 @@ def render_index() -> str:
     from mosaic.core.media.preprocess import MEDIA_STEPS
     from mosaic.core.pipeline.ops import OPS
     from mosaic.core.schema import TRACK_SCHEMAS
-    from mosaic.core.track_converter import (
-        TRACK_CONVERTERS,
-        ensure_track_converters_registered,
-    )
+    from mosaic.core.track_converter import builtin_track_converters
     from mosaic.tracking import register_ops
 
     register_ops()
     ensure_label_converters_registered()
-    ensure_track_converters_registered()
 
     return (
         f"{BANNER}\n"
@@ -617,7 +610,7 @@ def render_index() -> str:
         f"| [Media steps](media-steps.md) | {len(MEDIA_STEPS)} steps a `preprocess` "
         "run applies to make a media variant, with their parameters |\n"
         "| [CLI](cli.md) | Every `mosaic` command and flag |\n"
-        f"| [Track formats](track-formats.md) | {len(TRACK_CONVERTERS)} track "
+        f"| [Track formats](track-formats.md) | {len(builtin_track_converters())} track "
         f"converters, {len(TRACK_SCHEMAS)} schemas, {len(LABEL_CONVERTERS)} label "
         "converters |\n"
         "\n"
