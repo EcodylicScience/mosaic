@@ -86,6 +86,14 @@ which schema the output carries.
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
 explain why the three TRex rows differ.
 
+A package installed in the environment can add a format of its own, named with
+a double underscore, such as `acme__idtracker_mat`. The command line, a queue's
+workers and mosaic-api find it wherever the package is installed, and the
+reference above lists the built-in formats only. A recipe that names a format
+the process has not installed fails planning with a message that names it.
+[Write a converter](write-a-converter.md#shipping-it) shows how a package
+declares one.
+
 ## The frame rate of an imported table
 
 A SLEAP, DeepLabCut, Ultralytics, zebrafish 3D workflow or s-DANNCE file records frame

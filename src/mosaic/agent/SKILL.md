@@ -412,7 +412,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   them in a tracks table. Run `speed-angvel`, or `heading` with its method chosen.
 - Keypoints are optional. Features defined on keypoints refuse a table without them.
 - `frame` counts media frames from 0 across an entry's clips (imgstore: `frame_index`).
-- A format mosaic does not read needs a converter in the user's project:
+- A format mosaic does not read needs a converter. A package installed in the environment
+  can declare one (its format is named like `acme__idtracker_mat`), and the CLI and the
+  queue's workers find it wherever the package is installed. A converter registered in a
+  notebook is not found by either:
   https://ecodylicscience.github.io/mosaic/guides/tracking/write-a-converter/.
 - A converter refuses a raw file it cannot load without unpickling or within
   `MOSAIC_RAW_ARRAY_LIMIT_BYTES`, and `convert-tracks` reports it as an entry error.

@@ -8,6 +8,32 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: installed track converters
+
+No run id moves. An installed converter's variant is minted as a built-in's,
+from the converter's `version` and params, and the goldens do not change.
+
+A package can declare a track converter in the `mosaic.track_converters`
+entry-point group, and the command line, a queue's workers and mosaic-api find
+it wherever it is installed. The entry point's name is the converter's
+`src_format`, a namespace and a name joined by `__`, which no built-in format
+contains. An entry point that collides with a built-in or another entry point,
+breaks the rule, names a class with another `src_format` or an unreadable
+`version`, or fails to load is refused and recorded, and the built-ins keep
+working. A recipe that names a format that is not installed fails planning with
+a message that names it. A converter package's tests call
+`mosaic.core.track_library.conformance.converter_problems` on its classes,
+which returns one sentence for each way a class breaks the converter contract.
+
+`register_track_converter` refuses a format that a class of another module or
+qualified name holds, where it overwrote the registered class. A class of the
+same module and name replaces it, so a notebook cell run again keeps working.
+
+`tracks/index.csv` gains a trailing `converter_distribution` cell, the
+installed package and its version as `<name> <version>`. It is blank for a
+built-in converter, and an index written before it reads as blank. It is
+provenance and enters no run id.
+
 ## Unreleased: 3D `pair-posedistance-pca`
 
 No run id or output moves. `pair-posedistance-pca` has a `dimensions` param, 2 by

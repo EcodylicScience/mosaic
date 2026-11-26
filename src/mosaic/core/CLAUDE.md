@@ -16,7 +16,8 @@ covers that package. Layering and the `Params` hashing rule are in the root guid
   `ensure_label_converters_registered` returns when `LABEL_CONVERTERS` is non-empty. Do
   not guard the first on emptiness. A caller who registers a converter first would lose
   every built-in (`test_registering_a_converter_first_keeps_the_built_ins` in
-  `tests/core/track_library/test_track_converters.py`).
+  `tests/core/track_library/test_track_converters.py`). The first call of a process also
+  loads the converters that installed packages declare in `mosaic.track_converters`.
 - `core/media/` imports nothing from `behavior` or `tracking`. It does import
   `core.pipeline` modules (`media_index`, `joined_export`, `index_lock`, `provenance`).
 - `core/media/__init__.py` and `core/media/preprocess/__init__.py` bind their names
@@ -314,6 +315,17 @@ importing `mosaic.tracking` registers neither.
   factor is lost declares `mosaic_cm_v1`. TREx specifics are in the
   `track_library/trex.py` module docstring
   (`tests/core/track_library/test_trex_converter_units.py`).
+- The installed converters load through `mosaic/entry_points.py`, after the built-ins. A
+  refused entry point is recorded (`refused_track_converters`) and never raised from the
+  load, and `get_track_converter` of its name raises the message. A built-in format has
+  no `__` and an installed one has (`tests/meta/test_track_format_names.py`).
+  `builtin_track_converters` is the set that the generated reference and the README
+  counts read. `register_track_converter` refuses a format held by a class of another
+  module or qualified name, and a class of the same module and name replaces it, so a
+  notebook cell run again keeps working. An installed converter's variant is minted as a
+  built-in's, and its distribution is recorded in the tracks index's
+  `converter_distribution` and never hashed
+  (`tests/core/track_library/test_installed_track_converters.py`).
 - A converter does not compute a `DERIVED_COLUMNS` quantity. `mosaic_v1` forbids them,
   and `ensure_track_schema` raises `ForbiddenTrackColumnError` whatever `strict` says. A
   tracker that measures one declares a schema with `allows`, as `trex_v2` does.
