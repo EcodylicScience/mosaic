@@ -61,7 +61,8 @@ from mosaic.core.track_library.csv_columns import read_numeric_csv
 from mosaic.core.track_library.helpers import norm_hint
 from mosaic.core.track_library.world_frame import (
     WorldAxes,
-    complete_keypoint_center,
+    animal_columns,
+    stacked_table,
     to_world,
 )
 
@@ -207,59 +208,6 @@ class Zebrafish3dWorkflowConverter(TrackConverter[Zebrafish3dWorkflowParams]):
             present = ~np.isnan(source).all(axis=(1, 2))
             world = to_world(source[present], params.meters_per_unit, params.axes)
             per_fish.append(
-                _fish_columns(
-                    number,
-                    frames[present],
-                    world,
-                    rate,
-                    group,
-                    sequence,
-                )
+                animal_columns(number, frames[present], world, rate, group, sequence)
             )
-
-        columns = {
-            name: np.concatenate([fish[name] for fish in per_fish])
-            for name in per_fish[0]
-        }
-        order = np.lexsort((columns["id"], columns["frame"]))
-        return pd.DataFrame({name: values[order] for name, values in columns.items()})
-
-
-def _fish_columns(
-    number: int,
-    frames: npt.NDArray[np.int64],
-    world: npt.NDArray[np.float64],
-    rate: float,
-    group: str,
-    sequence: str,
-) -> dict[str, npt.NDArray[np.generic]]:
-    """One fish's table columns.
-
-    Args:
-        number: The fish number, written as ``id``.
-        frames: The frame of each present row.
-        world: Those rows' keypoints in world meters, ``(row, keypoint, axis)``.
-        rate: The frame rate that times the rows.
-        group: The ``group`` cell of every row.
-        sequence: The ``sequence`` cell of every row.
-
-    Returns:
-        The columns, in the table's order.
-    """
-    center = complete_keypoint_center(world)
-
-    n_rows = len(frames)
-    columns: dict[str, npt.NDArray[np.generic]] = {
-        "frame": frames,
-        "time": frames.astype(np.float64) / rate,
-        "id": np.full(n_rows, number, dtype=np.int64),
-        "X": center[:, 0],
-        "Y": center[:, 1],
-        "Z": center[:, 2],
-        "group": np.full(n_rows, group, dtype=object),
-        "sequence": np.full(n_rows, sequence, dtype=object),
-    }
-    for keypoint in range(world.shape[1]):
-        for axis, name in enumerate("XYZ"):
-            columns[f"pose{name}{keypoint}"] = world[:, keypoint, axis]
-    return columns
+        return stacked_table(per_fish)

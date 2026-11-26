@@ -251,6 +251,78 @@ def write_zebrafish_3d_csv(
     return values
 
 
+def write_sdannce_mat(
+    path: Path,
+    frames: int,
+    *,
+    focal: int = 301,
+    partner: int = 701,
+    social: bool = True,
+    blank: Iterable[tuple[int, int, int | None]] = (),
+    keypoints: int = 23,
+    compress: bool = True,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Write an ``sdannce_mat`` file of *frames* frames as a MATLAB v5 file.
+
+    The file holds one variable, ``sdannce``, a 1x1 struct. ``m1`` is the focal
+    animal's ``(frames, 3, keypoints)`` array in millimeters and ``m2`` its
+    partner's, empty in a lone file. Every cell is distinct: the value of animal
+    ``a`` (1 for ``m1``, 2 for ``m2``), keypoint ``k`` and axis ``i`` (0, 1 or 2)
+    at frame ``f`` is ``1000 a + 10 k + i + f / 100``.
+
+    Args:
+        path: Where to write the file. Missing parent directories are created.
+        frames: The number of frames.
+        focal: The focal animal's ``ratint``.
+        partner: The partner's ``ratp_int``, written only for a social file.
+        social: Whether the file has a partner. A lone file has an empty ``m2``
+            and ``ratp_int``, and ``issoc`` 0.
+        blank: Cells to write as NaN, each ``(array, frame, keypoint)`` with
+            ``array`` 1 for ``m1`` or 2 for ``m2``. A keypoint of None blanks
+            every keypoint of that frame. A blanked cell is NaN on all three axes.
+        keypoints: The length of the keypoint axis.
+        compress: Whether ``savemat`` compresses the variable.
+
+    Returns:
+        ``m1`` and ``m2`` as written, NaN where blanked. ``m2`` has no elements
+        for a lone file.
+    """
+    from scipy.io import savemat
+
+    frame_axis = np.arange(frames, dtype=np.float64)[:, None, None]
+    keypoint_axis = np.arange(keypoints, dtype=np.float64)[None, None, :]
+    axis_axis = np.arange(3, dtype=np.float64)[None, :, None]
+    base = 10 * keypoint_axis + axis_axis + frame_axis / 100
+    arrays = {
+        animal: np.array(np.broadcast_to(1000 * animal + base, (frames, 3, keypoints)))
+        for animal in (1, 2)
+    }
+    for animal, frame, keypoint in blank:
+        if keypoint is None:
+            arrays[animal][frame] = np.nan
+        else:
+            arrays[animal][frame, :, keypoint] = np.nan
+
+    m2 = arrays[2] if social else np.zeros((0, 0))
+    record: dict[str, object] = {
+        "m1": arrays[1],
+        "m2": m2,
+        "ratgroup": "LONGEVANS",
+        "ratdate": "20221128",
+        "ratid": "M0",
+        "ratint": float(focal),
+        "ratgen": "WT",
+        "ratp_id": "M2" if social else "",
+        "ratp_int": float(partner) if social else np.zeros((0, 0)),
+        "ratp_gen": "WT" if social else "",
+        "issoc": 1.0 if social else 0.0,
+        "isamph": 0.0,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    savemat(path, {"sdannce": record}, do_compression=compress)
+    return arrays[1], m2
+
+
 TRACKTOR_STEM = "20211117111002_900s_no12-DGRP101-female-2to4-6-1"
 """A release recording's name without its ``_tracked`` suffix."""
 

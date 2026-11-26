@@ -477,6 +477,17 @@ def _zebrafish_3d_convert_variant() -> str:
     return _default_convert_variant(Zebrafish3dWorkflowConverter)
 
 
+def _sdannce_convert_variant() -> str:
+    """The s-DANNCE converter's default variant.
+
+    It pins the converter's params dump and version, so a change to the shared
+    axes validator or world transform that moves either shows here.
+    """
+    from mosaic.core.track_library.sdannce import SdannceMatConverter
+
+    return _default_convert_variant(SdannceMatConverter)
+
+
 def _trex_variant() -> str:
     # The tracker's own settings, passed through unwrapped -- so this value is
     # byte-identical to trex_run_id(settings) for the same settings.
@@ -1289,6 +1300,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,
+    "tracks/convert-variant-sdannce": _sdannce_convert_variant,
     "tracks/convert-variant-zebrafish-3d": _zebrafish_3d_convert_variant,
     "tracks/trex-variant": _trex_variant,
     "tracks/sleap-variant": _sleap_variant,

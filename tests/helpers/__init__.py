@@ -58,8 +58,8 @@ What lives where:
   tests of a fit that a linked dataset holds, and a classifier that records the
   labels it reads.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
-  TREx, SLEAP, DeepLabCut, Tracktor and zebrafish 3D workflow exports, a
-  synthetic track file and a dataset indexing several of them, a window file, a
+  TREx, SLEAP, DeepLabCut, Tracktor, s-DANNCE and zebrafish 3D workflow exports,
+  a synthetic track file and a dataset indexing several of them, a window file, a
   CalMS21 dataset and the patch that makes the CalMS21 converter fail one
   sequence, and an object member whose unpickling writes a marker file.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
@@ -610,6 +610,7 @@ from tests.helpers.tracks import (
     unpickling_member,
     write_calms21_npy,
     write_dlc_csv,
+    write_sdannce_mat,
     write_sleap_analysis_h5,
     SYNTHETIC_ARENA_3D,
     SYNTHETIC_DROPOUTS,
@@ -1170,6 +1171,7 @@ __all__ = [
     "write_painted_entry",
     "write_painted_recording",
     "write_pv_header",
+    "write_sdannce_mat",
     "write_sleap_analysis_h5",
     "write_sleap_model",
     "write_sleap_model_set",

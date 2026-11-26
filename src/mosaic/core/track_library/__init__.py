@@ -31,6 +31,7 @@ accessible from mosaic.core.dataset module.
 # Each module calls register_track_converter() at module level.
 from . import calms21
 from . import deeplabcut
+from . import sdannce
 from . import sleap
 from . import synthetic
 from . import tracktor
@@ -42,6 +43,7 @@ from . import zebrafish_3d_workflow
 __all__ = [
     "calms21",
     "deeplabcut",
+    "sdannce",
     "sleap",
     "synthetic",
     "tracktor",

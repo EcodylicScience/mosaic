@@ -3,7 +3,7 @@
 
 # Track formats, schemas and label formats
 
-17 track converters read a tracker's output into one of
+18 track converters read a tracker's output into one of
 5 registered schemas, and 4 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
@@ -19,6 +19,7 @@ by `mosaic convert-tracks`.
 | `calms21_json` | `0.4` | `mosaic_v1` | yes | no | The same conversion, reading the ``.json`` spelling of a CalMS21 file. |
 | `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.3` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
+| `sdannce_mat` | `0.1` | `mosaic_world_v1` | no | no | An s-DANNCE ``.mat`` file -> a ``mosaic_world_v1`` table. |
 | `sleap_analysis_h5` | `0.3` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
 | `synthetic` | `0.1` | `mosaic_v1` | no | no | A two-dimensional synthetic track file -> a ``mosaic_v1`` table, in pixels. |
 | `synthetic_3d` | `0.1` | `mosaic_world_v1` | no | no | A three-dimensional synthetic track file -> a ``mosaic_world_v1`` table. |
@@ -57,6 +58,16 @@ by `mosaic convert-tracks`.
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+
+#### `sdannce_mat`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
+| `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+| `meters_per_unit` | `number` | `0.001` | > `0.0` | Meters in one unit of the file's coordinates. s-DANNCE writes millimeters. The default is 0.001. |
+| `axes` | tuple of (`string`, `string`, `string`) | `["x", "y", "z"]` | min items `3`, max items `3` | The source axis that becomes world X, Y and Z, each one of x, y or z with an optional leading minus. ('x', '-z', 'y') takes world Y from minus source z and world Z from source y. It must be a proper rotation, so a reflection is refused. The default is the file's frame, which has +Z up. |
 
 #### `sleap_analysis_h5`
 

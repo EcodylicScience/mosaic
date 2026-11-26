@@ -9,14 +9,19 @@ applies them, and ``WorldAxes`` refuses an ``axes`` that would mirror the tracks
 ``pose_columns.keypoint_centroid``, the 2D center, which takes a per-axis
 ``nanmean``. The 3D center averages only the keypoints with three finite axes, so
 a keypoint missing one axis leaves the center unchanged on the other two.
+
+``animal_columns`` and ``stacked_table`` build the table rows of one animal and of
+all of them, so the 3D converters write the same columns in the same order.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Final
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 from pydantic import AfterValidator
 
 _SOURCE_AXES: Final = ("x", "y", "z")
@@ -111,3 +116,56 @@ def complete_keypoint_center(world: npt.NDArray[np.float64]) -> npt.NDArray[np.f
     totals = np.where(complete[:, :, None], world, 0.0).sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(counts[:, None] > 0, totals / counts[:, None], np.nan)
+
+
+def animal_columns(
+    animal_id: int,
+    frames: npt.NDArray[np.int64],
+    world: npt.NDArray[np.float64],
+    rate: float,
+    group: str,
+    sequence: str,
+) -> dict[str, npt.NDArray[np.generic]]:
+    """One animal's table columns.
+
+    Args:
+        animal_id: The animal's number, written as ``id``.
+        frames: The frame of each row.
+        world: Those rows' keypoints in world meters, ``(row, keypoint, axis)``.
+        rate: The frame rate that times the rows.
+        group: The ``group`` cell of every row.
+        sequence: The ``sequence`` cell of every row.
+
+    Returns:
+        The columns, in the table's order: the base columns, then ``poseX{k}``,
+        ``poseY{k}`` and ``poseZ{k}`` for each keypoint ``k``.
+    """
+    center = complete_keypoint_center(world)
+
+    n_rows = len(frames)
+    columns: dict[str, npt.NDArray[np.generic]] = {
+        "frame": frames,
+        "time": frames.astype(np.float64) / rate,
+        "id": np.full(n_rows, animal_id, dtype=np.int64),
+        "X": center[:, 0],
+        "Y": center[:, 1],
+        "Z": center[:, 2],
+        "group": np.full(n_rows, group, dtype=object),
+        "sequence": np.full(n_rows, sequence, dtype=object),
+    }
+    for keypoint in range(world.shape[1]):
+        for axis, name in enumerate("XYZ"):
+            columns[f"pose{name}{keypoint}"] = world[:, keypoint, axis]
+    return columns
+
+
+def stacked_table(
+    per_animal: Sequence[dict[str, npt.NDArray[np.generic]]],
+) -> pd.DataFrame:
+    """The table of every animal's columns, sorted by ``frame`` and then ``id``."""
+    columns = {
+        name: np.concatenate([animal[name] for animal in per_animal])
+        for name in per_animal[0]
+    }
+    order = np.lexsort((columns["id"], columns["frame"]))
+    return pd.DataFrame({name: values[order] for name, values in columns.items()})
