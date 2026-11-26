@@ -55,3 +55,6 @@ ULTRALYTICS_RUNNER: Final = "tracking/external/runner/ultralytics_runner.py"
 
 ULTRALYTICS_PROTOCOL: Final = "tracking/external/runner/ultralytics_protocol.py"
 """The request and response of the Ultralytics runner."""
+
+LMT_REBUILD_RUNNER: Final = "tracking/external/runner/lmt_rebuild_runner.py"
+"""The lmt-analysis runner program, which the lmt-analysis environment runs."""

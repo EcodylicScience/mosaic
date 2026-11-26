@@ -23,7 +23,7 @@ from mosaic.core.pipeline.dataset_indexes import (
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
 from tests.helpers import (
-    inside_a_virtualenv,
+    is_third_party_source,
     make_dataset,
     run_child,
     runs_in_an_external_environment,
@@ -363,7 +363,7 @@ def test_the_listing_is_written_in_exactly_one_place() -> None:
         # own answer wherever one lands. Both are one shared declaration, spelled
         # by path component -- a substring test would also exempt a sibling
         # module merely named for one of them.
-        if inside_a_virtualenv(source, source_root):
+        if is_third_party_source(source, source_root):
             continue
         if runs_in_an_external_environment(source, source_root):
             continue

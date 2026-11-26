@@ -556,7 +556,11 @@ _UNPROBED_KINDS = (
 def test_only_sleap_and_lightning_pose_declare_a_probe() -> None:
     probed = {kind for kind, root in TRACKING_ROOTS.items() if root.decoder.probe}
     assert probed == {"sleap", "litpose"}
-    assert set(TRACKING_ROOTS) == probed | set(_UNPROBED_KINDS)
+    # A root that reads no media declares no decoder, so it has no probe to name.
+    media_roots = {
+        kind for kind, root in TRACKING_ROOTS.items() if root.reads != "none"
+    }
+    assert media_roots == probed | set(_UNPROBED_KINDS)
 
 
 @pytest.mark.parametrize("kind", _UNPROBED_KINDS)

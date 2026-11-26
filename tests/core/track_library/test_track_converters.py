@@ -17,10 +17,12 @@ Three of the four converters had no test at all before this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, override
 
 import numpy as np
 import pandas as pd
@@ -46,6 +48,7 @@ from mosaic.core.track_library.sleap import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.placement import place_converted
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.root_lookup import RootLookup
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 from tests.helpers import (
@@ -1251,3 +1254,306 @@ def test_an_answered_sleap_conversion_is_another_variant(tmp_path: Path) -> None
     unnamed = ds.track_conversion_variant("sleap_analysis_h5", {"tracks_named": False})
 
     assert len({unanswered, named, unnamed}) == 3
+
+
+# --- the file a converter reads ----------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _InputFileCall:
+    """The arguments of one ``input_file`` call."""
+
+    path: Path
+    params: TrackConvertParams
+    source_md5: str
+    root_of: RootLookup
+
+
+_input_file_calls: list[_InputFileCall] = []
+_converted_paths: list[Path] = []
+
+
+@pytest.fixture(autouse=True)
+def _forget_recorded_calls() -> None:
+    _input_file_calls.clear()
+    _converted_paths.clear()
+
+
+class _MergedRowsFromCsv(_RowsFromCsv):
+    """Several files make one sequence, named by the stem before the last ``_``."""
+
+    merges_per_sequence = True
+
+    @override
+    def sequence_from_stem(self, stem: str) -> str:
+        return stem.rsplit("_", 1)[0]
+
+
+class _Redirecting(TrackConverter[TrackConvertParams]):
+    """Read the file of the same name under ``redirected/``, and record each call."""
+
+    @override
+    def input_file(
+        self,
+        path: Path,
+        params: TrackConvertParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        _input_file_calls.append(_InputFileCall(path, params, source_md5, root_of))
+        return path.parent.parent / "redirected" / path.name
+
+    @override
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        _converted_paths.append(path)
+        return super().convert(path, params, hints)
+
+
+class _RedirectedRows(_Redirecting, _RowsFromCsv):
+    src_format = "redirected_rows_csv_test"
+
+
+class _RedirectedSequences(_Redirecting, _SequencesFromCsv):
+    src_format = "redirected_sequences_csv_test"
+
+
+class _RedirectedMerge(_Redirecting, _MergedRowsFromCsv):
+    src_format = "redirected_merge_csv_test"
+
+
+class _Refusing(TrackConverter[TrackConvertParams]):
+    """Refuse every file."""
+
+    @override
+    def input_file(
+        self,
+        path: Path,
+        params: TrackConvertParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        _ = params, source_md5, root_of
+        raise ValueError(f"{path} cannot be read")
+
+
+class _RefusingRows(_Refusing, _RowsFromCsv):
+    src_format = "refusing_rows_csv_test"
+
+
+class _RefusingSequences(_Refusing, _SequencesFromCsv):
+    src_format = "refusing_sequences_csv_test"
+
+
+class _RefusingMerge(_Refusing, _MergedRowsFromCsv):
+    src_format = "refusing_merge_csv_test"
+
+
+REDIRECTING = (
+    _RedirectedRows,
+    _RedirectedSequences,
+    _RedirectedMerge,
+    _RefusingRows,
+    _RefusingSequences,
+    _RefusingMerge,
+)
+
+
+@pytest.fixture
+def redirecting_converters(monkeypatch: pytest.MonkeyPatch) -> None:
+    for cls in REDIRECTING:
+        monkeypatch.setitem(TRACK_CONVERTERS, cls.src_format, cls)
+
+
+def _rows(sequence: str, frames: int, individual: int = 0) -> list[str]:
+    return [f"{sequence},{frame},{individual}" for frame in range(frames)]
+
+
+def _write_csv(path: Path, rows: list[str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text("\n".join(["sequence,frame,id", *rows]) + "\n")
+    return path
+
+
+def _md5(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _redirected_dataset(
+    tmp_path: Path,
+    src_format: str,
+    files: dict[str, tuple[list[str], list[str]]],
+    *,
+    multi_sequences_per_file: bool = False,
+) -> Dataset:
+    """A dataset over ``raw/``, whose files each have a counterpart in ``redirected/``.
+
+    Args:
+        files: Each file name mapped to the rows of the raw file and the rows of
+            its counterpart.
+    """
+    from mosaic.core.dataset import new_dataset_manifest
+
+    manifest = new_dataset_manifest(name="redirected", base_dir=tmp_path / "ds")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    for name, (raw_rows, redirected_rows) in files.items():
+        _ = _write_csv(tmp_path / "raw" / name, raw_rows)
+        _ = _write_csv(tmp_path / "redirected" / name, redirected_rows)
+    _ = dataset.index_tracks_raw(
+        [tmp_path / "raw"],
+        patterns="*.csv",
+        src_format=src_format,
+        multi_sequences_per_file=multi_sequences_per_file,
+    )
+    return dataset
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_a_single_entry_conversion_reads_the_file_the_hook_returns(
+    tmp_path: Path,
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path, _RedirectedRows.src_format, {"s.csv": (_rows("s", 2), _rows("s", 5))}
+    )
+    raw = tmp_path / "raw" / "s.csv"
+
+    assert _failures(ds, _RedirectedRows.src_format) == []
+
+    assert len(ds.load_tracks(group="", sequence="s")) == 5
+    (call,) = _input_file_calls
+    assert call.path == raw.resolve()
+    assert call.source_md5 == _md5(raw)
+    assert call.params == TrackConvertParams()
+    assert _converted_paths == [tmp_path / "redirected" / "s.csv"]
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_the_hook_is_handed_the_datasets_roots_by_key(tmp_path: Path) -> None:
+    ds = _redirected_dataset(
+        tmp_path, _RedirectedRows.src_format, {"s.csv": (_rows("s", 2), _rows("s", 5))}
+    )
+    _ = _failures(ds, _RedirectedRows.src_format)
+
+    (call,) = _input_file_calls
+
+    assert call.root_of("tracks") == ds.get_root("tracks")
+    assert call.root_of("no-such-root") is None
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_an_enumerated_conversion_reads_the_file_the_hook_returns(
+    tmp_path: Path,
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _RedirectedSequences.src_format,
+        {"all.csv": (_rows("a", 2) + _rows("b", 2), _rows("a", 4) + _rows("b", 3))},
+        multi_sequences_per_file=True,
+    )
+    raw = tmp_path / "raw" / "all.csv"
+
+    assert _failures(ds, _RedirectedSequences.src_format) == []
+
+    assert len(ds.load_tracks(group="", sequence="a")) == 4
+    assert len(ds.load_tracks(group="", sequence="b")) == 3
+    assert [(call.path, call.source_md5) for call in _input_file_calls] == [
+        (raw.resolve(), _md5(raw))
+    ] * 2
+    assert _converted_paths == [tmp_path / "redirected" / "all.csv"] * 2
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_a_merged_conversion_reads_the_file_the_hook_returns_for_each_raw_row(
+    tmp_path: Path,
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _RedirectedMerge.src_format,
+        {
+            "trial_0.csv": (_rows("trial", 2, 0), _rows("trial", 4, 0)),
+            "trial_1.csv": (_rows("trial", 2, 1), _rows("trial", 3, 1)),
+        },
+    )
+    raws = [tmp_path / "raw" / "trial_0.csv", tmp_path / "raw" / "trial_1.csv"]
+
+    assert _failures(ds, _RedirectedMerge.src_format) == []
+
+    assert len(ds.load_tracks(group="", sequence="trial")) == 7
+    assert sorted((call.path, call.source_md5) for call in _input_file_calls) == [
+        (raw.resolve(), _md5(raw)) for raw in raws
+    ]
+    assert sorted(_converted_paths) == [
+        tmp_path / "redirected" / "trial_0.csv",
+        tmp_path / "redirected" / "trial_1.csv",
+    ]
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_a_hook_that_raises_fails_the_entry_and_writes_no_table(
+    tmp_path: Path,
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _RefusingRows.src_format,
+        {"s.csv": (_rows("s", 2), _rows("s", 2))},
+    )
+
+    heard = _failures(ds, _RefusingRows.src_format)
+
+    assert len(heard) == 1
+    assert "s.csv cannot be read" in heard[0]
+    assert ds.list_entries() == []
+    assert read_tracks_index(ds).empty
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_a_hook_that_raises_fails_each_sequence_of_an_enumerated_file(
+    tmp_path: Path,
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _RefusingSequences.src_format,
+        {"all.csv": (_rows("a", 2) + _rows("b", 2), _rows("a", 2) + _rows("b", 2))},
+        multi_sequences_per_file=True,
+    )
+
+    heard = _failures(ds, _RefusingSequences.src_format)
+
+    assert len(heard) == 2
+    assert all("all.csv cannot be read" in message for message in heard)
+    assert ds.list_entries() == []
+    assert read_tracks_index(ds).empty
+
+
+@pytest.mark.usefixtures("redirecting_converters")
+def test_a_hook_that_raises_fails_a_merged_sequence(tmp_path: Path) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _RefusingMerge.src_format,
+        {
+            "trial_0.csv": (_rows("trial", 2, 0), _rows("trial", 2, 0)),
+            "trial_1.csv": (_rows("trial", 2, 1), _rows("trial", 2, 1)),
+        },
+    )
+
+    heard = _failures(ds, _RefusingMerge.src_format)
+
+    assert len(heard) == 1
+    assert "cannot be read" in heard[0]
+    assert ds.list_entries() == []
+    assert read_tracks_index(ds).empty
+
+
+@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
+def test_the_default_hook_returns_the_path_it_is_given(
+    src_format: str, tmp_path: Path
+) -> None:
+    converter = get_track_converter(src_format)
+    path = tmp_path / "file"
+
+    returned = converter.input_file(
+        path, converter.Params.model_construct(), "", lambda _key: None
+    )
+
+    assert returned == path

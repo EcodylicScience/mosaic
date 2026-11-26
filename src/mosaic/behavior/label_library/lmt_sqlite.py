@@ -28,6 +28,13 @@ the entry's tracks when the dataset has them, and by frame number less the origi
 otherwise. An event whose seconds hold no tracks frame is left out and its id is
 listed in ``dropped_event_ids``. The file records the database's ``LOG`` rows as
 ``rebuild_log``, the builds that made its events.
+
+With ``rebuild_run_id`` set, ``lmt_events`` reads the copy that a
+``rebuild-lmt-events`` run made of the database in its place (``input_file``), so
+``rebuild_log`` lists the builds of the source followed by the rebuild's. The file
+then also holds the keys ``rebuild_run_id`` and ``lmt_analysis_commit`` as text, the
+run and the lmt-analysis commit that the copy's manifest names, and both are ``""``
+without a rebuild. ``id_tags`` always reads the raw database.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ from typing import Annotated, Final, Self, override
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 
 from mosaic.core.entry import entry_token
 from mosaic.core.label_converter import (
@@ -54,12 +61,20 @@ from mosaic.core.label_converter import (
 )
 from mosaic.core.label_intervals import SEGMENTS_FORMAT, LabelSegments
 from mosaic.core.params import Declared, has_fields
+from mosaic.core.root_lookup import RootLookup
 from mosaic.core.track_library.lmt import (
     LMT_EVENT_NAMES,
     LmtFrames,
     frame_seconds,
     open_lmt_database,
     table_columns,
+)
+from mosaic.core.track_library.lmt_rebuild import (
+    REBUILD_KIND,
+    REBUILD_RUN_ID_DESCRIPTION,
+    read_rebuild_manifest,
+    rebuilt_copy,
+    refuse_foreign_rebuild_run_id,
 )
 
 __all__ = [
@@ -122,6 +137,13 @@ class LmtEventsParams(LabelConvertParams):
         "Detection",
         "Undetected",
     ]
+    rebuild_run_id: Annotated[str | None, Declared(REBUILD_RUN_ID_DESCRIPTION)] = None
+
+    @field_validator("rebuild_run_id", check_fields=False)
+    @classmethod
+    def _refuse_a_run_of_another_kind(cls, value: str | None) -> str | None:
+        """Refuse a value that is not the id of a ``rebuild-lmt-events`` run."""
+        return refuse_foreign_rebuild_run_id(value)
 
     @model_validator(mode="after")
     def _refuse_a_vocabulary_that_cannot_hold(self) -> Self:
@@ -437,6 +459,20 @@ class LmtEventsConverter(ClockedLabelConverter[LmtEventsParams]):
     refuses_shared_entry_keys = True
 
     @override
+    def input_file(
+        self,
+        path: Path,
+        params: LmtEventsParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        if params.rebuild_run_id is None:
+            return path
+        return rebuilt_copy(
+            root_of(REBUILD_KIND), params.rebuild_run_id, source_md5, str(path)
+        )
+
+    @override
     def convert(
         self,
         src_path: Path,
@@ -453,12 +489,23 @@ class LmtEventsConverter(ClockedLabelConverter[LmtEventsParams]):
             ValueError: An event name is outside the vocabulary and the skipped
                 names, an event's ``STARTFRAME`` or ``ENDFRAME`` has no ``FRAME``
                 row, an ``ENDFRAME`` is below its ``STARTFRAME``, a table or
-                column is missing, or a journal sits beside the file. The message
-                names the file and the event id or name.
+                column is missing, a journal sits beside the file, or with
+                ``rebuild_run_id`` set the manifest beside the file names another
+                run. The message names the file and the event id or name, or both
+                runs.
         """
         group = entry_group(params.group_from, raw_row, "")
         sequence = str(raw_row.get("sequence", "") or "")
         file = str(src_path)
+        commit = ""
+        if params.rebuild_run_id is not None:
+            manifest = read_rebuild_manifest(src_path)
+            if manifest.run_id != params.rebuild_run_id:
+                raise ValueError(
+                    f"{file}: the manifest beside it names the run {manifest.run_id}, "
+                    f"not the run {params.rebuild_run_id} that was asked for"
+                )
+            commit = manifest.lmt_analysis_commit
         connection = open_lmt_database(src_path)
         try:
             total, skipped = _refuse_unknown_names(connection, file, params)
@@ -507,6 +554,8 @@ class LmtEventsConverter(ClockedLabelConverter[LmtEventsParams]):
             ),
             "background_id": np.int32(-1),
             "rebuild_log": rebuild_log,
+            "rebuild_run_id": params.rebuild_run_id or "",
+            "lmt_analysis_commit": commit,
             "label_format": self.label_format,
             "group": group,
             "sequence": sequence,

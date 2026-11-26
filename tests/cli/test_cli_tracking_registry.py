@@ -35,7 +35,12 @@ from mosaic.tracking.trex.dataset_runs import (
     trex_index_path,
     trex_run_root,
 )
-from tests.helpers import run_child
+from tests.helpers import (
+    LmtAnalysisInstaller,
+    lmt_source_state,
+    rebuilt_lmt_dataset,
+    run_child,
+)
 
 RUN_ID = "trex.0.1-aaaaaaaaaa"
 ENTRY = "g__vid1"
@@ -148,3 +153,58 @@ def test_sweep_does_not_call_a_rowed_directory_unrowed(
         "a directory named by the trex index read as unrowed, so the sweep "
         "refused it; the reconcilable-index registry was empty"
     )
+
+
+def test_sweep_tracking_reclaims_a_finished_rebuild_copy_when_its_window_is_zero(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    import json
+
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+
+    result = _cli(
+        "sweep-tracking",
+        "-m",
+        str(ds.manifest_path),
+        "--rebuild-days",
+        "0",
+        "--apply",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["removed"] == [str(entry_dir)]
+    assert report["rows_dropped"] == 1
+    assert not entry_dir.exists()
+    assert lmt_source_state(ds) == before
+
+
+def test_sweep_tracking_keeps_a_finished_rebuild_copy_by_default(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    import json
+
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+
+    result = _cli("sweep-tracking", "-m", str(ds.manifest_path), "--apply", "--json")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["removed"] == []
+    assert report["held_for_age"] == 1
+    assert entry_dir.exists()
+    assert lmt_source_state(ds) == before
+
+
+def test_the_held_for_age_line_names_the_rebuild_option(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+
+    result = _cli("sweep-tracking", "-m", str(ds.manifest_path), "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "--tracker-days / --inference-days / --rebuild-days" in result.stdout
+    assert entry_dir.exists()
+    assert lmt_source_state(ds) == before

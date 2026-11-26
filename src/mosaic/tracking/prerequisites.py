@@ -322,7 +322,11 @@ def plan_prerequisites(
     """
     register_ops()
     answered = sorted(
-        {key for key in TRACKING_ROOTS if key in OPS}
+        {
+            key
+            for key, root in TRACKING_ROOTS.items()
+            if key in OPS and root.reads != "none"
+        }
         | {_EXTRACT_FRAMES, PREPROCESS_KIND}
     )
     if kind not in answered:

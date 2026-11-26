@@ -1,0 +1,29 @@
+[project]
+name = "mosaic-lmt-env"
+version = "0.1.0"
+description = "Isolated environment for lmt-analysis"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # lmt-analysis is GPL-3.0. It is cloned by the user, beside this file, and
+    # is not declared here because it is not a package: its repository has no
+    # package metadata, and its scripts import `lmtanalysis` with `LMT/` on
+    # `sys.path`. The program that mosaic starts in this environment is
+    # `runner/lmt_rebuild_runner.py`, which puts the checkout on `sys.path`.
+    # mosaic's dependencies do not name lmt-analysis. Whoever conveys a built
+    # environment conveys lmt-analysis under the GPL, with its source. See
+    # README.md here and NOTICE at the repository root.
+    #
+    # The packages of lmt-analysis's `python packages needed.txt`, which names
+    # no versions. uv.lock pins them.
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "affine",
+    "tabulate",
+    "pandas",
+    "lxml",
+    "networkx",
+    "psutil",
+    "seaborn",
+    "statsmodels",
+]

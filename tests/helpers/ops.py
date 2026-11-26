@@ -49,6 +49,9 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "preprocess": {
         "steps": [{"step": "crop", "x": 0, "y": 0, "width": 320, "height": 240}]
     },
+    "rebuild-lmt-events": {
+        "lmt_analysis_commit": "0123456789abcdef0123456789abcdef01234567"
+    },
     "resample-tracks": {"target_fps": 30.0},
     "retire-recipes": {"retirement": {"planned_at": "2026-01-01T00:00:00+00:00"}},
     "score-predictions": {
@@ -77,6 +80,9 @@ _RULE_REACHING: dict[str, dict[str, dict[str, object]]] = {
         "group_split": {"split_by": "group", "sequence_groups": {"s1": "a"}},
     },
     "preprocess": {"no_steps": {"steps": [], "codec": "h264"}},
+    "rebuild-lmt-events": {
+        "two_builders": {"builders": ["BuildEventStop", "BuildEventMove"]}
+    },
     "select-frames": {
         "keypoint_name": {"head": "nose", "keypoint_names": ["nose", "tail"]}
     },

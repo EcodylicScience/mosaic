@@ -395,7 +395,13 @@ def test_the_recipe_does_not_teach_a_private_resolver() -> None:
     )
 
 
-@pytest.mark.parametrize("kind", ALL_ROOTS)
+# A root that reads no media declares no decoder.
+MEDIA_ROOTS: list[str] = [
+    key for key in ALL_ROOTS if TRACKING_ROOTS[key].reads != "none"
+]
+
+
+@pytest.mark.parametrize("kind", MEDIA_ROOTS)
 def test_it_declares_what_its_tool_decodes_with(kind: str) -> None:
     """Every producer says what opens the file mosaic hands it.
 

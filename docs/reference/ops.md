@@ -3,7 +3,7 @@
 
 # Ops
 
-29 ops are registered. An op is the unit `mosaic run --kind <kind>`
+30 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -190,6 +190,17 @@ Merge revisions of keypoint annotation sets into one training dataset.
     | `set_key` | `string` | _required_ |  | The set's key in the keypoints label series. |
     | `origin_uuid` | `string` | `""` |  | The manifest uuid of the dataset the set was saved in. Needed only when two datasets' sets share a key; empty matches the one that has it. |
     | `revision` | `integer` \| `None` | `null` |  | Which revision to read. Left unset, the latest one indexed when the run is named. The number selects and is recorded; only the content it resolves to enters the run identifier. |
+
+#### `rebuild-lmt-events`
+
+Version `0.1` &middot; `mosaic.tracking.ops.rebuild_lmt_events.RebuildLmtEventsOp`
+
+Copy each Live Mouse Tracker database of the scope and rebuild its events.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `lmt_analysis_commit` | `string` | _required_ |  | The commit of the lmt-analysis checkout that rebuilds the events, as 40 lowercase hex digits. The checkout has to be at this commit. |
+| `builders` | list of `string` \| `None` | `null` |  | The lmtanalysis modules that rebuild events, in order, such as BuildEventStop. A builder reads the events of those before it. Unset runs the builders of the checkout's rebuild script. A partial list rebuilds only the listed builders' events, and the copy keeps the source's other events. |
 
 #### `resample-tracks`
 

@@ -12,30 +12,54 @@ paused frame that has detections, detections without an animal inserted under
 explicit descending ids, and events of one, two and three animals, of none,
 with a comma in the name, and overlapping. :func:`lmt_detection_grid` streams
 detections without holding them, for the tests that write millions of rows.
+:func:`lmt_dataset` indexes databases as a dataset's raw files, and
+:func:`place_rebuilt_copy` writes the copy that a rebuild of one of them leaves
+under the ``rebuild-lmt-events`` root.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+import shutil
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import batched
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
+
+import pytest
+
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.markers import PhaseMarker, write_phase_marker
+from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.track_library.lmt_rebuild import REBUILD_KIND, RebuildManifest
+from tests.helpers.datasets import make_dataset
+from tests.helpers.lmt_analysis import LmtAnalysisInstaller
 
 __all__ = [
     "DEFAULT_ANIMAL_COLUMNS",
+    "LMT_REBUILD_COMMIT",
+    "LMT_REBUILD_RUN_ID",
     "NINE_ANIMAL_COLUMNS",
+    "REBUILD_SPOILS",
     "LmtAnimal",
     "LmtDetection",
     "LmtEvent",
     "LmtFrame",
     "LmtLog",
     "LmtRecording",
+    "RebuildSpoil",
     "alter_lmt_sqlite",
     "default_lmt_recording",
+    "lmt_dataset",
     "lmt_detection_grid",
+    "lmt_source_state",
+    "place_rebuilt_copy",
+    "rebuilt_lmt_dataset",
+    "spoil_rebuilt_copy",
     "write_lmt_sqlite",
 ]
 
@@ -248,6 +272,23 @@ def _detection_values(detection: LmtDetection) -> dict[str, object]:
     }
 
 
+def _insert_events(connection: sqlite3.Connection, events: Sequence[LmtEvent]) -> None:
+    """Insert *events* into ``EVENT``."""
+    connection.executemany(
+        "INSERT INTO EVENT (ID, NAME, STARTFRAME, ENDFRAME, IDANIMALA, "
+        "IDANIMALB, IDANIMALC, IDANIMALD) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(e.id, e.name, e.start, e.end, e.a, e.b, e.c, e.d) for e in events],
+    )
+
+
+def _insert_log(connection: sqlite3.Connection, log: Sequence[LmtLog]) -> None:
+    """Insert *log* into ``LOG``."""
+    connection.executemany(
+        "INSERT INTO LOG (process, version, date, tmin, tmax) VALUES (?, ?, ?, ?, ?)",
+        [(x.process, x.version, x.date, x.tmin, x.tmax) for x in log],
+    )
+
+
 def write_lmt_sqlite(
     path: Path,
     *,
@@ -333,17 +374,9 @@ def write_lmt_sqlite(
                 for frame in frames
             ],
         )
-        connection.executemany(
-            "INSERT INTO EVENT (ID, NAME, STARTFRAME, ENDFRAME, IDANIMALA, "
-            "IDANIMALB, IDANIMALC, IDANIMALD) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(e.id, e.name, e.start, e.end, e.a, e.b, e.c, e.d) for e in events],
-        )
+        _insert_events(connection, events)
         if log is not None:
-            connection.executemany(
-                "INSERT INTO LOG (process, version, date, tmin, tmax) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [(x.process, x.version, x.date, x.tmin, x.tmax) for x in log],
-            )
+            _insert_log(connection, log)
         insert_detection = (
             f"INSERT INTO DETECTION ({', '.join(detection_columns)}) "
             f"VALUES ({', '.join('?' * len(detection_columns))})"
@@ -464,3 +497,239 @@ def alter_lmt_sqlite(path: Path, sql: str) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def lmt_dataset(
+    base: Path,
+    *,
+    recordings: Mapping[str, LmtRecording] | None = None,
+    tracks: bool = True,
+    labels: bool = False,
+    group: str = "",
+    labels_group: str | None = None,
+    animal_columns: Sequence[str] = DEFAULT_ANIMAL_COLUMNS,
+    drop_detection_columns: Sequence[str] = (),
+    alter: str = "",
+    md5: bool = True,
+) -> Dataset:
+    """A dataset whose ``raw/`` holds Live Mouse Tracker databases, indexed with md5s.
+
+    Nothing is converted.
+
+    Args:
+        base: The dataset's directory.
+        recordings: Each database file's stem and rows. Defaults to the one file
+            ``recording`` that holds :func:`default_lmt_recording`.
+        tracks: Index ``raw/`` as the tracks source.
+        labels: Index ``raw/`` as the labels source.
+        group: The group of the tracks rows.
+        labels_group: The group of the labels rows, ``group`` when ``None``.
+        animal_columns: The columns of ``ANIMAL`` in every file.
+        drop_detection_columns: Columns that ``DETECTION`` is created without.
+        alter: SQL run on each file before it is indexed.
+        md5: Whether the scan hashes the files. ``False`` leaves the ``md5`` cell empty.
+    """
+    ds = make_dataset(base)
+    raw = ds.base_dir / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    if recordings is None:
+        recordings = {"recording": default_lmt_recording()}
+    for stem, rows in recordings.items():
+        path = write_lmt_sqlite(
+            raw / f"{stem}.sqlite",
+            animals=rows.animals,
+            frames=rows.frames,
+            events=rows.events,
+            detections=rows.detections,
+            log=rows.log,
+            animal_columns=animal_columns,
+            drop_detection_columns=drop_detection_columns,
+        )
+        if alter:
+            alter_lmt_sqlite(path, alter)
+    if tracks:
+        _ = ds.index_tracks_raw(
+            [raw],
+            patterns=["*.sqlite"],
+            src_format="lmt_sqlite",
+            group_from_path=(lambda _path: group) if group else None,
+            compute_md5=md5,
+        )
+    if labels:
+        labels_named = group if labels_group is None else labels_group
+        _ = ds.index_labels_raw(
+            [raw],
+            patterns=["*.sqlite"],
+            src_format="lmt_sqlite",
+            group_from_path=(lambda _path: labels_named) if labels_named else None,
+            compute_md5=md5,
+        )
+    return ds
+
+
+def lmt_source_state(ds: Dataset) -> dict[Path, tuple[bytes, int]]:
+    """Every raw database's bytes and modification time, to compare after a run."""
+    return {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in sorted((ds.base_dir / "raw").glob("*.sqlite*"))
+    }
+
+
+def rebuilt_lmt_dataset(
+    base: Path, install_lmt: LmtAnalysisInstaller, *, raises: bool = False
+) -> tuple[Dataset, Path, dict[Path, tuple[bytes, int]]]:
+    """A dataset whose one entry the rebuild op ran on, the entry's directory and the raw state.
+
+    The raw state is :func:`lmt_source_state` before the run, for the test to compare
+    with afterwards. With *raises* the stand-in fails, and the entry's directory holds
+    the logs of the failed attempt and nothing else.
+    """
+    from mosaic.tracking import register_ops
+
+    register_ops()
+    checkout = install_lmt(raises=raises)
+    ds = lmt_dataset(base)
+    before = lmt_source_state(ds)
+    params = {"lmt_analysis_commit": checkout.commit}
+    if raises:
+        with pytest.raises(AllEntriesFailed):
+            _ = run_op(ds, REBUILD_KIND, params)
+        [run_root] = ds.get_root(REBUILD_KIND).glob("rebuild-lmt-events.*")
+        run_id = run_root.name
+    else:
+        run_id = run_op(ds, REBUILD_KIND, params)
+    entry_dir = ds.get_root(REBUILD_KIND) / run_id / "recording"
+    assert entry_dir.is_dir()
+    return ds, entry_dir, before
+
+
+def place_rebuilt_copy(
+    ds: Dataset,
+    run_id: str,
+    source: Path,
+    *,
+    entry_key: str,
+    commit: str,
+    added_event: LmtEvent | None = None,
+    log: LmtLog | None = None,
+    alter: str = "",
+    finished: bool = True,
+) -> Path:
+    """Write the entry directory that a rebuild of *source* leaves, and return the copy.
+
+    The directory is ``<rebuild-lmt-events root>/<run_id>/<entry_key>``. It holds the
+    copy of *source* under its name, with *added_event* in ``EVENT`` and *log* in
+    ``LOG`` as a rebuild adds them and the SQL of *alter* run on it, the manifest
+    that names the copy's size and modification time, and with *finished* the
+    ``rebuild`` marker.
+
+    Args:
+        ds: The dataset that holds the root.
+        run_id: The run the copy belongs to.
+        source: The raw database.
+        entry_key: The name of the entry's directory.
+        commit: The lmt-analysis commit the manifest records.
+        added_event: An event the copy has and *source* lacks.
+        log: A ``LOG`` row the copy has and *source* lacks.
+        alter: SQL run on the copy after the rows above, for a change they do
+            not make.
+        finished: Whether to write the marker.
+    """
+    entry_dir = ds.get_root(REBUILD_KIND) / run_id / entry_key
+    entry_dir.mkdir(parents=True)
+    copy = entry_dir / source.name
+    _ = shutil.copyfile(source, copy)
+    if added_event is not None or log is not None:
+        connection = sqlite3.connect(copy)
+        try:
+            if added_event is not None:
+                _insert_events(connection, [added_event])
+            if log is not None:
+                _insert_log(connection, [log])
+            connection.commit()
+        finally:
+            connection.close()
+    if alter:
+        alter_lmt_sqlite(copy, alter)
+    stat = copy.stat()
+    RebuildManifest(
+        manifest_format=1,
+        run_id=run_id,
+        op_version="0.1",
+        lmt_analysis_commit=commit,
+        builders=("BuildEventStop",),
+        source_md5=hashlib.md5(source.read_bytes()).hexdigest(),
+        source_name=source.name,
+        source_size=source.stat().st_size,
+        copy_name=copy.name,
+        copy_size=stat.st_size,
+        copy_mtime_ns=stat.st_mtime_ns,
+        max_frame=0,
+        script_max_frame=0,
+        python="3.12.3",
+        packages={},
+        completed_at="2026-11-26T12:00:00+00:00",
+    ).write(entry_dir)
+    if finished:
+        write_phase_marker(entry_dir, PhaseMarker(phase="rebuild", run_id=run_id))
+    return copy
+
+
+LMT_REBUILD_RUN_ID: Final = "rebuild-lmt-events.0.1-0123456789"
+"""A well-formed id of a ``rebuild-lmt-events`` run, for the copies a test places."""
+
+LMT_REBUILD_COMMIT: Final = "0123456789abcdef0123456789abcdef01234567"
+"""An lmt-analysis commit, for the manifests a test places."""
+
+RebuildSpoil = Literal["no-run", "other-file", "unfinished", "missing", "changed"]
+"""How a copy placed by :func:`place_rebuilt_copy` stops being readable."""
+
+REBUILD_SPOILS: Final[tuple[RebuildSpoil, ...]] = (
+    "no-run",
+    "other-file",
+    "unfinished",
+    "missing",
+    "changed",
+)
+
+
+def spoil_rebuilt_copy(
+    ds: Dataset, run_id: str, source: Path, how: RebuildSpoil
+) -> None:
+    """Make the copy of *source* that :func:`place_rebuilt_copy` placed unreadable.
+
+    Args:
+        ds: The dataset that holds the root.
+        run_id: The run the copy was placed under.
+        source: The raw database.
+        how: ``no-run`` removes the run's directory, ``other-file`` replaces its copy
+            with the copy of a database with other content, ``unfinished`` replaces
+            it with one that has no marker, ``missing`` deletes the copy file, and
+            ``changed`` appends a byte to the copy.
+    """
+    run_dir = ds.get_root(REBUILD_KIND) / run_id
+    if how in ("missing", "changed"):
+        (copy,) = run_dir.glob(f"*/{source.name}")
+        if how == "missing":
+            copy.unlink()
+            return
+        with copy.open("ab") as handle:
+            _ = handle.write(b"x")
+        return
+    shutil.rmtree(run_dir)
+    if how == "no-run":
+        return
+    if how == "unfinished":
+        _ = place_rebuilt_copy(
+            ds, run_id, source, entry_key="spoiled", commit="0" * 40, finished=False
+        )
+        return
+    recording = default_lmt_recording()
+    other = write_lmt_sqlite(
+        ds.base_dir / "other.sqlite",
+        animals=recording.animals,
+        frames=recording.frames,
+        events=[],
+        detections=[],
+    )
+    _ = place_rebuilt_copy(ds, run_id, other, entry_key="other", commit="0" * 40)

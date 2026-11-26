@@ -68,11 +68,13 @@ from tests.helpers import (
     SEPARATED_TOOLS,
     ExampleServer,
     LineChildren,
+    LmtAnalysisInstaller,
     MediaClip,
     add_media_sequence,
     add_track_sequences,
     import_runner_program,
     isolate_card_leases,
+    lmt_analysis_installer,
     make_dataset,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
@@ -284,6 +286,14 @@ def pytest_runtest_teardown() -> None:
     if _tests_since_freeze >= _FREEZE_INTERVAL:
         _tests_since_freeze = 0
         _freeze_survivors()
+
+
+@pytest.fixture
+def install_lmt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> LmtAnalysisInstaller:
+    """Write a stand-in lmt-analysis checkout and point the location ladder at it."""
+    return lmt_analysis_installer(monkeypatch, tmp_path)
 
 
 @pytest.fixture

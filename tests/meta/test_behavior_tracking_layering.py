@@ -33,7 +33,7 @@ from tests.helpers import (
     SOURCE_ROOT,
     ReachedImport,
     imports_reaching,
-    inside_a_virtualenv,
+    is_third_party_source,
     package_of,
     source_tree,
 )
@@ -129,7 +129,7 @@ def test_no_module_imports_the_other_analysis_package(package: str) -> None:
     paths = [
         path
         for path in sorted((SOURCE_ROOT / package).rglob("*.py"))
-        if not inside_a_virtualenv(path, SOURCE_ROOT)
+        if not is_third_party_source(path, SOURCE_ROOT)
     ]
     offenders = [
         f"{imported.path}:{imported.found.line} imports {module} "

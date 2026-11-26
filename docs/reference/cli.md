@@ -552,6 +552,7 @@ $ mosaic prune-joined [OPTIONS]
 
 Delete tracker working directories that are finished and past their window.
 
+A rebuild copy of a Live Mouse Tracker database is swept on its own window.
 Never touches work in progress: a directory a live execution holds, or one
 this dataset's index does not yet name, is reported and left alone. A shared
 conversion is refused for as long as any surviving tracker directory names
@@ -575,6 +576,7 @@ $ mosaic sweep-tracking [OPTIONS]
 * `--root <str>`: Restrict to one tracker root (repeatable): trex, sleap, ...
 * `--tracker-days <float>`: Keep finished tracker output this long (default 14).  [default: 14.0]
 * `--inference-days <float>`: Keep finished inference output this long (default 3).  [default: 3.0]
+* `--rebuild-days <float>`: Keep a finished LMT rebuild copy this long (default 14). Running the op again makes it again.  [default: 14.0]
 * `--conversion-days <float>`: Keep an unreferenced shared conversion this long (default 14). One a tracker run still names is refused whatever its age.  [default: 14.0]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.

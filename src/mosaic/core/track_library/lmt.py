@@ -37,6 +37,12 @@ does not increase along ``FRAMENUMBER``, each naming the file and the frame.
 wall-clock start, genotypes and animal count, for ``mosaic sequence-tags import``.
 It reads the databases and writes the CSV alone.
 
+**A rebuilt copy.** With ``rebuild_run_id`` set, ``input_file`` hands the converter the
+copy that a ``rebuild-lmt-events`` run made of the raw file
+(:func:`~mosaic.core.track_library.lmt_rebuild.rebuilt_copy`), found by the file's md5,
+and the raw file is not opened. The param enters the variant, so a table converted
+from a copy is another variant than one converted from the raw file.
+
 The module reads SQLite through the standard library and unpickles nothing.
 """
 
@@ -53,7 +59,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Final, override
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mosaic.core.entry import entry_token
 from mosaic.core.params import HASH_EXCLUDE, Declared
@@ -63,7 +69,14 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
     register_track_converter,
 )
+from mosaic.core.root_lookup import RootLookup
 from mosaic.core.track_library.helpers import norm_hint
+from mosaic.core.track_library.lmt_rebuild import (
+    REBUILD_KIND,
+    REBUILD_RUN_ID_DESCRIPTION,
+    rebuilt_copy,
+    refuse_foreign_rebuild_run_id,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -75,12 +88,14 @@ __all__ = [
     "LmtSqliteParams",
     "frame_origin",
     "frame_seconds",
+    "journals_beside",
     "open_lmt_database",
     "table_columns",
     "write_lmt_sequence_tags",
 ]
 
-_JOURNAL_SUFFIXES = ("-journal", "-wal")
+_JOURNAL_SUFFIXES: Final = ("-journal", "-wal")
+"""The suffixes of the files that SQLite keeps beside a database while it writes."""
 
 LMT_EVENT_NAMES: Final[tuple[str, ...]] = (
     "Approach",
@@ -173,6 +188,20 @@ class LmtFrames:
     paused: NDArray[np.bool_]
 
 
+def journals_beside(path: Path) -> list[Path]:
+    """The ``-journal`` and ``-wal`` files that exist beside the database *path*.
+
+    *path* is resolved first, so a symlink to a database answers for the file it
+    names, which is where SQLite looks for the journal.
+    """
+    resolved = path.resolve()
+    return [
+        sibling
+        for suffix in _JOURNAL_SUFFIXES
+        if (sibling := resolved.with_name(resolved.name + suffix)).exists()
+    ]
+
+
 def open_lmt_database(path: Path) -> sqlite3.Connection:
     """Open a Live Mouse Tracker database for reading, and nothing else.
 
@@ -184,15 +213,14 @@ def open_lmt_database(path: Path) -> sqlite3.Connection:
         sqlite3.OperationalError: *path* is not an openable database.
     """
     resolved = path.resolve()
-    for suffix in _JOURNAL_SUFFIXES:
-        sibling = resolved.with_name(resolved.name + suffix)
-        if sibling.exists():
-            raise ValueError(
-                f"{path}: the sibling {sibling.name} exists. SQLite ignores a hot "
-                "journal under immutable=1, and the file would read without its "
-                "last writes. Open it once in SQLite, or copy it, to finish the "
-                "journal."
-            )
+    journals = journals_beside(path)
+    if journals:
+        raise ValueError(
+            f"{path}: the sibling {journals[0].name} exists. SQLite ignores a hot "
+            "journal under immutable=1, and the file would read without its "
+            "last writes. Open it once in SQLite, or copy it, to finish the "
+            "journal."
+        )
     return sqlite3.connect(f"{resolved.as_uri()}?mode=ro&immutable=1", uri=True)
 
 
@@ -432,6 +460,13 @@ class LmtSqliteParams(TrackConvertParams):
         HASH_EXCLUDE,
         Declared(_READ_CHUNK_DESCRIPTION, unit="rows"),
     ] = 50_000
+    rebuild_run_id: Annotated[str | None, Declared(REBUILD_RUN_ID_DESCRIPTION)] = None
+
+    @field_validator("rebuild_run_id", check_fields=False)
+    @classmethod
+    def _refuse_a_run_of_another_kind(cls, value: str | None) -> str | None:
+        """Refuse a value that is not the id of a ``rebuild-lmt-events`` run."""
+        return refuse_foreign_rebuild_run_id(value)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -538,6 +573,13 @@ def _unidentified_ids(
     return ids
 
 
+def _from_rebuild(params: LmtSqliteParams) -> str:
+    """The tail of the stderr line that names the rebuild the file was read from."""
+    if params.rebuild_run_id is None:
+        return ""
+    return f" from rebuild {params.rebuild_run_id}"
+
+
 @register_track_converter
 class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
     """A Live Mouse Tracker database -> an ``lmt_v1`` table, in pixels."""
@@ -553,6 +595,20 @@ class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
     @override
     def tracklets(self, params: LmtSqliteParams) -> bool | None:
         return not params.keep_unidentified
+
+    @override
+    def input_file(
+        self,
+        path: Path,
+        params: LmtSqliteParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        if params.rebuild_run_id is None:
+            return path
+        return rebuilt_copy(
+            root_of(REBUILD_KIND), params.rebuild_run_id, source_md5, str(path)
+        )
 
     @override
     def convert(
@@ -591,7 +647,7 @@ class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
         print(
             f"[lmt_sqlite] {entry_token(group, sequence)}: kept {kept} of {total} "
             f"detections; {unidentified_count} unidentified and {paused_count} on "
-            "paused frames dropped",
+            f"paused frames dropped{_from_rebuild(params)}",
             file=sys.stderr,
         )
 

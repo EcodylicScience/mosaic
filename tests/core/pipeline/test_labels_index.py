@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sys
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from operator import methodcaller
 from pathlib import Path
 from typing import ClassVar, override
@@ -46,10 +47,13 @@ from mosaic.core.pipeline.types import (
     NpzLoadSpec,
     ResultColumn,
 )
+from mosaic.core.root_lookup import RootLookup
 from tests.helpers import (
     LABELS_VARIANT,
     SOURCE_ENTRIES,
     ListedEntries,
+    ListedEntriesParams,
+    SecondsEntries,
     SharedKeyRefusingEntries,
     add_labels,
     add_segments_only_labels,
@@ -58,6 +62,7 @@ from tests.helpers import (
     assert_tree_unchanged,
     calms21_dataset,
     copy_of,
+    dropped_frame_tracks,
     labelled_source,
     make_dataset,
     portable_columns,
@@ -1240,3 +1245,154 @@ def test_dense_labels_of_a_first_sequence_that_tracks_number_later_are_refused(
         )
 
     _assert_no_label_written(ds)
+
+
+# --- the file a converter reads ----------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _InputFileCall:
+    """The arguments of one ``input_file`` call."""
+
+    path: Path
+    params: ListedEntriesParams
+    source_md5: str
+    root_of: RootLookup
+
+
+_input_file_calls: list[_InputFileCall] = []
+
+
+@pytest.fixture(autouse=True)
+def _forget_recorded_calls() -> None:
+    _input_file_calls.clear()
+
+
+class _Redirecting(LabelConverter[ListedEntriesParams]):
+    """Read the file of the same name under ``replacement/``, and record each call."""
+
+    @override
+    def input_file(
+        self,
+        path: Path,
+        params: ListedEntriesParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        _input_file_calls.append(_InputFileCall(path, params, source_md5, root_of))
+        return path.parent.parent / "replacement" / path.name
+
+
+class _Refusing(LabelConverter[ListedEntriesParams]):
+    """Refuse every file."""
+
+    @override
+    def input_file(
+        self,
+        path: Path,
+        params: ListedEntriesParams,
+        source_md5: str,
+        root_of: RootLookup,
+    ) -> Path:
+        _ = params, source_md5, root_of
+        raise ValueError(f"{path} cannot be read")
+
+
+class _RedirectedListed(_Redirecting, ListedEntries):
+    src_format = "redirected_listed_test_npy"
+
+
+class _RedirectedSeconds(_Redirecting, SecondsEntries):
+    src_format = "redirected_seconds_test_npy"
+
+
+class _RefusingListed(_Refusing, ListedEntries):
+    src_format = "refusing_listed_test_npy"
+
+
+class _RefusingSeconds(_Refusing, SecondsEntries):
+    src_format = "refusing_seconds_test_npy"
+
+
+STUBS = (_RedirectedListed, _RedirectedSeconds, _RefusingListed, _RefusingSeconds)
+
+
+@pytest.fixture
+def stub_label_converters(monkeypatch: pytest.MonkeyPatch) -> None:
+    for stub in STUBS:
+        monkeypatch.setitem(LABEL_CONVERTERS, (stub.src_format, "behavior"), stub)
+
+
+def _redirected_dataset(tmp_path: Path, src_format: str) -> Dataset:
+    """A dataset whose one raw file lists ``raw`` and whose counterpart lists ``swapped``."""
+    ds = make_dataset(tmp_path / "ds")
+    uploads = write_listed_entries(tmp_path / "uploads", {"f": [("", "raw")]})
+    _ = write_listed_entries(tmp_path / "replacement", {"f": [("", "swapped")]})
+    ds.index_labels_raw([uploads], patterns=["*.npy"], src_format=src_format)
+    return ds
+
+
+@pytest.mark.usefixtures("stub_label_converters")
+@pytest.mark.parametrize(
+    "stub", [_RedirectedListed, _RedirectedSeconds], ids=["plain", "clocked"]
+)
+def test_a_label_conversion_reads_the_file_the_hook_returns(
+    tmp_path: Path, stub: type[ListedEntries]
+) -> None:
+    ds = _redirected_dataset(tmp_path, stub.src_format)
+    raw = tmp_path / "uploads" / "f.npy"
+
+    _ = ds.convert_all_labels(kind="behavior", source_format=stub.src_format)
+
+    assert list(read_labels_index(ds, "behavior")["sequence"]) == ["swapped"]
+    (call,) = _input_file_calls
+    assert call.path.resolve() == raw.resolve()
+    assert call.source_md5 == hashlib.md5(raw.read_bytes()).hexdigest()
+    assert call.root_of("labels") == ds.get_root("labels")
+    assert call.root_of("no-such-root") is None
+
+
+@pytest.mark.usefixtures("stub_label_converters")
+def test_the_entries_named_to_find_a_tracks_variant_come_from_the_file_the_hook_returns(
+    tmp_path: Path,
+) -> None:
+    """Of two tracks variants, the one holding the entry that the returned file names."""
+    ds = _redirected_dataset(tmp_path, _RedirectedSeconds.src_format)
+    chosen = "convert-tracktor_corrected_tsv.0.1-aaaaaaaaaa"
+    other = "convert-tracktor_raw_csv.0.1-bbbbbbbbbb"
+    add_tracks_table(
+        ds,
+        chosen,
+        dropped_frame_tracks(ids=(0,), sequence="swapped"),
+        std_format="mosaic_v1",
+    )
+    add_tracks_table(
+        ds,
+        other,
+        dropped_frame_tracks(ids=(0,), sequence="elsewhere"),
+        std_format="mosaic_v1",
+    )
+
+    outcome = ds.convert_all_labels(
+        kind="behavior", source_format=_RedirectedSeconds.src_format
+    )
+
+    assert outcome.written == 1
+    assert list(read_labels_index(ds, "behavior")["sequence"]) == ["swapped"]
+    assert len(_input_file_calls) == 2
+
+
+@pytest.mark.usefixtures("stub_label_converters")
+@pytest.mark.parametrize(
+    "stub", [_RefusingListed, _RefusingSeconds], ids=["plain", "clocked"]
+)
+def test_a_hook_that_raises_refuses_the_conversion_and_writes_nothing(
+    tmp_path: Path, stub: type[ListedEntries]
+) -> None:
+    ds = _redirected_dataset(tmp_path, stub.src_format)
+
+    with pytest.raises(ValueError, match=r"f\.npy cannot be read"):
+        _ = ds.convert_all_labels(kind="behavior", source_format=stub.src_format)
+
+    assert _written_labels(ds) == {}
+    assert read_labels_index(ds, "behavior").empty

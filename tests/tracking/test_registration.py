@@ -64,7 +64,9 @@ def test_the_listed_modules_are_the_ones_that_register_at_import() -> None:
     assert registering == set(REGISTERING_MODULES)
 
 
-@pytest.mark.parametrize("root_key", ["frame_predictions", "selections"])
+@pytest.mark.parametrize(
+    "root_key", ["frame_predictions", "selections", "rebuild-lmt-events"]
+)
 def test_register_ops_registers_the_index_of_a_derived_root(root_key: str) -> None:
     """A fresh interpreter, because an earlier test may have imported the index."""
     code = (

@@ -62,7 +62,7 @@ bare component name rather than a path: the check is against ``Path.parts``,
 since a directory exclusion cannot be expressed as a basename pattern.
 """
 
-ToolReads = Literal["one-file", "entry-files", "in-process"]
+ToolReads = Literal["one-file", "entry-files", "in-process", "none"]
 """How a producer's tool reads an entry's media.
 
 ``one-file``: the tool opens one path that mosaic hands it -- the entry's one
@@ -78,9 +78,12 @@ an export. A store whose chunks are not those frames still needs its export.
 ``in-process``: the tool reads in mosaic's own process, through mosaic's reader,
 which reads clips and stores natively. It needs a join only for clips that differ
 in frame rate.
+
+``none``: the producer opens no media. It makes a file that is not a recording of
+pixels, so nothing has to be built before it and no decoder is declared for it.
 """
 
-RetentionClass = Literal["tracker", "inference", "conversion"]
+RetentionClass = Literal["tracker", "inference", "conversion", "rebuild"]
 """Which retention window an intermediate falls under.
 
 ``tracker`` is the expensive, reusable, correctable output -- a ``.pv`` and its
@@ -95,6 +98,11 @@ detection settings. It is the most expensive artifact in the tree and the one
 several runs read at once, so age alone must not reclaim it -- a slot still
 named by a surviving tracker directory is refused whatever its age, and the
 window only decides how long it lingers after its last reader is itself gone.
+
+``rebuild`` is a recomputable copy of an input that an external program rebuilt.
+It costs hours to make and is reclaimed by age, and a table converted from it
+keeps its identity when the copy is gone, so no reader pins it. Running the
+producer again under the same run id makes the copy again.
 
 A closed alias rather than a bare ``str``, because the window a class maps to
 is a policy decision and an unrecognized value must not silently fall through
@@ -659,6 +667,29 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
             phase_outputs=(TrackingPhase("infer", ("predictions.parquet",)),),
+        ),
+        # A rebuilt copy of a Live Mouse Tracker database, read by the LMT
+        # converters. The root keeps `CONSERVATIVE_DECODER` because nothing
+        # decodes media from it.
+        TrackingRoot(
+            key="rebuild-lmt-events",
+            retention="rebuild",
+            reads="none",
+            outputs=("*.sqlite", "rebuild.json"),
+            phase_outputs=(
+                TrackingPhase(
+                    "rebuild",
+                    (
+                        ".incoming-*",
+                        "*.sqlite",
+                        "*.sqlite-journal",
+                        "*.sqlite-wal",
+                        "rebuild.json",
+                        "rebuild.log",
+                        "rebuild-report.json",
+                    ),
+                ),
+            ),
         ),
     )
 }

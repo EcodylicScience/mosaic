@@ -20,7 +20,7 @@ import ast
 from pathlib import Path
 
 import mosaic
-from tests.helpers import inside_a_virtualenv
+from tests.helpers import is_third_party_source
 
 SOURCE_ROOT = Path(mosaic.__file__).parent
 
@@ -96,7 +96,7 @@ def _unreported_totals() -> list[str]:
     """
     offenders: list[str] = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
-        if inside_a_virtualenv(path, SOURCE_ROOT):
+        if is_third_party_source(path, SOURCE_ROOT):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         # One hop is allowed, and only into this module's own functions: a job

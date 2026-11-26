@@ -35,7 +35,7 @@ from mosaic.core.pipeline.inventory.params import (
     upstream_runs,
 )
 
-from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
+from tests.helpers import is_third_party_source, runs_in_an_external_environment
 
 # One document holding every case the two walks disagree about, plus the two
 # that neither keeps. Written once so a change to either rule is a visible diff.
@@ -538,9 +538,9 @@ def _modules_naming_the_file() -> dict[str, list[int]]:
         # is not mosaic's code wherever it lands, which the first predicate only
         # happens to cover while every such environment is built inside one of
         # the two named trees.
-        if inside_a_virtualenv(source, source_root) or runs_in_an_external_environment(
+        if is_third_party_source(
             source, source_root
-        ):
+        ) or runs_in_an_external_environment(source, source_root):
             continue
         for node in ast.walk(ast.parse(source.read_text())):
             if isinstance(node, ast.Constant) and node.value == "params.json":

@@ -66,6 +66,7 @@ __all__ = [
     "discard_if_empty",
     "empty_claimed_run_root",
     "held_run_root",
+    "kept_claimed",
     "open_entry",
     "phase_activity",
     "release_entry",
@@ -479,33 +480,56 @@ def held_run_root(
         RunRootHeld: Another execution holds *run_root*.
     """
     marker = claim_run_root(ds, execution_id, run_root, kind, idle_seconds, doing=doing)
+    try:
+        with kept_claimed(run_root, marker, idle_seconds):
+            yield marker
+    finally:
+        clear_inflight(run_root, execution_id=execution_id)
+
+
+@contextmanager
+def kept_claimed(
+    work_dir: Path, marker: InflightMarker, idle_seconds: float
+) -> Generator[None]:
+    """Re-stamp *marker* every :data:`INFLIGHT_REFRESH_SECONDS` while the block runs.
+
+    For work that prints no line and calls no progress callback that could refresh
+    the claim, or that stays silent for longer than a claim lasts. A thread
+    re-stamps the claim until the block ends. It is stopped and joined whatever
+    the block raised, and the claim itself is left in place: releasing it is the
+    caller's.
+
+    Args:
+        work_dir: The directory that holds the claim.
+        marker: This execution's claim on *work_dir*.
+        idle_seconds: How long each refreshed claim lasts without another.
+    """
     stop = threading.Event()
     thread = threading.Thread(
-        target=_keep_claimed,
-        args=(run_root, marker, idle_seconds, stop),
-        name=f"claim-{run_root.name}",
+        target=_refresh_until,
+        args=(work_dir, marker, idle_seconds, stop),
+        name=f"claim-{work_dir.name}",
         daemon=True,
     )
     thread.start()
     try:
-        yield marker
+        yield
     finally:
         stop.set()
         thread.join()
-        clear_inflight(run_root, execution_id=execution_id)
 
 
-def _keep_claimed(
-    run_root: Path, marker: InflightMarker, idle_seconds: float, stop: threading.Event
+def _refresh_until(
+    work_dir: Path, marker: InflightMarker, idle_seconds: float, stop: threading.Event
 ) -> None:
-    """Re-stamp *marker* until *stop* is set or another execution takes the root.
+    """Re-stamp *marker* until *stop* is set or another execution takes the directory.
 
     A refusal by the filesystem shortens the claim and is retried on the next
     tick. The interval is read on every tick.
     """
     while not stop.wait(INFLIGHT_REFRESH_SECONDS):
         try:
-            if refresh_inflight(run_root, marker, idle_seconds) is None:
+            if refresh_inflight(work_dir, marker, idle_seconds) is None:
                 return
         except OSError:
             continue

@@ -121,7 +121,7 @@ class TestTheDeclarationsAreWhatWeIntend:
 
     def test_the_scope_dependent_ops(self) -> None:
         dependent = {kind for kind, op in OPS.items() if op.scope_dependent}
-        assert dependent == {"resample-tracks", "assign-arenas"}
+        assert dependent == {"resample-tracks", "assign-arenas", "rebuild-lmt-events"}
 
     def test_the_arity_constrained_ops(self) -> None:
         assert OPS["transcode"].scope_takes == "at-least-one"
@@ -244,7 +244,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-twenty-nine.
+thirty.
 """
 
 
@@ -315,7 +315,7 @@ class TestNoScopeReachesTheHashedPayload:
 
     The direct leak, over **every** registered op, where the dataset gate below
     covers twenty-six. Every op takes both as arguments and declares no
-    such field, and that is why this passes for all twenty-nine. It
+    such field, and that is why this passes for all thirty. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -488,7 +488,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the twenty-nine have used,
+        model declares a coverage under any spelling the thirty have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -502,7 +502,7 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all twenty-nine.
+        position :class:`TestOpInterface` pins for all thirty.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in

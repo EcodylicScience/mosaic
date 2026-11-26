@@ -46,6 +46,16 @@ def sweep_tracking_command(
             help="Keep finished inference output this long (default 3).",
         ),
     ] = 3.0,
+    rebuild_days: Annotated[
+        float,
+        typer.Option(
+            "--rebuild-days",
+            help=(
+                "Keep a finished LMT rebuild copy this long (default 14). "
+                "Running the op again makes it again."
+            ),
+        ),
+    ] = 14.0,
     conversion_days: Annotated[
         float,
         typer.Option(
@@ -62,6 +72,7 @@ def sweep_tracking_command(
 ) -> None:
     """Delete tracker working directories that are finished and past their window.
 
+    A rebuild copy of a Live Mouse Tracker database is swept on its own window.
     Never touches work in progress: a directory a live execution holds, or one
     this dataset's index does not yet name, is reported and left alone. A shared
     conversion is refused for as long as any surviving tracker directory names
@@ -91,6 +102,7 @@ def sweep_tracking_command(
                     "tracker": tracker_days,
                     "inference": inference_days,
                     "conversion": conversion_days,
+                    "rebuild": rebuild_days,
                 },
             )
     except Exception as exc:  # noqa: BLE001 - surface sweep errors cleanly
@@ -129,5 +141,5 @@ def sweep_tracking_command(
     if report.held_for_age and not report.applied:
         typer.echo(
             "\nSome finished output is newer than its window; re-run later or "
-            "lower --tracker-days / --inference-days."
+            "lower --tracker-days / --inference-days / --rebuild-days."
         )

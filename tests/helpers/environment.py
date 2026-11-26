@@ -7,10 +7,11 @@ files that happened to request a guarding fixture and a bare ``FileNotFoundError
 naming a codec in the ones that did not.
 
 The two predicates below are the same question pointed inwards, and they are two
-questions rather than one. :func:`inside_a_virtualenv` asks whether a file is
-installed third-party code. A user builds each external tool's environment
-under one of the :data:`EXTERNAL_ENVIRONMENT_TREES`, and a walk of the package
-tree then includes a whole site-packages.
+questions rather than one. :func:`is_third_party_source` asks whether a file is
+installed third-party code, or a checkout of it. A user builds each external
+tool's environment under one of the :data:`EXTERNAL_ENVIRONMENT_TREES`, and a
+walk of the package tree then includes a whole site-packages and the checkout
+that the user cloned beside it.
 :func:`runs_in_an_external_environment` asks whether a file is part of mosaic
 but runs in one of those environments, where it may not import mosaic. A walk
 wants whichever it means, and often both.
@@ -59,6 +60,7 @@ from tests.helpers.paths import (
     FEATURE_RUNNERS,
     KPMS_PROTOCOL,
     KPMS_SERVER,
+    LMT_REBUILD_RUNNER,
     RUNNER_WIRE,
     SOURCE_ROOT,
     ULTRALYTICS_PROTOCOL,
@@ -162,21 +164,25 @@ def require_ffmpeg() -> None:
         pytest.skip(f"not on PATH: {', '.join(missing)}")
 
 
-def inside_a_virtualenv(source: Path, root: Path) -> bool:
-    """True when *source* is installed third-party code rather than mosaic's own.
+def is_third_party_source(source: Path, root: Path) -> bool:
+    """True when *source* is third-party code rather than mosaic's own.
 
     A user builds each external tool's environment under one of the
     :data:`EXTERNAL_ENVIRONMENT_TREES`, and a walk of the package tree then
     includes a whole site-packages. It finds hits outside mosaic's code:
     ``pandas``'s ``frame.py`` contains ``df.to_parquet("df.parquet.gzip", ...)``
     in a docstring example, which reads like a final path, and the Ultralytics
-    environment's site-packages contains Ultralytics itself.
+    environment's site-packages contains Ultralytics itself. The user also clones
+    lmt-analysis into ``tracking/external/lmt-env/lmt-analysis/``, and every one
+    of its scripts imports the library that mosaic's guards keep out.
 
-    Detected two ways because a virtualenv directory can be called anything: a
-    ``site-packages`` component *below the package root*, or a ``pyvenv.cfg`` in a
-    directory between *source* and *root*.
+    Detected three ways because a virtualenv directory can be called anything: a
+    ``site-packages`` component *below the package root*, a ``pyvenv.cfg`` in a
+    directory between *source* and *root*, or a ``.git`` entry in one, which marks
+    a checkout of another project. The package root's own ``.git`` is not between
+    them.
 
-    Both tests are deliberately relative to *root*. Under a non-editable install
+    The tests are deliberately relative to *root*. Under a non-editable install
     the package root is itself ``.../site-packages/mosaic``, so an absolute
     ``"site-packages" in source.parts`` is true of every file in the walk --
     which excludes the whole of mosaic, leaves the caller asserting against an
@@ -189,7 +195,7 @@ def inside_a_virtualenv(source: Path, root: Path) -> bool:
     for parent in source.parents:
         if parent == root:
             return False
-        if (parent / "pyvenv.cfg").is_file():
+        if (parent / "pyvenv.cfg").is_file() or (parent / ".git").exists():
             return True
     return False
 
@@ -207,7 +213,7 @@ construction: a program under one of them may take no import from ``mosaic`` at
 all -- that separation is what keeps mosaic and an AGPL-licensed or
 non-commercial tool two programs -- so it cannot call the function the guard is
 about. And each tree is where the user *builds* a virtualenv; that half is
-:func:`inside_a_virtualenv`'s subject, and it holds wherever a virtualenv lands
+:func:`is_third_party_source`'s subject, and it holds wherever a virtualenv lands
 rather than only in these two places.
 """
 
@@ -269,12 +275,16 @@ class SeparatedEnvironment:
             :attr:`directory` as its ``repo_venv``. A tool that is only an
             interpreter is located there. A tool with a console script is
             located on ``$PATH``.
+        declares_tool: Whether the environment's ``pyproject.toml`` declares the
+            tool's distribution. A tool that the user clones instead of
+            installing has none to declare.
     """
 
     directory: str
     tool_env: str
     built_by: CiJob | None
     located_in_directory: bool
+    declares_tool: bool = True
 
     @property
     def source_directory(self) -> Path:
@@ -395,7 +405,31 @@ VAME_TOOL: Final = SeparatedTool(
 )
 """VAME, behind the vame feature."""
 
-SEPARATED_TOOLS: Final = (ULTRALYTICS_TOOL, KPMS_TOOL, VAME_TOOL)
+LMT_ANALYSIS_TOOL: Final = SeparatedTool(
+    name="lmt-analysis",
+    license="GPL-3.0",
+    libraries=("lmtanalysis",),
+    distribution="lmt_analysis",
+    # No CI job builds it, and no distribution installs it: the user clones
+    # lmt-analysis beside the environment, so its manifest declares none. The
+    # install check therefore passes on any declaration, and the import check is
+    # the one that binds.
+    environments=(
+        SeparatedEnvironment(
+            "tracking/external/lmt-env",
+            "mosaic.tracking.common.lmt_env:LMT_ENV",
+            None,
+            located_in_directory=True,
+            declares_tool=False,
+        ),
+    ),
+    programs=frozenset({LMT_REBUILD_RUNNER}),
+    allowed_importers=frozenset({LMT_REBUILD_RUNNER}),
+    mosaic_distributions=frozenset(),
+)
+"""lmt-analysis, behind the ``rebuild-lmt-events`` op."""
+
+SEPARATED_TOOLS: Final = (ULTRALYTICS_TOOL, KPMS_TOOL, VAME_TOOL, LMT_ANALYSIS_TOOL)
 """Every tool that runs in an environment the user builds, outside mosaic's process.
 
 A separation check reads only the tools listed here.

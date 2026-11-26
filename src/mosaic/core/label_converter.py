@@ -41,6 +41,7 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
+from mosaic.core.root_lookup import RootLookup
 from mosaic.core.timebase import (
     first_frames_at_or_after,
     last_frames_at_or_before,
@@ -291,13 +292,34 @@ class LabelConverter(Generic[P]):
         _ = raw_row, params
         return True
 
+    def input_file(
+        self, path: Path, params: P, source_md5: str, root_of: RootLookup
+    ) -> Path:
+        """Return the file that :meth:`convert` reads for the raw file *path*.
+
+        The default is *path* itself. A converter that reads another file in its
+        place, such as a copy that a tool made of the raw file, returns that
+        file's path. A file it cannot find or trust is a refusal: a
+        ``ValueError`` naming the file, which refuses the conversion.
+
+        Args:
+            path: The raw label file.
+            params: Typed conversion parameters.
+            source_md5: The ``md5`` cell of the raw file's index row, ``""`` when
+                the scan did not hash it.
+            root_of: Finds a dataset root by its key, and returns ``None`` for a
+                root the dataset does not declare.
+        """
+        _ = params, source_md5, root_of
+        return path
+
     def convert(
         self, src_path: Path, params: P, raw_row: Mapping[str, object]
     ) -> list[LabelEntry]:
         """Read *src_path* and return one :class:`LabelEntry` per sequence.
 
         Args:
-            src_path: The raw label file.
+            src_path: The file that :meth:`input_file` returned for the raw file.
             params: Typed conversion parameters. These, plus ``src_format``,
                 ``label_kind`` and ``version``, are what a label variant identity
                 is made of.
@@ -334,7 +356,7 @@ class ClockedLabelConverter(LabelConverter[P]):
         """Read *src_path* and return one :class:`LabelEntry` per sequence.
 
         Args:
-            src_path: The raw label file.
+            src_path: The file that :meth:`input_file` returned for the raw file.
             params: Typed conversion parameters.
             raw_row: The ``labels_raw/index.csv`` row. Never hashed.
             clock: Where each entry's tracks put a second. ``None`` outside a

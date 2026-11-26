@@ -82,6 +82,7 @@ from .media.store_division import (
 )
 from .media.store_rate import store_rate_mismatch
 from .media.uniformity import UniformityVerdict, camera_uniformity
+from .root_lookup import RootLookup
 from .schema import (
     TrackSchemaError,
     TRACK_SCHEMAS,
@@ -4677,6 +4678,14 @@ class Dataset:
     def has_root(self, key: str) -> bool:
         """Return True if *key* is a set (non-empty) root."""
         return key in self.roots and bool(self.roots[key])
+
+    def _root_lookup(self) -> RootLookup:
+        """Return the function that finds a root of this dataset by its key.
+
+        It returns ``None`` for a root the dataset does not declare. A converter is
+        handed it in place of the dataset.
+        """
+        return lambda key: self.get_root(key) if self.has_root(key) else None
 
     def resolve_media_root(self) -> str:
         """Return the root key that holds actual video files.
@@ -10630,7 +10639,10 @@ class Dataset:
                         ),
                         division,
                     )
-                    df_std = converter.convert(src_path, conv_params, hints)
+                    input_path = converter.input_file(
+                        src_path, conv_params, source_md5, self._root_lookup()
+                    )
+                    df_std = converter.convert(input_path, conv_params, hints)
 
                     # Overwrite group column in DataFrame to match policy
                     if (
@@ -10729,7 +10741,10 @@ class Dataset:
             ),
             division,
         )
-        df_std = converter.convert(src_path, conv_params, hints)
+        input_path = converter.input_file(
+            src_path, conv_params, source_md5, self._root_lookup()
+        )
+        df_std = converter.convert(input_path, conv_params, hints)
         df_std = _placed_conversion(
             df_std, hints, (group_value, seq_value), str(src_path), division
         )
@@ -11429,7 +11444,13 @@ class Dataset:
         for _, row in group_df.iterrows():
             src_path = self.resolve_path(row["abs_path"])
             try:
-                df_std = converter.convert(src_path, conv_params, hints)
+                input_path = converter.input_file(
+                    src_path,
+                    conv_params,
+                    text_cell(row.get("md5", "")),
+                    self._root_lookup(),
+                )
+                df_std = converter.convert(input_path, conv_params, hints)
             except TrackSchemaError:
                 # The caller asked for strict validation, so this is an answer
                 # rather than a mishap. Warning and skipping would report
@@ -11657,10 +11678,13 @@ class Dataset:
                 cancel_check()
             src_path = self.resolve_path(raw_row["abs_path"])
             source_md5 = str(raw_row.get("md5", "") or "")
+            input_path = converter.input_file(
+                src_path, conv_params, source_md5, self._root_lookup()
+            )
             entries = (
-                converter.convert(src_path, conv_params, raw_row, clock=clock)
+                converter.convert(input_path, conv_params, raw_row, clock=clock)
                 if isinstance(converter, ClockedLabelConverter)
-                else converter.convert(src_path, conv_params, raw_row)
+                else converter.convert(input_path, conv_params, raw_row)
             )
             for entry in entries:
                 key = make_entry_key(entry.group, entry.sequence)
@@ -11810,7 +11834,13 @@ class Dataset:
             return named
         for _, raw_row in rows.iterrows():
             src_path = self.resolve_path(raw_row["abs_path"])
-            for entry in converter.convert(src_path, params, raw_row):
+            input_path = converter.input_file(
+                src_path,
+                params,
+                str(raw_row.get("md5", "") or ""),
+                self._root_lookup(),
+            )
+            for entry in converter.convert(input_path, params, raw_row):
                 named.add((entry.group, entry.sequence))
         return named
 

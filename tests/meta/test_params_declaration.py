@@ -89,7 +89,7 @@ from mosaic.core.pipeline.ops import OPS
 from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
 from tests.helpers import (
-    inside_a_virtualenv,
+    is_third_party_source,
     runs_in_an_external_environment,
     source_tree,
 )
@@ -644,7 +644,7 @@ def class_declarations() -> list[tuple[str, str, tuple[str, ...]]]:
     """
     found: list[tuple[str, str, tuple[str, ...]]] = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
-        if inside_a_virtualenv(path, PACKAGE_ROOT):
+        if is_third_party_source(path, PACKAGE_ROOT):
             continue
         if runs_in_an_external_environment(path, PACKAGE_ROOT):
             continue

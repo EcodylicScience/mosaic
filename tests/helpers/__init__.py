@@ -32,7 +32,10 @@ What lives where:
   a vame output table places a finite latent on each.
 - ``column_contract`` checks a feature's output against the columns that
   validation predicts from its declaration, and a pair table's mirror rows.
-- ``lmt`` writes Live Mouse Tracker databases.
+- ``lmt`` writes Live Mouse Tracker databases, indexes them as a dataset's raw files,
+  and writes the copies that a rebuild of them leaves.
+- ``lmt_analysis`` commits a stand-in for the lmt-analysis checkout that the rebuild
+  runner imports, names it in the environment, and runs git in a checkout.
 - ``conversion_memory`` measures the growth of peak memory over one conversion in a
   fresh interpreter, under the machine's lock for large ones.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
@@ -287,6 +290,7 @@ from tests.helpers.environment import (
     FAKE_CONDA,
     FFMPEG_TOOLCHAIN,
     KPMS_TOOL,
+    LMT_ANALYSIS_TOOL,
     SEPARATED_TOOLS,
     ULTRALYTICS_TOOL,
     VAME_TOOL,
@@ -297,7 +301,7 @@ from tests.helpers.environment import (
     assert_no_literal_tilde,
     fake_path_lookup,
     hide_package,
-    inside_a_virtualenv,
+    is_third_party_source,
     isolate_tool_location,
     missing_ffmpeg_tools,
     require_ffmpeg,
@@ -318,18 +322,35 @@ from tests.helpers.frame_predictions import (
 from tests.helpers.frame_selections import entry_selection, record_entry_selection
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
+from tests.helpers.lmt_analysis import (
+    InstalledLmtAnalysis,
+    LmtAnalysisInstaller,
+    fail_lmt_rebuilds,
+    git_in_checkout,
+    lmt_analysis_installer,
+    write_fake_lmt_analysis,
+)
 from tests.helpers.lmt import (
     DEFAULT_ANIMAL_COLUMNS,
+    LMT_REBUILD_COMMIT,
+    LMT_REBUILD_RUN_ID,
     NINE_ANIMAL_COLUMNS,
+    REBUILD_SPOILS,
     LmtAnimal,
     LmtDetection,
     LmtEvent,
     LmtFrame,
     LmtLog,
     LmtRecording,
+    RebuildSpoil,
     alter_lmt_sqlite,
     default_lmt_recording,
+    lmt_dataset,
     lmt_detection_grid,
+    lmt_source_state,
+    place_rebuilt_copy,
+    rebuilt_lmt_dataset,
+    spoil_rebuilt_copy,
     write_lmt_sqlite,
 )
 from tests.helpers.fresh_interpreter import modules_loaded_by, run_fresh
@@ -473,6 +494,7 @@ from tests.helpers.paths import (
     GOLDEN_DIR,
     KPMS_PROTOCOL,
     KPMS_SERVER,
+    LMT_REBUILD_RUNNER,
     REPO_ROOT,
     SOURCE_ROOT,
     TESTS_ROOT,
@@ -538,6 +560,7 @@ from tests.helpers.source_scan import (
     ReachedImport,
     imports_in,
     imports_of,
+    computed_dynamic_imports,
     imports_reaching,
     names_called_by,
     package_of,
@@ -844,6 +867,8 @@ __all__ = [
     "KPMS_PROTOCOL",
     "KPMS_SERVER",
     "KPMS_TOOL",
+    "LMT_ANALYSIS_TOOL",
+    "LMT_REBUILD_RUNNER",
     "LA_CLASSES",
     "LA_CLASS_NAMES",
     "LA_PAD",
@@ -971,6 +996,7 @@ __all__ = [
     "import_runner_program",
     "imports_in",
     "imports_of",
+    "computed_dynamic_imports",
     "imports_reaching",
     "healthy_probe",
     "clean_facts_cells",
@@ -1004,7 +1030,7 @@ __all__ = [
     "index_locked_out",
     "index_media_sequence",
     "index_session",
-    "inside_a_virtualenv",
+    "is_third_party_source",
     "install_fake_litpose",
     "install_fake_litpose_frames",
     "install_fake_point_inference",
@@ -1234,17 +1260,32 @@ __all__ = [
     "RECIPE_SAVED_BY_0_17",
     "recipe_saved_by_0_17",
     "DEFAULT_ANIMAL_COLUMNS",
+    "LMT_REBUILD_COMMIT",
+    "LMT_REBUILD_RUN_ID",
     "NINE_ANIMAL_COLUMNS",
+    "REBUILD_SPOILS",
     "LmtAnimal",
     "LmtDetection",
     "LmtEvent",
     "LmtFrame",
     "LmtLog",
     "LmtRecording",
+    "RebuildSpoil",
     "alter_lmt_sqlite",
     "conversion_growth",
     "default_lmt_recording",
+    "lmt_dataset",
     "lmt_detection_grid",
+    "lmt_source_state",
     "one_large_child",
+    "place_rebuilt_copy",
+    "rebuilt_lmt_dataset",
+    "spoil_rebuilt_copy",
     "write_lmt_sqlite",
+    "InstalledLmtAnalysis",
+    "LmtAnalysisInstaller",
+    "fail_lmt_rebuilds",
+    "git_in_checkout",
+    "lmt_analysis_installer",
+    "write_fake_lmt_analysis",
 ]

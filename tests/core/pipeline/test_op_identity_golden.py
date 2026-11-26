@@ -103,6 +103,10 @@ from mosaic.tracking.ops.assign_identities import (
 from mosaic.tracking.ops.convert import convert_points_run_id
 from mosaic.tracking.ops.infer import infer_run_id
 from mosaic.tracking.ops.predict_frames import predict_frames_run_id
+from mosaic.tracking.ops.rebuild_lmt_events import (
+    RebuildLmtEventsParams,
+    rebuild_lmt_events_run_id,
+)
 from mosaic.tracking.ops.prepare import (
     PrepareTrainingDataParams,
     prepare_training_data_run_id,
@@ -1291,6 +1295,16 @@ def _score_predictions_pool() -> str:
     )
 
 
+def _rebuild_lmt_events_run_id() -> str:
+    """The run id of a rebuild of two sources, whose md5s are given out of order."""
+    params = RebuildLmtEventsParams(
+        lmt_analysis_commit="0123456789abcdef0123456789abcdef01234567", builders=None
+    )
+    return rebuild_lmt_events_run_id(
+        params, ["d41d8cd98f00b204e9800998ecf8427e", "0cc175b9c0f1b6a831c399e269772661"]
+    )
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
@@ -1372,6 +1386,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     ),
     "score-predictions/sources-read": _score_predictions_sources_read,
     "score-predictions/pool": _score_predictions_pool,
+    "rebuild-lmt-events/run-id": _rebuild_lmt_events_run_id,
 }
 
 
@@ -1426,6 +1441,7 @@ def test_every_family_is_covered() -> None:
         "predict-frames",
         "score-predictions",
         "select-frames",
+        "rebuild-lmt-events",
         "composition",
         "tracks",
         "labels",

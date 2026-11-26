@@ -14,6 +14,13 @@ each.
 
 You need only the one your work reaches.
 
+`lmt-env/` is a third environment of another kind. It holds the interpreter that
+the `rebuild-lmt-events` op runs [lmt-analysis](https://github.com/fdechaumont/lmt-analysis)
+in, on a copy of a Live Mouse Tracker database. lmt-analysis is GPL-3.0 and is cloned
+beside the environment rather than installed. The program that runs inside it is
+`runner/lmt_rebuild_runner.py`, and `lmt-env/README.md` gives the build, the license
+terms and the variables that locate it.
+
 ## Why the separation exists
 
 > **Ultralytics is licensed AGPL-3.0**, and so is the

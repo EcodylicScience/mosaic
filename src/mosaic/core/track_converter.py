@@ -50,6 +50,7 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
+from mosaic.core.root_lookup import RootLookup
 from mosaic.entry_points import (
     EntryPointRefused,
     InstalledOrigin,
@@ -320,11 +321,32 @@ class TrackConverter(Generic[P]):
         _ = params
         return self.carries_tracklets
 
+    def input_file(
+        self, path: Path, params: P, source_md5: str, root_of: RootLookup
+    ) -> Path:
+        """Return the file that :meth:`convert` reads for the raw file *path*.
+
+        The default is *path* itself. A converter that reads another file in its
+        place, such as a copy that a tool made of the raw file, returns that
+        file's path. A file it cannot find or trust is a refusal: a
+        ``ValueError`` naming the file, which fails the entry.
+
+        Args:
+            path: The raw tracks file.
+            params: Typed conversion parameters.
+            source_md5: The ``md5`` cell of the raw file's index row, ``""`` when
+                the scan did not hash it.
+            root_of: Finds a dataset root by its key, and returns ``None`` for a
+                root the dataset does not declare.
+        """
+        _ = params, source_md5, root_of
+        return path
+
     def convert(self, path: Path, params: P, hints: EntryHints) -> pd.DataFrame:
         """Read *path* and return one schema-valid table.
 
         Args:
-            path: The raw tracks file.
+            path: The file that :meth:`input_file` returned for the raw file.
             params: Typed conversion parameters. These, plus ``src_format`` and
                 ``version``, are what the tracks variant identity is made of.
             hints: Which entry to produce. Never hashed -- see :class:`EntryHints`.

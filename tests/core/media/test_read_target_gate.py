@@ -18,7 +18,7 @@ from mosaic.media_probe_config import media_thresholds
 from tests.helpers import (
     imports_in,
     imports_of,
-    inside_a_virtualenv,
+    is_third_party_source,
     runs_in_an_external_environment,
     source_tree,
 )
@@ -318,7 +318,7 @@ def test_only_the_gate_and_its_two_reader_modules_import_mosaic_media_readers() 
     root = Path(mosaic.__file__).parent
     reader_importers: set[str] = set()
     for source in root.rglob("*.py"):
-        if inside_a_virtualenv(source, root) or runs_in_an_external_environment(
+        if is_third_party_source(source, root) or runs_in_an_external_environment(
             source, root
         ):
             continue
@@ -391,7 +391,7 @@ def test_only_the_two_reader_modules_may_construct_an_upstream_reader() -> None:
     root = Path(mosaic.__file__).parent
     matched: set[str] = set()
     for source in root.rglob("*.py"):
-        if inside_a_virtualenv(source, root) or runs_in_an_external_environment(
+        if is_third_party_source(source, root) or runs_in_an_external_environment(
             source, root
         ):
             continue

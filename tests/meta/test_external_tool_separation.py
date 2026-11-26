@@ -58,12 +58,15 @@ from tests.helpers import (
     SeparatedEnvironment,
     SeparatedTool,
     distribution_names,
+    imports_in,
     imports_of,
-    inside_a_virtualenv,
+    imports_reaching,
+    is_third_party_source,
     project_requirements,
     requirements_reaching,
     run_child,
     runs_in_an_external_environment,
+    source_tree,
 )
 
 _MOSAIC: Final = "mosaic"
@@ -120,6 +123,25 @@ def _manifest(environment: SeparatedEnvironment) -> Path:
     return environment.source_directory / "pyproject.toml"
 
 
+def _imports_and_calls(source: Path) -> list[ImportedName]:
+    """Returns the imports of *source*: statements, and ``import_module`` of a literal.
+
+    lmt-analysis's runner reaches the tool through ``importlib``, because it puts
+    the user's checkout on ``sys.path`` first. A call that names its module with a
+    literal is the import it performs.
+    """
+    tree = source_tree(source)
+    package = ".".join((_MOSAIC, *source.relative_to(_PACKAGE_ROOT).parent.parts))
+    statements = imports_in(tree, scope="anywhere", relative=False)
+    calls = [
+        ImportedName(reached.line, module, None, None)
+        for reached in imports_reaching(tree, package)
+        if not reached.statement.startswith(("import ", "from "))
+        for module in reached.reaches
+    ]
+    return sorted([*statements, *calls], key=lambda imported: imported.line)
+
+
 @pytest.fixture(scope="module")
 def mosaic_imports() -> dict[str, list[ImportedName]]:
     """Returns the imports of each mosaic source file, by path under the package root.
@@ -131,11 +153,9 @@ def mosaic_imports() -> dict[str, list[ImportedName]]:
     the walk then reads none.
     """
     return {
-        source.relative_to(_PACKAGE_ROOT).as_posix(): imports_of(
-            source, scope="anywhere", relative=False
-        )
+        source.relative_to(_PACKAGE_ROOT).as_posix(): _imports_and_calls(source)
         for source in sorted(_PACKAGE_ROOT.rglob("*.py"))
-        if not inside_a_virtualenv(source, _PACKAGE_ROOT)
+        if not is_third_party_source(source, _PACKAGE_ROOT)
     }
 
 
@@ -347,6 +367,8 @@ def test_no_mosaic_install_declares_the_tool(tool: SeparatedTool) -> None:
     before its empty answer about mosaic is believed.
     """
     for environment in tool.environments:
+        if not environment.declares_tool:
+            continue
         declared = distribution_names(
             project_requirements(_manifest(environment)).dependencies
         )
@@ -376,9 +398,10 @@ def test_an_environment_declares_only_its_permitted_mosaic_distributions(
         project_requirements(_manifest(environment)).dependencies
     )
 
-    assert tool.distribution in declared, (
-        f"{_manifest(environment)} does not declare {tool.distribution}. The test "
-        "has lost its subject."
+    assert (tool.distribution in declared) == environment.declares_tool, (
+        f"{_manifest(environment)} declares {sorted(declared)}, and the registry "
+        f"records declares_tool={environment.declares_tool} for {tool.distribution}. "
+        "The test has lost its subject."
     )
     from_mosaic = {name for name in declared if name.startswith(_MOSAIC)}
     assert from_mosaic == tool.mosaic_distributions, (

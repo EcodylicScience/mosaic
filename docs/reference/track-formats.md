@@ -67,6 +67,7 @@ by `mosaic convert-tracks`.
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `keep_unidentified` | `boolean` | `false` |  | Keep the detections whose ANIMALID is NULL, under the negative ids -2, -3 and so on within each frame, in DETECTION.ID order. Off, they are dropped and counted. On, the ids no longer follow animals. |
 | `read_chunk_rows` | `integer` | `50000` | >= `1` | Detections fetched per read. A larger chunk reads faster and holds more of them as Python tuples beside the column arrays. It does not change the table. [rows] |
+| `rebuild_run_id` | `string` \| `None` | `null` |  | A rebuild-lmt-events run whose copy of each file is read instead of it; unset reads the raw file. |
 
 #### `sdannce_mat`
 

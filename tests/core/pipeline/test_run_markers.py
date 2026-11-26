@@ -90,6 +90,23 @@ def test_phase_marker_round_trips(tmp_path: Path) -> None:
     assert read_phase_marker(tmp_path, "track") is None
 
 
+def test_a_rebuild_marker_round_trips_and_clears(tmp_path: Path) -> None:
+    marker = PhaseMarker(
+        phase="rebuild",
+        run_id="rebuild-lmt-events.0.1-abcd1234",
+        execution_id="EXEC1",
+        completed_at="2026-11-26T12:00:00+00:00",
+        source="media_raw/seq/recording.sqlite",
+        source_uid="d41d8cd98f00b204e9800998ecf8427e",
+    )
+    write_phase_marker(tmp_path, marker)
+
+    assert read_phase_marker(tmp_path, "rebuild") == marker
+
+    clear_phase_markers(tmp_path)
+    assert read_phase_marker(tmp_path, "rebuild") is None
+
+
 def test_absent_marker_reads_as_none(tmp_path: Path) -> None:
     assert read_phase_marker(tmp_path, "convert") is None
 

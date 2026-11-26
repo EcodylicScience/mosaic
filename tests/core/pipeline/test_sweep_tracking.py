@@ -31,7 +31,16 @@ from mosaic.core.pipeline.sweep import (
     retention_days,
 )
 
-from tests.helpers import make_dataset
+from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.track_library.lmt_rebuild import REBUILD_KIND
+from tests.helpers import (
+    LmtAnalysisInstaller,
+    fail_lmt_rebuilds,
+    lmt_source_state,
+    make_dataset,
+    rebuilt_lmt_dataset,
+)
 
 _NOW = datetime.datetime(2026, 7, 29, 12, 0, tzinfo=datetime.timezone.utc)
 
@@ -118,6 +127,27 @@ def _row(
         )
         return
 
+    if root_key == REBUILD_KIND:
+        from mosaic.tracking.ops.rebuild_lmt_events import (
+            LmtRebuildIndexRow,
+            rebuild_index,
+        )
+
+        copies = rebuild_index(ds.get_root(REBUILD_KIND) / "index.csv")
+        copies.ensure()
+        copies.append(
+            [
+                LmtRebuildIndexRow(
+                    run_id=run_id,
+                    abs_path=Path(ds.relative_to_root(path)),
+                    group=group,
+                    sequence=sequence,
+                    source_md5="",
+                )
+            ]
+        )
+        return
+
     assert root_key == "trex", "only the trex row shape is built here"
     idx = trex_index(trex_index_path(ds))
     idx.ensure()
@@ -193,6 +223,13 @@ def test_every_retention_class_has_a_default_window() -> None:
     from mosaic.core.pipeline.tracking_roots import RetentionClass
 
     assert set(_DEFAULT_RETENTION_DAYS) == set(get_args(RetentionClass))
+
+
+def test_a_rebuilt_copy_is_kept_as_long_as_a_tracker_output() -> None:
+    from mosaic.core.track_library.lmt_rebuild import REBUILD_KIND
+
+    assert retention_days(REBUILD_KIND) == 14.0
+    assert retention_days(REBUILD_KIND, {"rebuild": 2.0}) == 2.0
 
 
 def test_the_conversion_window_is_settable_and_changes_the_verdict(
@@ -707,3 +744,177 @@ def test_an_applied_sweep_drops_the_row_of_a_grouped_entry(tmp_path: Path) -> No
     assert not aged.exists(), "the aged directory was not reclaimed"
     assert report.rows_dropped == 1, "the directory went but its row stayed"
     assert len(trex_index(trex_index_path(ds)).read()) == 0
+
+
+# --- The rebuild root --------------------------------------------------------
+
+_REBUILD_RUN_ID = "rebuild-lmt-events.0.1-aaaaaaaaaa"
+
+
+def _after(days: float) -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+
+
+def test_a_rebuilt_copy_past_its_window_goes_with_its_row(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+
+    report = ds.sweep_tracking(apply=True, now=_after(15.0))
+
+    assert not entry_dir.exists()
+    assert report.removed == [entry_dir]
+    assert report.rows_dropped == 1
+    assert report.bytes_reclaimed > 0
+    assert [e.verdict for e in report.entries] == ["complete_aged"]
+    from mosaic.tracking.ops.rebuild_lmt_events import rebuild_index
+
+    assert rebuild_index(ds.get_root(REBUILD_KIND) / "index.csv").read().empty
+    assert lmt_source_state(ds) == before
+
+
+def test_a_rebuilt_copy_inside_its_window_is_held_and_reported_as_held_for_age(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+
+    report = ds.sweep_tracking(apply=True, now=_after(13.0))
+
+    assert entry_dir.exists()
+    assert [e.verdict for e in report.entries] == ["complete_young"]
+    assert report.held_for_age == 1
+    assert report.removed == []
+    assert lmt_source_state(ds) == before
+
+
+def test_the_rebuild_window_is_settable_and_changes_the_verdict(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+    soon = _after(1.0)
+
+    default = ds.sweep_tracking(apply=False, now=soon)
+    narrowed = ds.sweep_tracking(
+        apply=False, retention_overrides={"rebuild": 0.5}, now=soon
+    )
+    tracker_window = ds.sweep_tracking(
+        apply=False, retention_overrides={"tracker": 0.5}, now=soon
+    )
+
+    assert [e.verdict for e in default.entries] == ["complete_young"]
+    assert [e.verdict for e in narrowed.entries] == ["complete_aged"]
+    assert [e.verdict for e in tracker_window.entries] == ["complete_young"]
+    assert entry_dir.exists(), "no call applied anything"
+    assert lmt_source_state(ds) == before
+
+
+def test_a_complete_copy_that_the_index_does_not_name_is_refused_as_unrowed(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+    _drop_rows(ds, REBUILD_KIND)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"rebuild": 0.0}, now=_after(15.0)
+    )
+
+    assert entry_dir.exists()
+    assert [e.verdict for e in report.entries] == ["unrowed"]
+    assert report.removed == []
+    assert lmt_source_state(ds) == before
+
+
+def test_a_directory_with_only_the_logs_of_a_failed_rebuild_is_foreign_and_kept(
+    tmp_path: Path, install_lmt: LmtAnalysisInstaller
+) -> None:
+    ds, entry_dir, before = rebuilt_lmt_dataset(
+        tmp_path / "ds", install_lmt, raises=True
+    )
+    assert sorted(path.name for path in entry_dir.iterdir()) == [
+        "rebuild-report.json",
+        "rebuild.log",
+    ]
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"rebuild": 0.0}, now=_after(365.0)
+    )
+
+    assert sorted(path.name for path in entry_dir.iterdir()) == [
+        "rebuild-report.json",
+        "rebuild.log",
+    ]
+    assert [e.verdict for e in report.entries] == ["foreign"]
+    assert lmt_source_state(ds) == before
+
+
+def test_a_rowed_directory_without_the_rebuild_marker_is_reclaimed_at_any_age(
+    tmp_path: Path,
+) -> None:
+    """The sweeper's general rule for a root: a rowed directory that is not finished goes.
+
+    The op appends the row after the marker and drops the entry's row before it redoes
+    the entry, so a row implies a finished copy. This directory is built by hand, with
+    the marker of another phase so that it reads as a mosaic directory, to test the rule
+    the sweeper applies to any root.
+    """
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    unfinished = _entry(ds, root_key=REBUILD_KIND, run_id=_REBUILD_RUN_ID)
+    write_phase_marker(
+        unfinished,
+        PhaseMarker(
+            phase="convert",
+            run_id=_REBUILD_RUN_ID,
+            completed_at=_NOW.isoformat(),
+        ),
+    )
+
+    report = ds.sweep_tracking(apply=True, now=_NOW)
+
+    assert not unfinished.exists()
+    assert [e.verdict for e in report.entries] == ["incomplete"]
+    assert report.rows_dropped == 1
+
+
+def test_a_hand_built_rebuild_directory_is_held_until_its_window_ends(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="sweep")
+    copy = _entry(
+        ds, root_key=REBUILD_KIND, run_id=_REBUILD_RUN_ID, finished_days_ago=13.0
+    )
+
+    held = ds.sweep_tracking(apply=True, now=_NOW)
+    assert copy.exists()
+    assert [e.verdict for e in held.entries] == ["complete_young"]
+
+    gone = ds.sweep_tracking(apply=True, now=_NOW + datetime.timedelta(days=2))
+    assert not copy.exists()
+    assert [e.verdict for e in gone.entries] == ["complete_aged"]
+
+
+def test_a_failed_redo_leaves_the_entry_foreign_and_unrowed(
+    tmp_path: Path,
+    install_lmt: LmtAnalysisInstaller,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mosaic.core.track_library.lmt_rebuild import read_rebuild_manifest
+    from mosaic.tracking.ops.rebuild_lmt_events import rebuild_index
+
+    ds, entry_dir, before = rebuilt_lmt_dataset(tmp_path / "ds", install_lmt)
+    commit = read_rebuild_manifest(entry_dir / "recording.sqlite").lmt_analysis_commit
+    fail_lmt_rebuilds(monkeypatch)
+    with pytest.raises(AllEntriesFailed):
+        _ = run_op(ds, REBUILD_KIND, {"lmt_analysis_commit": commit}, overwrite=True)
+
+    report = ds.sweep_tracking(
+        apply=True, retention_overrides={"rebuild": 0.0}, now=_after(365.0)
+    )
+
+    assert sorted(path.name for path in entry_dir.iterdir()) == [
+        "rebuild-report.json",
+        "rebuild.log",
+    ]
+    assert [e.verdict for e in report.entries] == ["foreign"]
+    assert report.rows_dropped == 0
+    assert rebuild_index(ds.get_root(REBUILD_KIND) / "index.csv").read().empty
+    assert lmt_source_state(ds) == before

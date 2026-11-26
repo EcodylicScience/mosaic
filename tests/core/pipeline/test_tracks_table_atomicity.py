@@ -38,7 +38,7 @@ from mosaic.tracking.common.bridge import (
     readable_tracks_table,
 )
 
-from tests.helpers import inside_a_virtualenv
+from tests.helpers import is_third_party_source
 
 
 def _tracks_frame(n_rows: int = 4) -> pd.DataFrame:
@@ -146,7 +146,7 @@ def test_every_tracks_writer_goes_through_the_atomic_one() -> None:
         if source.name == "writers.py":
             reached_the_definition_site = True
             continue  # the one legitimate definition site
-        if inside_a_virtualenv(source, root):
+        if is_third_party_source(source, root):
             continue
         scanned.add(source.relative_to(root).as_posix())
         for number, line in enumerate(source.read_text().splitlines(), start=1):

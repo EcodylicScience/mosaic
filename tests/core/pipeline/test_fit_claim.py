@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -25,7 +26,7 @@ import pytest
 import mosaic.core.pipeline.entry_claim as entry_claim
 import mosaic.core.pipeline.run as run_module
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.entry_claim import RunRootHeld
+from mosaic.core.pipeline.entry_claim import RunRootHeld, kept_claimed
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.markers import (
@@ -368,6 +369,73 @@ def test_a_timer_refreshes_the_claim_while_a_fit_runs(
     assert later is not None
     assert later > earlier
     assert not _claimed(_run_root(scenario_dataset, control))
+
+
+def _planted_claim(tmp_path: Path) -> tuple[Path, InflightMarker]:
+    """A directory holding one execution's claim, whose expiry is already past."""
+    work_dir = tmp_path / "entry"
+    work_dir.mkdir()
+    marker = _peer_claim(expires_at="2000-01-01T00:00:00+00:00")
+    write_inflight(work_dir, marker)
+    return work_dir, marker
+
+
+def _wait_for_refresh(work_dir: Path, stale: str) -> None:
+    """Return once the claim in *work_dir* expires later than *stale*."""
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while time.monotonic() < deadline:
+        held = read_inflight(work_dir)
+        assert held is not None
+        if held.expires_at != stale:
+            return
+        time.sleep(0.01)
+    raise AssertionError("the claim was never refreshed")
+
+
+def test_kept_claimed_refreshes_the_claim_while_the_block_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(entry_claim, "INFLIGHT_REFRESH_SECONDS", 0.05)
+    work_dir, marker = _planted_claim(tmp_path)
+
+    with kept_claimed(work_dir, marker, 3600.0):
+        _wait_for_refresh(work_dir, marker.expires_at)
+        held = read_inflight(work_dir)
+
+    assert held is not None
+    earlier = parse_instant(marker.expires_at)
+    later = parse_instant(held.expires_at)
+    assert earlier is not None
+    assert later is not None
+    assert later > earlier
+
+
+def test_kept_claimed_stops_its_thread_on_leaving_the_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(entry_claim, "INFLIGHT_REFRESH_SECONDS", 0.05)
+    work_dir, marker = _planted_claim(tmp_path)
+
+    with kept_claimed(work_dir, marker, 3600.0):
+        _wait_for_refresh(work_dir, marker.expires_at)
+
+    assert [t for t in threading.enumerate() if t.name.startswith("claim-")] == []
+    settled = read_inflight(work_dir)
+    time.sleep(0.2)
+    assert read_inflight(work_dir) == settled
+
+
+def test_kept_claimed_stops_its_thread_when_the_block_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(entry_claim, "INFLIGHT_REFRESH_SECONDS", 0.05)
+    work_dir, marker = _planted_claim(tmp_path)
+
+    with pytest.raises(RuntimeError, match="the block failed"):
+        with kept_claimed(work_dir, marker, 3600.0):
+            raise RuntimeError("the block failed")
+
+    assert [t for t in threading.enumerate() if t.name.startswith("claim-")] == []
 
 
 def test_an_untracked_fit_is_claimed_and_released(scenario_dataset: Dataset) -> None:

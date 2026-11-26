@@ -787,11 +787,14 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     ``reads_media`` stays tied to the registry rather than following
     ``writes_tracks``: it is true because bridging into tracks means opening the
     entry's video, which is exactly what a tracks-to-tracks producer does not do.
+    It reads the root's own ``reads``: a root that reads ``none``, such as the
+    rebuild of a Live Mouse Tracker database, opens no media, and every other
+    member of the registry reads some.
     """
     from mosaic.core.pipeline.ops import op_resource_class
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
-    bridges_tracks = kind in TRACKING_ROOTS
+    root = TRACKING_ROOTS.get(kind)
     return Declaration(
         produces=ProducerDecl(
             name=kind,
@@ -810,7 +813,7 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
             takes_no_inputs=True,
             # Every producer that bridges into tracks opens video to do it, which
             # is what makes an ordering-only edge from a media writer meaningful.
-            reads_media=bridges_tracks,
+            reads_media=root is not None and root.reads != "none",
         ),
         emits="individual",
         category=str(getattr(op_cls, "category", "")),

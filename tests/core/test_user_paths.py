@@ -26,7 +26,7 @@ from mosaic.user_paths import user_path
 from tests.helpers import (
     SOURCE_ROOT,
     assert_no_literal_tilde,
-    inside_a_virtualenv,
+    is_third_party_source,
     runs_in_an_external_environment,
     sandbox_home,
     write_media_index,
@@ -112,7 +112,7 @@ def test_expanduser_is_called_in_exactly_one_place() -> None:
         # holding them to this rule would leave no way to comply; and an
         # installed virtualenv is not mosaic's code wherever it lands. One
         # declaration of each, shared with every other structural walk.
-        if path == home or inside_a_virtualenv(path, package):
+        if path == home or is_third_party_source(path, package):
             continue
         if runs_in_an_external_environment(path, package):
             continue

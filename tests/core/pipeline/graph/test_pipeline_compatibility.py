@@ -13,6 +13,7 @@ import sys
 
 import pytest
 
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.graph import (
     TRACKS_DECLARATION,
     ConsumerDecl,
@@ -403,6 +404,24 @@ def test_declarations_are_read_off_what_a_class_declares() -> None:
     assert trainer is not None
     assert not trainer.produces.writes_tracks
     assert not trainer.consumes.reads_media
+
+
+def test_an_op_reads_media_unless_its_root_reads_none() -> None:
+    """``reads_media`` follows the root's ``reads``, and the rebuild op reads none."""
+    catalog = declaration_catalog()
+
+    rebuild = catalog.entries["rebuild-lmt-events"]
+    assert not rebuild.consumes.reads_media
+    assert not rebuild.produces.writes_tracks
+    others = [key for key in TRACKING_ROOTS if key in catalog.entries]
+    assert "trex" in others
+    for key in others:
+        assert catalog.entries[key].consumes.reads_media == (
+            TRACKING_ROOTS[key].reads != "none"
+        ), key
+    assert {key for key in others if TRACKING_ROOTS[key].reads == "none"} == {
+        "rebuild-lmt-events"
+    }
 
 
 def test_the_catalog_lists_the_track_spaces_each_feature_computes_in() -> None:

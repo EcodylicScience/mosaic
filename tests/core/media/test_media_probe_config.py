@@ -17,7 +17,7 @@ from mosaic.media_probe_config import media_thresholds
 
 from tests.helpers import (
     imports_in,
-    inside_a_virtualenv,
+    is_third_party_source,
     runs_in_an_external_environment,
     source_tree,
 )
@@ -126,7 +126,7 @@ def test_every_derive_call_in_mosaic_resolves_thresholds() -> None:
         # installed virtualenv is not mosaic's code wherever it lands, which the
         # first predicate only happens to cover while every such environment is
         # built inside one of the two named trees.
-        if inside_a_virtualenv(source, root) or runs_in_an_external_environment(
+        if is_third_party_source(source, root) or runs_in_an_external_environment(
             source, root
         ):
             continue

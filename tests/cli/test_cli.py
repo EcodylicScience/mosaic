@@ -749,6 +749,7 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "predict-frames",
         "score-predictions",
         "select-frames",
+        "rebuild-lmt-events",
     }
 )
 

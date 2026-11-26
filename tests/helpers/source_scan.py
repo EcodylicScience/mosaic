@@ -213,6 +213,28 @@ def _called(call: ast.Call, package: str) -> tuple[str, ...]:
     return (name, *(f"{name}.{sub}" for sub in submodules if sub))
 
 
+def computed_dynamic_imports(tree: ast.Module) -> list[str]:
+    """Returns the module argument of each dynamic import that names no literal.
+
+    A call of ``import_module`` or ``__import__``, through any spelling of the
+    function, whose module is not a string literal is out of reach of
+    :func:`imports_reaching`. Each is reported as its argument's source, in the
+    order of lines, so a guard can name the one module expression it allows.
+    """
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _trailing_name(node.func) in DYNAMIC_IMPORTS
+    ]
+    calls.sort(key=lambda call: call.lineno)
+    computed: list[str] = []
+    for call in calls:
+        argument = _argument(call, 0, "name")
+        if not _constant_string(argument):
+            computed.append(ast.unparse(call if argument is None else argument))
+    return computed
+
+
 def imports_reaching(
     tree: ast.Module, package: str, *, literal_packages: Collection[str] = ()
 ) -> list[ReachedImport]:

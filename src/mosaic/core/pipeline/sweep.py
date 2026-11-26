@@ -175,6 +175,9 @@ _DEFAULT_RETENTION_DAYS: Final[Mapping[RetentionClass, float]] = {
     # the conversion is itself kept for 14 days, so this is "14 days after last
     # use" without a stored timestamp that could go stale.
     "conversion": 14.0,
+    # A rebuilt copy costs hours to make, as a tracker's output does, and no
+    # reader pins it: a table converted from it keeps its identity when it goes.
+    "rebuild": 14.0,
 }
 
 

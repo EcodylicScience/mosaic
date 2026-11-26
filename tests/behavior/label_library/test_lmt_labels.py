@@ -7,11 +7,13 @@ converts it through a dataset. The files load without unpickling, and
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from itertools import pairwise
 import math
+import os
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
@@ -37,59 +39,32 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_library.lmt import LMT_EVENT_NAMES
+from mosaic.core.track_library.lmt_rebuild import read_rebuild_manifest
 from tests.helpers import (
-    DEFAULT_ANIMAL_COLUMNS,
+    LMT_REBUILD_COMMIT,
+    LMT_REBUILD_RUN_ID,
     NINE_ANIMAL_COLUMNS,
+    REBUILD_SPOILS,
     LmtAnimal,
     LmtEvent,
+    LmtLog,
     LmtRecording,
+    RebuildSpoil,
     alter_lmt_sqlite,
     default_lmt_recording,
     file_digests,
-    make_dataset,
+    lmt_dataset,
+    place_rebuilt_copy,
     result_outputs,
-    write_lmt_sqlite,
+    spoil_rebuilt_copy,
 )
 
 _RFIDS = ["000004395862", "000004395870", "000004395881"]
 
 
-def _lmt_labels_dataset(
-    base: Path,
-    recording: LmtRecording | None = None,
-    *,
-    animal_columns: Sequence[str] = DEFAULT_ANIMAL_COLUMNS,
-    tracks: bool = False,
-    recordings: Mapping[str, LmtRecording] | None = None,
-    alter: str = "",
-) -> Dataset:
-    """A dataset whose labels source, and with *tracks* its tracks source, is ``raw/``.
-
-    *recordings* names each database file's stem and rows, and defaults to the one
-    file ``recording`` that holds *recording*. *alter* is SQL run on each file
-    before it is indexed.
-    """
-    ds = make_dataset(base)
-    raw = ds.base_dir / "raw"
-    raw.mkdir(parents=True, exist_ok=True)
-    if recordings is None:
-        recordings = {"recording": recording or default_lmt_recording()}
-    for stem, rows in recordings.items():
-        path = write_lmt_sqlite(
-            raw / f"{stem}.sqlite",
-            animals=rows.animals,
-            frames=rows.frames,
-            events=rows.events,
-            detections=rows.detections,
-            log=rows.log,
-            animal_columns=animal_columns,
-        )
-        if alter:
-            alter_lmt_sqlite(path, alter)
-    _ = ds.index_labels_raw([raw], patterns=["*.sqlite"], src_format="lmt_sqlite")
-    if tracks:
-        _ = ds.index_tracks_raw([raw], patterns=["*.sqlite"], src_format="lmt_sqlite")
-        assert ds.convert_all_tracks().failed == 0
+def _converted(ds: Dataset) -> Dataset:
+    """*ds* after its tracks are converted, so that events place on their frames."""
+    assert ds.convert_all_tracks().failed == 0
     return ds
 
 
@@ -117,7 +92,7 @@ def test_the_converter_declares_its_contract() -> None:
 
 
 def test_the_animals_are_written_as_text_arrays_keyed_by_id(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
 
     arrays = _arrays(_convert(ds))
 
@@ -130,7 +105,7 @@ def test_the_animals_are_written_as_text_arrays_keyed_by_id(tmp_path: Path) -> N
 
 
 def test_a_null_cell_is_empty_text(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
 
     genotype = _arrays(_convert(ds))["genotype"]
 
@@ -141,7 +116,9 @@ def test_a_null_cell_is_empty_text(tmp_path: Path) -> None:
 def test_the_ids_ascend_whatever_the_row_order(tmp_path: Path) -> None:
     recording = default_lmt_recording()
     reordered = replace(recording, animals=list(reversed(recording.animals)))
-    ds = _lmt_labels_dataset(tmp_path / "ds", reordered)
+    ds = lmt_dataset(
+        tmp_path / "ds", recordings={"recording": reordered}, labels=True, tracks=False
+    )
 
     arrays = _arrays(_convert(ds))
 
@@ -161,10 +138,12 @@ def test_the_nine_column_table_writes_nine_arrays(tmp_path: Path) -> None:
     animals: list[LmtAnimal] = [
         replace(animal, extra=extras) for animal in recording.animals
     ]
-    ds = _lmt_labels_dataset(
+    ds = lmt_dataset(
         tmp_path / "ds",
-        replace(recording, animals=animals),
+        recordings={"recording": replace(recording, animals=animals)},
         animal_columns=NINE_ANIMAL_COLUMNS,
+        labels=True,
+        tracks=False,
     )
 
     arrays = _arrays(_convert(ds))
@@ -187,7 +166,7 @@ def test_the_nine_column_table_writes_nine_arrays(tmp_path: Path) -> None:
 
 
 def test_the_index_row_records_the_format_and_the_vocabulary(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
     _ = _convert(ds)
 
     (row,) = (row for _, row in read_labels_index(ds, "id_tags").iterrows())
@@ -203,7 +182,7 @@ def test_the_index_row_records_the_format_and_the_vocabulary(tmp_path: Path) -> 
 def test_id_tag_columns_attaches_the_rfid_as_text_with_its_zeros(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", tracks=True)
+    ds = _converted(lmt_dataset(tmp_path / "ds", labels=True, tracks=True))
     _ = _convert(ds)
 
     result = run_feature(ds, IdTagColumns())
@@ -216,7 +195,7 @@ def test_id_tag_columns_attaches_the_rfid_as_text_with_its_zeros(
 
 
 def test_conversion_leaves_the_database_unchanged(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
     raw = ds.base_dir / "raw"
     path = raw / "recording.sqlite"
     digests = file_digests(raw)
@@ -233,7 +212,7 @@ def test_conversion_leaves_the_database_unchanged(tmp_path: Path) -> None:
 def test_a_journal_sibling_refuses_the_conversion_and_writes_nothing(
     tmp_path: Path, suffix: str
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
     sibling = ds.base_dir / "raw" / f"recording.sqlite{suffix}"
     _ = sibling.write_bytes(b"")
 
@@ -253,7 +232,7 @@ def test_a_journal_sibling_refuses_the_conversion_and_writes_nothing(
 def test_an_animal_table_that_cannot_be_read_refuses_the_conversion_and_writes_nothing(
     tmp_path: Path, script: str, message: str
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
     path = ds.base_dir / "raw" / "recording.sqlite"
     alter_lmt_sqlite(path, script)
 
@@ -519,7 +498,14 @@ def test_the_events_converter_declares_its_contract() -> None:
 def test_individual_pair_and_group_events_round_trip_through_the_segments(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -553,7 +539,14 @@ def test_individual_pair_and_group_events_round_trip_through_the_segments(
 def test_the_payload_holds_the_vocabulary_and_the_entry_without_pickles(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -576,7 +569,14 @@ def test_native_segments_start_and_end_on_the_frames_of_the_tracks(
     tmp_path: Path,
 ) -> None:
     recording = _events_recording()
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -597,7 +597,14 @@ def test_an_event_starting_on_the_paused_frame_starts_on_the_next_tracks_frame(
     tmp_path: Path,
 ) -> None:
     recording = _events_recording([LmtEvent("Stop", 180, 200, a=1, id=10)])
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -628,7 +635,14 @@ def test_a_resampled_variant_places_events_by_their_seconds_and_lists_the_droppe
     base = _events_recording()
     between = _between_grid_points(base, fps)
     recording = _events_recording([between])
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     native = str(read_tracks_index(ds)["run_id"].iloc[0])
     _ = run_op(
         ds,
@@ -689,7 +703,14 @@ def test_overlapping_events_keep_their_listing_order(tmp_path: Path) -> None:
         LmtEvent("Contact", 140, 160, a=1, b=2, id=5),
         LmtEvent("Stop", 150, 170, a=1, id=3),
     )
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -706,7 +727,14 @@ def test_a_file_whose_only_event_is_skipped_writes_no_segment_and_records_tracks
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     recording = _with_events(LmtEvent("coucou", 110, 130, a=1, id=1))
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = capsys.readouterr()
 
     _ = _convert_events(ds, {"skip_event_names": ["coucou"]})
@@ -731,13 +759,16 @@ def test_two_files_with_different_event_sets_share_one_id_per_name(
 ) -> None:
     contact = LmtEvent("Contact", 140, 160, a=1, b=2, id=1)
     stop = LmtEvent("Stop", 110, 120, a=1, id=2)
-    ds = _lmt_labels_dataset(
-        tmp_path / "ds",
-        recordings={
-            "alpha": _with_events(contact),
-            "beta": _with_events(contact, stop),
-        },
-        tracks=True,
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={
+                "alpha": _with_events(contact),
+                "beta": _with_events(contact, stop),
+            },
+            labels=True,
+            tracks=True,
+        )
     )
 
     _ = _convert_events(ds)
@@ -765,7 +796,14 @@ def test_an_unknown_name_refuses_naming_it_and_converts_once_accepted(
             LmtEvent("zzz second", 310, 320, a=2, id=11),
         ]
     )
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
 
     with pytest.raises(ValueError) as raised:
         _ = _convert_events(ds)
@@ -792,7 +830,14 @@ def test_an_unknown_name_refuses_naming_it_and_converts_once_accepted(
 def test_a_name_with_a_comma_is_comma_free_in_the_index_and_stored_in_the_file(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -813,7 +858,14 @@ def test_a_name_with_a_comma_is_comma_free_in_the_index_and_stored_in_the_file(
 def test_the_quality_ids_leave_label_statistics_without_a_column(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     arrays = _events_file(ds)
@@ -847,10 +899,13 @@ def test_an_event_frame_without_a_row_or_a_reversed_event_refuses_naming_the_id(
     tmp_path: Path, event: LmtEvent, named: str
 ) -> None:
     default = default_lmt_recording()
-    ds = _lmt_labels_dataset(
-        tmp_path / "ds",
-        _with_events(*default.events[:1], event),
-        tracks=True,
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _with_events(*default.events[:1], event)},
+            labels=True,
+            tracks=True,
+        )
     )
     path = ds.base_dir / "raw" / "recording.sqlite"
 
@@ -864,7 +919,14 @@ def test_an_event_frame_without_a_row_or_a_reversed_event_refuses_naming_the_id(
 
 
 def test_the_rebuild_log_holds_the_files_two_rows_in_id_order(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
 
     log = _events_file(ds)["rebuild_log"]
@@ -878,8 +940,14 @@ def test_the_rebuild_log_holds_the_files_two_rows_in_id_order(tmp_path: Path) ->
 
 
 def test_a_file_without_a_log_table_has_an_empty_rebuild_log(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(
-        tmp_path / "ds", _events_recording(), tracks=True, alter="DROP TABLE LOG"
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            alter="DROP TABLE LOG",
+            labels=True,
+            tracks=True,
+        )
     )
     _ = _convert_events(ds)
 
@@ -890,7 +958,14 @@ def test_a_file_without_a_log_table_has_an_empty_rebuild_log(tmp_path: Path) -> 
 
 
 def test_event_conversion_leaves_the_database_unchanged(tmp_path: Path) -> None:
-    ds = _lmt_labels_dataset(tmp_path / "ds", _events_recording(), tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": _events_recording()},
+            labels=True,
+            tracks=True,
+        )
+    )
     raw = ds.base_dir / "raw"
     path = raw / "recording.sqlite"
     digests = file_digests(raw)
@@ -906,7 +981,14 @@ def test_event_conversion_leaves_the_database_unchanged(tmp_path: Path) -> None:
 
 def test_a_conversion_without_a_clock_numbers_by_the_origin(tmp_path: Path) -> None:
     recording = _events_recording()
-    ds = _lmt_labels_dataset(tmp_path / "ds", recording, tracks=True)
+    ds = _converted(
+        lmt_dataset(
+            tmp_path / "ds",
+            recordings={"recording": recording},
+            labels=True,
+            tracks=True,
+        )
+    )
     _ = _convert_events(ds)
     native = _events_file(ds)
     path = ds.base_dir / "raw" / "recording.sqlite"
@@ -921,3 +1003,183 @@ def test_a_conversion_without_a_clock_numbers_by_the_origin(tmp_path: Path) -> N
     assert (entry.group, entry.sequence) == ("", "recording")
     for key in ("seg_start_frame", "seg_end_frame", "seg_event_id", "seg_label"):
         assert np.asarray(entry.payload[key]).tolist() == native[key].tolist()
+
+
+# --- a rebuilt copy ----------------------------------------------------------------
+
+_ADDED_EVENT = LmtEvent("Contact", 300, 310, a=2, b=3, id=100)
+_ADDED_LOG = LmtLog("Build Event Rebuilt", "1", "2026-11-26 12:00:00", 0, 400)
+
+
+def _rebuilt(tmp_path: Path) -> tuple[Dataset, Path, Path]:
+    """A dataset, its database, and a rebuilt copy that has one more event and build."""
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False)
+    source = ds.base_dir / "raw" / "recording.sqlite"
+    copy = place_rebuilt_copy(
+        ds,
+        LMT_REBUILD_RUN_ID,
+        source,
+        entry_key="recording",
+        commit=LMT_REBUILD_COMMIT,
+        added_event=_ADDED_EVENT,
+        log=_ADDED_LOG,
+        alter="UPDATE ANIMAL SET NAME = 'rebuilt' WHERE ID = 1;",
+    )
+    return ds, source, copy
+
+
+def _text(arrays: dict[str, np.ndarray], key: str) -> str:
+    return str(arrays[key])
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs a file that its owner cannot read",
+)
+def test_the_copy_is_read_in_place_of_the_raw_file(tmp_path: Path) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    source.chmod(0)
+    try:
+        _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+    finally:
+        source.chmod(0o644)
+
+    assert 100 in _events_file(ds)["seg_event_id"].tolist()
+
+
+def test_the_raw_file_is_unchanged_by_a_conversion_from_its_copy(
+    tmp_path: Path,
+) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    digests = file_digests(source.parent)
+    mtime_ns = source.stat().st_mtime_ns
+
+    _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert file_digests(source.parent) == digests
+    assert source.stat().st_mtime_ns == mtime_ns
+
+
+def test_the_rebuild_run_changes_the_variant(tmp_path: Path) -> None:
+    ds, _, _ = _rebuilt(tmp_path)
+
+    default = _convert_events(ds)
+    rebuilt = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert rebuilt != default
+    assert 100 not in _events_file(ds, default)["seg_event_id"].tolist()
+
+
+def test_the_copy_is_found_when_the_labels_group_differs_from_the_tracks_group(
+    tmp_path: Path,
+) -> None:
+    ds = lmt_dataset(
+        tmp_path / "ds", labels=True, tracks=True, group="tracks", labels_group="labels"
+    )
+    source = ds.base_dir / "raw" / "recording.sqlite"
+    _ = place_rebuilt_copy(
+        ds,
+        LMT_REBUILD_RUN_ID,
+        source,
+        entry_key="recording",
+        commit=LMT_REBUILD_COMMIT,
+        added_event=_ADDED_EVENT,
+    )
+
+    variant = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert 100 in _events_file(ds, variant)["seg_event_id"].tolist()
+
+
+def test_the_payload_names_the_rebuild_and_the_commit_and_lists_its_log(
+    tmp_path: Path,
+) -> None:
+    ds, _, _ = _rebuilt(tmp_path)
+
+    _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+    arrays = _events_file(ds)
+
+    assert _text(arrays, "rebuild_run_id") == LMT_REBUILD_RUN_ID
+    assert _text(arrays, "lmt_analysis_commit") == LMT_REBUILD_COMMIT
+    assert arrays["rebuild_log"][-1].tolist() == [
+        "Build Event Rebuilt",
+        "1",
+        "2026-11-26 12:00:00",
+        "0",
+        "400",
+    ]
+
+
+def test_without_a_rebuild_the_payload_names_none(tmp_path: Path) -> None:
+    ds, _, _ = _rebuilt(tmp_path)
+
+    _ = _convert_events(ds)
+    arrays = _events_file(ds)
+
+    assert _text(arrays, "rebuild_run_id") == ""
+    assert _text(arrays, "lmt_analysis_commit") == ""
+    assert arrays["rebuild_run_id"].dtype.kind == "U"
+    assert arrays["lmt_analysis_commit"].dtype.kind == "U"
+
+
+def test_a_manifest_that_names_another_run_is_refused_naming_both(
+    tmp_path: Path,
+) -> None:
+    ds, _, copy = _rebuilt(tmp_path)
+    other = "rebuild-lmt-events.0.1-abcdef0123"
+    manifest = read_rebuild_manifest(copy)
+    manifest.model_copy(update={"run_id": other}).write(copy.parent)
+
+    with pytest.raises(ValueError) as raised:
+        _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert LMT_REBUILD_RUN_ID in str(raised.value)
+    assert other in str(raised.value)
+    assert read_labels_index(ds, _EVENT_KIND).empty
+
+
+@pytest.mark.parametrize("how", REBUILD_SPOILS)
+def test_a_copy_that_cannot_be_read_refuses_the_conversion_and_writes_nothing(
+    tmp_path: Path, how: RebuildSpoil
+) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    spoil_rebuilt_copy(ds, LMT_REBUILD_RUN_ID, source, how)
+
+    with pytest.raises(ValueError) as raised:
+        _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert str(source) in str(raised.value)
+    assert LMT_REBUILD_RUN_ID in str(raised.value)
+    assert read_labels_index(ds, _EVENT_KIND).empty
+    assert list((ds.get_root("labels") / _EVENT_KIND).rglob("*.npz")) == []
+
+
+def test_a_file_the_scan_did_not_hash_refuses_the_conversion_naming_the_scan(
+    tmp_path: Path,
+) -> None:
+    ds = lmt_dataset(tmp_path / "ds", labels=True, tracks=False, md5=False)
+    source = ds.base_dir / "raw" / "recording.sqlite"
+    _ = place_rebuilt_copy(
+        ds, LMT_REBUILD_RUN_ID, source, entry_key="recording", commit=LMT_REBUILD_COMMIT
+    )
+
+    with pytest.raises(ValueError, match="mosaic scan") as raised:
+        _ = _convert_events(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert str(source) in str(raised.value)
+    assert read_labels_index(ds, _EVENT_KIND).empty
+
+
+def test_a_run_id_of_another_kind_is_refused_by_the_params() -> None:
+    with pytest.raises(ValueError, match="rebuild-lmt-events"):
+        _ = LmtEventsParams(rebuild_run_id="convert-tracks.0.1-0123456789")
+
+
+def test_the_animals_are_read_from_the_raw_file_beside_a_rebuilt_copy(
+    tmp_path: Path,
+) -> None:
+    ds, _, _ = _rebuilt(tmp_path)
+
+    arrays = _arrays(_convert(ds))
+
+    assert arrays["name"].tolist() == ["mouse one", "mouse two", "mouse three"]

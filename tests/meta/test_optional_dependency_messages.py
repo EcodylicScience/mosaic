@@ -28,7 +28,7 @@ from tests.helpers import (
     REPO_ROOT,
     SELF_REFERENCE,
     SOURCE_ROOT,
-    inside_a_virtualenv,
+    is_third_party_source,
     project_requirements,
     requirements_reaching,
     self_referenced_extras,
@@ -75,7 +75,7 @@ def _python_sources() -> list[Path]:
     return [
         source
         for source in sorted(SOURCE_ROOT.rglob("*.py"))
-        if not inside_a_virtualenv(source, SOURCE_ROOT)
+        if not is_third_party_source(source, SOURCE_ROOT)
     ]
 
 

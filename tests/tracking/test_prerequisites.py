@@ -26,6 +26,7 @@ from mosaic.core.pipeline.joined_export import (
     joined_source_uid,
 )
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.preprocess_layout import media_variant_recipe_path
 from mosaic.core.pipeline.media_index import write_media_index_rows
 from mosaic.core.pipeline.ops import run_op
@@ -121,6 +122,26 @@ def _reason(plan: PrerequisitePlan) -> str:
     """The reason of *plan*'s one refusal."""
     (refusal,) = plan.refusals
     return refusal.reason
+
+
+@pytest.mark.parametrize(
+    "kind", [key for key, root in TRACKING_ROOTS.items() if root.reads == "none"]
+)
+def test_an_op_whose_root_reads_no_media_has_no_prerequisites(
+    kind: str, tmp_path: Path
+) -> None:
+    """The checks of ``tool_input`` read ``entry-files`` for any root not named
+    ``in-process`` or ``one-file``, so a root that reads ``none`` is refused here
+    and never reaches them."""
+    ds = make_dataset(tmp_path / "ds")
+
+    with pytest.raises(ValueError, match="answers for") as refused:
+        _ = plan_prerequisites(ds, kind)
+
+    assert f"{kind!r} is none of them" in str(refused.value)
+    answered = str(refused.value).split("answers for ", 1)[1].split(", and", 1)[0]
+    assert kind not in answered.split(", ")
+    assert "trex" in answered.split(", ")
 
 
 # --- joins ------------------------------------------------------------------

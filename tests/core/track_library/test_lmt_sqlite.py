@@ -12,7 +12,9 @@ LMT's heights and flags, under the frame numbers and times of the file.
 from __future__ import annotations
 
 import csv
+import os
 import sqlite3
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -35,21 +37,29 @@ from mosaic.core.track_library.lmt import (
     LmtSqliteParams,
     frame_origin,
     frame_seconds,
+    journals_beside,
     open_lmt_database,
     table_columns,
     write_lmt_sequence_tags,
 )
 from tests.helpers import (
+    LMT_REBUILD_COMMIT,
+    LMT_REBUILD_RUN_ID,
     DEFAULT_ANIMAL_COLUMNS,
     NINE_ANIMAL_COLUMNS,
+    REBUILD_SPOILS,
     LmtDetection,
     LmtFrame,
     LmtRecording,
+    RebuildSpoil,
     alter_lmt_sqlite,
     assert_tree_unchanged,
     default_lmt_recording,
     file_digests,
+    lmt_dataset,
     make_dataset,
+    place_rebuilt_copy,
+    spoil_rebuilt_copy,
     tree_snapshot,
     write_lmt_sqlite,
 )
@@ -236,6 +246,23 @@ def test_a_journal_beside_the_target_of_a_symlink_is_refused(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="recording.sqlite-journal"):
         open_lmt_database(link)
+
+
+def test_journals_beside_names_each_sibling_of_the_resolved_file(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "data").mkdir()
+    target = _write(tmp_path / "data" / "recording.sqlite", default_lmt_recording())
+    link = tmp_path / "link.sqlite"
+    link.symlink_to(target)
+    assert journals_beside(link) == []
+    journal = target.with_name("recording.sqlite-journal")
+    wal = target.with_name("recording.sqlite-wal")
+    journal.write_bytes(b"")
+    wal.write_bytes(b"")
+
+    assert journals_beside(link) == [journal.resolve(), wal.resolve()]
+    assert journals_beside(target) == [journal.resolve(), wal.resolve()]
 
 
 def test_the_writer_refuses_to_drop_the_primary_key(tmp_path: Path) -> None:
@@ -450,25 +477,6 @@ def _convert(
 
 def _recording_file(tmp_path: Path, recording: LmtRecording | None = None) -> Path:
     return _write(tmp_path / "recording.sqlite", recording or default_lmt_recording())
-
-
-def _lmt_dataset(
-    base: Path,
-    recording: LmtRecording | None = None,
-    *,
-    drop_detection_columns: Sequence[str] = (),
-) -> Dataset:
-    """A dataset indexing one database, ``raw/recording.sqlite``."""
-    ds = make_dataset(base)
-    raw = ds.base_dir / "raw"
-    raw.mkdir(parents=True, exist_ok=True)
-    _ = _write(
-        raw / "recording.sqlite",
-        recording or default_lmt_recording(),
-        drop_detection_columns=drop_detection_columns,
-    )
-    _ = ds.index_tracks_raw([raw], patterns=["*.sqlite"], src_format="lmt_sqlite")
-    return ds
 
 
 def _expected_rows(recording: LmtRecording) -> pd.DataFrame:
@@ -807,7 +815,7 @@ def test_a_non_numeric_cell_names_the_file(tmp_path: Path) -> None:
 
 
 def test_a_dataset_converts_the_database_to_an_lmt_v1_table(tmp_path: Path) -> None:
-    ds = _lmt_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds")
 
     outcome = ds.convert_all_tracks()
 
@@ -826,7 +834,7 @@ def test_a_dataset_converts_the_database_to_an_lmt_v1_table(tmp_path: Path) -> N
 def test_keep_unidentified_changes_the_variant_and_records_no_tracklets(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds")
     default = ds.track_conversion_variant("lmt_sqlite")
     keeping = ds.track_conversion_variant("lmt_sqlite", {"keep_unidentified": True})
 
@@ -844,7 +852,7 @@ def test_the_default_chunk_holds_50000_rows() -> None:
 
 
 def test_the_chunk_size_keeps_the_variant(tmp_path: Path) -> None:
-    ds = _lmt_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds")
 
     default = ds.track_conversion_variant("lmt_sqlite")
     chunked = ds.track_conversion_variant("lmt_sqlite", {"read_chunk_rows": 7})
@@ -857,7 +865,7 @@ def test_the_chunk_size_keeps_the_variant(tmp_path: Path) -> None:
 def test_conversion_leaves_the_database_and_its_directory_unchanged(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds")
     raw = ds.base_dir / "raw"
     path = raw / "recording.sqlite"
     before = tree_snapshot(raw)
@@ -873,11 +881,11 @@ def test_conversion_leaves_the_database_and_its_directory_unchanged(
     assert_tree_unchanged(raw, before)
 
 
-def _failure_text(ds: Dataset) -> str:
+def _failure_text(ds: Dataset, params: dict[str, object] | None = None) -> str:
     """Convert and return the one failure's text, asserting the entry failed."""
     failures: list[str] = []
     outcome = ds.convert_all_tracks(
-        on_failure=lambda _path, error: failures.append(str(error))
+        params, on_failure=lambda _path, error: failures.append(str(error))
     )
     assert (outcome.converted, outcome.failed) == (0, 1)
     (text,) = failures
@@ -914,7 +922,9 @@ def _with_timestamps(changes: dict[int, int | None]) -> LmtRecording:
 def test_a_repeated_frame_and_id_fails_the_entry_at_the_write_path(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds", _with_detection(_grid_like(130, 1)))
+    ds = lmt_dataset(
+        tmp_path / "ds", recordings={"recording": _with_detection(_grid_like(130, 1))}
+    )
 
     text = _failure_text(ds)
 
@@ -925,7 +935,9 @@ def test_a_repeated_frame_and_id_fails_the_entry_at_the_write_path(
 def test_a_detection_on_a_frame_without_a_frame_row_names_the_frame(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds", _with_detection(_grid_like(250, 1)))
+    ds = lmt_dataset(
+        tmp_path / "ds", recordings={"recording": _with_detection(_grid_like(250, 1))}
+    )
 
     text = _failure_text(ds)
 
@@ -934,7 +946,9 @@ def test_a_detection_on_a_frame_without_a_frame_row_names_the_frame(
 
 
 def test_a_null_timestamp_fails_the_entry_naming_the_frame(tmp_path: Path) -> None:
-    ds = _lmt_dataset(tmp_path / "ds", _with_timestamps({150: None}))
+    ds = lmt_dataset(
+        tmp_path / "ds", recordings={"recording": _with_timestamps({150: None})}
+    )
 
     text = _failure_text(ds)
 
@@ -944,7 +958,9 @@ def test_a_null_timestamp_fails_the_entry_naming_the_frame(tmp_path: Path) -> No
 
 def test_an_equal_timestamp_fails_the_entry_naming_the_frame(tmp_path: Path) -> None:
     stamps = {frame.number: frame.timestamp for frame in default_lmt_recording().frames}
-    ds = _lmt_dataset(tmp_path / "ds", _with_timestamps({151: stamps[150]}))
+    ds = lmt_dataset(
+        tmp_path / "ds", recordings={"recording": _with_timestamps({151: stamps[150]})}
+    )
 
     text = _failure_text(ds)
 
@@ -954,7 +970,7 @@ def test_an_equal_timestamp_fails_the_entry_naming_the_frame(tmp_path: Path) -> 
 def test_a_missing_required_column_fails_the_entry_naming_the_column(
     tmp_path: Path,
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds", drop_detection_columns=("BACK_Y",))
+    ds = lmt_dataset(tmp_path / "ds", drop_detection_columns=("BACK_Y",))
 
     text = _failure_text(ds)
 
@@ -966,7 +982,7 @@ def test_a_missing_required_column_fails_the_entry_naming_the_column(
 def test_a_journal_sibling_fails_the_entry_naming_the_sibling(
     tmp_path: Path, suffix: str
 ) -> None:
-    ds = _lmt_dataset(tmp_path / "ds")
+    ds = lmt_dataset(tmp_path / "ds")
     sibling = ds.base_dir / "raw" / f"recording.sqlite{suffix}"
     sibling.write_bytes(b"")
 
@@ -1109,3 +1125,117 @@ def test_table_columns_refuses_a_missing_table_naming_the_file(tmp_path: Path) -
         connection.close()
 
     assert str(path) in str(raised.value)
+
+
+# --- a rebuilt copy ----------------------------------------------------------------
+
+_ADDED_DETECTION = (
+    "INSERT INTO DETECTION (FRAMENUMBER, ANIMALID, MASS_X, MASS_Y, DATA) "
+    "VALUES (130, 4, 1.0, 2.0, '<root/>');"
+)
+
+
+def _rebuilt(tmp_path: Path) -> tuple[Dataset, Path, Path]:
+    """A dataset and its database, with a rebuilt copy that has one more animal."""
+    ds = lmt_dataset(tmp_path / "ds")
+    source = ds.base_dir / "raw" / "recording.sqlite"
+    copy = place_rebuilt_copy(
+        ds,
+        LMT_REBUILD_RUN_ID,
+        source,
+        entry_key="recording",
+        commit=LMT_REBUILD_COMMIT,
+        alter=_ADDED_DETECTION,
+    )
+    return ds, source, copy
+
+
+def _tracks_of(ds: Dataset) -> pd.DataFrame:
+    (path,) = read_tracks_index(ds)["abs_path"].tolist()
+    return pd.read_parquet(ds.resolve_path(str(path)))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs a file that its owner cannot read",
+)
+def test_a_rebuilt_copy_is_read_in_place_of_the_raw_file(tmp_path: Path) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    source.chmod(0)
+    try:
+        outcome = ds.convert_all_tracks({"rebuild_run_id": LMT_REBUILD_RUN_ID})
+    finally:
+        source.chmod(0o644)
+
+    assert (outcome.converted, outcome.failed) == (1, 0)
+    assert 4 in set(_tracks_of(ds)["id"])
+
+
+def test_the_raw_file_is_unchanged_by_a_conversion_from_its_copy(
+    tmp_path: Path,
+) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    digests = file_digests(source.parent)
+    mtime_ns = source.stat().st_mtime_ns
+
+    _ = ds.convert_all_tracks({"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert file_digests(source.parent) == digests
+    assert source.stat().st_mtime_ns == mtime_ns
+
+
+def test_the_rebuild_run_changes_the_variant(tmp_path: Path) -> None:
+    ds, _, _ = _rebuilt(tmp_path)
+
+    default = ds.track_conversion_variant("lmt_sqlite")
+    rebuilt = ds.track_conversion_variant(
+        "lmt_sqlite", {"rebuild_run_id": LMT_REBUILD_RUN_ID}
+    )
+
+    assert rebuilt != default
+
+
+def test_the_stderr_line_names_the_rebuild(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, _, copy = _rebuilt(tmp_path)
+
+    _ = _convert(copy, LmtSqliteParams(rebuild_run_id=LMT_REBUILD_RUN_ID))
+
+    (line,) = capsys.readouterr().err.splitlines()
+    assert line.endswith(f" from rebuild {LMT_REBUILD_RUN_ID}")
+
+
+def test_a_run_id_of_another_kind_is_refused_by_the_params() -> None:
+    with pytest.raises(ValueError, match="rebuild-lmt-events"):
+        _ = LmtSqliteParams(rebuild_run_id="convert-tracks.0.1-0123456789")
+
+
+@pytest.mark.parametrize("how", REBUILD_SPOILS)
+def test_a_copy_that_cannot_be_read_fails_the_entry_naming_the_file_and_the_run(
+    tmp_path: Path, how: RebuildSpoil
+) -> None:
+    ds, source, _ = _rebuilt(tmp_path)
+    spoil_rebuilt_copy(ds, LMT_REBUILD_RUN_ID, source, how)
+
+    text = _failure_text(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert str(source) in text
+    assert LMT_REBUILD_RUN_ID in text
+    assert read_tracks_index(ds).empty
+
+
+def test_a_file_the_scan_did_not_hash_fails_the_entry_naming_the_file_and_the_run(
+    tmp_path: Path,
+) -> None:
+    ds = lmt_dataset(tmp_path / "ds", md5=False)
+    source = ds.base_dir / "raw" / "recording.sqlite"
+    _ = place_rebuilt_copy(
+        ds, LMT_REBUILD_RUN_ID, source, entry_key="recording", commit=LMT_REBUILD_COMMIT
+    )
+
+    text = _failure_text(ds, {"rebuild_run_id": LMT_REBUILD_RUN_ID})
+
+    assert str(source) in text
+    assert LMT_REBUILD_RUN_ID in text
+    assert "mosaic scan" in text
