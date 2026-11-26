@@ -233,8 +233,8 @@ class SetsTracklets(Protocol):
     of the tracks variants the run reads (``tracklets_by_entry``). ``False``
     means the entry's ids restart each frame, and ``None`` that no row says. A
     run that reads no ``tracks`` input passes an empty map.
-    ``process_apply_worker`` calls it on the instance it builds, with the same
-    map. The map stays fixed for the run, so thread workers share it.
+    A process worker calls it on the instance it builds, with the same map. The
+    map stays fixed for the run, so thread workers share it.
     """
 
     def set_tracklets(self, by_entry: Mapping[Entry, bool | None]) -> None: ...

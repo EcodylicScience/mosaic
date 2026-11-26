@@ -1165,6 +1165,31 @@ def test_entry_end_leaves_out_a_covariate_it_did_not_read(tmp_path: Path) -> Non
     assert "pair_frames_bound" not in third
 
 
+def test_entry_end_writes_the_build_seconds_only_when_a_build_ran(
+    tmp_path: Path,
+) -> None:
+    built = EntryMeasure(
+        wall_seconds=2.5,
+        apply_seconds=1.5,
+        input_rows=40,
+        in_flight=1,
+        cpu_seconds=3.0,
+        mode="process",
+        build_seconds=0.75,
+    )
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.on_entry_end(1, 2, "a__1", measure=built)
+        log.on_entry_end(
+            2, 2, "a__2", measure=dataclasses.replace(built, build_seconds=None)
+        )
+
+    first, second = _events_of(tmp_path, "E1", "entry_end")
+
+    assert first["build_seconds"] == 0.75
+    assert "build_seconds" not in second
+
+
 def test_a_probe_event_names_its_request_step_entries_and_kind(tmp_path: Path) -> None:
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="t")

@@ -15,7 +15,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Collection, Generator, Iterable, Mapping
+from collections.abc import Callable, Collection, Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import override
@@ -51,12 +51,12 @@ from mosaic.core.pipeline.params_facts import (
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.run import (
+    FeatureBuild,
+    FeatureWorker,
     build_feature_meta,
-    process_apply_worker,
     run_feature,
 )
 from mosaic.core.pipeline._loaders import LoadSpec, ParquetLoadSpec
-from mosaic.core.pipeline.types import DependencyLookup
 from mosaic.runlog import (
     FlightSpan,
     InFlightLevel,
@@ -67,6 +67,7 @@ from mosaic.runlog import (
 )
 from tests.helpers import (
     HOLD_DIRECTORY_VARIABLE,
+    CountsItsBuilds,
     FitControl,
     FittingFeature,
     HoldsUntilReleased,
@@ -786,6 +787,18 @@ def _big_table() -> pd.DataFrame:
     )
 
 
+def _build_of(feature: ParallelFeature, run_root: Path) -> FeatureBuild:
+    """The build a process worker makes *feature* from, its state in *run_root*."""
+    return FeatureBuild.of(
+        feature,
+        state_root=run_root,
+        artifact_paths={},
+        dependency_lookups={},
+        manifest_path=None,
+        tracklets=None,
+    )
+
+
 def _spawned_worker_bases(
     run_root: Path, source: pd.DataFrame | EntryLoad
 ) -> tuple[WorkerBase, WorkerMeasure | None]:
@@ -793,34 +806,18 @@ def _spawned_worker_bases(
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor
 
-    feature = ParallelFeature()
-    module, name = type(feature).__module__, type(feature).__name__
-    inputs, params = feature.inputs.model_dump(), feature.params.model_dump()
-    paths: dict[str, str] = {}
-    lookups: dict[str, DependencyLookup] = {}
+    build = _build_of(ParallelFeature(), run_root)
 
-    with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:
-        empty = pool.submit(
-            run_module.process_worker_base,
-            module,
-            name,
-            inputs,
-            params,
-            str(run_root),
-            paths,
-            lookups,
-        ).result()
+    with ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=mp.get_context("spawn"),
+        initializer=run_module.start_feature_worker,
+        initargs=(build,),
+    ) as pool:
+        empty = pool.submit(run_module.process_worker_base, build).result()
         measure = report_of(
             pool.submit(
-                run_module.process_apply_worker,
-                module,
-                name,
-                inputs,
-                params,
-                str(run_root),
-                paths,
-                lookups,
-                _task(run_root, source),
+                run_module.process_entry_worker, _task(run_root, source)
             ).result()
         ).worker
     return empty, measure
@@ -1638,32 +1635,10 @@ def test_the_peak_sample_has_an_entry_in_flight_and_never_comes_from_the_fit(
 
 
 def _non_reclaimable_growth(
-    base: int | None,
-    peak: int | None,
-    module_name: str,
-    class_name: str,
-    inputs_dump: dict[str, object],
-    params_dump: dict[str, object],
-    run_root_str: str,
-    artifact_paths_str: dict[str, str],
-    dependency_lookups: dict[str, DependencyLookup],
-    task: EntryTask,
-    ds_manifest_path: str | None = None,
-    tracklets: Mapping[Entry, bool | None] | None = None,
+    base: int | None, peak: int | None, task: EntryTask
 ) -> EntryReport | EntryFailure:
     """Apply as a process worker does, and report the given non-reclaimable pair."""
-    outcome = process_apply_worker(
-        module_name,
-        class_name,
-        inputs_dump,
-        params_dump,
-        run_root_str,
-        artifact_paths_str,
-        dependency_lookups,
-        task,
-        ds_manifest_path,
-        tracklets,
-    )
+    outcome = run_module.process_entry_worker(task)
     measure = report_of(outcome).worker
     assert measure is not None
     measure = dataclasses.replace(
@@ -1823,7 +1798,7 @@ def test_every_process_entry_carries_its_workers_growth(
     worker_base = _GIB // 4
     monkeypatch.setattr(
         run_module,
-        "process_apply_worker",
+        "process_entry_worker",
         functools.partial(
             _non_reclaimable_growth, worker_base, worker_base + _GIB // 2
         ),
@@ -1856,7 +1831,7 @@ def test_a_process_entry_whose_worker_gave_no_figure_carries_no_growth(
     )
     monkeypatch.setattr(
         run_module,
-        "process_apply_worker",
+        "process_entry_worker",
         functools.partial(_non_reclaimable_growth, None, None),
     )
 
@@ -1884,16 +1859,7 @@ def test_a_process_entry_whose_worker_gave_no_figure_carries_no_growth(
 
 
 def _base_of_a_worker(tmp_path: Path) -> WorkerBase:
-    feature = ParallelFeature()
-    return run_module.process_worker_base(
-        type(feature).__module__,
-        type(feature).__name__,
-        feature.inputs.model_dump(),
-        feature.params.model_dump(),
-        str(tmp_path),
-        {},
-        {},
-    )
+    return run_module.process_worker_base(_build_of(ParallelFeature(), tmp_path))
 
 
 def test_a_process_worker_reports_both_bases(
@@ -1952,16 +1918,7 @@ def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
     handed = int(table.memory_usage(deep=True).sum())
 
     measure = report_of(
-        run_module.process_apply_worker(
-            type(feature).__module__,
-            type(feature).__name__,
-            feature.inputs.model_dump(),
-            feature.params.model_dump(),
-            str(tmp_path),
-            {},
-            {},
-            _task(tmp_path, table),
-        )
+        FeatureWorker(_build_of(feature, tmp_path)).run(_task(tmp_path, table))
     ).worker
 
     assert _SAMPLING["during_apply"]
@@ -1984,16 +1941,7 @@ def test_a_process_worker_without_the_figure_leaves_both_none(
     table = pd.DataFrame({"sequence": ["seq_a"] * 10})
 
     measure = report_of(
-        run_module.process_apply_worker(
-            type(feature).__module__,
-            type(feature).__name__,
-            feature.inputs.model_dump(),
-            feature.params.model_dump(),
-            str(tmp_path),
-            {},
-            {},
-            _task(tmp_path, table),
-        )
+        FeatureWorker(_build_of(feature, tmp_path)).run(_task(tmp_path, table))
     ).worker
 
     assert isinstance(measure, WorkerMeasure)
@@ -2023,3 +1971,36 @@ def test_a_sample_that_began_before_every_entry_gives_none_a_figure(
     report = _last_resources(ds, "TESTSAMPLEBEFORE")
     assert report["peak_in_flight_entries"] == 0
     assert report["peak_in_flight_rows"] == 0
+
+
+# --- the build of a process worker ---------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["thread", "process"])
+def test_the_entry_whose_worker_built_the_feature_records_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Each build in a process worker gives one entry its seconds, and threads none."""
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    monkeypatch.setenv(HOLD_DIRECTORY_VARIABLE, str(marks))
+    execution_id = f"TESTBUILDSECONDS{mode.upper()}"
+
+    _ = run_feature(
+        ds,
+        CountsItsBuilds(),
+        parallel_workers=2,
+        parallel_mode=mode,
+        execution_id=execution_id,
+    )
+
+    ends = logged_events(ds.base_dir, execution_id, "entry_end")
+    assert len(ends) == len(_SEQUENCES)
+    built = [end for end in ends if "build_seconds" in end]
+    builds = marks / "builds"
+    expected = len(builds.read_text().split()) if builds.exists() else 0
+    assert len(built) == expected
+    assert (expected > 0) == (mode == "process")
+    for end in built:
+        assert 0.0 < _number(end, "build_seconds") <= _number(end, "apply_seconds")

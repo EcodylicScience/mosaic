@@ -43,6 +43,8 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.graph.claims import FileFailureStore
+from mosaic.core.pipeline.entry_pool import EntryFailure
+from mosaic.core.pipeline.entry_task import EntryReport, EntryTask
 from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.parallelism import ParallelSettings, WorkerProcessDied
 from mosaic.core.pipeline.run import AllEntriesFailed
@@ -385,28 +387,28 @@ FAULT = "MOSAIC_TEST_PROCESS_FAULT"
 _GIB = 1024**3
 
 
-def faulty_worker(*args: Any) -> Any:
+def faulty_worker(task: EntryTask) -> EntryReport | EntryFailure:
     """Apply as a process worker does, unless ``FAULT`` names the entry's sequence.
 
-    Module level so that a spawned worker unpickles it by reference. The entry's
-    task is the eighth argument, and its meta names the entry's sequence.
+    Module level so that a spawned worker unpickles it by reference. The task's
+    meta names the entry's sequence.
     """
     action, _, target = os.environ.get(FAULT, "").partition(":")
-    sequence = str(args[7].meta.sequence)
+    sequence = str(task.meta.sequence)
     if target in ("*", sequence):
         if action == "kill":
             os.kill(os.getpid(), signal.SIGKILL)
         if action == "raise":
             msg = f"the process worker failed on {sequence}"
             raise RuntimeError(msg)
-    return run_module.process_apply_worker(*args)
+    return run_module.process_entry_worker(task)
 
 
 @pytest.fixture
 def process_fault(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Four processors, and process workers that obey ``FAULT``."""
     monkeypatch.setattr(parallelism, "host_cpus", lambda: 4)
-    monkeypatch.setattr(run_module, "process_apply_worker", faulty_worker)
+    monkeypatch.setattr(run_module, "process_entry_worker", faulty_worker)
     return monkeypatch
 
 

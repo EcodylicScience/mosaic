@@ -560,8 +560,11 @@ from tests.helpers.lightning_action import (
     write_templates_study,
 )
 from tests.helpers.stand_in_features import (
+    AlwaysFailsItsBuild,
     CenteringFeature,
+    CountsItsBuilds,
     CropLike,
+    FailsItsFirstBuild,
     FitControl,
     FittingFeature,
     HOLD_DIRECTORY_VARIABLE,
@@ -772,7 +775,10 @@ __all__ = [
     "CI_IDENTITY_MODULES",
     "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
+    "AlwaysFailsItsBuild",
     "CenteringFeature",
+    "CountsItsBuilds",
+    "FailsItsFirstBuild",
     "CropLike",
     "DIVISION_CREATED_UTC",
     "EVEN_STORE_TIMING",

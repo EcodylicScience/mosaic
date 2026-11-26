@@ -61,11 +61,14 @@ class EntryCost:
             where its time does not parse.
         wall_seconds: From the start of the entry's flight to its output written:
             its dispatch when its worker loads its input, else the run's load of
-            it.
+            it. The first entry each process worker computes contains the
+            worker's build of the feature.
         apply_seconds: From its dispatch to the end of its apply, which contains
-            the load when its worker loads its input.
+            the load when its worker loads its input, and the build of the first
+            entry each process worker computes.
         cpu_seconds: The CPU time of the process tree over its flight, which
-            counts every entry in flight with it.
+            counts every entry in flight with it, and the build of the first entry
+            each process worker computes.
         input_rows: The rows of its input files.
         in_flight: The most entries in flight at once during its flight, itself
             included.
@@ -79,6 +82,8 @@ class EntryCost:
         frames: The length of its frame extent.
         keypoints: The keypoints of its tracks row.
         fps: The frame rate its indexed media measured.
+        build_seconds: The seconds its process worker spent building the feature
+            before computing it, ``None`` where the event records no build.
     """
 
     key: str
@@ -96,6 +101,7 @@ class EntryCost:
     frames: int | None
     keypoints: int | None
     fps: float | None
+    build_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +466,7 @@ def _entries(records: Sequence[Mapping[str, object]], run_mode: str) -> list[Ent
             frames=record_optional_count(rec, "frames"),
             keypoints=record_optional_count(rec, "keypoints"),
             fps=record_optional_number(rec, "fps"),
+            build_seconds=record_optional_seconds(rec, "build_seconds"),
         )
         for rec in records
         if _is_measured(rec)

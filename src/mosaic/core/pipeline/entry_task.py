@@ -163,6 +163,9 @@ class EntryReport:
             task's return, the write included.
         worker: The memory of the worker process that ran the task, ``None``
             where the task ran in the run's own process or the measure failed.
+        build_seconds: The seconds the worker spent building the feature before
+            this task, 0 where it found the feature built or the task ran in the
+            run's own process.
     """
 
     written: bool
@@ -172,6 +175,7 @@ class EntryReport:
     notices: tuple[IrregularNotice, ...]
     seconds_after_apply: float
     worker: WorkerMeasure | None = None
+    build_seconds: float = 0.0
 
 
 def _loaded(load: EntryLoad) -> pd.DataFrame | None:
@@ -320,6 +324,8 @@ def run_entry_in_process(
     # and stays referenced by the pool's call item. It is the entry's memory, not
     # the worker's, and a worker handed no table measures without it
     # (``process_worker_base``). A task that loads reads its base before the load.
+    # A worker that built the feature for this task built it before this call, so
+    # the base contains the feature's loaded state.
     source = task.source
     handed = (
         int(source.memory_usage(deep=True).sum())

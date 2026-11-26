@@ -8,6 +8,7 @@ run resumes, and says what to change.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -20,6 +21,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import parse_entry_key
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import run as run_module
@@ -38,12 +40,15 @@ from mosaic.core.pipeline.parallelism import (
     WorkerProcessDied,
 )
 from mosaic.core.pipeline._utils import FeatureMeta
-from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.run import AllEntriesFailed, ApplyPhase, run_feature
 from mosaic.run_cost import read_run_cost
 from mosaic.runlog import parse_instant, read_run, run_log_dir
 from tests.helpers import (
     CLOCK_TICK_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
+    AlwaysFailsItsBuild,
+    CountsItsBuilds,
+    FailsItsFirstBuild,
     HoldsOnSequences,
     ParallelFeature,
     add_tracks_variant,
@@ -865,3 +870,129 @@ def test_the_gate_changes_neither_the_run_id_nor_the_outputs(tmp_path: Path) -> 
     assert expected.keys() == found.keys()
     for name, table in expected.items():
         pd.testing.assert_frame_equal(found[name], table)
+
+
+# --- a process worker builds its feature once -----------------------------------------
+
+
+_EIGHT = tuple(f"seq_{letter}" for letter in "abcdefgh")
+
+
+def _marks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The hold directory, named in the environment the spawned workers inherit."""
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    monkeypatch.setenv(HOLD_DIRECTORY_VARIABLE, str(marks))
+    return marks
+
+
+def _computed_keys(ds: Dataset, execution_id: str) -> set[str]:
+    """The keys of the entries the attempt computed, which carry their cost."""
+    return {
+        str(event["key"])
+        for event in logged_events(ds.base_dir, execution_id, "entry_end")
+        if "wall_seconds" in event
+    }
+
+
+def test_each_process_worker_builds_the_feature_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each phase's workers build at their first entry and apply the rest with it."""
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, VARIANT, *_EIGHT, std_format="mosaic_v1")
+    marks = _marks(tmp_path, monkeypatch)
+
+    def phase(sequences: tuple[str, ...], margin: float) -> ApplyPhase:
+        return ApplyPhase(
+            entries=tuple(("", sequence) for sequence in sequences),
+            workers=2,
+            mode="process",
+            admission_margin=margin,
+            measure_worker_base=False,
+        )
+
+    result = run_feature(
+        ds,
+        CountsItsBuilds(),
+        phases=(phase(_EIGHT[:4], 0.0), phase(_EIGHT[4:], 1.5)),
+    )
+
+    assert result.entries_written == len(_EIGHT)
+    builds = (marks / "builds").read_text().split()
+    assert len(builds) == len(set(builds))
+    assert 2 <= len(builds) <= 4
+
+
+def test_a_build_that_fails_costs_its_entry_and_the_worker_builds_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed build fails one entry, and the next task in its worker builds anew.
+
+    The rerun runs in threads, because a process rerun would fail each new worker's
+    first build again.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, VARIANT, *_EIGHT[:4], std_format="mosaic_v1")
+    marks = _marks(tmp_path, monkeypatch)
+
+    result = run_feature(
+        ds,
+        FailsItsFirstBuild(),
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id="TESTBUILDFAILS",
+    )
+
+    failed_builds = list(marks.glob("build-failed-*"))
+    assert 1 <= len(failed_builds) <= 2
+    assert len(result.failed_entries) == len(failed_builds)
+    errors = logged_events(ds.base_dir, "TESTBUILDFAILS", "entry_error")
+    assert sorted(str(error["key"]) for error in errors) == sorted(
+        result.failed_entries
+    )
+    for error in errors:
+        assert json.loads(str(error["error"]))["type"] == "OSError"
+    storage = "prov-parallel-fails-first-build__from__tracks"
+    assert result.run_id is not None
+    kept = feature_index(feature_index_path(ds, storage)).read(run_id=result.run_id)
+    assert sorted(kept["sequence"]) == sorted(
+        sequence
+        for sequence in _EIGHT[:4]
+        if make_entry_key("", sequence) not in result.failed_entries
+    )
+
+    again = run_feature(
+        ds,
+        FailsItsFirstBuild(),
+        parallel_workers=2,
+        parallel_mode="thread",
+        execution_id="TESTBUILDRERUN",
+    )
+
+    assert again.run_id == result.run_id
+    assert again.failed_entries == ()
+    assert _computed_keys(ds, "TESTBUILDRERUN") == set(result.failed_entries)
+
+
+def test_a_build_that_always_fails_fails_every_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _dataset(tmp_path)
+    _ = _marks(tmp_path, monkeypatch)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = run_feature(
+            ds,
+            AlwaysFailsItsBuild(),
+            parallel_workers=2,
+            parallel_mode="process",
+            execution_id="TESTBUILDNEVER",
+        )
+
+    errors = logged_events(ds.base_dir, "TESTBUILDNEVER", "entry_error")
+    assert sorted(parse_entry_key(str(error["key"]))[1] for error in errors) == list(
+        _SEQUENCES
+    )
+    for error in errors:
+        assert json.loads(str(error["error"]))["type"] == "OSError"

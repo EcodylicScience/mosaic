@@ -661,6 +661,25 @@ def test_an_entry_reads_its_covariates_and_the_time_it_ended(tmp_path: Path) -> 
     assert (second.pair_frames_bound, second.frames, second.fps) == (False, None, None)
 
 
+def test_an_entry_reads_the_seconds_of_its_build_and_none_without_one(
+    tmp_path: Path,
+) -> None:
+    _write_lines(
+        tmp_path,
+        "BUILD",
+        {"ev": "started", "kind": "feature", "target": "speed"},
+        _resources(),
+        _entry_end("g__a", ended=1.0, wall=4.0, rows=100, cpu=3.0, build_seconds=1.5),
+        _entry_end("g__b", ended=2.0, wall=1.0, rows=10, cpu=1.0),
+        {"ev": "finished"},
+    )
+
+    first, second = _read(tmp_path, "BUILD").entries
+
+    assert first.build_seconds == 1.5
+    assert second.build_seconds is None
+
+
 def test_an_entry_end_without_a_figure_reads_none_and_the_aggregates_skip_it(
     tmp_path: Path,
 ) -> None:

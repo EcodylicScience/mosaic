@@ -1010,6 +1010,8 @@ def _wrap_pools(
         on_computed: Callable[[FeatureMeta], None] | None,
         cancel_check: Callable[[], None] | None,
         hand_back_on_break: bool,
+        initializer: Callable[..., object] | None,
+        initargs: tuple[object, ...],
     ) -> RunPool:
         def computed(tag: FeatureMeta) -> None:
             if on_computed is not None:
@@ -1029,6 +1031,8 @@ def _wrap_pools(
             on_computed=computed,
             cancel_check=cancel_check,
             hand_back_on_break=hand_back_on_break,
+            initializer=initializer,
+            initargs=initargs,
         )
 
     monkeypatch.setattr(run_module, "EntryPool", build)

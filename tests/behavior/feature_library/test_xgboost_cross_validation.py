@@ -43,7 +43,7 @@ from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
-from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
+from mosaic.core.pipeline.run import FeatureBuild, FeatureWorker, build_feature_meta
 from mosaic.core.pipeline.writers import write_output
 from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import run_id_digest, written_by_worker
@@ -245,16 +245,15 @@ def scored_in_a_worker(
 ) -> pd.DataFrame:
     """The output a process worker writes for *entry* from *run_root*, read back."""
     task = EntryTask(meta=build_feature_meta(*entry, run_root), source=frame)
-    outcome = process_apply_worker(
-        feature.__module__,
-        type(feature).__name__,
-        feature.inputs.model_dump(),
-        feature.params.model_dump(),
-        str(run_root),
-        {},
-        {},
-        task,
+    build = FeatureBuild.of(
+        feature,
+        state_root=run_root,
+        artifact_paths={},
+        dependency_lookups={},
+        manifest_path=None,
+        tracklets=None,
     )
+    outcome = FeatureWorker(build).run(task)
     return written_by_worker(task, outcome)
 
 

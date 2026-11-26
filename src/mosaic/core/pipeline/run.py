@@ -578,10 +578,11 @@ def _build_nn_filter(
 def _close_feature(feature: Feature) -> None:
     """Call ``close()`` on *feature* when it declares :class:`ClosesResources`.
 
-    ``run_feature`` and ``process_apply_worker`` each call this from a
-    ``finally`` around their work on an instance. A ``close()`` that raises is
-    reported on standard error and does not replace the exception or the result
-    of that work.
+    ``run_feature`` calls this for the run's own instance, and
+    :func:`_rebuilt_feature` and :func:`_built_feature` for a worker's, each from a
+    ``finally`` or an ``except`` around their work on the instance. A ``close()``
+    that raises is reported on standard error and does not replace the exception
+    or the result of that work.
     """
     if isinstance(feature, ClosesResources):
         try:
@@ -599,19 +600,65 @@ def _hand_tracklets(feature: object, tracklets: Mapping[Entry, bool | None]) -> 
         feature.set_tracklets(dict(tracklets))
 
 
-@contextmanager
-def _rebuilt_feature(
-    module_name: str,
-    class_name: str,
-    inputs_dump: dict[str, object],
-    params_dump: dict[str, object],
-    run_root_str: str,
-    artifact_paths_str: dict[str, str],
-    dependency_lookups: dict[str, DependencyLookup],
-    ds_manifest_path: str | None,
-    tracklets: Mapping[Entry, bool | None] | None,
-) -> Generator[Feature]:
-    """Rebuild a feature in a worker process with its state loaded, and close it after.
+@dataclass(frozen=True)
+class FeatureBuild:
+    """What a process worker builds the run's feature from.
+
+    It crosses to each worker once, in the pickled process object of the worker's
+    spawn, as the arguments of :func:`start_feature_worker`.
+
+    Attributes:
+        module_name: The module that defines the feature's class.
+        class_name: The class's name in that module.
+        inputs_dump: The feature's inputs, as ``model_dump`` gives them.
+        params_dump: The feature's params, as ``model_dump`` gives them.
+        run_root: The run root that ``load_state`` reads the fitted state from.
+        artifact_paths: The paths of the artifacts ``load_state`` is handed.
+        dependency_lookups: The lookups ``load_state`` is handed.
+        manifest_path: The dataset's manifest, from which a feature that declares
+            ``bind_dataset`` is bound and a feature definition's module is found.
+            ``None`` binds nothing.
+        tracklets: Each entry's ``carries_tracklets`` answer, handed to a feature
+            that declares ``set_tracklets``. ``None`` hands it an empty map.
+    """
+
+    module_name: str
+    class_name: str
+    inputs_dump: dict[str, object]
+    params_dump: dict[str, object]
+    run_root: str
+    artifact_paths: dict[str, str]
+    dependency_lookups: dict[str, DependencyLookup]
+    manifest_path: str | None
+    tracklets: Mapping[Entry, bool | None] | None
+
+    @classmethod
+    def of(
+        cls,
+        feature: Feature,
+        *,
+        state_root: Path,
+        artifact_paths: Mapping[str, Path],
+        dependency_lookups: Mapping[str, DependencyLookup],
+        manifest_path: Path | None,
+        tracklets: Mapping[Entry, bool | None] | None,
+    ) -> FeatureBuild:
+        """The build of the run's *feature*, its state loaded from *state_root*."""
+        return cls(
+            module_name=feature.__module__,
+            class_name=type(feature).__name__,
+            inputs_dump=feature.inputs.model_dump(),
+            params_dump=feature.params.model_dump(),
+            run_root=str(state_root),
+            artifact_paths={name: str(path) for name, path in artifact_paths.items()},
+            dependency_lookups=dict(dependency_lookups),
+            manifest_path=None if manifest_path is None else str(manifest_path),
+            tracklets=tracklets,
+        )
+
+
+def _built_feature(build: FeatureBuild) -> Feature:
+    """Build the run's feature in a worker process, with its state loaded.
 
     If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
     EgocentricCropPipeline, FeralFeature), reconstruct the Dataset from its
@@ -621,126 +668,156 @@ def _rebuilt_feature(
     main-process bind at ``run_feature`` doesn't propagate across process
     workers. Features without ``bind_dataset`` are unaffected.
 
-    A feature that declares ``set_tracklets`` is handed *tracklets*, the map
-    ``run_feature`` built once for the run, before ``load_state``. ``None``
-    hands it an empty map.
+    A feature that declares ``set_tracklets`` is handed the build's tracklets,
+    the map ``run_feature`` built once for the run, before ``load_state``.
+    ``None`` hands it an empty map.
 
     A fitting definition given a model is narrowed to an apply, as the run's own
     instance is.
 
-    The worker builds its instance for this one use, and only this use refers to
-    it. The worker therefore closes the instance itself. ``run_feature`` closes
-    the main-process instance, on which ``apply`` does not run in this mode.
-    ``bind_dataset``, ``load_state`` and the caller's work all run inside the
-    ``try``, because each of them may acquire the resource that ``close()``
-    releases.
-
     A feature definition's module lives in the dataset, not on the import path.
-    For a *module_name* under ``mosaic_definitions.`` the worker first opens the
-    manifest at *ds_manifest_path*, which creates nothing, and registers the
-    dataset's definitions directory with the definition finder. The import then
-    runs the loader's checks as every load does. The class therefore has the same
-    ``name`` and ``__mosaic_definition__`` as the one the run built.
+    For a module under ``mosaic_definitions.`` the worker first opens the
+    manifest at the build's ``manifest_path``, which creates nothing, and
+    registers the dataset's definitions directory with the definition finder.
+    The import then runs the loader's checks as every load does. The class
+    therefore has the same ``name`` and ``__mosaic_definition__`` as the one the
+    run built.
+
+    Raises:
+        Exception: Whatever the import, the validation of the inputs, the
+            construction, ``bind_dataset``, ``set_tracklets`` or ``load_state``
+            raises. The instance built is closed first, because ``bind_dataset``
+            and ``load_state`` may each acquire the resource that ``close()``
+            releases.
     """
     from mosaic.core.pipeline.definitions.loader import narrow_to_apply
 
-    if ds_manifest_path is not None and module_name.startswith(
+    if build.manifest_path is not None and build.module_name.startswith(
         f"{DEFINITIONS_PACKAGE}."
     ):
         from mosaic.core.dataset import open_dataset
         from mosaic.core.pipeline.definitions.loader import register_definitions_root
 
         register_definitions_root(
-            open_dataset(ds_manifest_path, ensure_roots=False).get_root(
+            open_dataset(build.manifest_path, ensure_roots=False).get_root(
                 DEFINITIONS_ROOT
             )
         )
-    mod = importlib.import_module(module_name)
-    cls = getattr(mod, class_name)
-    inputs_obj = Inputs.model_validate(inputs_dump)
-    feature = cls(inputs_obj, params_dump)
+    mod = importlib.import_module(build.module_name)
+    cls = getattr(mod, build.class_name)
+    inputs_obj = Inputs.model_validate(build.inputs_dump)
+    feature = cls(inputs_obj, build.params_dump)
     narrow_to_apply(feature)
     try:
-        if ds_manifest_path is not None and hasattr(feature, "bind_dataset"):
+        if build.manifest_path is not None and hasattr(feature, "bind_dataset"):
             from mosaic.core.dataset import Dataset
 
-            ds_local = Dataset(manifest_path=Path(ds_manifest_path)).load()
+            ds_local = Dataset(manifest_path=Path(build.manifest_path)).load()
             feature.bind_dataset(ds_local)
-        _hand_tracklets(feature, tracklets if tracklets is not None else {})
+        _hand_tracklets(feature, build.tracklets if build.tracklets is not None else {})
         feature.load_state(
-            Path(run_root_str),
-            {k: Path(v) for k, v in artifact_paths_str.items()},
-            dependency_lookups,
+            Path(build.run_root),
+            {name: Path(path) for name, path in build.artifact_paths.items()},
+            build.dependency_lookups,
         )
+    except BaseException:
+        _close_feature(feature)
+        raise
+    return feature
+
+
+@contextmanager
+def _rebuilt_feature(build: FeatureBuild) -> Generator[Feature]:
+    """Build the run's feature in a worker process as for apply, and close it after.
+
+    The build is :func:`_built_feature`'s. Only this use refers to the instance, so
+    it is closed on exit.
+    """
+    feature = _built_feature(build)
+    try:
         yield feature
     finally:
         _close_feature(feature)
 
 
-def process_apply_worker(
-    module_name: str,
-    class_name: str,
-    inputs_dump: dict[str, object],
-    params_dump: dict[str, object],
-    run_root_str: str,
-    artifact_paths_str: dict[str, str],
-    dependency_lookups: dict[str, DependencyLookup],
-    task: EntryTask,
-    ds_manifest_path: str | None = None,
-    tracklets: Mapping[Entry, bool | None] | None = None,
-) -> EntryReport | EntryFailure:
-    """Rebuild a feature in a worker process, compute one entry, then close the feature.
+class FeatureWorker:
+    """A process worker's feature, built at its first task and applied to every task.
 
-    The feature is rebuilt for each task, as :func:`_rebuilt_feature` describes. The
-    worker loads the entry's input unless the task contains a table, writes the
-    entry's output
-    (:func:`~mosaic.core.pipeline.entry_task.run_entry_in_process`), and reads its
-    memory measure after the write.
+    The first task builds the feature from the build arguments
+    (:func:`_built_feature`), and the instance then serves every later task of
+    the pool's life, as the run's own instance serves every entry in thread
+    mode. A build that raises keeps no instance and fails that task as its
+    entry's error. The next task builds again, so a transient read error in
+    ``load_state`` costs one entry, and a build that always fails fails every
+    entry.
+    """
 
-    Returns:
-        The report of the output written or of a load of no rows, with the
-        worker's own memory, or the failure of the load (an input failure), the
-        trim or the write (an output failure). The report's
-        ``seconds_after_apply`` runs to this function's return, the close of the
-        feature included.
+    def __init__(self, build: FeatureBuild) -> None:
+        self._build = build
+        self._feature: Feature | None = None
+
+    def run(self, task: EntryTask) -> EntryReport | EntryFailure:
+        """Compute *task*'s entry with the feature, built first when none is held.
+
+        The worker loads the entry's input unless the task contains a table,
+        writes the entry's output
+        (:func:`~mosaic.core.pipeline.entry_task.run_entry_in_process`), and reads
+        its memory measure after the write. Its base is read after the build.
+
+        Returns:
+            The report of the output written or of a load of no rows, with the
+            worker's own memory and, when this task built the feature, the build's
+            seconds, or the failure of the load (an input failure), the trim or
+            the write (an output failure).
+
+        Raises:
+            Exception: The entry's error: a failed build, missing pair rows, a
+                missing input column, an arena-blind input that spans arenas, or
+                whatever ``apply`` raises.
+        """
+        feature = self._feature
+        build_seconds = 0.0
+        if feature is None:
+            started = time.monotonic()
+            feature = _built_feature(self._build)
+            build_seconds = time.monotonic() - started
+            self._feature = feature
+        outcome = run_entry_in_process(feature, task)
+        if isinstance(outcome, EntryFailure):
+            return outcome
+        return replace(outcome, build_seconds=build_seconds)
+
+
+_feature_worker: FeatureWorker | None = None
+"""The feature worker of this process, set by :func:`start_feature_worker`."""
+
+
+def start_feature_worker(build: FeatureBuild) -> None:
+    """Make this process's :class:`FeatureWorker` from *build*, as a pool's initializer.
+
+    It builds nothing: an initializer that raises breaks the pool, and a build
+    that fails is its task's error instead.
+    """
+    global _feature_worker
+    _feature_worker = FeatureWorker(build)
+
+
+def process_entry_worker(task: EntryTask) -> EntryReport | EntryFailure:
+    """Compute *task* in a worker process with the process's :class:`FeatureWorker`.
 
     Raises:
-        Exception: The entry's error: missing pair rows, a missing input column,
-            an arena-blind input that spans arenas, or whatever ``apply`` raises.
+        RuntimeError: This process was not started by :func:`start_feature_worker`.
+        Exception: The entry's error, as :meth:`FeatureWorker.run` gives it.
     """
-    with _rebuilt_feature(
-        module_name,
-        class_name,
-        inputs_dump,
-        params_dump,
-        run_root_str,
-        artifact_paths_str,
-        dependency_lookups,
-        ds_manifest_path,
-        tracklets,
-    ) as feature:
-        outcome = run_entry_in_process(feature, task)
-        returned = time.monotonic()
-    if isinstance(outcome, EntryFailure):
-        return outcome
-    return replace(
-        outcome,
-        seconds_after_apply=outcome.seconds_after_apply + time.monotonic() - returned,
-    )
+    worker = _feature_worker
+    if worker is None:
+        msg = "a process worker computes an entry only after start_feature_worker"
+        raise RuntimeError(msg)
+    return worker.run(task)
 
 
-def process_worker_base(
-    module_name: str,
-    class_name: str,
-    inputs_dump: dict[str, object],
-    params_dump: dict[str, object],
-    run_root_str: str,
-    artifact_paths_str: dict[str, str],
-    dependency_lookups: dict[str, DependencyLookup],
-    ds_manifest_path: str | None = None,
-    tracklets: Mapping[Entry, bool | None] | None = None,
-) -> WorkerBase:
-    """Rebuild a feature in a worker process as for apply, and return the worker's memory.
+def process_worker_base(build: FeatureBuild) -> WorkerBase:
+    """Build the feature in a worker process as for apply, and return the worker's memory.
 
     Nothing is applied. The figures are what one process worker holds before it is
     handed a table: an interpreter, the feature's imports and its loaded state.
@@ -749,17 +826,7 @@ def process_worker_base(
         The worker's resident memory in bytes, 0 where it cannot be measured, and
         its anonymous and shared memory, ``None`` where ``/proc`` does not give it.
     """
-    with _rebuilt_feature(
-        module_name,
-        class_name,
-        inputs_dump,
-        params_dump,
-        run_root_str,
-        artifact_paths_str,
-        dependency_lookups,
-        ds_manifest_path,
-        tracklets,
-    ):
+    with _rebuilt_feature(build):
         return WorkerBase(
             rss_bytes=process_rss_bytes(),
             nonreclaimable_bytes=process_nonreclaimable_bytes(),
@@ -2468,21 +2535,16 @@ def _report_worker_base(
     watch: MemoryWatch,
     cost: _RunCost,
     feature: Feature,
-    *,
-    state_root: Path,
-    artifact_paths: Mapping[str, Path],
-    dependency_lookups: dict[str, DependencyLookup],
-    manifest_path: Path,
-    tracklets: Mapping[Entry, bool | None],
+    build: FeatureBuild,
 ) -> None:
     """Measure one process worker's own memory, and report it beside the frozen figures.
 
     One worker is spawned as process mode spawns them, and runs
-    :func:`process_worker_base`, which loads the feature's state from *state_root*, the
-    run root the run loaded it from. Its CPU, time and memory enter no other figure,
-    because the report repeats the last one written. Nothing is spawned when the limit
-    has less available than the run's own base, which a worker at least matches, and a
-    worker that fails to start reports nothing.
+    :func:`process_worker_base`, which builds *feature* from *build* and so loads its
+    state from the run root the run loaded it from. Its CPU, time and memory enter no
+    other figure, because the report repeats the last one written. Nothing is spawned
+    when the limit has less available than the run's own base, which a worker at least
+    matches, and a worker that fails to start reports nothing.
     """
     frozen = cost.last_report
     limit = watch.limit
@@ -2490,18 +2552,7 @@ def _report_worker_base(
         return
     try:
         with caller_guarded_process_pool(1, mp.get_context("spawn")) as pool:
-            measured = pool.submit(
-                process_worker_base,
-                feature.__module__,
-                type(feature).__name__,
-                feature.inputs.model_dump(),
-                feature.params.model_dump(),
-                str(state_root),
-                {k: str(v) for k, v in artifact_paths.items()},
-                dependency_lookups,
-                str(manifest_path),
-                tracklets,
-            ).result()
+            measured = pool.submit(process_worker_base, build).result()
     except Exception as exc:
         print(
             f"[feature:{feature.name}] could not measure a process worker: {exc}",
@@ -3518,6 +3569,10 @@ def _run_feature_impl(
             # holds None, so its entry is not given the parent's sample, which counts
             # every worker.
             worker_growth: dict[str, int | None] = {}
+            # The seconds a process worker spent building the feature before the
+            # entry it applied, held until the entry's row is recorded. Only an
+            # entry whose task built the feature has one.
+            worker_builds: dict[str, float] = {}
 
             def _report_done(key: str, measure: EntryMeasure | None) -> None:
                 """Report *key* done and refresh the liveness heartbeat."""
@@ -3566,6 +3621,7 @@ def _run_feature_impl(
                         frames=covariates.frames,
                         keypoints=covariates.keypoints,
                         fps=covariates.fps,
+                        build_seconds=worker_builds.pop(key, None),
                     )
                 _report_done(key, measure)
                 if index_pacer.due():
@@ -4005,6 +4061,8 @@ def _run_feature_impl(
                         if worker is not None and cost.nonreclaimable
                         else None
                     )
+                    if outcome.build_seconds > 0:
+                        worker_builds[key] = outcome.build_seconds
                     if worker is not None:
                         worker_base = state.worker_bases.learn(
                             worker, nonreclaimable=cost.nonreclaimable
@@ -4080,6 +4138,20 @@ def _run_feature_impl(
             # under the floor, and the floor does not end a run on the memory a
             # loaded table takes. Each call writes its entry's output and returns a
             # report, from which ``_record_result`` records the row.
+            # Each process worker receives the build once, as its initializer's
+            # argument, and builds the feature at its first task.
+            build = (
+                FeatureBuild.of(
+                    feature,
+                    state_root=worker_state_root,
+                    artifact_paths=artifact_paths,
+                    dependency_lookups=dependency_lookups,
+                    manifest_path=ds.manifest_path,
+                    tracklets=tracklets,
+                )
+                if in_processes
+                else None
+            )
             active: EntryPool[FeatureMeta, EntryReport | EntryFailure] = EntryPool(
                 workers=settings.workers,
                 mode=settings.mode,
@@ -4093,6 +4165,8 @@ def _run_feature_impl(
                 on_computed=_outcome_was_set if in_processes else None,
                 cancel_check=ctx.check_cancel,
                 hand_back_on_break=True,
+                initializer=None if build is None else start_feature_worker,
+                initargs=() if build is None else (build,),
             )
 
             # The key that the last load started and that has not reached _process_entry.
@@ -4269,21 +4343,7 @@ def _run_feature_impl(
                 task needs (re)computation.
                 """
                 if in_processes:
-                    artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
-                    active.submit(
-                        task.meta,
-                        process_apply_worker,
-                        feature.__module__,
-                        type(feature).__name__,
-                        feature.inputs.model_dump(),
-                        feature.params.model_dump(),
-                        str(worker_state_root),
-                        artifact_paths_str,
-                        dependency_lookups,
-                        task,
-                        str(ds.manifest_path),
-                        tracklets,
-                    )
+                    active.submit(task.meta, process_entry_worker, task)
                 else:
                     active.submit(
                         task.meta, run_entry, feature, task, _after_apply(task.key)
@@ -4499,11 +4559,14 @@ def _run_feature_impl(
             watch,
             cost,
             feature,
-            state_root=worker_state_root,
-            artifact_paths=artifact_paths,
-            dependency_lookups=dependency_lookups,
-            manifest_path=ds.manifest_path,
-            tracklets=tracklets,
+            FeatureBuild.of(
+                feature,
+                state_root=worker_state_root,
+                artifact_paths=artifact_paths,
+                dependency_lookups=dependency_lookups,
+                manifest_path=ds.manifest_path,
+                tracklets=tracklets,
+            ),
         )
     # Mark the run finished only when every manifest entry's output parquet is on
     # disk. The filesystem is the source of truth (same disk check the Pipeline

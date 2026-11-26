@@ -35,7 +35,12 @@ from mosaic.behavior.feature_library.orientation_relative import (
     _ordered_pairs,  # pyright: ignore[reportPrivateUsage]
 )
 from mosaic.core.pipeline.entry_task import EntryTask
-from mosaic.core.pipeline.run import build_feature_meta, process_apply_worker
+from mosaic.core.pipeline.run import (
+    FeatureBuild,
+    build_feature_meta,
+    process_entry_worker,
+    start_feature_worker,
+)
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.track_library.calms21 import calms21_to_trex_df
@@ -981,26 +986,31 @@ def test_an_entry_of_twenty_thousand_frames_takes_seconds_not_a_minute(
 def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there(
     tmp_path: Path,
 ) -> None:
-    """``parallel_mode='process'`` rebuilds the feature per entry and calls ``load_state``."""
+    """``parallel_mode='process'`` builds the feature once per worker.
+
+    The worker's build calls ``load_state``.
+    """
     table = _drop_cells(_pose_table(n_frames=30, ids=(0, 1, 2)), 0.2)
     lookup = _scale_run(tmp_path, [9.0, 11.0])
     feature = OrientationRelativeFeature(params={"nearest_k": 4})
     task = EntryTask(meta=build_feature_meta("", "s", tmp_path), source=table)
 
+    build = FeatureBuild.of(
+        feature,
+        state_root=tmp_path,
+        artifact_paths={},
+        dependency_lookups={"scale": lookup},
+        manifest_path=None,
+        tracklets=None,
+    )
+
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=1, mp_context=multiprocessing.get_context("spawn")
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=start_feature_worker,
+        initargs=(build,),
     ) as pool:
-        outcome = pool.submit(
-            process_apply_worker,
-            feature.__module__,
-            type(feature).__name__,
-            feature.inputs.model_dump(),
-            feature.params.model_dump(),
-            str(tmp_path),
-            {},
-            {"scale": lookup},
-            task,
-        ).result(timeout=120)
+        outcome = pool.submit(process_entry_worker, task).result(timeout=120)
 
     result = written_by_worker(task, outcome)
     in_process = OrientationRelativeFeature(params={"nearest_k": 4})

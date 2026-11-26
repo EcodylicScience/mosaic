@@ -16,11 +16,13 @@ computes several entries at once. :class:`LabelsClassifier` reads ground-truth l
 and records the file of each entry it is handed, for the tests of labels that a linked
 dataset holds. :class:`HoldsOnSequences` stops in the entries it names until it is
 killed, for the tests of a cancel that reaches a run's workers.
-:class:`HoldsUntilReleased` stops in the entries it names until the test releases them,
-and can make the write or the trim of an entry fail, slow or end in the worker process
-that computes it, for the tests of how a run ends with entries in flight and of what it
-measures. Its ``unreadable-input`` fault fails the load of an entry in the worker
-process that loads it.
+:class:`CountsItsBuilds`, :class:`FailsItsFirstBuild` and :class:`AlwaysFailsItsBuild`
+count or fail the builds of a process worker, for the tests of a worker that builds
+its feature once. :class:`HoldsUntilReleased` stops in the entries it names until the
+test releases them, and can make the write or the trim of an entry fail, slow or end in
+the worker process that computes it, for the tests of how a run ends with entries in
+flight and of what it measures. Its ``unreadable-input`` fault fails the load of an
+entry in the worker process that loads it.
 """
 
 from __future__ import annotations
@@ -399,6 +401,92 @@ class HoldsUntilReleased(ParallelFeature):
             atomic_write(marks / sequence, lambda temp: temp.write_text(process))
             _await_files([marks / "release"], f"the test never released {sequence}")
         return super().apply(df)
+
+
+def _in_a_spawned_worker() -> bool:
+    """Whether this process is a worker that a pool spawned."""
+    return multiprocessing.parent_process() is not None
+
+
+class CountsItsBuilds(ParallelFeature):
+    """Appends its process id to ``builds`` in the hold directory at each build.
+
+    A build calls ``load_state`` once, so the file holds a line per build. Only a
+    spawned worker writes one, so the run's own instance and its loads count none.
+    """
+
+    name = "prov-parallel-counts-builds"
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        if _in_a_spawned_worker():
+            builds = Path(os.environ[HOLD_DIRECTORY_VARIABLE]) / "builds"
+            with builds.open("a") as stream:
+                _ = stream.write(f"{os.getpid()}\n")
+        return super().load_state(run_root, artifact_paths, dependency_lookups)
+
+
+class FailsItsFirstBuild(ParallelFeature):
+    """Fails the first build in each spawned worker, as an unreadable state file does.
+
+    ``load_state`` raises ``OSError`` on its first call in a spawned worker and
+    touches ``build-failed-<pid>`` in the hold directory. In a spawned worker
+    ``apply`` raises unless ``load_state`` returned on the same instance, so an
+    instance kept from a failed build fails every entry it is handed.
+    """
+
+    name = "prov-parallel-fails-first-build"
+
+    def __init__(
+        self,
+        inputs: Inputs | None = None,
+        params: dict[str, object] | _P | None = None,
+    ) -> None:
+        super().__init__(inputs, params)
+        self.loaded = False
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        if _in_a_spawned_worker():
+            failed = (
+                Path(os.environ[HOLD_DIRECTORY_VARIABLE])
+                / f"build-failed-{os.getpid()}"
+            )
+            if not failed.exists():
+                failed.touch()
+                raise OSError(errno.EIO, "the first build in this worker fails")
+        loaded = super().load_state(run_root, artifact_paths, dependency_lookups)
+        self.loaded = True
+        return loaded
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if _in_a_spawned_worker() and not self.loaded:
+            raise RuntimeError("applied without its state")
+        return super().apply(df)
+
+
+class AlwaysFailsItsBuild(ParallelFeature):
+    """Fails every build in a spawned worker, as a state file no worker can read does."""
+
+    name = "prov-parallel-always-fails-build"
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        if _in_a_spawned_worker():
+            raise OSError(errno.EIO, "no build in a worker succeeds")
+        return super().load_state(run_root, artifact_paths, dependency_lookups)
 
 
 class PairClusterFeature(PlainFeature):

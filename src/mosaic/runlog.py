@@ -405,15 +405,18 @@ class EntryMeasure:
         wall_seconds: From the start of its flight to its output written. The
             flight of an entry whose worker loads its input starts at its dispatch,
             after the wait for a free worker. That of an entry the run loads itself
-            starts at the run's load, and contains the wait.
+            starts at the run's load, and contains the wait. The first entry each
+            process worker computes contains the worker's build of the feature.
         apply_seconds: From its dispatch to the end of its apply, which contains
-            the load when its worker loads its input.
+            the load when its worker loads its input, and the build of the first
+            entry each process worker computes.
         input_rows: The rows of its input files.
         in_flight: The most entries in flight at once during its span, itself
             included, at most the workers when every entry's worker loads it. One
             means it ran alone, so its ``cpu_seconds`` are its own.
         cpu_seconds: The CPU time of the process tree over its flight, a load in
-            its worker included.
+            its worker included, and the build of the first entry each process
+            worker computes.
         mode: ``process`` when a worker process computed the entry, else
             ``thread``, which is also what a log without the field reads as.
         peak_grown_bytes: The memory the kernel cannot reclaim that the entry added
@@ -431,6 +434,9 @@ class EntryMeasure:
         frames: The length of its frame extent, ``None`` when unread.
         keypoints: The keypoints of its tracks row, ``None`` when unread.
         fps: The frame rate its indexed media measured, ``None`` when unread.
+        build_seconds: The seconds its process worker spent building the feature
+            before computing it, ``None`` when its worker found the feature built
+            or it ran in the run's own process, and then left out.
     """
 
     wall_seconds: float
@@ -446,6 +452,7 @@ class EntryMeasure:
     frames: int | None = None
     keypoints: int | None = None
     fps: float | None = None
+    build_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
