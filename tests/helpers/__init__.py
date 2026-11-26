@@ -101,8 +101,9 @@ What lives where:
 - ``entry_outcomes`` -- an entry task's outcome as a report or a raised error, and
   the output a worker wrote for a task.
 - ``entry_points`` -- the installed entry points a test declares in this process,
-  entry points that count their loads or fail them, and a child process that sees an
-  installed distribution declaring some.
+  entry points that count their loads, fail them or belong to a distribution, the
+  installed track converters of one test with the plugin module that an entry point
+  names, and a child process that sees an installed distribution declaring some.
 - ``entry_writes`` -- the write of an entry task, wrapped to fault it or hold it.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
@@ -261,9 +262,12 @@ from tests.helpers.dropped_frames import (
 )
 from tests.helpers.entry_outcomes import report_of, written_by_worker
 from tests.helpers.entry_points import (
+    AcmeEntryPoint,
     CountingEntryPoint,
     FailingEntryPoint,
     install_entry_points,
+    installed_track_converters,
+    plugin_module,
     run_with_distribution,
 )
 from tests.helpers.entry_writes import WriteOutput, wrapped_write
@@ -1128,9 +1132,12 @@ __all__ = [
     "wait_for",
     "TWO_CARDS",
     "install_fake_nvidia_smi",
+    "AcmeEntryPoint",
     "CountingEntryPoint",
     "FailingEntryPoint",
     "install_entry_points",
+    "installed_track_converters",
+    "plugin_module",
     "run_with_distribution",
     "isolate_card_leases",
     "write_reader_params",
