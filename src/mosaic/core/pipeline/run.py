@@ -9,6 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import cache
 from collections.abc import (
     Callable,
     Generator,
@@ -3510,6 +3511,21 @@ def _run_feature_impl(
                 ctx.phase("apply")
         # The run root a process worker loads the feature's state from.
         worker_state_root = run_root if loaded is None else loaded[0]
+
+        # What every process worker, and the worker-base probe, builds the feature
+        # from: made once, at the first use, since nothing it holds changes between
+        # phases and a run without process workers needs none.
+        @cache
+        def worker_build() -> FeatureBuild:
+            return FeatureBuild.of(
+                feature,
+                state_root=worker_state_root,
+                artifact_paths=artifact_paths,
+                dependency_lookups=dependency_lookups,
+                manifest_path=ds.manifest_path,
+                tracklets=tracklets,
+            )
+
         # The cell each row records: the digest of each fit the run read, and
         # of the state it applies when its root holds a fit record.
         own_state = None if loaded is None else loaded[1]
@@ -3569,7 +3585,8 @@ def _run_feature_impl(
             loads its input, unless overlap, widening, a pair filter or the cross
             join has the run load it, and writes its output, and the run records
             the row from the task's report. A load of no rows leaves the entry
-            without a row. Rows are flushed periodically.
+            without a row. Each process worker builds the feature from
+            ``worker_build()``. Rows are flushed periodically.
             When the apply stops early they are flushed, the entries in flight are
             waited for and their outputs recorded, and they are flushed again. The pool
             is closed on every exit after it is built, which writes the phase's final
@@ -4152,18 +4169,6 @@ def _run_feature_impl(
             # report, from which ``_record_result`` records the row.
             # Each process worker receives the build once, as its initializer's
             # argument, and builds the feature at its first task.
-            build = (
-                FeatureBuild.of(
-                    feature,
-                    state_root=worker_state_root,
-                    artifact_paths=artifact_paths,
-                    dependency_lookups=dependency_lookups,
-                    manifest_path=ds.manifest_path,
-                    tracklets=tracklets,
-                )
-                if in_processes
-                else None
-            )
             active: EntryPool[FeatureMeta, EntryReport | EntryFailure] = EntryPool(
                 workers=settings.workers,
                 mode=settings.mode,
@@ -4177,8 +4182,8 @@ def _run_feature_impl(
                 on_computed=_outcome_was_set if in_processes else None,
                 cancel_check=ctx.check_cancel,
                 hand_back_on_break=True,
-                initializer=None if build is None else start_feature_worker,
-                initargs=() if build is None else (build,),
+                initializer=start_feature_worker if in_processes else None,
+                initargs=(worker_build(),) if in_processes else (),
             )
 
             # The key that the last load started and that has not reached _process_entry.
@@ -4581,14 +4586,7 @@ def _run_feature_impl(
             watch,
             cost,
             feature,
-            FeatureBuild.of(
-                feature,
-                state_root=worker_state_root,
-                artifact_paths=artifact_paths,
-                dependency_lookups=dependency_lookups,
-                manifest_path=ds.manifest_path,
-                tracklets=tracklets,
-            ),
+            worker_build(),
         )
     # Mark the run finished only when every manifest entry's output parquet is on
     # disk. The filesystem is the source of truth (same disk check the Pipeline

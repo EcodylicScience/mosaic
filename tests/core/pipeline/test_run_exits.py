@@ -1023,9 +1023,9 @@ class HoldsBDiesOnSeqC(HoldsUntilReleased):
     """Runs ``seq_a`` to ``seq_c`` in three workers, holds ``seq_b``, kills ``seq_c``'s.
 
     ``seq_a``'s worker waits until ``seq_c`` is applied, so the three entries run in
-    three workers. Once ``seq_a`` is computed, ``seq_c``'s worker touches ``killed``
-    in the hold directory and ends itself with SIGKILL, so at its death one worker is
-    idle and one holds ``seq_b``.
+    three workers. Once ``seq_a`` is computed and ``seq_b`` is held, ``seq_c``'s
+    worker touches ``killed`` in the hold directory and ends itself with SIGKILL, so
+    at its death one worker is idle and one holds ``seq_b``.
     """
 
     hold_on = ("seq_b",)
@@ -1045,6 +1045,11 @@ class HoldsBDiesOnSeqC(HoldsUntilReleased):
                 lambda: _computed(marks, "seq_a"),
                 CHILD_TIMEOUT_SECONDS,
                 "seq_a was never computed",
+            )
+            wait_for(
+                (marks / "seq_b").exists,
+                CHILD_TIMEOUT_SECONDS,
+                "seq_b was never held",
             )
             (marks / "killed").touch()
             os.kill(os.getpid(), signal.SIGKILL)

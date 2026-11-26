@@ -673,12 +673,6 @@ def test_a_worker_process_opens_each_dataset_once(tmp_path: Path) -> None:
     assert worker_dataset(ref).manifest_path == ds.manifest_path
 
 
-def wait_for_file(path: str) -> int:
-    while not Path(path).exists():
-        time.sleep(0.01)
-    return 1
-
-
 @pytest.fixture
 def walks(
     monkeypatch: pytest.MonkeyPatch,
@@ -714,10 +708,10 @@ def test_a_process_pool_sees_each_worker_at_the_submission_that_starts_it(
     watch, counted = walks()
     pool = _process_pool(watch)
     try:
-        pool.submit(1, wait_for_file, str(release))
+        pool.submit(1, pool_call, str(tmp_path), 1, 1, "release")
         assert len(counted) == 1
         first = watch.sample()
-        pool.submit(2, wait_for_file, str(release))
+        pool.submit(2, pool_call, str(tmp_path), 2, 1, "release")
         assert len(counted) == 2
         second = watch.sample()
         assert len(counted) == 2
@@ -726,7 +720,7 @@ def test_a_process_pool_sees_each_worker_at_the_submission_that_starts_it(
         assert pool.in_flight == 2
         release.touch()
         for tag in range(3, 7):
-            pool.submit(tag, wait_for_file, str(release))
+            pool.submit(tag, pool_call, str(tmp_path), tag, 1, "release")
         pool.finish()
     finally:
         release.touch()
@@ -1158,21 +1152,15 @@ def test_a_results_only_settle_skips_a_worker_interrupted_by_a_signal() -> None:
     assert heard.errors == []
 
 
-def die_once_file_exists(path: str) -> int:
-    while not Path(path).exists():
-        time.sleep(0.01)
-    os._exit(1)
-
-
 def test_a_results_only_settle_of_a_pool_that_breaks_returns_with_the_results(
     tmp_path: Path,
 ) -> None:
-    computed = tmp_path / "computed-1"
+    go = tmp_path / "go"
     heard = _Heard()
 
     def stamp(tag: int) -> None:
         if tag == 1:
-            computed.touch()
+            go.touch()
 
     pool: EntryPool[int, int] = EntryPool(
         workers=2,
@@ -1182,7 +1170,7 @@ def test_a_results_only_settle_of_a_pool_that_breaks_returns_with_the_results(
         on_computed=stamp,
     )
     try:
-        pool.submit(2, die_once_file_exists, str(computed))
+        pool.submit(2, pool_call, str(tmp_path), 2, 1, "die-on-go")
         pool.submit(1, double, 1)
         started = time.monotonic()
         dropped = pool.settle(results_only=True)
