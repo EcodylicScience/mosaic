@@ -39,12 +39,14 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .helpers import (
     with_source_time,
     clean_tracks_grouped,
     ensure_columns,
     point_distances,
+    refuse_dimension_mismatch,
     write_bundle,
 )
 from .registry import register_feature
@@ -81,7 +83,7 @@ _BATCH_SIZE_DESCRIPTION = (
 _DIMENSIONS_DESCRIPTION = (
     "The number of axes the distances are measured in. 2 reads poseX{k} and "
     "poseY{k}. 3 also reads poseZ{k} of each selected keypoint and measures "
-    "distances in 3D."
+    "distances in 3D. 2 refuses a world-frame table and 3 a planar one."
 )
 
 _POSE_Z_PREFIX: Final = "poseZ"
@@ -184,6 +186,7 @@ class PairPoseDistancePCA:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.seq_col),
@@ -448,15 +451,24 @@ class PairPoseDistancePCA:
         x_cols, y_cols = self.params.pose.keypoint_columns()
         pose_cols = x_cols + y_cols
         if self.params.dimensions == 3:
-            pose_cols += [
-                f"{_POSE_Z_PREFIX}{index}"
-                for index in self.params.pose.selected_indices()
-            ]
+            pose_cols += self._z_columns()
         return pose_cols
+
+    def _z_columns(self) -> list[str]:
+        """The height column of each selected keypoint."""
+        return [
+            f"{_POSE_Z_PREFIX}{index}" for index in self.params.pose.selected_indices()
+        ]
 
     def _prep_pairs(
         self, df: pd.DataFrame
     ) -> tuple[pd.DataFrame, list[tuple[str, int, int]], np.ndarray, np.ndarray]:
+        refuse_dimension_mismatch(
+            df.columns,
+            self.params.dimensions,
+            self._z_columns(),
+            feature=self.name,
+        )
         pose_cols = self._pose_columns()
         order_col = resolve_order_col(df)
 

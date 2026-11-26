@@ -15,12 +15,14 @@ import numpy as np
 import pandas as pd
 import pytest
 from pydantic import BaseModel
+from sklearn.decomposition import IncrementalPCA
 
 from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.inventory import read_run_report
 from mosaic.core.pipeline.run import compute_run_id
 from mosaic.core.pipeline.types import InputStream, Result
+from tests.helpers import world_track_table
 
 N_FRAMES = 14
 N_KEYPOINTS = 3
@@ -390,3 +392,61 @@ def test_two_dimensions_score_as_an_absent_dimensions_does() -> None:
     pd.testing.assert_frame_equal(
         _scored(table, dimensions=2), _scored(table), check_exact=True
     )
+
+
+# --- a table whose axes disagree with the dimensions ----------------------------------
+
+
+def _fitted_feature(table: pd.DataFrame, dimensions: int) -> PairPoseDistancePCA:
+    feature = PairPoseDistancePCA(params={**BASIS, "dimensions": dimensions})
+    feature.fit(InputStream(lambda: iter([("g/fit", table)]), n_entries=1))
+    return feature
+
+
+def test_a_planar_apply_refuses_a_world_frame_table() -> None:
+    feature = _fitted_feature(_tracks("fit"), 2)
+
+    with pytest.raises(ValueError, match="dimensions: 3"):
+        feature.apply(world_track_table("g", "world", n_ids=2))
+
+
+def test_a_spatial_apply_refuses_a_planar_table() -> None:
+    feature = _fitted_feature(_lifted("fit"), 3)
+
+    with pytest.raises(ValueError, match=r"(?s)\bZ\b.*dimensions: 2"):
+        feature.apply(_tracks("apply"))
+
+
+def test_a_spatial_apply_names_the_keypoint_column_a_world_table_lacks() -> None:
+    feature = _fitted_feature(_lifted("fit"), 3)
+    world = world_track_table("g", "world", n_ids=2).drop(columns="poseZ1")
+
+    with pytest.raises(ValueError, match="poseZ1"):
+        feature.apply(world)
+
+
+def test_a_planar_fit_refuses_a_world_frame_table_before_it_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fitted: list[object] = []
+
+    def record(batch: object, *_: object, **__: object) -> None:
+        fitted.append(batch)
+
+    monkeypatch.setattr(IncrementalPCA, "partial_fit", record)
+    feature = PairPoseDistancePCA(params=BASIS)
+    world = world_track_table("g", "world", n_ids=2)
+
+    with pytest.raises(ValueError, match="dimensions: 3"):
+        feature.fit(InputStream(lambda: iter([("g/world", world)]), n_entries=1))
+
+    assert fitted == []
+
+
+def test_a_spatial_fit_and_apply_score_a_world_frame_table() -> None:
+    world = world_track_table("g", "world", n_ids=2)
+
+    scored = _scored(world, dimensions=3)
+
+    assert not scored.empty
+    assert [c for c in scored.columns if c.startswith("PC")] == ["PC0", "PC1"]

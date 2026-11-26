@@ -28,7 +28,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.schema import ARENA_COLUMN
 
-from .types import InterpolationConfig
+from .types import Dimensions, InterpolationConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,6 +70,7 @@ __all__ = [
     "out_of_fold_choice",
     "pair_sample_times",
     "pairwise_median_distance",
+    "refuse_dimension_mismatch",
     "refuse_repeated_series_rows",
     "row_max",
     "row_median",
@@ -521,6 +522,46 @@ def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
         if column in _PRODUCER_HINTS
     )
     raise ValueError("\n".join(lines))
+
+
+def refuse_dimension_mismatch(
+    columns: Iterable[str],
+    dimensions: Dimensions,
+    z_columns: Sequence[str],
+    *,
+    feature: str,
+) -> None:
+    """Raise ValueError when a table's axes disagree with the feature's *dimensions*.
+
+    A world-frame table carries a ``Z`` column and one height column per
+    keypoint. Measured at 2 it would silently project onto the plane, and a
+    planar table measured at 3 has no heights to read.
+
+    Args:
+        columns: The table's columns.
+        dimensions: The number of axes the feature measures in.
+        z_columns: The height columns the feature reads at 3 dimensions.
+        feature: The feature's name, for the message.
+
+    Raises:
+        ValueError: At 2, when the table has a ``Z`` column; at 3, when it lacks
+            ``Z`` or any of *z_columns*.
+    """
+    present = set(columns)
+    if dimensions == 2:
+        if "Z" in present:
+            raise ValueError(
+                f"[{feature}] The table has a Z column, so it is a world-frame "
+                "table that dimensions: 2 would flatten onto the plane. "
+                "Set dimensions: 3 to measure it in 3D."
+            )
+        return
+    missing = [name for name in ("Z", *z_columns) if name not in present]
+    if missing:
+        raise ValueError(
+            f"[{feature}] dimensions: 3 needs the columns {missing}, which "
+            "the table lacks. Set dimensions: 2 for a planar table."
+        )
 
 
 def refuse_unlabeled_templates(templates: pd.DataFrame, feature: str) -> None:

@@ -36,10 +36,12 @@ own environments.
   attribute outside the protocol. The default is both 2D spaces (`image_px` and
   `plane_cm`), so a feature handed a `world_m` table is refused with
   `schema_family_mismatch`. A feature whose computation does not depend on the space
-  (`keypoint-kinematics`, in the table's own units) or that reads no spatial column (the
-  aggregates) declares all three (`TRACK_SPACES`). `refuse_unsupported_track_space` in
-  `core/pipeline/track_space.py` checks it, and `test_feature_conformance.py` pins the
-  declarations.
+  (`keypoint-kinematics`, in the table's own units), that reads no spatial column (the
+  aggregates), or that has a `dimensions` param and refuses a table of the other kind
+  when it runs (`pair-posedistance-pca`, through `refuse_dimension_mismatch` in
+  `feature_library/helpers.py`) declares all three (`TRACK_SPACES`).
+  `refuse_unsupported_track_space` in `core/pipeline/track_space.py` checks it, and
+  `test_feature_conformance.py` pins the declarations.
 - **A feature may declare `keywords`**, a tuple of lowercase phrases a person may search
   for that its name and summary lack, a class attribute outside the protocol. The
   catalog search reads them as summary words, and `CatalogEntry.keywords` carries
