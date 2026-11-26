@@ -3,8 +3,8 @@
 
 # Track formats, schemas and label formats
 
-18 track converters read a tracker's output into one of
-5 registered schemas, and 4 label
+19 track converters read a tracker's output into one of
+6 registered schemas, and 5 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
 validation and the tracks index both read.
@@ -19,6 +19,7 @@ by `mosaic convert-tracks`.
 | `calms21_json` | `0.4` | `mosaic_v1` | yes | no | The same conversion, reading the ``.json`` spelling of a CalMS21 file. |
 | `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.3` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
+| `lmt_sqlite` | `0.1` | `lmt_v1` | no | no | A Live Mouse Tracker database -> an ``lmt_v1`` table, in pixels. |
 | `sdannce_mat` | `0.1` | `mosaic_world_v1` | no | no | An s-DANNCE ``.mat`` file -> a ``mosaic_world_v1`` table. |
 | `sleap_analysis_h5` | `0.3` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
 | `synthetic` | `0.1` | `mosaic_v1` | no | no | A two-dimensional synthetic track file -> a ``mosaic_v1`` table, in pixels. |
@@ -58,6 +59,14 @@ by `mosaic convert-tracks`.
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+
+#### `lmt_sqlite`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `keep_unidentified` | `boolean` | `false` |  | Keep the detections whose ANIMALID is NULL, under the negative ids -2, -3 and so on within each frame, in DETECTION.ID order. Off, they are dropped and counted. On, the ids no longer follow animals. |
+| `read_chunk_rows` | `integer` | `50000` | >= `1` | Detections fetched per read. A larger chunk reads faster and holds more of them as Python tuples beside the column arrays. It does not change the table. [rows] |
 
 #### `sdannce_mat`
 
@@ -177,6 +186,19 @@ Every schema validates a standardized parquet table. Spatial columns are video
 pixels and `X`/`Y` are the body center, except in the centimeter families,
 which say so in their names. A physical unit is otherwise obtained downstream
 by the `scale-to-cm` feature rather than stored in the table.
+
+### `lmt_v1`
+
+`mosaic_v1` plus what Live Mouse Tracker measures in depth, which its recordings hold per detection. `X`/`Y` and the keypoints (`poseX0`/`poseY0` the nose, `poseX1`/`poseY1` the tail base) are pixels with y down, as `mosaic_v1` has them. The three `Z#` columns (`Z#mass`, `Z#front`, `Z#back`) are LMT's heights in millimeters, which `scale-to-cm` leaves unscaled. `rearing`, `look_up` and `look_down` are LMT's per-detection booleans, with a missing cell where the database holds none.
+
+| | |
+| --- | --- |
+| Extends | `mosaic_v1` |
+| Required | `X`, `Y`, `Z#back`, `Z#front`, `Z#mass`, `frame`, `group`, `id`, `look_down`, `look_up`, `rearing`, `sequence`, `time` |
+| Required prefixes | -- |
+| Recommended | -- |
+| Allows | -- |
+| Forbidden | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `AZ`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `VZ`, `X#wcentroid`, `Y#wcentroid` |
 
 ### `mosaic_cm_v1`
 
@@ -410,4 +432,5 @@ Applied by `mosaic convert-labels --kind <label_kind>`.
 | `boris_aggregated_csv` | `behavior` | Convert BORIS Aggregated Events CSV/TSV to behavior dataset format. |
 | `boris_pandas_pickle` | `behavior` | Convert BORIS Pandas DataFrame pickle to behavior dataset format. |
 | `calms21_npy` | `behavior` | Convert CalMS21 npy/json behavior annotations to the behavior format. |
+| `lmt_sqlite` | `id_tags` | A Live Mouse Tracker database -> its animals as individual tags. |
 | `predictions_table` | `predictions` | Read a per-frame table of predictions, with optional probabilities and folds. |

@@ -7,18 +7,13 @@ pool, and reads the growth of the child's peak resident memory over the conversi
 
 The two slow tests are the largest entries a 16 GiB machine converts: 10 million rows
 with 5 keypoints, and 30 million rows at the cell cap. Each runs under an exclusive
-lock that allows one large child per machine at a time.
+lock that allows one large child per machine at a time. The launcher, the program and
+the lock are in ``tests/helpers/conversion_memory.py``.
 """
 
 from __future__ import annotations
 
-import fcntl
-import json
-import signal
 import sys
-import tempfile
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
@@ -29,79 +24,14 @@ from mosaic.core.track_library.synthetic_spec import (
     MAX_TABLE_CELLS,
     read_synthetic_spec,
 )
-from tests.helpers import make_dataset, run_child, run_fresh, write_synthetic_spec
+from tests.helpers import conversion_growth, make_dataset, write_synthetic_spec
 
 GIB: Final = 1024**3
 MIB: Final = 1024**2
-CHILD_TIMEOUT_SECONDS: Final = 30 * 60.0
-LAUNCHER_MARGIN_SECONDS: Final = 30.0
-SMALL_TIMEOUT_SECONDS: Final = 120.0
 WARM_UP_FRAMES: Final = 6
 INDIVIDUALS: Final = 100
 KEYPOINTS: Final = 5
 LONG_FRAMES: Final = 300_000
-
-LAUNCHER: Final = """
-import os
-import subprocess
-import sys
-
-timeout = float(sys.argv[1])
-argv = [sys.executable, "-c", sys.argv[2], *sys.argv[3:]]
-code = subprocess.run(argv, timeout=timeout).returncode
-if code < 0:
-    os.kill(os.getpid(), -code)
-raise SystemExit(code)
-"""
-"""Runs the program in a grandchild interpreter and passes its exit status on.
-
-The first argument is the seconds the grandchild has. A longer run kills the
-grandchild and fails the launcher. No conversion outlives the lock the test holds.
-
-On Linux a process starts with the peak resident memory of the process that spawned
-it. A program started from the large test process reads zero growth.
-The launcher is small, and its child starts from the launcher's peak.
-"""
-
-PROGRAM: Final = """
-import json
-import sys
-from pathlib import Path
-
-import pandas as pd
-import pyarrow.parquet as pq
-
-from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.memory_watch import max_rss_bytes
-from mosaic.core.pipeline.tracks_index import read_tracks_index
-
-manifest, measured_raw, read_table = sys.argv[1:4]
-ds = Dataset(manifest_path=Path(manifest)).load()
-warm = ds.convert_all_tracks()
-assert (warm.converted, warm.failed) == (1, 0), warm
-before = max_rss_bytes()
-_ = ds.index_tracks_raw([Path(measured_raw)], patterns=["*.toml"], src_format="synthetic")
-measured = ds.convert_all_tracks()
-after = max_rss_bytes()
-assert (measured.converted - measured.current, measured.failed) == (1, 0), measured
-written = ds.resolve_path(str(read_tracks_index(ds).iloc[-1]["abs_path"]))
-metadata = pq.ParquetFile(written).metadata
-parquet_bytes = sum(
-    metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups)
-)
-table_bytes = 0
-if read_table == "1":
-    table_bytes = int(pd.read_parquet(written).memory_usage(deep=True).sum())
-print(
-    json.dumps(
-        {
-            "growth": after - before,
-            "table_bytes": table_bytes,
-            "parquet_bytes": parquet_bytes,
-        }
-    )
-)
-"""
 
 
 def _overrides(frames: int, keypoints: int) -> dict[str, object]:
@@ -130,45 +60,16 @@ def _prepare(tmp_path: Path, frames: int, keypoints: int) -> tuple[Dataset, Path
     return ds, measured
 
 
-def _measurements(stdout: str) -> dict[str, int]:
-    """The program's last line: ``growth``, ``table_bytes`` and ``parquet_bytes``."""
-    payload: dict[str, int] = json.loads(stdout.strip().splitlines()[-1])
-    return payload
-
-
-@contextmanager
-def _one_large_child() -> Generator[None]:
-    """Take the machine's lock for large conversions, one child at a time."""
-    lock_path = Path(tempfile.gettempdir()) / "mosaic-synthetic-memory.lock"
-    with lock_path.open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
 def _slow_growth(tmp_path: Path, frames: int, keypoints: int) -> int:
     ds, measured = _prepare(tmp_path, frames, keypoints)
-    argv = [
-        sys.executable,
-        "-c",
-        LAUNCHER,
-        str(CHILD_TIMEOUT_SECONDS - LAUNCHER_MARGIN_SECONDS),
-        PROGRAM,
-        str(ds.manifest_path),
-        str(measured),
-        "0",
-    ]
-    with _one_large_child():
-        completed = run_child(argv, timeout=CHILD_TIMEOUT_SECONDS)
-    code = completed.returncode
-    assert code >= 0, (
-        f"the conversion child was killed by {signal.Signals(-code).name}; "
-        f"stderr: {completed.stderr}"
+    measurements = conversion_growth(
+        ds.manifest_path,
+        measured,
+        pattern="*.toml",
+        src_format="synthetic",
+        read_table=False,
+        large=True,
     )
-    assert code == 0, completed.stderr
-    measurements = _measurements(completed.stdout)
     growth = measurements["growth"]
     print(
         f"{frames * INDIVIDUALS} rows, {keypoints} keypoints: growth "
@@ -188,15 +89,14 @@ def test_a_200k_row_entry_grows_memory_by_a_few_tables(tmp_path: Path) -> None:
     one to two.
     """
     ds, measured = _prepare(tmp_path, 2_000, KEYPOINTS)
-    argv = [
-        str(SMALL_TIMEOUT_SECONDS - LAUNCHER_MARGIN_SECONDS),
-        PROGRAM,
-        str(ds.manifest_path),
-        str(measured),
-        "1",
-    ]
-    stdout = run_fresh(LAUNCHER, args=argv, timeout=SMALL_TIMEOUT_SECONDS)
-    measurements = _measurements(stdout)
+    measurements = conversion_growth(
+        ds.manifest_path,
+        measured,
+        pattern="*.toml",
+        src_format="synthetic",
+        read_table=True,
+        large=False,
+    )
     growth, table_bytes = measurements["growth"], measurements["table_bytes"]
     print(
         f"growth {growth} bytes, table {table_bytes} bytes, ratio {growth / table_bytes:.2f}"

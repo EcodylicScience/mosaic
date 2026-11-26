@@ -21,6 +21,7 @@ __all__ = [
     "GAZE_COLUMNS",
     "HEAD_COLUMNS",
     "LEGACY_SCHEMA",
+    "LMT_COLUMNS",
     "TRACK_SCHEMAS",
     "ForbiddenTrackColumnError",
     "IncompleteTrackColumnsError",
@@ -557,6 +558,37 @@ register_track_schema(
             "forbidden here. `X`/`Y` carry the body center (TRex's `#wcentroid`), "
             "and TRex's own bare `X`/`Y` -- which are the *head*, and present "
             "only where posture was calculated -- are kept as `X#head`/`Y#head`."
+        ),
+    )
+)
+
+
+LMT_COLUMNS: AbstractSet[str] = frozenset(
+    {"Z#mass", "Z#front", "Z#back", "rearing", "look_up", "look_down"}
+)
+"""What an ``lmt_v1`` table carries beyond ``mosaic_v1``, from Live Mouse Tracker.
+
+``Z#mass``, ``Z#front`` and ``Z#back`` are the heights of the body center, the
+nose and the tail base above the cage floor, in millimeters. ``rearing``,
+``look_up`` and ``look_down`` are the tracker's per-detection booleans, with a
+missing cell where the database stores NULL.
+"""
+
+
+register_track_schema(
+    TrackSchema(
+        name="lmt_v1",
+        extends="mosaic_v1",
+        required=LMT_COLUMNS,
+        description=(
+            "`mosaic_v1` plus what Live Mouse Tracker measures in depth, which "
+            "its recordings hold per detection. `X`/`Y` and the keypoints "
+            "(`poseX0`/`poseY0` the nose, `poseX1`/`poseY1` the tail base) are "
+            "pixels with y down, as `mosaic_v1` has them. The three `Z#` "
+            "columns (`Z#mass`, `Z#front`, `Z#back`) are LMT's heights in "
+            "millimeters, which `scale-to-cm` leaves unscaled. `rearing`, "
+            "`look_up` and `look_down` are LMT's per-detection booleans, with "
+            "a missing cell where the database holds none."
         ),
     )
 )

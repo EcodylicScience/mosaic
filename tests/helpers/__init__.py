@@ -32,6 +32,9 @@ What lives where:
   a vame output table places a finite latent on each.
 - ``column_contract`` checks a feature's output against the columns that
   validation predicts from its declaration, and a pair table's mirror rows.
+- ``lmt`` writes Live Mouse Tracker databases.
+- ``conversion_memory`` measures the growth of peak memory over one conversion in a
+  fresh interpreter, under the machine's lock for large ones.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events and of segments only, and their
   index rows, and holds the label converters that the conversion tests register. It
@@ -187,6 +190,10 @@ from tests.helpers.cleanup import (
     reasons_by_run,
     runs_by_id,
 )
+from tests.helpers.conversion_memory import (
+    conversion_growth,
+    one_large_child,
+)
 from tests.helpers.column_contract import assert_writes_declared_columns, mirrored_rows
 from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
@@ -311,6 +318,19 @@ from tests.helpers.frame_predictions import (
 from tests.helpers.frame_selections import entry_selection, record_entry_selection
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
+from tests.helpers.lmt import (
+    DEFAULT_ANIMAL_COLUMNS,
+    NINE_ANIMAL_COLUMNS,
+    LmtAnimal,
+    LmtDetection,
+    LmtEvent,
+    LmtFrame,
+    LmtLog,
+    LmtRecording,
+    default_lmt_recording,
+    lmt_detection_grid,
+    write_lmt_sqlite,
+)
 from tests.helpers.fresh_interpreter import modules_loaded_by, run_fresh
 from tests.helpers.golden import (
     UPDATE_GOLDEN_ENV,
@@ -1212,4 +1232,17 @@ __all__ = [
     "write_ultralytics_predictions",
     "RECIPE_SAVED_BY_0_17",
     "recipe_saved_by_0_17",
+    "DEFAULT_ANIMAL_COLUMNS",
+    "NINE_ANIMAL_COLUMNS",
+    "LmtAnimal",
+    "LmtDetection",
+    "LmtEvent",
+    "LmtFrame",
+    "LmtLog",
+    "LmtRecording",
+    "conversion_growth",
+    "default_lmt_recording",
+    "lmt_detection_grid",
+    "one_large_child",
+    "write_lmt_sqlite",
 ]

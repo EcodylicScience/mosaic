@@ -32,6 +32,7 @@ accessible from mosaic.core.dataset module.
 # Each module calls register_track_converter() at module level.
 from . import calms21
 from . import deeplabcut
+from . import lmt
 from . import sdannce
 from . import sleap
 from . import synthetic
@@ -48,6 +49,7 @@ __all__ = [
     "calms21",
     "conformance",
     "deeplabcut",
+    "lmt",
     "sdannce",
     "sleap",
     "synthetic",

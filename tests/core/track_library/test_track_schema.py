@@ -16,6 +16,7 @@ a dataset nothing had validated.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,7 @@ from mosaic.core.schema import (
     DERIVED_COLUMNS,
     GAZE_COLUMNS,
     HEAD_COLUMNS,
+    LMT_COLUMNS,
     TRACK_SCHEMAS,
     ForbiddenTrackColumnError,
     IncompleteTrackColumnsError,
@@ -41,8 +43,10 @@ from mosaic.core.schema import (
 )
 from mosaic.core.spaces import TRACK_SPACES
 from mosaic.core.scope import Scope
+from mosaic.core.track_converter import EntryHints
+from mosaic.core.track_library.lmt import LmtSqliteConverter, LmtSqliteParams
 
-from tests.helpers import add_tracks_variant
+from tests.helpers import add_tracks_variant, default_lmt_recording, write_lmt_sqlite
 
 
 def _minimal_trex_v1_frame() -> pd.DataFrame:
@@ -606,3 +610,56 @@ def test_a_world_table_refuses_beside_a_pixel_one(tmp_path: Path) -> None:
     ds = _dataset_mixing(tmp_path, "mosaic_world_v1", "mosaic_v1")
     with pytest.raises(ValueError, match="incompatible schemas"):
         _ = build_manifest(ds, Inputs(("tracks",)))
+
+
+def _lmt_table(tmp_path: Path) -> pd.DataFrame:
+    """The converter's table of the default Live Mouse Tracker recording."""
+    recording = default_lmt_recording()
+    path = write_lmt_sqlite(
+        tmp_path / "recording.sqlite",
+        animals=recording.animals,
+        frames=recording.frames,
+        events=recording.events,
+        detections=recording.detections,
+    )
+    return LmtSqliteConverter().convert(path, LmtSqliteParams(), EntryHints())
+
+
+def test_lmt_v1_accepts_the_converters_table(tmp_path: Path) -> None:
+    _, report = ensure_track_schema(_lmt_table(tmp_path), "lmt_v1", strict=True)
+    assert report["missing_required"] == []
+    assert report["forbidden_present"] == []
+
+
+@pytest.mark.parametrize("column", sorted(LMT_COLUMNS))
+def test_lmt_v1_refuses_a_table_without_one_of_its_columns(
+    tmp_path: Path, column: str
+) -> None:
+    table = _lmt_table(tmp_path).drop(columns=[column])
+    with pytest.raises(TrackSchemaError, match=re.escape(column)):
+        _ = ensure_track_schema(table, "lmt_v1", strict=True)
+
+
+def test_lmt_v1_requires_its_six_columns() -> None:
+    assert LMT_COLUMNS == {
+        "Z#mass",
+        "Z#front",
+        "Z#back",
+        "rearing",
+        "look_up",
+        "look_down",
+    }
+    assert TRACK_SCHEMAS["lmt_v1"].required >= LMT_COLUMNS
+    assert TRACK_SCHEMAS["lmt_v1"].extends == "mosaic_v1"
+
+
+def test_lmt_v1_is_in_the_pixel_family() -> None:
+    assert schema_space("lmt_v1") == "image_px"
+    assert schema_family("lmt_v1") == schema_family("mosaic_v1") == "mosaic_v1"
+
+
+def test_lmt_v1_description_states_the_units() -> None:
+    description = TRACK_SCHEMAS["lmt_v1"].description
+    assert "pixels" in description
+    assert "millimeters" in description
+    assert "scale-to-cm" in description
