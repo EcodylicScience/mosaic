@@ -22,7 +22,6 @@ from collections.abc import Callable
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
-    ProcessPoolExecutor,
     ThreadPoolExecutor,
     wait,
 )
@@ -40,7 +39,7 @@ from .parallelism import (
     WorkerProcessDied,
     memory_use_text,
 )
-from .process_pool import caller_guarded_process_pool
+from .process_pool import CallerGuardedPool, caller_guarded_process_pool
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -90,6 +89,12 @@ class EntryPool[Tag, Result]:
     before it raises for the break. An error callback that raises then propagates in
     place of the break, after every result was heard.
 
+    A process pool's watcher kills its live workers on every break, a break that no
+    call of this pool sees included, such as the death of an idle worker. The sites
+    that see the break without the executor's lock, :meth:`drain_one` and both
+    settles, also kill them before they hand back, raise or return, and
+    :meth:`submit` does when the executor raises the break.
+
     Args:
         workers: How many calls are computed at once. 1 computes each call inside
             :meth:`submit`, with no executor.
@@ -124,6 +129,10 @@ class EntryPool[Tag, Result]:
         hand_back_on_break: Whether a broken pool hands back the calls that
             finished before the break. A call that failed with the break itself is
             dropped, and a call not yet done stays in flight.
+        initializer: Called as ``initializer(*initargs)`` in each process worker as
+            it starts, after the caller guard. It must pickle. Thread workers and a
+            single worker ignore it.
+        initargs: The arguments of *initializer*.
     """
 
     def __init__(
@@ -141,6 +150,8 @@ class EntryPool[Tag, Result]:
         on_computed: Callable[[Tag], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
         hand_back_on_break: bool = False,
+        initializer: Callable[..., object] | None = None,
+        initargs: tuple[object, ...] = (),
     ) -> None:
         self._hand_back_on_break: bool = hand_back_on_break
         self._broken: bool = False
@@ -156,13 +167,16 @@ class EntryPool[Tag, Result]:
         self._on_computed: Callable[[Tag], None] | None = on_computed
         self.watch: MemoryWatch = MemoryWatch() if watch is None else watch
         self._pending: dict[Future[Result], Tag] = {}
-        self._executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
+        self._executor: CallerGuardedPool | ThreadPoolExecutor | None = None
         self._walks_at_start: int | None = None
         if self.workers > 1:
             if mode == "process":
                 self._walks_at_start = self.watch.walks
                 self._executor = caller_guarded_process_pool(
-                    self.workers, mp.get_context("spawn")
+                    self.workers,
+                    mp.get_context("spawn"),
+                    initializer=initializer,
+                    initargs=initargs,
                 )
             else:
                 self._executor = ThreadPoolExecutor(max_workers=self.workers)
@@ -229,6 +243,7 @@ class EntryPool[Tag, Result]:
                 future.add_done_callback(self._stamp(tag))
         except BrokenProcessPool as exc:
             self._broken = True
+            self.kill_workers()
             if self._hand_back_on_break:
                 self._hand_back_finished()
             self.report(final=True)
@@ -305,6 +320,8 @@ class EntryPool[Tag, Result]:
                     try:
                         result = future.result()
                     except Exception as exc:
+                        if isinstance(exc, BrokenProcessPool):
+                            self.kill_workers()
                         self._on_error(tag, exc)
                     else:
                         self._on_result(tag, result)
@@ -330,6 +347,7 @@ class EntryPool[Tag, Result]:
                 error = future.exception()
                 if isinstance(error, BrokenProcessPool):
                     self._broken = True
+                    self.kill_workers()
                 if error is not None:
                     continue
                 if self._on_computed is not None:
@@ -372,6 +390,17 @@ class EntryPool[Tag, Result]:
                 _ = future.result()
             except Exception as exc:
                 self._on_error(tag, exc)
+
+    def kill_workers(self) -> None:
+        """Kill the process workers that are still alive, without the executor's lock.
+
+        A worker that ignores SIGTERM survives the executor's end of a broken pool,
+        and its join would block every later call of the executor. Thread workers
+        cannot be killed, and a single worker runs in the caller, so either does
+        nothing.
+        """
+        if isinstance(self._executor, CallerGuardedPool):
+            self._executor.kill_workers()
 
     def close(self) -> None:
         """Shut the executor down without waiting, and record the final measurement.
@@ -418,7 +447,8 @@ class EntryPool[Tag, Result]:
         A cancel of the run's process group kills the workers, so a break while a
         cancel is requested is that cancel and not a memory death. The pool waits up
         to ``CANCEL_ARRIVAL_SECONDS`` for the request to arrive, and raises what the
-        cancel check raises.
+        cancel check raises. The caller has killed the live workers first, and the
+        pool's watcher kills them on every break.
         """
         check = self._cancel_check
         if check is not None:
@@ -462,6 +492,7 @@ class EntryPool[Tag, Result]:
                 # Every other pending future of a broken pool fails the same way, so
                 # this is the run's failure and not one entry's.
                 self._broken = True
+                self.kill_workers()
                 if self._hand_back_on_break:
                     self._hand_back_finished()
                 self.report(final=True)

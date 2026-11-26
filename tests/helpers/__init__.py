@@ -83,11 +83,13 @@ What lives where:
   real GPU card.
 - ``index_locks`` probes from a child process whether an index's lock is held.
 - ``processes`` contains a child program that appends to a file, a sleeper
-  command, checks of whether a process stopped writing to it or exited, the line
-  children of a test, a cancel fired once a condition is true, the timeout on every
-  wait for a child, a command run under it, a line read from a child under it, a
-  child whose process group is signalled once a condition is true, whether a
-  process is running, and a count of the walks of the process tree.
+  command, checks of whether a process stopped writing to it or exited, a kill of
+  the listed processes still running, the line children of a test, a cancel fired
+  once a condition is true, the timeout on every wait for a child, a command run
+  under it, a child run with its output in files, a child whose process pool loses
+  a worker and the calls of that pool, a line read from a child under it, a child
+  whose process group is signalled once a condition is true, whether a process is
+  running, and a count of the walks of the process tree.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` contains media variant files, their index rows and recorded
   recipes, and a count of the index reads that a variant's consumers make.
@@ -355,18 +357,26 @@ from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
     CHILD_TIMEOUT_SECONDS,
     CLOCK_TICK_SECONDS,
+    EXIT_AFTER_MARK_SECONDS,
     SLEEPER_COMMAND,
     LineChildren,
+    PoolCallEnd,
     SignalledGroup,
     appender_program,
+    assert_marked_child_ends,
     assert_process_exited,
     assert_stopped_writing,
     cancel_when,
     count_process_tree_walks,
     exited_pid,
+    kill_marked,
+    kill_running,
+    listed_pids,
+    pool_call,
     process_alive,
     read_line,
     run_child,
+    run_child_to_files,
     signal_group_when,
     wait_for,
 )
@@ -755,6 +765,7 @@ __all__ = [
     "noting_definition_loads",
     "plan_refused",
     "CHILD_TIMEOUT_SECONDS",
+    "EXIT_AFTER_MARK_SECONDS",
     "CLOCK_TICK_SECONDS",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",
@@ -812,6 +823,7 @@ __all__ = [
     "HoldsOnSequences",
     "HoldsUntilReleased",
     "LineChildren",
+    "PoolCallEnd",
     "LitposeSnippetRun",
     "LossyFeature",
     "MOUSE",
@@ -901,6 +913,7 @@ __all__ = [
     "converting_recipe",
     "assert_latents_at_centers",
     "assert_no_literal_tilde",
+    "assert_marked_child_ends",
     "assert_process_exited",
     "assert_ready_then_shutdown",
     "assert_stopped_writing",
@@ -935,6 +948,9 @@ __all__ = [
     "example_fixture",
     "hardlink_member",
     "exited_pid",
+    "kill_marked",
+    "kill_running",
+    "listed_pids",
     "extract_entry_camera",
     "fail_calms21_sequence",
     "fake_tool_probe",
@@ -1050,10 +1066,12 @@ __all__ = [
     "rewrite_as_older_prepared_index",
     "rewrite_index",
     "rule_reaching_op_params",
+    "pool_call",
     "process_alive",
     "read_line",
     "refuse_index",
     "run_child",
+    "run_child_to_files",
     "run_over_edited_tracks",
     "record_applied_sequences",
     "constant_time_in_mixed",

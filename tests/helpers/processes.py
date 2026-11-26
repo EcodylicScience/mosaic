@@ -18,7 +18,10 @@ group, or the child alone, once a condition is true.
 code makes.
 
 :data:`CHILD_TIMEOUT_SECONDS` is the bound on every wait for a child process to
-finish, and :func:`run_child` runs a command under it. :func:`read_line` reads one
+finish, and :func:`run_child` runs a command under it. :func:`run_child_to_files`
+runs a child whose own children may outlive it, with its output in files, and
+:func:`assert_marked_child_ends` runs such a child, whose process pool loses a
+worker, through the calls of :func:`pool_call`. :func:`read_line` reads one
 line of a child's output under it. Every wait for a child takes a ``timeout``, this
 constant unless the test needs a shorter one.
 """
@@ -32,10 +35,10 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import pytest
 
@@ -127,6 +130,146 @@ def run_child(
         raise AssertionError(message) from expired
 
 
+def _child_environment(extra_env: Mapping[str, str]) -> dict[str, str]:
+    """This process's environment and *extra_env*, importing this process's ``mosaic``.
+
+    The directory that holds the imported ``mosaic`` goes first on ``PYTHONPATH``,
+    so a child imports the same source in a worktree and in an installed checkout.
+    """
+    source = str(Path(mosaic.__file__).parent.parent)
+    inherited = os.environ.get("PYTHONPATH")
+    path = source if not inherited else os.pathsep.join([source, inherited])
+    return {**os.environ, **extra_env, "PYTHONPATH": path}
+
+
+def run_child_to_files(
+    argv: Sequence[str],
+    *,
+    errors: Path,
+    timeout: float,
+) -> int:
+    """Run *argv* in the repository's root and return its exit status.
+
+    The child imports the ``mosaic`` that this process imported. Its standard input
+    and output are closed and its standard error goes to *errors*, because a
+    grandchild that inherits a pipe holds it open and keeps a reader of the pipe
+    waiting for its end after the child exited.
+
+    Args:
+        argv: The command of the child.
+        errors: The file the child's standard error is written to.
+        timeout: Seconds the child has to exit.
+
+    Raises:
+        AssertionError: The child ran past *timeout*. It is killed and reaped
+            first, and the message holds its standard error.
+    """
+    with errors.open("wb") as stream:
+        child = subprocess.Popen(
+            list(argv),
+            env=_child_environment({}),
+            cwd=REPO_ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stream,
+        )
+        try:
+            return child.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
+    message = (
+        f"a child process did not exit within {timeout} s: {list(argv)!r}\n"
+        f"{errors.read_text()}"
+    )
+    raise AssertionError(message)
+
+
+MARKED_CHILD_TIMEOUT_SECONDS: Final[float] = 30.0
+"""The bound on a child of :func:`assert_marked_child_ends`, imports included."""
+
+EXIT_AFTER_MARK_SECONDS: Final[float] = 10.0
+"""How long after the mark's write a child of :func:`assert_marked_child_ends` may exit."""
+
+_HOLD_SECONDS: Final[float] = 600.0
+
+type PoolCallEnd = Literal["return", "hold", "release", "die", "die-on-go"]
+"""How a :func:`pool_call` ends.
+
+``return`` returns at once, ``hold`` sleeps for ten minutes, and ``release`` returns
+once the file ``release`` exists. ``die`` writes the file ``mark`` and ends its
+worker, and ``die-on-go`` does so once the file ``go`` exists.
+"""
+
+
+def _wait_for_file(path: Path) -> None:
+    while not path.exists():
+        time.sleep(0.01)
+
+
+def pool_call(directory: str, tag: int, meet: int, end: PoolCallEnd) -> int:
+    """Record this worker's pid in *directory*, then end as *end* says and return ``2 * tag``.
+
+    The pid goes to the file ``pid-<tag>``. The call then waits until *meet* calls
+    have recorded theirs, so that calls that meet run in workers of their own.
+    """
+    marks = Path(directory)
+    _ = (marks / f"pid-{tag}").write_text(str(os.getpid()))
+    while len(list(marks.glob("pid-*"))) < meet:
+        time.sleep(0.01)
+    if end == "hold":
+        time.sleep(_HOLD_SECONDS)
+    elif end == "release":
+        _wait_for_file(marks / "release")
+    elif end in ("die", "die-on-go"):
+        if end == "die-on-go":
+            _wait_for_file(marks / "go")
+        (marks / "mark").touch()
+        os._exit(1)
+    return 2 * tag
+
+
+def listed_pids(directory: Path) -> dict[int, int]:
+    """The pids that the :func:`pool_call` calls recorded in *directory*, by tag."""
+    return {
+        int(path.name.removeprefix("pid-")): int(path.read_text())
+        for path in directory.glob("pid-*")
+        if path.read_text().isdigit()
+    }
+
+
+def kill_marked(directory: Path, pid: int) -> None:
+    """Write the file ``mark`` in *directory*, then kill the process *pid*."""
+    (directory / "mark").touch()
+    os.kill(pid, signal.SIGKILL)
+
+
+def assert_marked_child_ends(argv: Sequence[str], directory: Path) -> None:
+    """Run a child whose pool loses a worker, and assert that it ends with its workers.
+
+    The child records its workers' pids and the death's mark in *directory*, as
+    :func:`pool_call` and :func:`kill_marked` write them. It must exit 0 within
+    :data:`EXIT_AFTER_MARK_SECONDS` of the mark's write, and leave no recorded
+    worker running. A child that hangs is killed at
+    :data:`MARKED_CHILD_TIMEOUT_SECONDS`, and every recorded worker is killed on
+    the way out.
+    """
+    errors = directory.parent / f"{directory.name}-errors.txt"
+    try:
+        status = run_child_to_files(
+            argv, errors=errors, timeout=MARKED_CHILD_TIMEOUT_SECONDS
+        )
+        exited = time.time()
+        assert status == 0, errors.read_text()
+        mark = directory / "mark"
+        assert mark.exists(), f"no worker died: {errors.read_text()}"
+        assert exited - mark.stat().st_mtime < EXIT_AFTER_MARK_SECONDS
+        running = [pid for pid in listed_pids(directory).values() if process_alive(pid)]
+        assert running == [], "a worker outlived the child"
+    finally:
+        kill_running(listed_pids(directory).values())
+
+
 SLEEPER_COMMAND: tuple[str, ...] = (
     sys.executable,
     "-c",
@@ -174,6 +317,16 @@ def process_alive(pid: int) -> bool:
         return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
+
+
+def kill_running(pids: Iterable[int]) -> None:
+    """Send SIGKILL to each of *pids* that names a running process."""
+    for pid in set(pids):
+        if process_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
 
 
 def count_process_tree_walks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -283,14 +436,10 @@ def signal_group_when(
             standard error in the message, or *ready* stayed false, or the child
             outlived the wait after the signal.
     """
-    source = str(Path(mosaic.__file__).parent.parent)
-    inherited = os.environ.get("PYTHONPATH")
-    path = source if not inherited else os.pathsep.join([source, inherited])
-    environment = {**os.environ, **extra_env, "PYTHONPATH": path}
     with errors.open("w") as stream:
         child = subprocess.Popen(
             list(argv),
-            env=environment,
+            env=_child_environment(extra_env),
             cwd=REPO_ROOT,
             stderr=stream,
             start_new_session=True,

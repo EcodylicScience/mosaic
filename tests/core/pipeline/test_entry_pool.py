@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import pickle
+import signal
+import sys
 import threading
 import time
 import traceback
@@ -16,7 +18,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import override
+from typing import Final, override
 
 import pytest
 
@@ -36,13 +38,20 @@ from mosaic.core.pipeline.parallelism import (
     ParallelSettings,
     WorkerProcessDied,
 )
+from mosaic.core.pipeline.process_pool import ignore_stop_signals
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.runlog import ResourceReport
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
     CLOCK_TICK_SECONDS,
+    PoolCallEnd,
+    assert_marked_child_ends,
     count_process_tree_walks,
+    kill_marked,
+    listed_pids,
+    pool_call,
     process_alive,
+    wait_for,
 )
 
 
@@ -1230,3 +1239,201 @@ def test_a_results_only_settle_hears_a_result_set_while_it_found_the_break(
     assert dropped == []
     assert events.heard == [("result", 0)]
     assert pool.in_flight == 1
+
+
+def ignore_stop_signals_and_mark_sigterm(directory: str) -> None:
+    """Install the stop-signal rules, and record each SIGTERM this worker receives.
+
+    The signal module writes each signal's number to the wakeup file as the signal
+    arrives, before the handler runs, so a thread sees the executor's SIGTERM even
+    while the worker's main thread waits in a read that the signal does not end.
+    The thread writes ``sigterm-<pid>`` in *directory*.
+    """
+    ignore_stop_signals()
+    reader, writer = os.pipe()
+    os.set_blocking(writer, False)
+    _ = signal.set_wakeup_fd(writer, warn_on_full_buffer=False)
+    marker = Path(directory, f"sigterm-{os.getpid()}")
+
+    def mark() -> None:
+        while True:
+            if signal.SIGTERM in os.read(reader, 64):
+                marker.touch()
+
+    threading.Thread(target=mark, name="sigterm-mark", daemon=True).start()
+
+
+def _break_pool(
+    directory: Path,
+    heard: _Heard,
+    *,
+    workers: int,
+    hand_back_on_break: bool = True,
+    on_computed: Callable[[int], None] | None = None,
+) -> EntryPool[int, int]:
+    return EntryPool(
+        workers=workers,
+        mode="process",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        on_computed=on_computed,
+        hand_back_on_break=hand_back_on_break,
+        initializer=ignore_stop_signals_and_mark_sigterm,
+        initargs=(str(directory),),
+    )
+
+
+def _wait_for_sigterm(directory: Path, tag: int) -> None:
+    """Wait until the worker of the call *tag* received the executor's SIGTERM."""
+    pid = listed_pids(directory)[tag]
+    wait_for(
+        lambda: (directory / f"sigterm-{pid}").exists(),
+        CHILD_TIMEOUT_SECONDS,
+        "the executor never ended the broken pool",
+    )
+
+
+def _returned_held_and_dying(
+    directory: Path, *, hand_back_on_break: bool, dying: PoolCallEnd
+) -> tuple[EntryPool[int, int], _Heard]:
+    """A pool of three workers whose first call returned, second holds and third dies.
+
+    The third call dies once the second holds its worker, after the file ``go``
+    exists when *dying* is ``die-on-go``. It may run on a worker that its own
+    submission started.
+    """
+    heard = _Heard()
+    computed = threading.Event()
+
+    def stamp(tag: int) -> None:
+        if tag == 1:
+            computed.set()
+
+    pool = _break_pool(
+        directory,
+        heard,
+        workers=3,
+        hand_back_on_break=hand_back_on_break,
+        on_computed=stamp,
+    )
+    folder = str(directory)
+    pool.submit(1, pool_call, folder, 1, 1, "return")
+    assert computed.wait(CHILD_TIMEOUT_SECONDS)
+    pool.submit(2, pool_call, folder, 2, 2, "hold")
+    pool.submit(3, pool_call, folder, 3, 3, dying)
+    return pool, heard
+
+
+def _drain_through_the_break(directory: Path, *, hand_back_on_break: bool) -> _Heard:
+    pool, heard = _returned_held_and_dying(
+        directory, hand_back_on_break=hand_back_on_break, dying="die"
+    )
+    try:
+        with pytest.raises(WorkerProcessDied):
+            while pool.in_flight:
+                pool.drain_one()
+    finally:
+        pool.close()
+    return heard
+
+
+def _drain_one_case(directory: Path) -> None:
+    heard = _drain_through_the_break(directory, hand_back_on_break=True)
+    assert heard.results == [(1, 2)], heard.results
+
+
+def _no_hand_back_case(directory: Path) -> None:
+    _ = _drain_through_the_break(directory, hand_back_on_break=False)
+
+
+def _settle_case(directory: Path, *, results_only: bool) -> None:
+    pool, heard = _returned_held_and_dying(
+        directory, hand_back_on_break=True, dying="die-on-go"
+    )
+    try:
+        (directory / "go").touch()
+        if results_only:
+            assert pool.settle(results_only=True) == []
+        else:
+            pool.settle()
+    finally:
+        pool.close()
+    assert heard.results == [(1, 2)], heard.results
+    if not results_only:
+        assert sorted(tag for tag, _ in heard.errors) == [2, 3], heard.errors
+
+
+def _two_workers(
+    directory: Path, first: PoolCallEnd
+) -> tuple[EntryPool[int, int], _Heard]:
+    """A pool of two workers whose first call ends as *first* says, and second returned."""
+    heard = _Heard()
+    pool = _break_pool(directory, heard, workers=2)
+    folder = str(directory)
+    pool.submit(1, pool_call, folder, 1, 2, first)
+    pool.submit(2, pool_call, folder, 2, 2, "return")
+    return pool, heard
+
+
+def _submit_case(directory: Path) -> None:
+    pool, heard = _two_workers(directory, "hold")
+    try:
+        pool.drain_one()
+        assert heard.results == [(2, 4)]
+        kill_marked(directory, listed_pids(directory)[2])
+        _wait_for_sigterm(directory, 1)
+        with pytest.raises(WorkerProcessDied):
+            pool.submit(3, pool_call, str(directory), 3, 1, "return")
+    finally:
+        pool.close()
+
+
+def _idle_case(directory: Path, *, finish: bool) -> None:
+    pool, heard = _two_workers(directory, "release")
+    try:
+        wait_for(lambda: len(listed_pids(directory)) == 2, CHILD_TIMEOUT_SECONDS)
+        (directory / "release").touch()
+        while pool.in_flight:
+            pool.drain_one()
+        assert sorted(heard.results) == [(1, 2), (2, 4)]
+        kill_marked(directory, listed_pids(directory)[2])
+        _wait_for_sigterm(directory, 1)
+        if finish:
+            pool.finish()
+    finally:
+        pool.close()
+
+
+_BREAK_CASES: Final[dict[str, Callable[[Path], None]]] = {
+    "drain-one": _drain_one_case,
+    "submit": _submit_case,
+    "finish": lambda directory: _idle_case(directory, finish=True),
+    "close": lambda directory: _idle_case(directory, finish=False),
+    "settle-results-only": lambda directory: _settle_case(directory, results_only=True),
+    "settle": lambda directory: _settle_case(directory, results_only=False),
+    "no-hand-back": _no_hand_back_case,
+}
+
+
+def run_break_case(case: str, directory: str) -> None:
+    """Run the break case *case* in this process, recording in *directory*."""
+    _BREAK_CASES[case](Path(directory))
+
+
+@pytest.mark.parametrize("case", list(_BREAK_CASES))
+def test_a_pool_whose_worker_dies_ends_its_workers_and_returns_from_the_site(
+    case: str, tmp_path: Path
+) -> None:
+    """Each site that meets the break returns while the other workers ignore SIGTERM.
+
+    The case runs in a child, so that a site the break blocks costs the child's
+    timeout and leaves no worker of this process blocked.
+    """
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    program = (
+        "import sys\n"
+        f"from {__name__} import run_break_case\n"
+        "run_break_case(*sys.argv[1:])\n"
+    )
+    assert_marked_child_ends([sys.executable, "-c", program, case, str(marks)], marks)
