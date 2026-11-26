@@ -32,6 +32,7 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.evaluation import Weighting, majority_mapping, select_scored_rows
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -135,6 +136,7 @@ class FitLabelMap:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         ParamColumn("prediction_column"),

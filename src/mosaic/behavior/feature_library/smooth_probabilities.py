@@ -49,6 +49,7 @@ from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d, median_filter
 
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -212,6 +213,7 @@ class SmoothProbabilitiesFeature:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True  # smooths each id's series along its frames
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Prefix("prob_"),
         Column(COLUMNS.frame_col),

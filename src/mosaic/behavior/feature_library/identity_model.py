@@ -47,6 +47,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TrackSpace
 from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import (
@@ -224,6 +225,9 @@ class GlobalIdentityModel:
     prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    # The fit reads crop images cut in pixels, so the catalog does not list it
+    # under world_m.
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset({"image_px", "plane_cm"})
     # Fit reads crop images from disk, and apply returns its input unchanged.
     requires: ClassVar[tuple[Requirement, ...]] = ()
     provides: ClassVar[Provides] = Provides(passthrough=True)

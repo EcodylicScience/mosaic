@@ -81,7 +81,10 @@ class Feature(Protocol):
     the coordinate spaces it computes in. A feature that declares nothing computes
     in the two 2D spaces, ``image_px`` and ``plane_cm``, so it is refused a
     world-frame table with ``schema_family_mismatch``. A feature that reads no
-    spatial column declares all three. The declaration enters no run id.
+    spatial column declares all three. A registered feature whose ``Inputs`` take
+    no tracks declares it too, and for such a feature it sets only the catalog
+    listing, since the step that reads the tracks is the one checked. The
+    declaration enters no run id.
 
     A feature may also declare ``keywords: ClassVar[tuple[str, ...]]``, lowercase
     phrases a person may search for that its name and summary lack. The catalog

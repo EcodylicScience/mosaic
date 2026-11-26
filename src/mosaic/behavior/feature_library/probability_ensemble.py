@@ -71,6 +71,7 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -264,6 +265,7 @@ class ProbabilityEnsembleFeature:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (Prefix("prob_"),)
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),

@@ -89,6 +89,7 @@ from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 from mosaic.core.pipeline.inventory.params import (
     RunKey,
@@ -558,6 +559,7 @@ class SequenceClassifier(FitReporting):
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(), Column(COLUMNS.frame_col))
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),

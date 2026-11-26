@@ -62,6 +62,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -460,6 +461,7 @@ class LightningActionFeature(FitReporting):
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Apply reads the template columns and writes one probability per class.
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(), Column(COLUMNS.frame_col))
     provides: ClassVar[Provides] = Provides(

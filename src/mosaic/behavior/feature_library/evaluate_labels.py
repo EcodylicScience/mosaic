@@ -81,6 +81,7 @@ from mosaic.core.evaluation import (
 )
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.column_contract import (
     Column,
@@ -221,6 +222,7 @@ class EvaluateLabels:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     report_file: ClassVar[str] = METRICS_FILE
     """The file of a run that the MCP report resource serves."""
     requires: ClassVar[tuple[Requirement, ...]] = (

@@ -39,9 +39,13 @@ own environments.
   (`keypoint-kinematics`, in the table's own units), that reads no spatial column (the
   aggregates), or that has a `dimensions` param and refuses a table of the other kind
   when it runs (`pair-posedistance-pca`, through `refuse_dimension_mismatch` in
-  `feature_library/helpers.py`) declares all three (`TRACK_SPACES`).
-  `refuse_unsupported_track_space` in `core/pipeline/track_space.py` checks it, and
-  `test_feature_conformance.py` pins the declarations.
+  `feature_library/helpers.py`) declares all three (`TRACK_SPACES`). A feature whose
+  `Inputs` take no tracks declares it too: it is never refused for a space, since the
+  step that reads the tracks is checked, and the declaration sets only where the catalog
+  lists it (every space for a feature that interprets no coordinate, the planar set for
+  one that fits on crops cut in pixels). `refuse_unsupported_track_space` in
+  `core/pipeline/track_space.py` checks it, and `test_feature_conformance.py` pins the
+  declarations and fails a feature that reads no tracks and declares none.
 - **A feature may declare `keywords`**, a tuple of lowercase phrases a person may search
   for that its name and summary lack, a class attribute outside the protocol. The
   catalog search reads them as summary words, and `CatalogEntry.keywords` carries

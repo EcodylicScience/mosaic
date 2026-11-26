@@ -44,6 +44,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import HASH_EXCLUDE, Declared
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.graph.compatibility import GpuWhen
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -283,6 +284,7 @@ class XgboostFeature(FitReporting):
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Apply reads the template columns and writes one probability per class.
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
     provides: ClassVar[Provides] = Provides(

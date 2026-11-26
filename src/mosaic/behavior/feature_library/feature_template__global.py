@@ -60,6 +60,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .helpers import feature_columns, meta_columns, write_bundle
 
@@ -107,6 +108,10 @@ class MyGlobalFeature:
     # follows ids over tracks whose ids restart each frame; the template declares
     # the conservative answer.
     follows_ids: bool = True
+    # A feature that reads no tracks is never refused for a space, since the step
+    # that reads the tracks is checked. This sets what the catalog lists it under:
+    # every space for a feature that interprets no coordinate.
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):

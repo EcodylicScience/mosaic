@@ -203,7 +203,10 @@ Start from the per-sequence template above, with these differences:
   `dimensions` param that refuses a table of the other kind when it runs, through
   `refuse_dimension_mismatch` (`mosaic.behavior.feature_library.helpers`). The
   per-sequence template declares the two planar spaces, so a feature copied from it
-  stays refused over world-frame tracks until its author widens the set.
+  stays refused over world-frame tracks until its author widens the set. The global
+  template reads results only and declares every space. For a feature that reads only
+  results the declaration sets only where the catalog lists it, since the step that
+  reads the tracks is the one checked.
 - **Give `temporal_reach` as an int or `None`.** A function of the params and a
   `temporal_reach_by_option` are refused, because planning reads the reach without
   the class.

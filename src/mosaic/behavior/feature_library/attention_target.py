@@ -43,6 +43,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .helpers import ensure_columns, with_source_time
 from .registry import register_feature
@@ -102,6 +103,7 @@ class AttentionTarget:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column("id1"),

@@ -112,3 +112,13 @@ def test_the_global_template_validates_as_a_fit_and_its_apply(
 
     with definition_scope(global_dataset, load=False):
         assert check_recipe(recipe) == ()
+
+
+def test_the_global_template_declares_every_track_space(
+    global_dataset: Dataset,
+) -> None:
+    with definition_scope(global_dataset, load=False):
+        declared = declaration_catalog().get(f"def:{GLOBAL_COPY_NAME}")
+
+    assert declared is not None
+    assert declared.track_spaces == ("image_px", "plane_cm", "world_m")

@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.pipeline.column_contract import Column, declared_provides
+from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
@@ -483,6 +484,7 @@ def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
 
 
 _EVERY_SPACE: frozenset[TrackSpace] = frozenset(TRACK_SPACES)
+_CROP_SPACES: frozenset[TrackSpace] = frozenset({"image_px", "plane_cm"})
 
 TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "keypoint-kinematics": _EVERY_SPACE,
@@ -509,6 +511,18 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "pair-world": frozenset({"world_m"}),
     "pair-posedistance-pca": _EVERY_SPACE,
     "roi-occupancy": frozenset({"image_px"}),
+    "attention-target": _EVERY_SPACE,
+    "evaluate-labels": _EVERY_SPACE,
+    "fit-label-map": _EVERY_SPACE,
+    "lightning-action": _EVERY_SPACE,
+    "probability-ensemble": _EVERY_SPACE,
+    "sequence-classifier": _EVERY_SPACE,
+    "smooth-probabilities": _EVERY_SPACE,
+    "tune-threshold": _EVERY_SPACE,
+    "xgboost": _EVERY_SPACE,
+    "global-identity-model": _CROP_SPACES,
+    "global-identity-embedding": _CROP_SPACES,
+    "global-identity-dinov2-temporal": _CROP_SPACES,
 }
 """The features that declare their track spaces, and the spaces each declares.
 
@@ -517,7 +531,8 @@ only other features' columns, or whose computation is independent of the space,
 and every space for one with a ``dimensions`` param that refuses a table of the
 other kind when it runs. ``world_m`` alone for one defined on world up, which a
 planar table does not have. ``image_px`` alone for one whose geometry is in the
-pixels of the arena layouts. Every other registered feature declares nothing and
+pixels of the arena layouts. The two planar spaces for an identity model, which
+fits on crops cut in pixels. Every other registered feature declares nothing and
 so computes in the two 2D spaces, which is what refuses it a world-frame table.
 """
 
@@ -533,6 +548,23 @@ def test_only_the_listed_features_declare_track_spaces(cls: type) -> None:
             f"{cls.__name__} declares track_spaces = {declared!r}. Add it to "
             f"TRACK_SPACES_DECLARED with the spaces it computes in."
         )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_feature_reading_no_tracks_declares_its_track_spaces(cls: type) -> None:
+    """A feature that takes no tracks declares ``track_spaces``, which lists it."""
+    slug: object = getattr(cls, "name", None)
+    assert isinstance(slug, str)
+    consumes = builtin_declaration_catalog().entries[slug].consumes
+    if consumes.accepts_tracks:
+        return
+    assert "track_spaces" in vars(cls), (
+        f"{cls.__name__} reads no tracks and declares no track_spaces. For such a "
+        f"feature the declaration sets only the catalog listing, since the step "
+        f"that reads the tracks is the one checked. Declare "
+        f"frozenset(TRACK_SPACES) for a feature that interprets no coordinate, "
+        f"and the planar set otherwise."
+    )
 
 
 def test_every_declared_track_space_is_a_feature_and_a_set_of_spaces() -> None:
