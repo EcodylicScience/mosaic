@@ -365,8 +365,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   applies a `model` fails. `pose-egocentric` and `pair-world` refuse a pixel or
   centimeter table. A feature whose computation does not depend on the space
   (`keypoint-kinematics`, `label-statistics`) or that reads no spatial column (the
-  aggregates) accepts every space. Before planning on world-frame tracks, find the step
-  types that compute in `world_m` with `describe_step_types(track_space="world_m")` or
+  aggregates) accepts every space. So do the steps that read only the results of
+  earlier steps (such as `global-kmeans`, `global-tsne`, `arhmm` and `xgboost`) and the
+  two wavelets. `feral`, `hidra`, `vame`, `kpms` and the identity models stay planar.
+  Before planning on world-frame tracks, find the step types that compute in `world_m`
+  with `describe_step_types(track_space="world_m")` or
   `mosaic features list --track-space world_m`. Each step type lists its `track_spaces`,
   and an op, which computes in none, passes the filter.
 - A Tracktor table (`tracktor_corrected_tsv`, `tracktor_raw_csv`) is timed by the file's

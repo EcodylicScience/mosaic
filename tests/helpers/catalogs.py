@@ -12,6 +12,24 @@ from dataclasses import replace
 
 from mosaic.core.pipeline.graph import DeclarationCatalog, declaration_catalog
 
+RESULT_READING_FEATURES: frozenset[str] = frozenset(
+    {
+        "arhmm",
+        "global-kmeans",
+        "global-ward",
+        "global-tsne",
+        "global-scaler",
+        "extract-templates",
+        "extract-labeled-templates",
+        "temporal-stack",
+    }
+)
+"""Eight of the steps that read only results and compute in every space.
+
+The clustering, embedding, template, scaler, AR-HMM and stacking steps. The label and
+classifier steps that read only results are not listed.
+"""
+
 
 def catalog_without_contract(*names: str) -> DeclarationCatalog:
     """The registries' catalog, with no ``requires`` or ``provides`` for *names*.

@@ -50,7 +50,7 @@ Approach-avoidance events between every pair of individuals in a sequence.
 
 ### `attention-target`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.3` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-frame attention target with group-membership labeling.
 
@@ -654,7 +654,7 @@ Convert every length-bearing column into centimeters.
 
 ### `smooth-probabilities`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.smooth_probabilities.SmoothProbabilitiesFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.1` &middot; `mosaic.behavior.feature_library.smooth_probabilities.SmoothProbabilitiesFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Smooth a classifier's class probabilities along consecutive frames.
 
@@ -821,7 +821,7 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
 ### `evaluate-labels`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Score a run's predictions or clusters against ground-truth labels.
 
@@ -1277,7 +1277,7 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 
 ### `fit-label-map`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Map each cluster to the behavior class its labeled rows favor.
 
@@ -1766,7 +1766,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Supervised temporal action segmentation via lightning-action.
 
@@ -1853,7 +1853,7 @@ Supervised temporal action segmentation via lightning-action.
 
 ### `probability-ensemble`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Average or blend the class probabilities of several classifier runs.
 
@@ -1900,7 +1900,7 @@ Average or blend the class probabilities of several classifier runs.
 
 ### `sequence-classifier`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Neural sequence classifier: a registered head on runs of consecutive frames.
 
@@ -1999,7 +1999,7 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
 
 ### `tune-threshold`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.tune_threshold.TuneThresholdFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.1` &middot; `mosaic.behavior.feature_library.tune_threshold.TuneThresholdFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Choose the probability thresholds of a cross-validated classifier.
 
@@ -2111,7 +2111,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.5` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 XGBoost behavior classifier as a pipeline feature.
 

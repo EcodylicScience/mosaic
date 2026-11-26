@@ -8,6 +8,27 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: features that read only results compute in every track space
+
+No run id or output moves. The catalog's `track_spaces` (`describe_step_types`,
+`mosaic features list --track-space`, the editor catalog's `declaration.track_spaces`)
+now lists `world_m` for nineteen features: `arhmm`, `attention-target`,
+`evaluate-labels`, `extract-labeled-templates`, `extract-templates`, `fit-label-map`,
+`global-kmeans`, `global-scaler`, `global-tsne`, `global-ward`, `individual-wavelet`,
+`lightning-action`, `pair-wavelet`, `probability-ensemble`, `sequence-classifier`,
+`smooth-probabilities`, `temporal-stack`, `tune-threshold` and `xgboost`. A step type
+that interprets no coordinate was listed under the two planar spaces only, because a
+feature that declares nothing computes there.
+
+Seventeen of them take the results of earlier steps and no tracks, and a feature of that
+kind is never refused for a track space, so only its catalog listing changes. The two
+wavelets also read tracks directly, so a plan over `mosaic_world_v1` tracks no longer
+refuses a wavelet that reads them, and a `Z` column is one more series to it.
+
+`global-identity-model`, `global-identity-embedding` and
+`global-identity-dinov2-temporal` declare the planar spaces they already had, since they
+fit on crop images cut in pixels, and their catalog listing does not change.
+
 ## Unreleased: installed track converters
 
 No run id moves. An installed converter's variant is minted as a built-in's,

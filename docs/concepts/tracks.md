@@ -34,13 +34,16 @@ refuse a table in centimeters or in the world frame, because a marker placed at 
 coordinates lands somewhere else in the frame. A table whose schema declares no space is
 drawn as pixels, with a warning. Convert a `trex_v1` table with `mosaic upgrade-tracks`.
 
-Each feature likewise declares the spaces it computes in. A planar feature, which is
-nearly every feature, refuses a world-frame table, and `pose-egocentric` and
-`pair-world`, which compute in 3D, refuse a planar one. The run is refused with
-`schema_family_mismatch` before anything is computed. A recipe is refused when it is
-planned or, for tracks the recipe itself writes, when the step starts. Features whose
-computation does not depend on the space (`keypoint-kinematics` measures in the table's
-own units) and features that read no spatial column (the aggregates) accept every space.
+Each feature likewise declares the spaces it computes in. A planar feature, such as the
+pose and pair features that read `X` and `Y`, refuses a world-frame table, and
+`pose-egocentric` and `pair-world`, which compute in 3D, refuse a planar one. The run is
+refused with `schema_family_mismatch` before anything is computed. A recipe is refused
+when it is planned or, for tracks the recipe itself writes, when the step starts.
+Features whose computation does not depend on the space (`keypoint-kinematics` measures
+in the table's own units) and features that read no spatial column (the aggregates)
+accept every space. So do the steps that read only the results of earlier steps
+(`global-kmeans`, `global-tsne`, `arhmm` and `xgboost`, for example) and the two
+wavelets. `feral`, `hidra`, `vame`, `kpms` and the identity models stay planar.
 `pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at
 `dimensions: 2` a world-frame table fails when the step runs, not when it is planned,
 and the message names `dimensions: 3`.

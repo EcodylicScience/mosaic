@@ -21,6 +21,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
+    RESULT_READING_FEATURES,
     SLEEPER_COMMAND,
     hide_package,
     invoke_json,
@@ -678,20 +679,6 @@ def test_features_list_ranks_the_features_a_query_matches() -> None:
     assert {row["type"] for row in found} == {"feature"}
     assert plain.exit_code == 0
     assert plain.stdout.splitlines()[1].split()[0] == "speed-angvel"
-
-
-RESULT_READING_FEATURES = frozenset(
-    {
-        "arhmm",
-        "global-kmeans",
-        "global-ward",
-        "global-tsne",
-        "global-scaler",
-        "extract-templates",
-        "extract-labeled-templates",
-        "temporal-stack",
-    }
-)
 
 
 def test_features_list_filters_by_track_space_and_shows_the_spaces() -> None:

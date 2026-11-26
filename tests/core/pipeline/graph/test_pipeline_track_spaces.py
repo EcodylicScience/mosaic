@@ -446,17 +446,6 @@ def test_a_derived_result_shows_its_reader_no_space(world: Dataset) -> None:
     assert after.track_space_refusals == {}
 
 
-def test_a_wavelet_reads_world_tracks_directly(world: Dataset) -> None:
-    """``individual-wavelet`` interprets no coordinate, so it computes in every space."""
-    recipe = _single("individual-wavelet")
-
-    plan = plan_pipeline(world, recipe, refuse=False)
-
-    assert plan.problems == ()
-    assert plan.track_space_refusals == {}
-    assert submit_request(world, recipe).request
-
-
 _WAVELET: dict[str, JsonValue] = {
     "id": "wavelet",
     "type": "feature",
@@ -513,7 +502,8 @@ POSE_MAP = _map_chain(_POSE_EGOCENTRIC, _WAVELET_ON_POSE)
 def test_a_world_map_chain_is_not_refused(world: Dataset) -> None:
     """A map over world tracks starts at a wavelet reading them, the one step checked.
 
-    The steps after it read results only, which are not space-checked.
+    The steps after it read results only, which are not space-checked. The plan
+    refuses the chain when the wavelet does not declare every space.
     """
     plan = plan_pipeline(world, WORLD_MAP, refuse=False)
 
@@ -536,3 +526,47 @@ def test_a_map_chain_through_pose_egocentric_plans_without_problems(
     assert plan.problems == ()
     assert plan.track_space_refusals == {}
     assert submit_request(world, POSE_MAP).request
+
+
+PAIR_MAP = read_recipe(
+    {
+        "steps": [
+            {
+                "id": "distances",
+                "type": "feature",
+                "feature": "pair-posedistance-pca",
+                "inputs": ["tracks"],
+                "params": {"pose": {"pose_n": 3}, "dimensions": 3, "n_components": 3},
+            },
+            {
+                "id": "wavelet",
+                "type": "feature",
+                "feature": "pair-wavelet",
+                "inputs": [{"step": "distances"}],
+                "params": {"n_freq": 4},
+            },
+        ]
+    }
+)
+
+
+def test_a_3d_pair_map_chain_is_not_refused(world: Dataset) -> None:
+    """``pair-posedistance-pca`` at ``dimensions: 3`` reads world tracks, and a pair
+    wavelet on it writes ``W_`` columns.
+
+    The distances are the one step that reads tracks, so it is the one checked, and
+    it declares every space.
+    """
+    plan = plan_pipeline(world, PAIR_MAP, refuse=False)
+
+    assert plan.problems == ()
+    assert plan.track_space_refusals == {}
+    assert submit_request(world, PAIR_MAP).request
+
+    _ = run_pipeline(world, PAIR_MAP)
+
+    wavelet = plan_pipeline(world, PAIR_MAP).step("wavelet")
+    assert wavelet.run_id is not None
+    root = feature_run_root(world, wavelet.storage_name, wavelet.run_id)
+    written = pd.read_parquet(root / "seq.parquet")
+    assert any(column.startswith("W_") for column in written.columns)
