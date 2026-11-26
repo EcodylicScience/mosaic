@@ -79,6 +79,11 @@ from mosaic.core.pipeline.types import Result
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
+from mosaic.core.pipeline.tracks_raw_index import (
+    load_tracks_raw_index_frame,
+    write_tracks_raw_index_rows,
+)
+from mosaic.core.track_converter import TRACK_CONVERTER_GROUP
 from mosaic.core.recording import RecordingKey
 from mosaic.core.scope import Scope
 from mosaic.core.selections import save_selection
@@ -93,6 +98,10 @@ from mosaic.tracking.frame_predictions.read import (
 )
 from tests.helpers import (
     CANARY_NAME,
+    AcmeEntryPoint,
+    installed_track_converters,
+    plugin_module,
+    write_trex_npz,
     CANARY_SOURCE,
     CANARY_VARIABLE,
     CONVERT_LABELS_STEP,
@@ -1186,6 +1195,78 @@ def test_planning_a_converting_recipe_writes_no_variant(tmp_path: Path) -> None:
     assert_tree_unchanged(dataset.base_dir, before)
     steps = json.loads(result.stdout)["steps"]
     assert [step["run_id"] is not None for step in steps] == [True, True, True]
+
+
+INSTALLED_FORMAT = "acme__rows"
+INSTALLED_CONVERTER_SOURCE = """
+from mosaic.core.track_converter import TrackConverter
+
+class AcmeConverter(TrackConverter):
+    src_format = "acme__rows"
+    version = "1.0"
+    output_schema = "mosaic_v1"
+    carries_tracklets = True
+
+    def convert(self, path, params, hints):
+        raise NotImplementedError
+"""
+
+
+def test_planning_a_recipe_of_an_installed_format_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan loads the installed converter and writes nothing to the dataset."""
+    module = plugin_module(tmp_path, monkeypatch, INSTALLED_CONVERTER_SOURCE)
+    found = AcmeEntryPoint(
+        name=INSTALLED_FORMAT,
+        value=f"{module}:AcmeConverter",
+        group=TRACK_CONVERTER_GROUP,
+    )
+    dataset = make_dataset(tmp_path / "ds")
+    raw = dataset.get_root("tracks_raw")
+    write_trex_npz(raw / "vid_id0.npz", individual=0)
+    _ = dataset.index_tracks_raw([raw], patterns="*.npz", src_format="trex_npz")
+    index_path = raw / "index.csv"
+    frame = load_tracks_raw_index_frame(index_path)
+    frame["src_format"] = INSTALLED_FORMAT
+    write_tracks_raw_index_rows(index_path, frame)
+    recipe = tmp_path / "installed.json"
+    recipe.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "installed",
+                "steps": [
+                    {
+                        "id": "tracks",
+                        "type": "op",
+                        "kind": "convert-tracks",
+                        "params": {"source_format": INSTALLED_FORMAT},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _strip_to_content(dataset.base_dir)
+    before = tree_snapshot(dataset.base_dir)
+
+    with installed_track_converters(monkeypatch, found):
+        result = invoke_ok(
+            [
+                "pipeline",
+                "plan",
+                "--recipe",
+                f"@{recipe}",
+                "--manifest",
+                str(dataset.manifest_path),
+                "--json",
+            ]
+        )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    (step,) = json.loads(result.stdout)["steps"]
+    assert step["run_id"] is not None
 
 
 def _inventory(fixture: ReadDataset) -> object:

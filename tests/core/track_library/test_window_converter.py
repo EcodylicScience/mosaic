@@ -30,8 +30,13 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     variant_entry_rows,
 )
+from mosaic.core.track_converter import (
+    TRACK_CONVERTERS,
+    ensure_track_converters_registered,
+)
 from mosaic.core.track_library.window import (
     WINDOW_FORMAT,
+    TracksWindowConverter,
     WindowEntry,
     WindowSpec,
     read_window_spec,
@@ -645,6 +650,82 @@ def test_the_pixel_format_refuses_a_3d_source_naming_the_world_format(
 
     assert "window_mosaic_world_v1" in message
     assert "'a'" in message
+
+
+class AcmeWindowConverter(TracksWindowConverter):
+    """A window format of ``mosaic_v1`` that a package could install."""
+
+    src_format = "acme__window"
+    output_schema = "mosaic_v1"
+
+
+class ZetaWindowConverter(TracksWindowConverter):
+    """A second window format of ``mosaic_v1``, sorted after the others."""
+
+    src_format = "zeta__window"
+    output_schema = "mosaic_v1"
+
+
+def test_a_refusal_names_the_one_window_format_that_reads_the_schema(
+    tmp_path: Path,
+) -> None:
+    source, run_id = synthetic_source(tmp_path / "source", ["a"])
+    ds = window_dataset(
+        tmp_path / "dest", source, run_id, [window("a")], src_format="window_trex_v2"
+    )
+
+    (message,) = failures_of(ds, TRACKLETS)
+
+    assert "records the schema mosaic_v1. Convert it as window_mosaic_v1." in message
+
+
+def test_a_refusal_names_both_formats_that_read_the_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_track_converters_registered()
+    monkeypatch.setitem(TRACK_CONVERTERS, "acme__window", AcmeWindowConverter)
+    source, run_id = synthetic_source(tmp_path / "source", ["a"])
+    ds = window_dataset(
+        tmp_path / "dest", source, run_id, [window("a")], src_format="window_trex_v2"
+    )
+
+    (message,) = failures_of(ds, TRACKLETS)
+
+    assert (
+        "records the schema mosaic_v1. Convert it as acme__window or window_mosaic_v1."
+        in message
+    )
+
+
+def test_a_refusal_names_three_formats_with_commas_and_a_final_or(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_track_converters_registered()
+    monkeypatch.setitem(TRACK_CONVERTERS, "acme__window", AcmeWindowConverter)
+    monkeypatch.setitem(TRACK_CONVERTERS, "zeta__window", ZetaWindowConverter)
+    source, run_id = synthetic_source(tmp_path / "source", ["a"])
+    ds = window_dataset(
+        tmp_path / "dest", source, run_id, [window("a")], src_format="window_trex_v2"
+    )
+
+    (message,) = failures_of(ds, TRACKLETS)
+
+    assert "Convert it as acme__window, window_mosaic_v1 or zeta__window." in message
+
+
+def test_a_refusal_with_no_reading_format_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_track_converters_registered()
+    monkeypatch.delitem(TRACK_CONVERTERS, "window_mosaic_v1")
+    source, run_id = synthetic_source(tmp_path / "source", ["a"])
+    ds = window_dataset(
+        tmp_path / "dest", source, run_id, [window("a")], src_format="window_trex_v2"
+    )
+
+    (message,) = failures_of(ds, TRACKLETS)
+
+    assert "records the schema mosaic_v1. No window format reads it." in message
 
 
 @pytest.mark.parametrize(

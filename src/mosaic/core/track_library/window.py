@@ -19,8 +19,9 @@ stays current until ``convert-tracks --overwrite`` rewrites it.
 **Each schema is its own format.** A converter declares one ``output_schema``
 for all of its files (``trex.py``). ``window_mosaic_v1``, ``window_trex_v2``,
 ``window_mosaic_cm_v1`` and ``window_mosaic_world_v1`` each read a source of
-their schema and refuse another, naming the format that reads it. No format reads
-the legacy ``trex_v1``, which ``mosaic upgrade-tracks`` rescales into pixels.
+their schema and refuse another, naming each registered format that reads it, an
+installed package's included. No format reads the legacy ``trex_v1``, which
+``mosaic upgrade-tracks`` rescales into pixels.
 
 **Tracklets are declared.** ``WindowParams.carries_tracklets`` is what a written
 row records, and a conversion refuses a source whose row answers otherwise.
@@ -202,12 +203,22 @@ def _spelled(answer: bool | None) -> str:
     return f"carries_tracklets = {str(answer).lower()}"
 
 
-def _window_format_for(schema: str) -> str | None:
-    """The registered window format that reads a source of *schema*, if any."""
-    for src_format, cls in TRACK_CONVERTERS.items():
-        if issubclass(cls, TracksWindowConverter) and cls.output_schema == schema:
-            return src_format
-    return None
+def _window_formats_for(schema: str) -> list[str]:
+    """The registered window formats that read a source of *schema*, sorted."""
+    return sorted(
+        src_format
+        for src_format, cls in TRACK_CONVERTERS.items()
+        if issubclass(cls, TracksWindowConverter) and cls.output_schema == schema
+    )
+
+
+def _remedy(formats: list[str]) -> str:
+    """The sentence that names each of *formats* as one that converts the source."""
+    if not formats:
+        return "No window format reads it."
+    if len(formats) == 1:
+        return f"Convert it as {formats[0]}."
+    return f"Convert it as {', '.join(formats[:-1])} or {formats[-1]}."
 
 
 def read_window_table(
@@ -265,12 +276,7 @@ def read_window_table(
         )
         raise ValueError(msg)
     if recorded != schema:
-        reader = _window_format_for(recorded)
-        remedy = (
-            f"Convert it as {reader}."
-            if reader is not None
-            else "No window format reads it."
-        )
+        remedy = _remedy(_window_formats_for(recorded))
         msg = f"The table of the {named} records the schema {recorded}. {remedy}"
         raise ValueError(msg)
     answer = read_carries_tracklets(row)
