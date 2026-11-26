@@ -126,6 +126,28 @@ A feature that declares `close()` runs in threads when process mode is asked, as
 feature that defines `set_scope` does, because a worker keeps its instance for the
 pool's life and nothing would close it.
 
+## Unreleased: the Live Mouse Tracker rebuild op
+
+No released identifier moves. Every existing op keeps its version and its run ids.
+The new `rebuild-lmt-events` op starts at version `0.1`.
+
+This release reads Live Mouse Tracker databases: the `lmt_sqlite` track converter
+(`lmt_v1`, pixels) and the `id_tags` and `lmt_events` label converters.
+`mosaic convert-labels` runs them with `--source-format lmt_sqlite`. The `lmt_events`
+vocabulary holds 67 event names, among them every name that the default builders of
+lmt-analysis write.
+
+The op copies each `lmt_sqlite` raw file into the dataset and rebuilds its events on
+the copy with lmt-analysis, in an environment the user builds. A dataset's manifest
+gains the root `_tracking/rebuild-lmt-events/`. `lmt_sqlite` and `lmt_events` take the
+optional `rebuild_run_id`. Left unset, they read the raw file. An `lmt_events` file
+then holds the keys `rebuild_run_id` and `lmt_analysis_commit` as empty text.
+
+`RetentionClass` gains `rebuild`, and `sweep-tracking` gains `--rebuild-days`, with a
+default of 14 days. `ToolReads` gains `none`, for a root whose op reads no media. The
+step-type declarations of tracking ops read `reads_media` from the root's `reads`, with
+the same value for every existing op.
+
 ## Unreleased: example downloads and Claude Desktop registration
 
 No run id or output moves. `mosaic examples list` and `mosaic examples fetch` download

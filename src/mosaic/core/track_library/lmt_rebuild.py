@@ -42,6 +42,7 @@ from typing import ClassVar, Final, Literal
 
 from pydantic import ConfigDict, ValidationError
 
+from mosaic.core.root_lookup import RootLookup
 from mosaic.core.strict_model import StrictModel, located
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "copy_unchanged",
     "mtime_seconds",
     "read_rebuild_manifest",
+    "rebuild_input",
     "rebuilt_copy",
     "refuse_foreign_rebuild_run_id",
 ]
@@ -177,6 +179,26 @@ def refuse_foreign_rebuild_run_id(value: str | None) -> str | None:
     if parsed is None or parsed.kind != REBUILD_KIND:
         raise ValueError(f"{value!r} is not the id of a {REBUILD_KIND} run")
     return value
+
+
+def rebuild_input(
+    path: Path, rebuild_run_id: str | None, source_md5: str, root_of: RootLookup
+) -> Path:
+    """The file a converter reads for the raw file *path*.
+
+    Args:
+        path: The raw file.
+        rebuild_run_id: The converter's ``rebuild_run_id`` param. Unset reads the
+            raw file.
+        source_md5: The ``md5`` cell of the raw file's index row.
+        root_of: The dataset's root lookup.
+
+    Raises:
+        ValueError: As :func:`rebuilt_copy`, when a run is named.
+    """
+    if rebuild_run_id is None:
+        return path
+    return rebuilt_copy(root_of(REBUILD_KIND), rebuild_run_id, source_md5, str(path))
 
 
 def rebuilt_copy(root: Path | None, run_id: str, source_md5: str, file: str) -> Path:

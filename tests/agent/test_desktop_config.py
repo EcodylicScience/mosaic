@@ -33,7 +33,12 @@ from mosaic.core.json_value import JsonValue
 from tests.helpers import SOURCE_ROOT, source_tree
 
 SKIPPED_ENVS: Final = frozenset(
-    {"MOSAIC_KPMS_CONDA_ENV", "MOSAIC_VAME_CONDA_ENV", "MOSAIC_LITPOSE_CONDA_ENV"}
+    {
+        "MOSAIC_KPMS_CONDA_ENV",
+        "MOSAIC_VAME_CONDA_ENV",
+        "MOSAIC_LMT_CONDA_ENV",
+        "MOSAIC_LITPOSE_CONDA_ENV",
+    }
 )
 """The ``ToolEnv`` declarations that are not checked, by their conda variable."""
 
@@ -414,7 +419,7 @@ def test_tool_in_a_directory_of_the_entry_path_is_not_warned_about(
     assert result.warnings == []
 
 
-def test_the_checked_tools_are_the_declared_envs_less_the_three_skipped() -> None:
+def test_the_checked_tools_are_the_declared_envs_less_the_skipped() -> None:
     declared: dict[str, str] = {}
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
         relative = path.relative_to(SOURCE_ROOT)

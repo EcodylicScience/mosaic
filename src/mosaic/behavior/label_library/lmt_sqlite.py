@@ -70,10 +70,9 @@ from mosaic.core.track_library.lmt import (
     table_columns,
 )
 from mosaic.core.track_library.lmt_rebuild import (
-    REBUILD_KIND,
     REBUILD_RUN_ID_DESCRIPTION,
     read_rebuild_manifest,
-    rebuilt_copy,
+    rebuild_input,
     refuse_foreign_rebuild_run_id,
 )
 
@@ -101,7 +100,7 @@ _SPELLING_NOTE = (
 )
 _EXTRA_EVENT_NAMES_DESCRIPTION = (
     "Event names given label ids after the built-in vocabulary, in the order "
-    "written, from id 63. A name must not be in the built-in vocabulary or in "
+    "written, from id 67. A name must not be in the built-in vocabulary or in "
     "skip_event_names. " + _SPELLING_NOTE
 )
 _SKIP_EVENT_NAMES_DESCRIPTION = (
@@ -351,14 +350,6 @@ def _read_events(
     )
 
 
-def _rows_of(frames: LmtFrames, numbers: NDArray[np.float64]) -> NDArray[np.intp]:
-    """The position of each frame number in *frames*, ``-1`` where it has no row."""
-    at = np.searchsorted(frames.numbers, numbers)
-    clipped = np.minimum(at, frames.numbers.size - 1)
-    present = frames.numbers[clipped] == numbers
-    return np.where(present, clipped, -1)
-
-
 def _refuse_unplaceable(
     file: str, events: _EventRows, frames: LmtFrames
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -369,8 +360,8 @@ def _refuse_unplaceable(
             or its ``ENDFRAME`` is below its ``STARTFRAME``. The message names the
             file and the first such event's id.
     """
-    start_row = _rows_of(frames, events.start_frame)
-    end_row = _rows_of(frames, events.end_frame)
+    start_row = frames.rows_of(events.start_frame)
+    end_row = frames.rows_of(events.end_frame)
     reversed_span = events.end_frame < events.start_frame
     for position in np.flatnonzero((start_row < 0) | (end_row < 0) | reversed_span):
         event = f"event {int(events.key[position])} ({events.name[position]})"
@@ -466,11 +457,7 @@ class LmtEventsConverter(ClockedLabelConverter[LmtEventsParams]):
         source_md5: str,
         root_of: RootLookup,
     ) -> Path:
-        if params.rebuild_run_id is None:
-            return path
-        return rebuilt_copy(
-            root_of(REBUILD_KIND), params.rebuild_run_id, source_md5, str(path)
-        )
+        return rebuild_input(path, params.rebuild_run_id, source_md5, root_of)
 
     @override
     def convert(

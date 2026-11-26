@@ -186,11 +186,11 @@ under `notebooks/` are in the repository only, and the pip package does not carr
 
 ## Tools that run in their own environment
 
-Seven of the tools mosaic drives are **not installed by mosaic**. Install each
+Eight of the tools mosaic drives are **not installed by mosaic**. Install each
 one yourself, then tell mosaic where it went, and mosaic launches it there. The
-Ultralytics, POLO, keypoint-MoSeq and VAME environments are built from files that live
-in the repository and that the pip package does not carry, so they need a
-[clone](#install-from-source).
+Ultralytics, POLO, keypoint-MoSeq, VAME and lmt-analysis environments are built from
+files that live in the repository and that the pip package does not carry, so they need
+a [clone](#install-from-source).
 
 | Install it yourself | Used by | Tell mosaic where it is |
 | ------------------- | ------- | ----------------------- |
@@ -201,21 +201,23 @@ in the repository and that the pip package does not carry, so they need a
 | [**POLO**](https://github.com/mooch443/POLO) | the `infer-points` and `train-points` ops | `MOSAIC_POLO_CONDA_ENV`, or `MOSAIC_POLO_BIN` for the environment's `yolo` script |
 | [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_CONDA_ENV`, or `MOSAIC_KPMS_PYTHON` for the environment's interpreter |
 | [**VAME**](https://github.com/EthoML/VAME) | the `vame` feature | `MOSAIC_VAME_CONDA_ENV`, or `MOSAIC_VAME_PYTHON` for the environment's interpreter |
+| [**lmt-analysis**](https://github.com/fdechaumont/lmt-analysis) | the `rebuild-lmt-events` op | `MOSAIC_LMT_CONDA_ENV`, or `MOSAIC_LMT_PYTHON` for the environment's interpreter, and `MOSAIC_LMT_ANALYSIS_DIR` for its checkout |
 
 A `_CONDA_ENV` variable names a conda environment, which mosaic activates with `conda
 run`. A `_BIN` or `_PYTHON` variable names a path directly. With neither set, mosaic
 looks on `$PATH`. For keypoint-MoSeq it looks in the environment built under
 `src/mosaic/behavior/feature_library/external` of the clone that mosaic is installed
-from instead, and for VAME under `.../external/vame-env`. A tool's location does not enter a `run_id`. Two machines
-that place a tool differently therefore agree on what a run is called.
+from instead, for VAME under `.../external/vame-env`, and for lmt-analysis under
+`src/mosaic/tracking/external/lmt-env`. A tool's location does not enter a `run_id`.
+Two machines that place a tool differently therefore agree on what a run is called.
 
 Mosaic looks for a conda environment in each directory that `CONDA_ENVS_DIRS` lists,
 then in the `envs` directory of the conda installation, then in `~/.conda/envs`. Only
 the name `base` names the installation itself. An environment kept elsewhere, such as in
 an `envs_dirs` directory of `.condarc`, needs its directory in `CONDA_ENVS_DIRS`, or the
-tool's `_BIN` or `_PYTHON` variable instead. Otherwise keypoint-MoSeq and VAME refuse
-the environment, and any other tool runs by its bare name, which `conda run` resolves on
-`$PATH`.
+tool's `_BIN` or `_PYTHON` variable instead. Otherwise keypoint-MoSeq, VAME and
+lmt-analysis refuse the environment, and any other tool runs by its bare name, which
+`conda run` resolves on `$PATH`.
 
 ### Video codecs each tool reads
 
@@ -415,6 +417,36 @@ The device changes the trained model. CPU and MPS fits differ materially from
 each other and from a GPU fit. Only training on the CPU is bit-reproducible.
 Two CPU fits of one recipe give identical models. The model bundle and the run
 log record the device that ran.
+
+### lmt-analysis
+
+[lmt-analysis](https://github.com/fdechaumont/lmt-analysis) rebuilds the events of a
+Live Mouse Tracker database. Mosaic runs it on a copy, and the `rebuild-lmt-events` op
+needs it. Build its environment in the `lmt-env` directory of a
+[clone](#install-from-source), then clone lmt-analysis beside it:
+
+```bash
+cd src/mosaic/tracking/external/lmt-env
+uv sync --python 3.12
+git clone https://github.com/fdechaumont/lmt-analysis.git lmt-analysis
+git -C lmt-analysis checkout 3ac90ec842b38e945a5d226dd2486880afbd766d
+```
+
+Pass that commit to the op as `lmt_analysis_commit`. The op refuses a checkout at
+another commit and a checkout with a modified tracked file. The
+[import guide](guides/tracking/import.md#rebuild-the-events-with-lmt-analysis) describes
+the op and [rebuilding by hand](guides/tracking/import.md#rebuild-by-hand).
+
+Built in the clone that mosaic is installed from, mosaic finds the interpreter and the
+checkout by itself. Built anywhere else, name them:
+`export MOSAIC_LMT_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
+`export MOSAIC_LMT_CONDA_ENV=lmt`, and
+`export MOSAIC_LMT_ANALYSIS_DIR=/path/to/lmt-analysis`.
+
+lmt-analysis is licensed GPL-3.0, which does not restrict running it. Whoever conveys a
+built environment conveys lmt-analysis's source under the GPL. The environment's
+[README](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/tracking/external/lmt-env/README.md)
+and NOTICE describe the obligation.
 
 ### FERAL
 

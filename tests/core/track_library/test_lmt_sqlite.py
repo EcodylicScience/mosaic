@@ -135,6 +135,21 @@ def test_the_missing_frame_number_leaves_a_double_step(tmp_path: Path) -> None:
     assert np.round(across[0] * 1000) == 67.0
 
 
+def test_rows_of_gives_each_present_number_its_row_and_an_absent_one_minus_one() -> (
+    None
+):
+    """A number before, between and after the stored ones has no row."""
+    frames = LmtFrames(
+        numbers=np.array([10, 11, 13], dtype=np.int64),
+        seconds=np.zeros(3, dtype=np.float64),
+        paused=np.zeros(3, dtype=np.bool_),
+    )
+
+    rows = frames.rows_of(np.array([9, 10, 12, 13, 14], dtype=np.float64))
+
+    assert rows.tolist() == [-1, 0, -1, 2, -1]
+
+
 def test_frame_origin_is_the_smallest_frame_number(tmp_path: Path) -> None:
     path = _write(tmp_path / "recording.sqlite", default_lmt_recording())
     connection = open_lmt_database(path)

@@ -118,8 +118,8 @@ pip does not read that table.
   the extra stays out of the `test` group, which the feral job installs over FERAL's
   pins. `mosaic.agent.mcp.server` calls `MCP_SDK.load()` before importing
   `_binding`, the one module that imports the SDK.
-- Ultralytics, POLO, keypoint-MoSeq and VAME run only as separate programs in
-  environments the user builds. No extra or dependency group declares them. The
+- Ultralytics, POLO, keypoint-MoSeq, VAME and lmt-analysis run only as separate programs
+  in environments the user builds. No extra or dependency group declares them. The
   [behavior](src/mosaic/behavior/CLAUDE.md) and [tracking](src/mosaic/tracking/CLAUDE.md)
   guides give the runners and the separation test. keypoint-MoSeq's non-commercial
   license cannot combine with the AGPL. Do not bundle it into a packaged installer.

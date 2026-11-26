@@ -962,7 +962,6 @@ class LabelStatistics:
     ) -> tuple[str | int, ...]:
         """``states`` when set, else the file's label names less *ignore*.
 
-
         A file declaring no ``label_ids`` is refused rather than given the
         labels it happens to hold: those differ between entries, and the
         columns would differ with them -- a state one entry never shows would

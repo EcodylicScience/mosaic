@@ -69,7 +69,7 @@ custom template) places each event on the entry's tracks, and so needs them firs
 | `boris_aggregated_csv` | BORIS Aggregated Events export, CSV or TSV |
 | `boris_pandas_pickle` | BORIS pandas DataFrame pickle, only with `MOSAIC_TRUST_PICKLED_FILES=1` |
 | `calms21_npy` | CalMS21 `.npy` / `.json` behavior annotations; the `.npy` needs `MOSAIC_TRUST_PICKLED_FILES=1`, the `.json` does not |
-| `lmt_sqlite` | Live Mouse Tracker events (kind `lmt_events`) and animals (kind `id_tags`) |
+| `lmt_sqlite` | [Live Mouse Tracker](../tracking/import.md#live-mouse-tracker-databases) events (kind `lmt_events`) and animals (kind `id_tags`) |
 
 A pickle or a CalMS21 `.npy` can run code when it loads, so mosaic refuses one unless
 you set `MOSAIC_TRUST_PICKLED_FILES=1` for files you trust. A refused file fails the
@@ -85,11 +85,9 @@ If your annotation tool is not here, the label converter registry works the same
 track converter registry does.
 
 `lmt_sqlite` reads the same Live Mouse Tracker `.sqlite` that the track converter of
-that name reads, and the kind you convert picks what it reads. `--kind id_tags` writes
-the file's animals (RFID, name, genotype, age, sex, strain, setup, treatment and ind,
-whichever the file has) for `id-tag-columns` to attach to a run.
-`write_lmt_sequence_tags`, from `mosaic.core.track_library.lmt`, writes the CSV of
-sequence tags for `mosaic sequence-tags import`.
+that name reads, and the kind you convert picks what it reads. The
+[import guide](../tracking/import.md#live-mouse-tracker-databases) has the commands,
+the rebuild of a database's events and the tags of a recording.
 
 `--kind lmt_events` reads the file's events, one segment per event, into one
 dataset-wide vocabulary of the stored event names, so every file of a variant gives the

@@ -16,7 +16,7 @@ import pytest
 from tests.helpers import (
     SOURCE_ROOT,
     imports_reaching,
-    inside_a_virtualenv,
+    is_third_party_source,
     modules_loaded_by,
     package_of,
     source_tree,
@@ -56,7 +56,7 @@ def test_no_library_module_imports_the_examples_package(package: str) -> None:
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)}:{line}"
         for path in sorted((SOURCE_ROOT / package).rglob("*.py"))
-        if not inside_a_virtualenv(path, SOURCE_ROOT)
+        if not is_third_party_source(path, SOURCE_ROOT)
         for line in _example_imports(source_tree(path), path)
     ]
 

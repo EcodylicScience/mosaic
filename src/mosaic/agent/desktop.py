@@ -133,8 +133,8 @@ def path_checked_tools() -> tuple[tuple[ToolEnv, str], ...]:
 
     Each is a placement and the executable name its runner searches with. The
     fifth rung of a tool's ladder searches ``$PATH``, which a Desktop server
-    does not have. The interpreter-only tools (keypoint-MoSeq, VAME) do not
-    search it, and Lightning Pose looks up ``python``, which cannot tell
+    does not have. The interpreter-only tools (keypoint-MoSeq, VAME,
+    lmt-analysis) do not search it, and Lightning Pose looks up ``python``, which cannot tell
     whether the tool is installed.
 
     Returns:

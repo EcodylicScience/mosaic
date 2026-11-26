@@ -72,9 +72,8 @@ from mosaic.core.track_converter import (
 from mosaic.core.root_lookup import RootLookup
 from mosaic.core.track_library.helpers import norm_hint
 from mosaic.core.track_library.lmt_rebuild import (
-    REBUILD_KIND,
     REBUILD_RUN_ID_DESCRIPTION,
-    rebuilt_copy,
+    rebuild_input,
     refuse_foreign_rebuild_run_id,
 )
 
@@ -161,14 +160,20 @@ LMT_EVENT_NAMES: Final[tuple[str, ...]] = (
     "Flickering",
     "night",
     "Undetected",
+    "Move high speed",
+    "Train3",
+    "Train4",
+    "longChase",
 )
 """The event names of the ``lmt_events`` vocabulary, as ``EVENT.NAME`` stores them.
 
 A name's position is its label id. The first 60 names are those of the demo
-database other than ``coucou`` and ``event``, in SQLite's ``BINARY`` order, and
-``Flickering``, ``night`` and ``Undetected`` follow. A name is appended with a
-version bump of the converter, and every existing id keeps its event. Removing
-or reordering a name is a new converter version.
+database other than ``coucou`` and ``event``, in SQLite's ``BINARY`` order.
+``Flickering``, ``night`` and ``Undetected`` follow. The last four, ``Move high
+speed``, ``Train3``, ``Train4`` and ``longChase``, are event names that the default
+builders of lmt-analysis's ``Rebuild_All_Events`` write beyond the demo database. A
+name is appended with a version bump of the converter, and every existing id keeps its
+event. Removing or reordering a name is a new converter version.
 """
 
 
@@ -186,6 +191,15 @@ class LmtFrames:
     numbers: NDArray[np.int64]
     seconds: NDArray[np.float64]
     paused: NDArray[np.bool_]
+
+    def rows_of(
+        self, numbers: NDArray[np.int64] | NDArray[np.float64]
+    ) -> NDArray[np.intp]:
+        """The row of each frame number in *numbers*, ``-1`` where it has none."""
+        at = np.searchsorted(self.numbers, numbers)
+        clipped = np.minimum(at, self.numbers.size - 1)
+        present = self.numbers[clipped] == numbers
+        return np.where(present, clipped, -1)
 
 
 def journals_beside(path: Path) -> list[Path]:
@@ -604,11 +618,7 @@ class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
         source_md5: str,
         root_of: RootLookup,
     ) -> Path:
-        if params.rebuild_run_id is None:
-            return path
-        return rebuilt_copy(
-            root_of(REBUILD_KIND), params.rebuild_run_id, source_md5, str(path)
-        )
+        return rebuild_input(path, params.rebuild_run_id, source_md5, root_of)
 
     @override
     def convert(
@@ -624,16 +634,15 @@ class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
         finally:
             connection.close()
 
-        placed = np.searchsorted(frames.numbers, detections.frame_number)
-        clipped = np.minimum(placed, frames.numbers.size - 1)
-        absent = frames.numbers[clipped] != detections.frame_number
+        frame_rows = frames.rows_of(detections.frame_number)
+        absent = frame_rows < 0
         if absent.any():
             first = int(detections.frame_number[absent].min())
             raise ValueError(
                 f"{file}: a detection is on frame {first}, which has no FRAME row"
             )
 
-        on_paused = frames.paused[clipped]
+        on_paused = frames.paused[frame_rows]
         dropped_unidentified = detections.unidentified & ~on_paused
         keep = ~on_paused
         if not params.keep_unidentified:
@@ -666,7 +675,7 @@ class LmtSqliteConverter(TrackConverter[LmtSqliteParams]):
 
         columns: dict[str, object] = {
             "frame": frame_number - frames.numbers[0],
-            "time": frames.seconds[clipped[rows]],
+            "time": frames.seconds[frame_rows[rows]],
             "id": animal,
             "group": np.full(rows.size, group, dtype=object),
             "sequence": np.full(rows.size, sequence, dtype=object),

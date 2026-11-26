@@ -125,7 +125,8 @@ whole store. Every other dataset stays at version 3 and opens in an older mosaic
 ├── feature_definitions/    features stored as source, one folder per name
 ├── _tracking/
 │   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
-│   └── infer-pose/  infer-points/  infer-localizer/
+│   ├── infer-pose/  infer-points/  infer-localizer/
+│   └── rebuild-lmt-events/
 ├── features/
 ├── models/
 └── .mosaic/
@@ -149,7 +150,9 @@ Directory assignments:
   `frame_predictions/` model predictions on extracted frames and their scores,
   `selections/` frame lists chosen from tracks, `features/`, `models/`.
 - **Temporary files** — `_tracking/` raw tracker output before conversion, reclaimed
-  by `mosaic sweep-tracking` once a run is finished.
+  by `mosaic sweep-tracking` once a run is finished. The rebuilt copies of Live Mouse
+  Tracker databases in `_tracking/rebuild-lmt-events/` are reclaimed after
+  `--rebuild-days` (14 by default), and running the op again makes them again.
 - **Run records**, in `.mosaic/`: what was attempted and submitted here, as
   [Run work and see what ran](guides/pipelines/run-and-see-what-ran.md#where-what-ran-is-recorded)
   describes.

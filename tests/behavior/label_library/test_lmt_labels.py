@@ -307,12 +307,16 @@ _SPEC_EVENT_NAMES = (
     "Flickering",
     "night",
     "Undetected",
+    "Move high speed",
+    "Train3",
+    "Train4",
+    "longChase",
 )
 
 
 def test_the_vocabulary_is_the_specified_table_in_order() -> None:
     assert LMT_EVENT_NAMES == _SPEC_EVENT_NAMES
-    assert len(LMT_EVENT_NAMES) == 63
+    assert len(LMT_EVENT_NAMES) == 67
     assert LMT_EVENT_NAMES.index("Detection") == 7
 
 
@@ -371,8 +375,8 @@ def test_a_quality_event_is_written_as_stored_with_its_comma() -> None:
 def test_extra_names_follow_the_constant_in_the_order_given() -> None:
     params = LmtEventsParams(extra_event_names=["Grooming", "Digging"])
     vocabulary = params.vocabulary()
-    assert vocabulary[:63] == LMT_EVENT_NAMES
-    assert vocabulary[63:] == ("Grooming", "Digging")
+    assert vocabulary[:67] == LMT_EVENT_NAMES
+    assert vocabulary[67:] == ("Grooming", "Digging")
     assert LmtEventsParams().vocabulary() == LMT_EVENT_NAMES
 
 
@@ -557,7 +561,7 @@ def test_the_payload_holds_the_vocabulary_and_the_entry_without_pickles(
     assert int(arrays["background_id"]) == -1
     assert arrays["background_id"].dtype == np.int32
     assert arrays["label_ids"].dtype == np.int32
-    assert arrays["label_ids"].tolist() == list(range(63))
+    assert arrays["label_ids"].tolist() == list(range(67))
     assert arrays["dropped_event_ids"].dtype == np.int64
     assert arrays["dropped_event_ids"].size == 0
     assert arrays["quality_label_ids"].dtype == np.int32
@@ -743,7 +747,7 @@ def test_a_file_whose_only_event_is_skipped_writes_no_segment_and_records_tracks
     segments = segments_from_npz(arrays)
     assert segments is not None
     assert len(segments) == 0
-    assert arrays["label_ids"].size == 63
+    assert arrays["label_ids"].size == 67
     (row,) = read_labels_index(ds, _EVENT_KIND).to_dict("records")
     roots = str(row["consumed_source_roots"])
     assert "labels_raw" in roots
@@ -780,7 +784,7 @@ def test_two_files_with_different_event_sets_share_one_id_per_name(
         LMT_EVENT_NAMES.index("Contact"),
         LMT_EVENT_NAMES.index("Stop"),
     ]
-    assert alpha["label_ids"].tolist() == beta["label_ids"].tolist() == list(range(63))
+    assert alpha["label_ids"].tolist() == beta["label_ids"].tolist() == list(range(67))
     assert alpha["label_names"].tolist() == beta["label_names"].tolist()
     rows = read_labels_index(ds, _EVENT_KIND)
     assert rows["label_ids"].nunique() == 1
@@ -817,14 +821,14 @@ def test_an_unknown_name_refuses_naming_it_and_converts_once_accepted(
 
     _ = _convert_events(ds, {"extra_event_names": ["zzz first", "zzz second"]})
     extended = _events_file(ds)
-    assert extended["label_ids"].tolist() == list(range(65))
-    assert extended["seg_label"][9:].tolist() == [63, 64]
-    assert extended["label_names"][63:].tolist() == ["zzz first", "zzz second"]
+    assert extended["label_ids"].tolist() == list(range(69))
+    assert extended["seg_label"][9:].tolist() == [67, 68]
+    assert extended["label_names"][67:].tolist() == ["zzz first", "zzz second"]
 
     skipped = _convert_events(ds, {"skip_event_names": ["zzz first", "zzz second"]})
     left = _events_file(ds, skipped)
     assert left["seg_event_id"].tolist() == list(range(1, 10))
-    assert left["label_ids"].size == 63
+    assert left["label_ids"].size == 67
 
 
 def test_a_name_with_a_comma_is_comma_free_in_the_index_and_stored_in_the_file(
@@ -998,7 +1002,7 @@ def test_a_conversion_without_a_clock_numbers_by_the_origin(tmp_path: Path) -> N
     )
 
     assert entry.n_frames == 401 - _ORIGIN + 1
-    assert entry.label_ids == tuple(range(63))
+    assert entry.label_ids == tuple(range(67))
     assert entry.label_names == tuple(comma_free(name) for name in LMT_EVENT_NAMES)
     assert (entry.group, entry.sequence) == ("", "recording")
     for key in ("seg_start_frame", "seg_end_frame", "seg_event_id", "seg_label"):

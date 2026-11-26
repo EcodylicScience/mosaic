@@ -57,6 +57,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   boundary, a declaration of the tool in mosaic's dependencies, Ultralytics runner
   subcommands that differ from `RunnerSubcommand`, or a subcommand's request or
   response declared outside the protocol module.
+- `test_lmt_analysis_pin.py`: the install page, the import guide or the lmt-env README
+  naming no 40-digit lmt-analysis commit or more than one, or naming different ones.
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.
 - `test_core_lazy_exports.py`: `mosaic.core` binding a name at import, or a leaf
   import loading pandas or h5py.

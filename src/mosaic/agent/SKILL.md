@@ -137,11 +137,12 @@ Commands and environments are on https://ecodylicscience.github.io/mosaic/instal
   installs the base without it. Check the retired names on the installation page.
 - Install the `feral` extra in a separate environment, since its exact pins downgrade
   mosaic's dependencies.
-- TRex, SLEAP, Lightning Pose, Ultralytics, POLO, keypoint-MoSeq and VAME each run in an
-  environment the user builds, and mosaic finds each through the variables the
-  installation page lists. The Ultralytics, POLO, keypoint-MoSeq and VAME environments
-  are built from files in the mosaic repository that a pip install does not carry, so
-  they need a clone. Do not install Ultralytics into mosaic's environment.
+- TRex, SLEAP, Lightning Pose, Ultralytics, POLO, keypoint-MoSeq, VAME and lmt-analysis
+  each run in an environment the user builds, and mosaic finds each through the
+  variables the installation page lists. The Ultralytics, POLO, keypoint-MoSeq, VAME and
+  lmt-analysis environments are built from files in the mosaic repository that a pip
+  install does not carry, so they need a clone. Do not install Ultralytics into
+  mosaic's environment.
 - Licenses differ. keypoint-MoSeq is for non-commercial research and academic use
   only, and mosaic refuses to start it until the user sets the acceptance variable.
   Setting it is the user's assertion. Ask, and do not set it yourself. TRex needs a
@@ -377,12 +378,28 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   scale them; pass `cm_per_pixel` 10/57 to it for mice. Detections of an animal the
   database did not identify and detections on paused frames are dropped and counted,
   and `keep_unidentified` keeps the first. A file with a `-journal` or `-wal` beside it
-  is refused. `convert-labels --kind lmt_events` and `--kind id_tags` read the same
-  files. An event name the converter does not know is refused until it is named in
-  `extra_event_names` or `skip_event_names`, and only `label-statistics` reads an
-  `lmt_events` file. `write_lmt_sequence_tags` (in `mosaic.core.track_library.lmt`)
-  writes the CSV for `mosaic sequence-tags import`:
-  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#the-formats-mosaic-reads.
+  is refused. `convert-labels --source-format lmt_sqlite --kind lmt_events` and
+  `--kind id_tags` read the same files. `--source-format` defaults to `calms21_npy`, and
+  without it no converter is found. An event name the converter does not know
+  is refused until it is named in `extra_event_names` or `skip_event_names`, and only
+  `label-statistics` reads an `lmt_events` file. The `rebuild-lmt-events` op copies each
+  database into the dataset and rebuilds its events on the copy with lmt-analysis, which
+  runs in an environment the user builds. The raw file is not written, and the op needs
+  twice the file's size free on the dataset's disk, so ask the user before the run. Pass
+  `lmt_analysis_commit` (the full commit of the checkout), then pass the run's id as
+  `rebuild_run_id` to `convert-tracks --json` and to
+  `convert-labels --source-format lmt_sqlite --kind lmt_events`, and both read that
+  copy. The dataset then holds two tracks variants, so pass the `variants` entry that
+  `convert-tracks` reported to `convert-labels` as `--tracks-run-id`
+  (https://ecodylicscience.github.io/mosaic/guides/tracking/import/#rebuild-the-events-with-lmt-analysis).
+  Without the environment, `trajectory-smooth` with `speed_threshold` set writes
+  `bad_frame`, the quality mask
+  (https://ecodylicscience.github.io/mosaic/guides/tracking/import/#without-lmt-analysis),
+  or the user rebuilds copies by hand and converts them without `rebuild_run_id`
+  (https://ecodylicscience.github.io/mosaic/guides/tracking/import/#rebuild-by-hand).
+  `write_lmt_sequence_tags` (in `mosaic.core.track_library.lmt`) writes the CSV for
+  `mosaic sequence-tags import`. The whole import:
+  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#live-mouse-tracker-databases.
 - Synthetic tracks come from a TOML file of generator parameters, one file per sequence,
   read by `synthetic` (2D, `mosaic_v1`, pixels) and `synthetic_3d` (3D,
   `mosaic_world_v1`, meters). The file declares every generator parameter, and the

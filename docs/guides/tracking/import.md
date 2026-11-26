@@ -58,7 +58,7 @@ starts.
 
 ## The formats mosaic reads
 
-Eighteen converters are registered. `--src-format` names one, and the choice also fixes
+Nineteen converters are registered. `--src-format` names one, and the choice also fixes
 which schema the output carries.
 
 | `--src-format` | Reads | Emits |
@@ -75,7 +75,7 @@ which schema the output carries.
 | `sdannce_mat` | The `.mat` files of an s-DANNCE study: the `sdannce` struct, with `m1` and `m2` in millimeters and ids from `ratint` and `ratp_int`. It records no frame rate. Set `fps_default: 50` or pass `fps=50` for the Klibaite et al. 2025 release. The release publishes a dyad session as two files, one per focal animal, and some cohorts add `_S-1` files. Index one file per session, or the session's animals appear twice. Index the files with `--patterns '*.mat'`, because the default track patterns are `*.npy`, `*.h5` and `*.csv`. The converter reads the rat cohorts' 23-keypoint layout, and files of the release's mouse cohort are unchecked | `mosaic_world_v1` |
 | `tracktor_corrected_tsv` | The corrected `*_tracked_fixed_final.tsv` of a Tracktor run, as the DGRP looming release writes it: one arena per file, `Fly<n>` ids that follow the animals. Time is its `seconds_total`. Frames before 62 are dropped (`first_frame`). Pixels, with `stimuli` and the recording's labels carried as columns | `mosaic_v1` |
 | `tracktor_raw_csv` | The raw `*_tracked.csv` of the same run, whose ids swap between animals. It has no time column, so the corrected `.tsv` beside it times the table, and a missing `.tsv` fails the entry | `mosaic_v1` |
-| `lmt_sqlite` | A Live Mouse Tracker `.sqlite`: detections in pixels, heights in millimeters, rearing and look flags | `lmt_v1` |
+| `lmt_sqlite` | A [Live Mouse Tracker `.sqlite`](#live-mouse-tracker-databases): detections in pixels, heights in millimeters, rearing and look flags | `lmt_v1` |
 | `synthetic` | A [synthetic track file](#synthetic-tracks) describing a 2D simulation, in pixels | `mosaic_v1` |
 | `synthetic_3d` | A synthetic track file describing a 3D simulation, in meters | `mosaic_world_v1` |
 | `window_mosaic_v1` | A [window file](#windows-of-another-dataset) that cuts frames out of the `mosaic_v1` tracks of another dataset | `mosaic_v1` |
@@ -152,6 +152,152 @@ first. It interpolates on `time`. Positions are pixels. For millimeters, run `sc
 mosaic sources add -m dataset.yaml --kind tracks --path /data/tracktor \
     --patterns '*_tracked_fixed_final.tsv' --src-format tracktor_corrected_tsv
 ```
+
+## Live Mouse Tracker databases
+
+`lmt_sqlite` reads the `.sqlite` that Live Mouse Tracker writes for a recording. One
+database is one entry, and it holds the tracks, the animals and the events, so the
+same files are declared as a tracks source and as a labels source:
+
+```bash
+mosaic sources add -m dataset.yaml --kind tracks \
+    --path /data/lmt --patterns '*.sqlite' --src-format lmt_sqlite
+mosaic sources add -m dataset.yaml --kind labels \
+    --path /data/lmt --patterns '*.sqlite' --src-format lmt_sqlite
+mosaic scan -m dataset.yaml --kind tracks
+mosaic scan -m dataset.yaml --kind labels
+mosaic convert-tracks -m dataset.yaml --source-format lmt_sqlite
+mosaic convert-labels -m dataset.yaml --source-format lmt_sqlite --kind lmt_events
+mosaic convert-labels -m dataset.yaml --source-format lmt_sqlite --kind id_tags
+```
+
+`convert-labels` finds no Live Mouse Tracker converter without `--source-format`. The
+event vocabulary, the placement of events on frames and the reader are in [Import
+behavior annotations](../analysis/import-labels.md#the-formats-mosaic-reads).
+
+**Frames and time.** The origin is the smallest `FRAMENUMBER` of the file, so a row's
+`frame` is its `FRAMENUMBER` less that one. A number the file lacks is a gap and leaves
+no row. `time` is the `TIMESTAMP` less the origin's, in seconds, so the table needs no
+frame rate and takes none from the media or the manifest. A file whose `FRAME` table is
+empty, or whose timestamps are missing or do not increase, fails its entry, and the
+message names the file.
+
+**Dropped detections.** A detection of no identified animal and a detection on a
+paused frame are dropped, and the converter prints their counts to standard error.
+`keep_unidentified` keeps the first kind under ids `-2`, `-3` and so on within a frame.
+The table then records that ids do not follow animals.
+
+**Units.** `X` and `Y` are pixels. The `Z#` columns are heights in millimeters, and
+`scale-to-cm` does not scale them. For mice run `scale-to-cm` with `cm_per_pixel` set to
+10/57, about 0.1754.
+
+**Animals and recordings.** `--kind id_tags` writes each animal's RFID, name, genotype,
+age, sex, strain, setup, treatment and `ind`, whichever the file has, and
+`id-tag-columns` attaches them to a run. For tags of a whole recording,
+`write_lmt_sequence_tags` writes a CSV with each recording's start (UTC), genotypes and
+animal count, and `mosaic sequence-tags import` stores it:
+
+```python
+from pathlib import Path
+
+from mosaic.core.dataset import open_dataset
+from mosaic.core.track_library.lmt import write_lmt_sequence_tags
+
+write_lmt_sequence_tags(open_dataset("dataset.yaml"), Path("lmt_tags.csv"))
+```
+
+```bash
+mosaic sequence-tags import lmt_tags.csv -m dataset.yaml
+```
+
+**The files are only read.** mosaic opens a database read-only, takes no lock and
+writes nothing beside it. A database with a `-journal` or `-wal` file beside it is
+refused, and the message names the file, because a read-only open would ignore the
+changes that file holds.
+
+**Memory.** The track converter's peak memory grows with the number of detections, to
+about three times the table it writes. A database of 71 hours of four mice at 30 fps,
+30 million detections, grew peak memory by 10.4 GiB.
+
+### Rebuild the events with lmt-analysis
+
+The events in a database are the ones lmt-analysis detected when the recording was
+processed, and `lmt_events` reads them as stored. A database that lmt-analysis processed
+before it gained its Flickering builder holds no `Flickering` events, and a rebuild adds
+them. The rebuild writes into the database it reads, so the `rebuild-lmt-events` op runs
+it on a copy inside the dataset, in an environment you build once
+([lmt-analysis](../../installation.md#lmt-analysis)). mosaic verified lmt-analysis at
+the commit in this command, and the op refuses a checkout at another commit.
+
+```bash
+mosaic run -m dataset.yaml --kind rebuild-lmt-events \
+    --params '{"lmt_analysis_commit": "3ac90ec842b38e945a5d226dd2486880afbd766d"}'
+```
+
+The run prints its id. Pass it as `rebuild_run_id` to both conversions, which then read
+the copies instead of the raw files and name the rebuild in their variants. The tracks
+now exist in two variants, so the labels name the one to place events on, which
+`variants` of the `--json` report gives:
+
+```bash
+mosaic convert-tracks -m dataset.yaml --source-format lmt_sqlite --json \
+    --params '{"rebuild_run_id": "<run_id>"}'
+mosaic convert-labels -m dataset.yaml --source-format lmt_sqlite --kind lmt_events \
+    --params '{"rebuild_run_id": "<run_id>"}' --tracks-run-id <variant>
+```
+
+A feature that reads these tracks needs the same variant: see [Several recipes over one
+dataset](#several-recipes-over-one-dataset).
+
+The raw files are not written. Each copy is made under `_tracking/rebuild-lmt-events/`,
+and the op needs twice the file's size free on the dataset's disk. A second run is a
+cache hit. `mosaic sweep-tracking --apply` reclaims copies after `--rebuild-days`,
+14 by default, and running the op again makes them again.
+
+On a 13 minute recording of four mice (141 MB) the copy grew by 1.7% and the
+rebuild took 2 min 18 s with a peak of 448 MiB of memory. The rebuild added `Flickering`
+and `Move high speed`, removed `FollowZone Isolated`, recounted some events such as
+`Approach rear` and `Social approach`, and left `Oral-oral Contact` as it was.
+
+### Rebuild by hand
+
+Without the op, run lmt-analysis yourself and give mosaic the rebuilt files as inputs:
+
+1. Copy the databases to a directory outside the dataset, keeping each file's stem so
+   that the entries keep their names.
+2. Rebuild the copies at the commit above with lmt-analysis's own `Rebuild_All_Events`
+   script, from your own environment.
+3. Declare both sources over the copies instead of the originals, scan them again, and
+   convert without `rebuild_run_id`. If the dataset already holds tables converted from
+   the originals, convert the tracks with `--json` and pass the variant it reports to
+   `convert-labels` as `--tracks-run-id`, as above.
+
+A rebuild can rewrite detections, so the tracks and the events of an entry must come
+from the same copy, which is why both sources move. The script's `maxT` is 7,776,000
+frames, three days at 30 fps, and it leaves out every later frame without an error. For
+a longer recording, use the op, which covers them.
+
+### Without lmt-analysis
+
+`trajectory-smooth` with `speed_threshold` set flags jumps and jitter in `bad_frame`.
+`interpolate_centroid=False` leaves the positions as they are when only the mask is
+wanted:
+
+```bash
+mosaic run -m dataset.yaml --feature trajectory-smooth \
+    --params '{"speed_threshold": 2565, "interpolate_centroid": false}'
+```
+
+`2565` pixels per second is a starting point: the per-frame jump of 85.5 pixels in
+LMT-MCP's instructions, at 30 fps. The flags are not Live Mouse Tracker's `Flickering`
+events, which differ in three ways:
+
+- `bad_frame` judges one step against a speed. LMT's rule looks at a window of steps and
+  flags only where the largest step is large and the steps' velocity varies, so a fast
+  straight run passes it and can fail `bad_frame`.
+- The threshold is in pixels per second, and a step across a gap is allowed the gap's
+  seconds. LMT's thresholds are pixels per frame over consecutive frames.
+- A flag is extended by `expand_frames` rows, not by a centered window of frames.
 
 ## Synthetic tracks
 

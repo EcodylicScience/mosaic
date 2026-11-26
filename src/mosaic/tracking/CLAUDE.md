@@ -150,10 +150,45 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   own basedpyright execution environment, which resolves its bare
   `ultralytics_protocol` import.
 
+## The lmt-analysis environment
+
+- lmt-analysis is GPL-3.0 and runs only as a separate program.
+  `external/runner/lmt_rebuild_runner.py` is the one file that imports `lmtanalysis`
+  and its `Rebuild_All_Events` script, through `importlib`, and it imports nothing
+  from mosaic. `tests/meta/test_external_tool_separation.py` checks both, and
+  `SEPARATED_TOOLS` lists the tool. No lmt-analysis code is copied or reimplemented.
+- `external/lmt-env/` declares the environment the user builds with
+  `uv sync --python 3.12`, and the user clones lmt-analysis beside it. `LMT_ENV`
+  (`common/lmt_env.py`) finds the interpreter through `MOSAIC_LMT_CONDA_ENV`,
+  `MOSAIC_LMT_PYTHON` or the directory's `.venv`. `MOSAIC_LMT_ANALYSIS_DIR` names the
+  checkout, and `lmt-env/lmt-analysis/` is the default. Neither enters a `run_id`.
+  `LMT_README` is the one path of the environment's README, and every environment refusal
+  names it.
+- A JSON report file, a command line and an exit status cross. Exit 3 is the
+  environment, 4 is the input (an unknown builder or a database without a readable
+  `FRAME` table) and 5 is `process` raising. In `rebuild` those three raise
+  `LmtRebuildError` and fail the entry. Exit 2 and any other status, or a report that
+  is missing or does not parse, raise `LmtRunnerDefect`, which fails the run. The
+  module docstring of `lmt_env.py` holds the table.
+- `rebuild-lmt-events` is a tracking op with its own root and the `rebuild` retention
+  class: `sweep-tracking` reclaims a finished copy after `--rebuild-days`. The root
+  declares `reads="none"`, so the op reads no media, has no prerequisites and declares
+  `reads_media` false. It is outside `TRACKERS`.
+- A row of the root's index means a finished copy. The op drops an entry's row before it
+  redoes the entry, and `entries_written` counts the entries it rebuilt and the ones it
+  found current.
+- The converters find a copy by the md5 of the raw file through `rebuilt_copy`
+  (`core/track_library/lmt_rebuild.py`), not through the index. A row lost to an
+  interrupted write affects only the sweep.
+- `tests/helpers/lmt_analysis.py` writes the stand-in checkout that the suite runs
+  against, from the names the runner reads and nothing else. No test needs the real
+  tool.
+
 ## Tool input per entry
 
-- `TrackingRoot.reads` declares `one-file`, `entry-files` or `in-process`, and decides
-  what must exist before a run: a join, a store export, or neither.
+- `TrackingRoot.reads` declares `one-file`, `entry-files`, `in-process` or `none`, and
+  decides what must exist before a run: a join, a store export, or neither. `none` is
+  a root that reads no media, and its op has no prerequisites.
   `plan_prerequisites` (`prerequisites.py`) answers that per entry from the same
   checks (`refuse_unreadable_entry` in `common/tool_input.py`), without a probe. It
   plans the run that each entry lacks: a join, a store export or a media variant.

@@ -8,20 +8,10 @@ rebuild on the copy. The program runs in the environment that
 ``convert-tracks`` and ``convert-labels`` read a copy through their
 ``rebuild_run_id`` param.
 
-**Layout.** One run is one directory under the ``rebuild-lmt-events`` root::
-
-    <run_id>/
-      .identity_scheme
-      <entry_key>/
-        <source file name>      the rebuilt copy
-        rebuild.json            the entry manifest
-        rebuild.log             the runner's output
-        rebuild-report.json     the runner's report
-        .mosaic-rebuild.json    the ``rebuild`` phase marker
-
-``index.csv`` beside the run directories holds one row per ``(run_id, entry)``,
-written last, so a row names only a finished directory. The sweeper reclaims
-rowed directories alone.
+**Layout.** One run is one directory under the ``rebuild-lmt-events`` root.
+:mod:`mosaic.core.track_library.lmt_rebuild` draws the tree. The root's ``index.csv``
+holds one row per ``(run_id, entry)``, written last, so a row names only a finished
+directory. The sweeper reclaims rowed directories alone.
 
 **The run id** is ``rebuild-lmt-events.<version>-<digest>`` over the lmt-analysis
 commit, the builders and the sorted md5 of each covered source

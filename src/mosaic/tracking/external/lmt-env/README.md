@@ -27,12 +27,11 @@ From the repository root:
 cd src/mosaic/tracking/external/lmt-env
 uv sync --python 3.12
 git clone https://github.com/fdechaumont/lmt-analysis.git lmt-analysis
-git -C lmt-analysis checkout <commit>
+git -C lmt-analysis checkout 3ac90ec842b38e945a5d226dd2486880afbd766d
 ```
 
-`<commit>` is the commit of lmt-analysis that the import guide names. A run names
-the commit it uses, and the runner refuses a checkout at another commit or with a
-modified tracked file.
+That commit is the one the import guide names. A run names the commit it uses, and
+the runner refuses a checkout at another commit or with a modified tracked file.
 
 `pyproject.toml` admits Python 3.11 and 3.12. `uv sync` resolves from the committed
 `uv.lock`, which pins the packages that lmt-analysis lists in its

@@ -225,6 +225,25 @@ VAME
                embeddings of animal motion. Communications Biology
                5:1267. https://doi.org/10.1038/s42003-022-04080-7
 
+lmt-analysis
+  Origin:      https://github.com/fdechaumont/lmt-analysis
+  License:     GPL-3.0
+  Run by:      src/mosaic/tracking/external/runner/lmt_rebuild_runner.py,
+               in an environment the user builds
+               (src/mosaic/tracking/external/lmt-env/) beside a checkout of
+               lmt-analysis that the user clones. Mosaic does not import the
+               package, copy its code or vendor it, and its extras,
+               dependency groups and uv.lock do not name it. The runner
+               reaches it by name through importlib.
+  Obligation:  none on running it. The GPL does not restrict use.
+               Mosaic's runner, licensed AGPL-3.0-or-later like the rest
+               of mosaic, runs in lmt-analysis's process, a combination
+               that section 13 of both licenses permits. Whoever conveys a
+               built environment conveys lmt-analysis under GPL-3.0, with
+               its source.
+  Citation:    de Chaumont et al. (2019), given under Live Mouse Tracker in
+               FILE FORMATS MOSAIC READS below.
+
 Ultralytics YOLO
   Origin:      https://github.com/ultralytics/ultralytics
   Copyright:   (C) Ultralytics
@@ -448,6 +467,11 @@ Live Mouse Tracker
   Read by:     src/mosaic/core/track_library/lmt.py and
                src/mosaic/behavior/label_library/lmt_sqlite.py, which read
                the SQLite databases that Live Mouse Tracker writes.
+  Obligation:  none on running it. The GPL does not restrict use. The
+               import guide (docs/guides/tracking/import.md) also
+               describes running lmt-analysis by hand, outside mosaic, on
+               copies of the databases. Mosaic conveys no lmt-analysis
+               code either way.
   Citation:    de Chaumont, F., Ey, E., Torquet, N., Lagache, T.,
                Dallongeville, S., Imbert, A., Legou, T., Le Sourd, A.-M.,
                Faure, P., Bourgeron, T., Olivo-Marin, J.-C. (2019).
@@ -674,5 +698,6 @@ metadata only, so it does not see libraries bundled inside a wheel -- the
 FFmpeg builds in av and opencv-python-headless, or the CUDA runtime in
 xgboost -- which are described above instead. By default it reads mosaic's lock,
 the isolated keypoint-MoSeq lock and the isolated VAME lock. Pass --lock
-for the Ultralytics and POLO environment locks, which list the
-AGPL-licensed distributions and are not read by default.
+for the Ultralytics, POLO and lmt-analysis environment locks, which list
+the distributions of programs that run apart from mosaic and are not read
+by default.
