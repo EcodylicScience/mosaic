@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.label_intervals import LabelSegments
 from mosaic.core.pipeline.error_envelope import error_envelope
 from mosaic.core.pipeline.graph import run_pipeline
 from mosaic.core.pipeline.inventory import (
@@ -36,6 +37,7 @@ from mosaic.core.pipeline.preview import (
 )
 from tests.helpers import (
     speed_recipe,
+    add_segments_only_labels,
     add_track_sequences,
     add_tracks_table,
     assert_tree_unchanged,
@@ -579,6 +581,21 @@ def test_a_dense_labels_table_is_previewed(tmp_path: Path) -> None:
     assert labels.label_format == "dense"
     assert (labels.n_events, labels.frames_labeled, labels.n_pairs) == (6, 6, None)
     assert {c.id: c.events for c in labels.classes} == {0: 2, 1: 1, 2: 3}
+
+
+def test_a_segments_only_labels_variant_is_unreadable_as_frames(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    segments = LabelSegments(
+        start_frame=np.array([0]), end_frame=np.array([5]), label=np.array([1])
+    )
+    _ = add_segments_only_labels(
+        ds, *ENTRY, segments, names=["other", "attack"], run_id=LABELS_VARIANT
+    )
+
+    with pytest.raises(PreviewUnreadable, match="segments_v1"):
+        _ = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
 
 
 def test_previewing_labels_writes_nothing_and_unpickles_nothing(

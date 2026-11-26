@@ -40,7 +40,8 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.entry import Entry
-from mosaic.core.helpers import text_cell, to_safe_name
+from mosaic.core.helpers import detect_label_format, text_cell, to_safe_name
+from mosaic.core.label_intervals import refuse_segments_only
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pipeline.dataset_indexes import (
     label_kinds,
@@ -602,10 +603,12 @@ def _label_draft(
     """The row of the label file at *path*, as its contents and its name give it.
 
     Raises:
+        SegmentsOnlyLabels: If the file is ``segments_v1``, which holds no frames.
         ValueError: If the file lacks a key that the row records, or its ``group``
             and ``sequence`` are not the entry whose key is the file's stem.
     """
     with np.load(path, allow_pickle=True) as loaded:
+        refuse_segments_only(detect_label_format(loaded), path, "index_labels_variant")
         for key in ("label_format", "frames", "label_ids", "label_names"):
             if key not in loaded.files:
                 raise ValueError(f"{path} has no {key!r} array.")

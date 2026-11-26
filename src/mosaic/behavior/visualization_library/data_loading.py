@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from mosaic.core.helpers import detect_label_format
+from mosaic.core.label_intervals import refuse_segments_only
 from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_rows,
@@ -227,6 +229,7 @@ def load_ground_truth_labels(
 
     Raises:
         FileNotFoundError: No labels of *label_kind* exist, or none of the entry.
+        SegmentsOnlyLabels: The file is ``segments_v1``, which holds no frames.
         ValueError: The entry has two variants in one dataset.
     """
     rows = labels_rows(ds, label_kind)
@@ -246,6 +249,7 @@ def load_ground_truth_labels(
 
     path = ds.resolve_path(str(hits.iloc[0]["abs_path"]))
     payload = np.load(path, allow_pickle=True)
+    refuse_segments_only(detect_label_format(payload), path, "load_ground_truth_labels")
     label_ids = payload["labels"]
     if "frames" in payload.files:
         frames = payload["frames"]

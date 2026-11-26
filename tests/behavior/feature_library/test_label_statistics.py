@@ -44,7 +44,7 @@ from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.schema import ensure_track_schema
 
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_segments_only_labels
 
 FPS = 10.0
 ENTRY = ("", "s")
@@ -132,13 +132,18 @@ def _segments() -> LabelSegments:
 
 
 def _label_file(
-    path: Path, segments: LabelSegments | None, dense: list[int] | None = None
+    path: Path,
+    segments: LabelSegments | None,
+    dense: list[int] | None = None,
+    quality: list[int] | None = None,
 ) -> Path:
     payload: dict[str, object] = {
         "label_format": "dense",
         "label_ids": LABEL_IDS,
         "label_names": LABEL_NAMES,
     }
+    if quality is not None:
+        payload["quality_label_ids"] = np.asarray(quality, dtype=np.int32)
     if segments is not None:
         payload["labels"] = segments.to_dense(20, policy="shortest")
         payload.update(segments.to_payload())
@@ -742,6 +747,29 @@ def test_segments_keep_their_overlap(tmp_path: Path) -> None:
     assert row["entropy"] == pytest.approx(_bits(0.5, 0.2), rel=1e-6)
 
 
+def test_a_segments_only_file_gives_the_statistics_of_its_segments(
+    tmp_path: Path,
+) -> None:
+    """The file of :func:`test_segments_keep_their_overlap` without a dense array."""
+    path = write_segments_only_labels(
+        tmp_path / "s.npz", _segments(), names=["none", "rest", "groom"]
+    )
+    with np.load(path, allow_pickle=False) as npz:
+        assert "labels" not in npz.files
+
+    row = _row(
+        _ground_truth_feature(path, ignore=["none"]).apply(
+            _tracks({0: list(range(20))})
+        ),
+        0,
+    )
+
+    assert row["usage__rest"] == pytest.approx(0.5)
+    assert row["usage__groom"] == pytest.approx(0.2)
+    assert row["coverage"] == pytest.approx(0.6)
+    assert (row["n_bouts"], row["bouts__rest"], row["bouts__groom"]) == (3, 1, 2)
+
+
 def test_segments_on_every_other_frame_last_as_long_as_on_every_frame(
     tmp_path: Path,
 ) -> None:
@@ -894,7 +922,75 @@ def test_ignoring_every_label_is_refused(tmp_path: Path) -> None:
     """Default states less ignore leaving nothing would emit a row of NaNs."""
     path = _label_file(tmp_path / "s.npz", None, dense=[1, 1, 2, 2])
     feature = _ground_truth_feature(path, ignore=["none", "rest", 2])
-    with pytest.raises(ValueError, match="no state left"):
+    with pytest.raises(ValueError, match=r"ignore \['none', 'rest', 2\] removes every"):
+        _ = feature.apply(_tracks({0: [0, 1, 2, 3]}))
+
+
+def test_a_quality_label_has_no_column_and_counts_toward_frames_only(
+    tmp_path: Path,
+) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1, 2, 2], quality=[0])
+    out = _ground_truth_feature(path).apply(_tracks({0: [0, 1, 2, 3, 4, 5]}))
+    row = _row(out, 0)
+    assert "usage__none" not in row.index
+    assert row["n_frames"] == 6
+    assert row["usage__rest"] == pytest.approx(1 / 3)
+    assert row["usage__groom"] == pytest.approx(1 / 3)
+    assert row["coverage"] == pytest.approx(2 / 3)
+
+
+def test_a_quality_label_is_ignored_when_states_name_another_label(
+    tmp_path: Path,
+) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1], quality=[0])
+    out = _ground_truth_feature(path, states=["rest"]).apply(_tracks({0: [0, 1, 2, 3]}))
+    row = _row(out, 0)
+    assert "usage__none" not in row.index
+    assert row["n_frames"] == 4
+    assert row["usage__rest"] == pytest.approx(0.5)
+    assert row["coverage"] == pytest.approx(0.5)
+
+
+def test_a_quality_label_that_states_name_is_counted(tmp_path: Path) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1], quality=[0])
+    out = _ground_truth_feature(path, states=["none", "rest"]).apply(
+        _tracks({0: [0, 1, 2, 3]})
+    )
+    row = _row(out, 0)
+    assert row["usage__none"] == pytest.approx(0.5)
+    assert row["usage__rest"] == pytest.approx(0.5)
+    assert row["coverage"] == pytest.approx(1.0)
+
+
+def test_a_label_in_neither_states_nor_ignore_is_refused_without_quality_ids(
+    tmp_path: Path,
+) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1])
+    feature = _ground_truth_feature(path, states=["rest"])
+    with pytest.raises(ValueError, match=r"nor ignore \[\]\. Add it"):
+        _ = feature.apply(_tracks({0: [0, 1, 2, 3]}))
+
+
+def test_a_refusal_names_the_quality_ids_the_file_added_to_ignore(
+    tmp_path: Path,
+) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 1, 2, 2], quality=[0])
+    feature = _ground_truth_feature(path, states=["rest"])
+    with pytest.raises(
+        ValueError, match=r"nor ignore \[\] plus the file's quality_label_ids \[0\]"
+    ):
+        _ = feature.apply(_tracks({0: [0, 1, 2, 3]}))
+
+
+def test_ignoring_every_other_label_than_the_quality_labels_is_refused(
+    tmp_path: Path,
+) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1], quality=[1, 2])
+    feature = _ground_truth_feature(path, ignore=["none"])
+    with pytest.raises(
+        ValueError,
+        match=r"ignore \['none'\] plus the file's quality_label_ids \[1, 2\] removes",
+    ):
         _ = feature.apply(_tracks({0: [0, 1, 2, 3]}))
 
 

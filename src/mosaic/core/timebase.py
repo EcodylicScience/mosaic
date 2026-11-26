@@ -47,6 +47,7 @@ __all__ = [
     "IrregularNotice",
     "TimeAxis",
     "collect_irregular_notices",
+    "first_frames_at_or_after",
     "frame_step",
     "last_frames_at_or_before",
     "local_periods",
@@ -433,6 +434,15 @@ def uniform_grid_rate(df: pd.DataFrame, who: str) -> float:
     return axis.rate
 
 
+def _rows_by_time(
+    track_frames: NDArray[np.float64], track_times: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The times and frames of the rows with both finite, stably sorted by time."""
+    keep = np.isfinite(track_frames) & np.isfinite(track_times)
+    order = np.argsort(track_times[keep], kind="stable")
+    return track_times[keep][order], track_frames[keep][order]
+
+
 def last_frames_at_or_before(
     track_frames: NDArray[np.float64],
     track_times: NDArray[np.float64],
@@ -454,14 +464,43 @@ def last_frames_at_or_before(
         The frame for each event, NaN where the event is before the first track
         row or no track row has a finite time.
     """
-    keep = np.isfinite(track_frames) & np.isfinite(track_times)
-    order = np.argsort(track_times[keep], kind="stable")
-    times = track_times[keep][order]
-    frames = track_frames[keep][order]
+    times, frames = _rows_by_time(track_frames, track_times)
     out = np.full(seconds.shape, np.nan)
     if times.size == 0:
         return out
     at = np.searchsorted(times, seconds, side="right") - 1
     inside = at >= 0
+    out[inside] = frames[at[inside]]
+    return out
+
+
+def first_frames_at_or_after(
+    track_frames: NDArray[np.float64],
+    track_times: NDArray[np.float64],
+    seconds: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """The first track frame whose time is at or after each of *seconds*.
+
+    The ceiling that :func:`last_frames_at_or_before` is the floor of: the frame an
+    event that starts at a given second first shows on, when the track is timed by
+    ``time``. A second between two rows gives the later row, and on a table that
+    dropped frames a second inside the gap gives the frame after it. A second that
+    is before the first row gives the first frame.
+
+    Args:
+        track_frames: The frame of each track row.
+        track_times: The time of each track row, in seconds.
+        seconds: The event times.
+
+    Returns:
+        The frame for each event, NaN where the event is after the last track row
+        or no track row has a finite time.
+    """
+    times, frames = _rows_by_time(track_frames, track_times)
+    out = np.full(seconds.shape, np.nan)
+    if times.size == 0:
+        return out
+    at = np.searchsorted(times, seconds, side="left")
+    inside = at < times.size
     out[inside] = frames[at[inside]]
     return out

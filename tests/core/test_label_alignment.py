@@ -20,7 +20,8 @@ from mosaic.core.helpers import (
     load_labels_auto,
     load_labels_for_feature_frames,
 )
-from tests.helpers import write_sparse_labels
+from mosaic.core.label_intervals import LabelSegments, SegmentsOnlyLabels
+from tests.helpers import write_segments_only_labels, write_sparse_labels
 
 
 def _sparse(
@@ -178,3 +179,26 @@ def test_a_filter_of_the_wrong_shape_is_refused(tmp_path: Path) -> None:
         _ = load_labels_for_feature_frames(
             path, np.array([0, 1]), individual_filter=_rows((0, 1))
         )
+
+
+def _segments_only(path: Path) -> Path:
+    segments = LabelSegments(
+        start_frame=np.array([0]), end_frame=np.array([5]), label=np.array([1])
+    )
+    return write_segments_only_labels(path, segments, names=["rest", "chase"])
+
+
+def test_a_segments_only_file_is_refused_by_the_frame_reader(tmp_path: Path) -> None:
+    path = _segments_only(tmp_path / "a.npz")
+
+    with pytest.raises(
+        SegmentsOnlyLabels, match=r"segments_v1.*load_labels_for_feature_frames"
+    ):
+        _ = load_labels_for_feature_frames(path, np.arange(5))
+
+
+def test_a_segments_only_file_is_refused_by_load_labels_auto(tmp_path: Path) -> None:
+    path = _segments_only(tmp_path / "a.npz")
+
+    with pytest.raises(SegmentsOnlyLabels, match=r"segments_v1.*load_labels_auto"):
+        _ = load_labels_auto(path)

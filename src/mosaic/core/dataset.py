@@ -47,6 +47,7 @@ from .helpers import (
     text_cell,
     to_safe_name,
 )
+from .label_intervals import refuse_segments_only
 from .media.drift import MeasurementOrigin, MediaDrift, classify_identity
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
@@ -12583,6 +12584,24 @@ class Dataset:
         unlabelled row, and two genuine recipes raise rather than silently taking
         the first.
         """
+        return self._label_file(group, sequence, kind, labels_run_id)[1]
+
+    def _label_file(
+        self,
+        group: str,
+        sequence: str,
+        kind: str,
+        labels_run_id: Optional[str],
+    ) -> tuple[Path, dict[str, NDArray[np.generic]]]:
+        """The resolved label file of ``(group, sequence)`` and its arrays.
+
+        :meth:`load_labels` documents which variant is read. A reader that
+        refuses a format names the file from the path.
+
+        Raises:
+            ValueError: No labels of the entry, or the row records no path.
+            FileNotFoundError: The file is gone.
+        """
         df = select_label_variant_rows(labels_rows(self, kind), labels_run_id)
         df = df[
             (df["group"].astype(str) == group)
@@ -12606,7 +12625,7 @@ class Dataset:
         with np.load(path, allow_pickle=True) as npz:
             data = {key: npz[key] for key in npz.files}
 
-        return data
+        return path, data
 
     def get_label_map(
         self, kind: str = "behavior", labels_run_id: Optional[str] = None
@@ -12665,7 +12684,12 @@ class Dataset:
             - labels: np.ndarray of behavior IDs
             - individual_ids: np.ndarray of shape (n_events, 2)
         """
-        data = self.load_labels(group, sequence, kind)
+        path, data = self._label_file(group, sequence, kind, None)
+        refuse_segments_only(
+            str(data.get("label_format", "")),
+            path,
+            "Dataset.get_labels_for_individual",
+        )
 
         # Check format
         if "individual_ids" not in data:
@@ -12729,7 +12753,10 @@ class Dataset:
             - labels: np.ndarray of behavior IDs
             - individual_ids: np.ndarray or None
         """
-        data = self.load_labels(group, sequence, kind)
+        path, data = self._label_file(group, sequence, kind, None)
+        refuse_segments_only(
+            str(data.get("label_format", "")), path, "Dataset.get_labels_at_frame"
+        )
 
         mask = data["frames"] == frame
 

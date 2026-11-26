@@ -33,9 +33,9 @@ What lives where:
 - ``column_contract`` checks a feature's output against the columns that
   validation predicts from its declaration, and a pair table's mirror rows.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
-- ``labels`` writes converted label files of events, and their index rows, and
-  holds the label converters that the conversion tests register. It also writes
-  raw predictions tables and scans them as a labels source.
+- ``labels`` writes converted label files of events and of segments only, and their
+  index rows, and holds the label converters that the conversion tests register. It
+  also writes raw predictions tables and scans them as a labels source.
 - ``failures`` -- failure records written into a dataset, a quarantined entry of
   a step.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
@@ -536,10 +536,12 @@ from tests.helpers.labels import (
     TracksAxisEntries,
     add_labels,
     add_predictions,
+    add_segments_only_labels,
     scan_predictions_tables,
     write_lineage_run,
     write_listed_entries,
     write_predictions,
+    write_segments_only_labels,
     write_sparse_labels,
 )
 from tests.helpers.linked import (
@@ -910,6 +912,7 @@ __all__ = [
     "add_feature_run",
     "add_labels",
     "add_predictions",
+    "add_segments_only_labels",
     "scan_predictions_tables",
     "add_media_sequence",
     "add_media_variant",
@@ -1176,6 +1179,7 @@ __all__ = [
     "write_lineage_run",
     "write_listed_entries",
     "write_predictions",
+    "write_segments_only_labels",
     "write_sparse_labels",
     "write_templates_study",
     "write_driver_lease",

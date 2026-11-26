@@ -47,6 +47,13 @@ reader switching on a key sees a new one: those switch on ``label_format``,
 any of them. A reader that does not know the sidecar reads the file exactly as
 before; one that does (:func:`segments_from_npz`) reads the segments losslessly.
 
+A file whose ``label_format`` is ``segments_v1`` (:data:`SEGMENTS_FORMAT`) is the
+sidecar alone: it contains the sidecar, ``label_ids``, ``label_names`` and
+``label_format``, without a dense or event array. A converter writes one where
+painting its segments onto frames would lose them. Every reader of a file's frames
+refuses it through :func:`refuse_segments_only`. ``label-statistics`` reads its
+segments.
+
 **Seconds become frames by the midpoint rule.** Frame ``i`` is the interval
 ``[i/fps, (i+1)/fps)``, and it belongs to the segment ``[start_s, end_s)`` that
 holds its midpoint ``(i + 1/2)/fps``. Applied to both ends of every segment by
@@ -60,6 +67,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Final, Literal, get_args
 
 import numpy as np
@@ -74,11 +82,14 @@ __all__ = [
     "SEG_LABEL",
     "SEG_START_FRAME",
     "SEG_WEIGHT",
+    "SEGMENTS_FORMAT",
     "LabelSegments",
     "OverlapPolicy",
     "SegmentOverlapError",
+    "SegmentsOnlyLabels",
     "intervals_to_dense",
     "label_vocabulary",
+    "refuse_segments_only",
     "seconds_to_frames",
     "segments_from_npz",
 ]
@@ -91,6 +102,9 @@ SEG_END_FRAME: Final = "seg_end_frame"
 SEG_LABEL: Final = "seg_label"
 SEG_WEIGHT: Final = "seg_weight"
 SEG_INDIVIDUAL: Final = "seg_individual"
+
+SEGMENTS_FORMAT: Final = "segments_v1"
+"""The ``label_format`` of a file that contains the segment sidecar alone."""
 
 SCENE_LEVEL: Final = -1
 """The ``seg_individual`` value of a segment about the scene rather than one track."""
@@ -108,6 +122,31 @@ _INT32 = np.iinfo(np.int32)
 
 class SegmentOverlapError(ValueError):
     """Two segments cover one frame and the policy was ``"refuse"``."""
+
+
+class SegmentsOnlyLabels(ValueError):
+    """A reader of a label file's frames was given a ``segments_v1`` file."""
+
+
+def refuse_segments_only(label_format: str, path: Path | str, reader: str) -> None:
+    """Raise :class:`SegmentsOnlyLabels` when *label_format* is ``segments_v1``.
+
+    A reader of a label file's frames calls it with the file's format before it
+    reads an array a segments-only file does not hold.
+
+    Args:
+        label_format: The file's format, as ``detect_label_format`` gives it.
+        path: The file, named in the message.
+        reader: The public function or method that refuses, named in the message.
+
+    Raises:
+        SegmentsOnlyLabels: *label_format* is :data:`SEGMENTS_FORMAT`.
+    """
+    if label_format == SEGMENTS_FORMAT:
+        raise SegmentsOnlyLabels(
+            f"{path} contains segments only ({SEGMENTS_FORMAT}), which {reader} "
+            "cannot read frame by frame. label-statistics reads segments."
+        )
 
 
 def _as_vector(name: str, values: ArrayLike) -> NDArray[Any]:

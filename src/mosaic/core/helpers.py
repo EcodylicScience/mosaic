@@ -16,6 +16,7 @@ from mosaic.core.entry import (
     parse_entry_key as parse_entry_key,
     to_safe_name as to_safe_name,
 )
+from mosaic.core.label_intervals import refuse_segments_only
 
 
 # The spellings a table cell uses for "nothing here". A blank CSV cell reads
@@ -347,10 +348,12 @@ def _row_events(
     *,
     default_label: int | None,
     deduplicate_symmetric: bool,
+    reader: str,
 ) -> RowEvents:
     """The event labeling each frame of *feature_frames* in the file at *path*.
 
-    :func:`load_labels_for_feature_frames` documents the arguments.
+    :func:`load_labels_for_feature_frames` documents the arguments. *reader*
+    names the public function a ``segments_v1`` file is refused for.
     """
     with np.load(path, allow_pickle=True) as npz:
         fmt = detect_label_format(npz)
@@ -397,6 +400,7 @@ def _row_events(
                 positions=positions, matches=inside.astype(np.int64), labels=labels
             )
 
+        refuse_segments_only(fmt, path, reader)
         raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
 
 
@@ -693,6 +697,7 @@ def load_labels_auto(
             return labels
 
         else:
+            refuse_segments_only(fmt, path, "load_labels_auto")
             raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
 
 
@@ -772,6 +777,7 @@ def load_labels_for_feature_frames(
         individual_filter,
         default_label=default_label,
         deduplicate_symmetric=deduplicate_symmetric,
+        reader="load_labels_for_feature_frames",
     ).labels
 
 
@@ -801,6 +807,7 @@ def events_for_frames(
         a dense file is :data:`UNLABELED`. Label controls are not applied.
 
     Raises:
+        SegmentsOnlyLabels: The file is ``segments_v1``, which holds no frames.
         ValueError: The file is of no known label format.
     """
     return _row_events(
@@ -809,6 +816,7 @@ def events_for_frames(
         individual_filter,
         default_label=None,
         deduplicate_symmetric=True,
+        reader="events_for_frames",
     )
 
 

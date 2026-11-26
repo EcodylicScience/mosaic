@@ -24,15 +24,19 @@ from mosaic.core.label_intervals import (
     SEG_END_FRAME,
     SEG_LABEL,
     SEG_START_FRAME,
+    SEGMENTS_FORMAT,
     LabelSegments,
     OverlapPolicy,
     SegmentOverlapError,
+    SegmentsOnlyLabels,
     intervals_to_dense,
     label_vocabulary,
+    refuse_segments_only,
     seconds_to_frames,
     segments_from_npz,
 )
 from mosaic.core.pipeline._utils import atomic_savez
+from tests.helpers import write_segments_only_labels
 
 # --- seconds_to_frames -------------------------------------------------------
 
@@ -390,3 +394,64 @@ def test_the_vocabulary_maps_ids_to_names() -> None:
     assert label_vocabulary({"labels": np.zeros(2)}) == {}
     with pytest.raises(ValueError, match="label_names"):
         _ = label_vocabulary({"label_ids": np.array([0, 1]), "label_names": names[:1]})
+
+
+# --- the segments-only format --------------------------------------------------
+
+
+def test_a_segments_only_file_is_refused_by_a_reader_of_frames(tmp_path: Path) -> None:
+    path = tmp_path / "labels.npz"
+
+    with pytest.raises(SegmentsOnlyLabels, match=r"labels\.npz.*segments_v1.*a reader"):
+        refuse_segments_only(SEGMENTS_FORMAT, path, "a reader")
+
+
+@pytest.mark.parametrize("label_format", ["dense", "individual_pair_v1", ""])
+def test_every_other_format_passes_the_segments_only_refusal(
+    label_format: str, tmp_path: Path
+) -> None:
+    refuse_segments_only(label_format, tmp_path / "labels.npz", "a reader")
+
+
+def test_the_segments_only_refusal_is_a_value_error() -> None:
+    assert issubclass(SegmentsOnlyLabels, ValueError)
+    assert SEGMENTS_FORMAT == "segments_v1"
+
+
+def test_the_refusal_says_which_reader_cannot_read_frames_and_what_can(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SegmentsOnlyLabels) as raised:
+        refuse_segments_only(SEGMENTS_FORMAT, tmp_path / "a.npz", "some_reader")
+
+    assert str(raised.value) == (
+        f"{tmp_path / 'a.npz'} contains segments only (segments_v1), which "
+        "some_reader cannot read frame by frame. label-statistics reads segments."
+    )
+
+
+def test_a_segments_only_file_reads_back_as_its_segments(tmp_path: Path) -> None:
+    segments = LabelSegments(
+        start_frame=np.array([0, 5, 5]),
+        end_frame=np.array([9, 8, 20]),
+        label=np.array([1, 0, 1]),
+        weight=np.array([1.0, 0.5, 0.25]),
+        individual=np.array([0, 1, -1]),
+    )
+    path = write_segments_only_labels(
+        tmp_path / "labels.npz", segments, names=["rest", "chase"]
+    )
+
+    with np.load(path, allow_pickle=False) as npz:
+        assert detect_label_format(npz) == SEGMENTS_FORMAT
+        assert "labels" not in npz.files and "frames" not in npz.files
+        read = segments_from_npz(npz)
+
+    assert read is not None
+    assert np.array_equal(read.start_frame, segments.start_frame)
+    assert np.array_equal(read.end_frame, segments.end_frame)
+    assert np.array_equal(read.label, segments.label)
+    assert segments.weight is not None and segments.individual is not None
+    assert read.weight is not None and read.individual is not None
+    assert np.array_equal(read.weight, segments.weight)
+    assert np.array_equal(read.individual, segments.individual)

@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.timebase import (
+    first_frames_at_or_after,
     frame_step,
     last_frames_at_or_before,
     local_periods,
@@ -119,6 +120,52 @@ def test_an_event_maps_to_the_last_frame_at_or_before_its_second() -> None:
     assert at[1] == 89.0
     assert at[2] == float(times.size - 1)
     assert np.isnan(at[3])
+
+
+def test_a_second_on_a_row_gives_that_row_and_between_rows_the_later() -> None:
+    times = np.arange(10, dtype=np.float64) * 0.1
+    frames = np.arange(10, dtype=np.float64) * 2.0 + 100.0
+    at = first_frames_at_or_after(frames, times, np.array([0.3, 0.35]))
+    assert at[0] == 106.0
+    assert at[1] == 108.0
+
+
+def test_a_second_inside_a_gap_gives_the_frame_after_it() -> None:
+    times = dropped_frame_times()
+    frames = np.arange(times.size, dtype=np.float64) * 2.0 + 100.0
+    inside_gap = float(times[89] + 0.7)
+    at = first_frames_at_or_after(frames, times, np.array([inside_gap]))
+    assert at[0] == frames[90]
+
+
+def test_a_second_before_the_first_row_gives_the_first_frame() -> None:
+    times = dropped_frame_times()
+    frames = np.arange(times.size, dtype=float)
+    at = first_frames_at_or_after(frames, times, np.array([times[0] - 1.0]))
+    assert at[0] == 0.0
+
+
+def test_a_second_past_the_last_row_gives_nan() -> None:
+    times = dropped_frame_times()
+    frames = np.arange(times.size, dtype=float)
+    at = first_frames_at_or_after(frames, times, np.array([times[-1], times[-1] + 1.0]))
+    assert at[0] == float(times.size - 1)
+    assert np.isnan(at[1])
+
+
+def test_an_axis_without_a_finite_time_gives_nan_everywhere() -> None:
+    frames = np.arange(4, dtype=float)
+    times = np.full(4, np.nan)
+    at = first_frames_at_or_after(frames, times, np.array([0.0, 1.0]))
+    assert np.isnan(at).all()
+
+
+def test_the_lookup_sorts_by_time_and_drops_rows_without_a_frame_or_time() -> None:
+    frames = np.array([2.0, 0.0, np.nan, 1.0, 3.0])
+    times = np.array([0.2, 0.0, 0.15, 0.1, np.nan])
+    at = first_frames_at_or_after(frames, times, np.array([0.05, 0.15]))
+    assert at[0] == 1.0
+    assert at[1] == 2.0
 
 
 def test_a_float32_time_does_not_bias_the_measured_rate() -> None:

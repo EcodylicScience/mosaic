@@ -16,9 +16,10 @@ import pandas as pd
 import pytest
 
 from mosaic.core.helpers import UNLABELED, RowEvents, events_for_frames
+from mosaic.core.label_intervals import LabelSegments, SegmentsOnlyLabels
 from mosaic.core.pipeline.loading import events_for_rows, labels_for_rows
 from mosaic.core.pipeline.types import GroundTruthLabelsSource
-from tests.helpers import write_sparse_labels
+from tests.helpers import write_segments_only_labels, write_sparse_labels
 
 Event = tuple[int, int, int, int]
 
@@ -168,3 +169,15 @@ def test_rows_without_a_frame_are_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="'frame'"):
         _ = events_for_rows(path, pd.DataFrame({"id": [0]}))
+
+
+def test_a_segments_only_file_is_refused_by_events_for_frames(tmp_path: Path) -> None:
+    segments = LabelSegments(
+        start_frame=np.array([0]), end_frame=np.array([5]), label=np.array([1])
+    )
+    path = write_segments_only_labels(
+        tmp_path / "a.npz", segments, names=["rest", "chase"]
+    )
+
+    with pytest.raises(SegmentsOnlyLabels, match=r"segments_v1.*events_for_frames"):
+        _ = events_for_frames(path, np.arange(5))

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import replace
+from operator import methodcaller
 from pathlib import Path
 from typing import ClassVar, override
 
@@ -16,6 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import EntryKeyCollisionError
 from mosaic.core.helpers import place_label_payload
+from mosaic.core.label_intervals import LabelSegments, SegmentsOnlyLabels
 from mosaic.core.label_converter import (
     LABEL_CONVERTERS,
     LabelConverter,
@@ -28,6 +31,7 @@ from mosaic.core.pipeline.labels_index import (
     LabelsRowDraft,
     LABELS_ROWS_PATH_COLUMNS,
     empty_labels_frame,
+    index_labels_variant,
     labels_rows,
     read_labels_index,
     readable_label_kinds,
@@ -48,8 +52,10 @@ from tests.helpers import (
     ListedEntries,
     SharedKeyRefusingEntries,
     add_labels,
+    add_segments_only_labels,
     add_track_sequences,
     add_tracks_table,
+    assert_tree_unchanged,
     calms21_dataset,
     copy_of,
     labelled_source,
@@ -60,6 +66,7 @@ from tests.helpers import (
     tree_snapshot,
     write_listed_entries,
     write_painted_recording,
+    write_segments_only_labels,
 )
 
 
@@ -560,6 +567,83 @@ def test_load_labels_resolves_and_reads(tmp_path: Path) -> None:
     data = ds.load_labels("g", "s1", "behavior")
     assert data["labels"].tolist() == [0, 1, 2, 3, 0]
     assert ds.get_label_map("behavior")[0] == "attack"
+
+
+# --- segments-only files ------------------------------------------------------
+
+_SEGMENTS = LabelSegments(
+    start_frame=np.array([0, 4]), end_frame=np.array([6, 9]), label=np.array([1, 0])
+)
+_SEGMENT_NAMES = ("rest", "chase")
+
+
+def test_load_labels_returns_the_arrays_of_a_segments_only_file(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+    _ = add_segments_only_labels(ds, "g", "s1", _SEGMENTS, names=_SEGMENT_NAMES)
+
+    data = ds.load_labels("g", "s1", "behavior")
+
+    assert str(data["label_format"]) == "segments_v1"
+    assert data["seg_start_frame"].tolist() == [0, 4]
+    assert data["label_names"].tolist() == ["rest", "chase"]
+    assert "labels" not in data
+
+
+@pytest.mark.parametrize(
+    ("reader", "arguments"),
+    [
+        ("get_labels_for_individual", ("g", "s1", 0)),
+        ("get_labels_at_frame", ("g", "s1", 0)),
+    ],
+)
+def test_the_individual_and_frame_readers_refuse_a_segments_only_file(
+    tmp_path: Path, reader: str, arguments: tuple[str, str, int]
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+    path = add_segments_only_labels(ds, "g", "s1", _SEGMENTS, names=_SEGMENT_NAMES)
+
+    with pytest.raises(
+        SegmentsOnlyLabels, match=rf"segments_v1.*Dataset\.{reader}"
+    ) as raised:
+        _ = methodcaller(reader, *arguments)(ds)
+
+    assert str(path) in str(raised.value)
+
+
+def test_an_unlabelled_entry_still_raises_value_error_from_get_labels_at_frame(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False, ensure_roots=False)
+
+    with pytest.raises(ValueError, match="No labels found"):
+        _ = methodcaller("get_labels_at_frame", "g", "s1", 0)(ds)
+
+
+def test_indexing_a_variant_holding_a_segments_only_file_is_refused(
+    tmp_path: Path,
+) -> None:
+    source = calms21_dataset(tmp_path / "source", {"train": {"ann": {"s1": 4}}})
+    _ = source.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    rows = read_labels_index(source, "behavior")
+    variant = str(rows["run_id"].iloc[0])
+    origin = source.get_root("labels") / "behavior" / variant
+    target = make_dataset(tmp_path / "target", name="target")
+    placed = target.get_root("labels") / "behavior" / variant
+    placed.mkdir(parents=True)
+    for path in origin.iterdir():
+        if path.suffix == ".json":
+            _ = shutil.copy2(path, placed / path.name)
+    _ = write_segments_only_labels(
+        placed / "train__s1.npz", _SEGMENTS, names=_SEGMENT_NAMES
+    )
+    before = tree_snapshot(target.base_dir)
+
+    with pytest.raises(SegmentsOnlyLabels, match=r"segments_v1.*index_labels_variant"):
+        _ = index_labels_variant(target, "behavior", variant)
+
+    assert_tree_unchanged(target.base_dir, before)
 
 
 # --- the rows a converter selects, and one entry key from two sources --------

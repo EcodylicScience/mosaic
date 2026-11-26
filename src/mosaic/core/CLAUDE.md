@@ -371,11 +371,12 @@ importing `mosaic.tracking` registers neither.
 - **`core/timebase.py` is the one reading of `time`.** `step_seconds` gives the seconds
   between rows, `uniform_grid_rate` a rate measured as the frame span over the time span
   with a warning on uneven steps, `row_seconds` the seconds each row stands for, per
-  series, `frame_step` the frame gap of a decimated table, and
-  `last_frames_at_or_before` the frame of an event second. A feature takes no frame rate
-  of its own, and `resample-tracks` interpolates on `time`. It imports numpy and the
-  standard-library `mosaic.runlog`, whose `time_irregular_sentence` is the one wording
-  of the uneven-time warning (`tests/core/test_timebase.py`).
+  series, `frame_step` the frame gap of a decimated table, `last_frames_at_or_before`
+  and `first_frames_at_or_after` the frame of an event second, as a floor and as a
+  ceiling. A feature takes no frame rate of its own, and `resample-tracks` interpolates
+  on `time`. It imports numpy and the standard-library `mosaic.runlog`, whose
+  `time_irregular_sentence` is the one wording of the uneven-time warning
+  (`tests/core/test_timebase.py`).
 - **A `ClockedLabelConverter` maps event seconds through a `TrackClock`,** which
   `convert_all_labels` builds from each entry's tracks
   (`_EntryTracks` in `dataset.py`, which reads the tracks index and selects the
@@ -394,6 +395,10 @@ importing `mosaic.tracking` registers neither.
   uses it, or leaves the step unresolved
   (`tests/behavior/label_library/test_event_seconds_on_tracks.py`,
   `tests/core/pipeline/graph/test_pipeline_label_order.py`).
+- A `segments_v1` label file contains the segment sidecar alone. `label-statistics`
+  reads it, and every reader of a label file's frames refuses it through
+  `refuse_segments_only` (`core/label_intervals.py`). A new reader calls it too
+  (`tests/core/test_label_intervals.py`).
 
 ## Parameter models
 

@@ -3,8 +3,9 @@ writes them, the label converters the conversion tests register, and raw predict
 tables scanned as a labels source.
 
 A label file is ``individual_pair_v1``: one row per ``(frame, id1, id2, label)``
-event. The default vocabulary is CalMS21's, whose every class is a behavior, so
-the default ``background_id`` is ``-1``.
+event, and a segments-only file is ``segments_v1``. The default vocabulary is
+CalMS21's, whose every class is a behavior, so the default ``background_id`` is
+``-1``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from mosaic.core.label_converter import (
     LabelEntry,
     TrackClock,
 )
+from mosaic.core.label_intervals import SEGMENTS_FORMAT, LabelSegments
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.labels_index import write_labels_row
 
@@ -130,6 +132,82 @@ def add_labels(
         label_names=",".join(CALMS21_NAMES),
         source=source,
         consumed_source_roots=consumed_source_roots,
+    )
+    return path
+
+
+def write_segments_only_labels(
+    path: Path, segments: LabelSegments, *, names: Sequence[str]
+) -> Path:
+    """Write a ``segments_v1`` file of *segments* at *path*.
+
+    The file contains the segment sidecar, ``label_ids`` ``0..len(names) - 1``,
+    ``label_names`` and ``background_id`` ``-1``, without a dense or event array.
+
+    Args:
+        path: The ``.npz`` to write. Its directory is created.
+        segments: The segments.
+        names: The vocabulary, ids ``0..len(names) - 1``.
+
+    Returns:
+        *path*.
+    """
+    payload: dict[str, np.ndarray] = {
+        "label_format": np.array(SEGMENTS_FORMAT),
+        **segments.to_payload(),
+        "label_ids": np.arange(len(names), dtype=np.int32),
+        "label_names": np.array(list(names)),
+        "background_id": np.array(-1, dtype=np.int32),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, allow_pickle=False, **payload)
+    return path
+
+
+def add_segments_only_labels(
+    ds: Dataset,
+    group: str,
+    sequence: str,
+    segments: LabelSegments,
+    *,
+    names: Sequence[str],
+    run_id: str = LABELS_VARIANT,
+    label_kind: str = "behavior",
+) -> Path:
+    """Write the segments-only labels of one entry and their index row.
+
+    Args:
+        ds: The dataset.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        segments: The entry's segments.
+        names: The vocabulary, ids ``0..len(names) - 1``.
+        run_id: The labels variant the file is filed under.
+        label_kind: The kind the file is filed under.
+
+    Returns:
+        The written file.
+    """
+    path = write_segments_only_labels(
+        ds.get_root("labels")
+        / label_kind
+        / run_id
+        / f"{make_entry_key(group, sequence)}.npz",
+        segments,
+        names=names,
+    )
+    write_labels_row(
+        ds,
+        run_id=run_id,
+        group=group,
+        sequence=sequence,
+        out_path=path,
+        producer="convert-labels-calms21_npy",
+        label_kind=label_kind,
+        label_format=SEGMENTS_FORMAT,
+        n_frames=int(segments.end_frame.max()) if len(segments) else 0,
+        label_ids=",".join(str(index) for index in range(len(names))),
+        label_names=",".join(names),
     )
     return path
 

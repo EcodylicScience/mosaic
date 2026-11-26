@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from mosaic.behavior.visualization_library.data_loading import load_ground_truth_labels
+from mosaic.core.label_intervals import LabelSegments, SegmentsOnlyLabels
 from tests.helpers import (
     SOURCE_ENTRIES,
     add_labels,
+    add_segments_only_labels,
     copy_of,
     labelled_source,
     make_dataset,
@@ -60,3 +63,16 @@ def test_absent_labels_raise_file_not_found(tmp_path: Path) -> None:
         _ = load_ground_truth_labels(empty, "behavior", "g", "s1")
     with pytest.raises(FileNotFoundError, match="sequence='other'"):
         _ = load_ground_truth_labels(source, "behavior", "g", "other")
+
+
+def test_a_segments_only_file_is_refused_by_playback(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    segments = LabelSegments(
+        start_frame=np.array([0]), end_frame=np.array([5]), label=np.array([1])
+    )
+    _ = add_segments_only_labels(ds, "g", "s1", segments, names=["rest", "chase"])
+
+    with pytest.raises(
+        SegmentsOnlyLabels, match=r"segments_v1.*load_ground_truth_labels"
+    ):
+        _ = load_ground_truth_labels(ds, "behavior", "g", "s1")

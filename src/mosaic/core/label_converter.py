@@ -41,7 +41,10 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
-from mosaic.core.timebase import last_frames_at_or_before
+from mosaic.core.timebase import (
+    first_frames_at_or_after,
+    last_frames_at_or_before,
+)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -124,8 +127,9 @@ class TrackClock:
     """The frames and times of each entry's tracks, for a converter of timed events.
 
     A converter of events stamped in seconds hands a second to
-    :meth:`frames_at_or_before` and gets the frame of the entry's tracks that the
-    clock puts it on: the last frame whose ``time`` is at or before the second,
+    :meth:`frames_at_or_before` or :meth:`frames_at_or_after` and gets the frame of
+    the entry's tracks that the clock puts it on: the last frame whose ``time`` is
+    at or before the second, or the first frame whose ``time`` is at or after it,
     which on a table that dropped frames is not ``seconds * fps``. The times are
     the entry's own: a division's event seconds count from the division's start,
     so the lookup subtracts the offset that its tracks' recording clock carries.
@@ -201,6 +205,21 @@ class TrackClock:
             return None
         self.used.add((group, sequence))
         return last_frames_at_or_before(tracks[0], tracks[1], seconds)
+
+    def frames_at_or_after(
+        self, group: str, sequence: str, seconds: NDArray[np.float64]
+    ) -> NDArray[np.float64] | None:
+        """The first frame at or after each of *seconds*, NaN past the last row.
+
+        Returns:
+            The frames, or ``None`` when the entry has no tracks, which the
+            converter answers with its own rate.
+        """
+        tracks = self._of(group, sequence)
+        if tracks is None:
+            return None
+        self.used.add((group, sequence))
+        return first_frames_at_or_after(tracks[0], tracks[1], seconds)
 
 
 class LabelConvertParams(Params):

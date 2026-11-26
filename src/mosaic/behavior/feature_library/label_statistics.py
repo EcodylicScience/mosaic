@@ -84,7 +84,8 @@ _STATES_DESCRIPTION = (
     "differ between entries whose files were converted with different "
     "vocabularies; a file that declares no label_ids has no vocabulary to "
     "default to and is refused. A label or value in neither states nor "
-    "ignore is refused."
+    "ignore is refused. A label file's quality_label_ids join ignore, "
+    "unless states names them."
 )
 
 _FPS_DESCRIPTION = (
@@ -107,7 +108,8 @@ _IGNORE_DESCRIPTION = (
     "Labels or values excluded from every statistic, such as a background "
     "or an unsure class. Their frames count toward n_frames only, so they "
     "lower coverage. Matched as states are, and refused when also listed in "
-    "states."
+    "states. A label file's quality_label_ids join it, unless states names "
+    "them."
 )
 
 _UNLABELLED: Final = -1
@@ -174,10 +176,35 @@ def _matches(ref: str | int, key: _Key) -> bool:
     return as_text is not None and ref == as_text
 
 
+@dataclass(frozen=True, slots=True)
+class _Ignore:
+    """The labels or values left out of every statistic, and where they came from.
+
+    ``params`` is the params' ``ignore``, ``quality`` the label file's
+    ``quality_label_ids``.
+    """
+
+    params: tuple[str | int, ...]
+    quality: tuple[int, ...] = ()
+
+    @property
+    def refs(self) -> tuple[str | int, ...]:
+        """Every label or value ignored, matched as a state is."""
+        return (*self.params, *self.quality)
+
+    def __str__(self) -> str:
+        if not self.quality:
+            return str(list(self.params))
+        return (
+            f"{list(self.params)} plus the file's quality_label_ids "
+            f"{list(self.quality)}"
+        )
+
+
 def _code_table(
     keys: Sequence[_Key],
     states: Sequence[str | int],
-    ignore: Sequence[str | int],
+    ignore: _Ignore,
     shown: Sequence[object],
 ) -> NDArray[np.int32]:
     """Each key's state index, or ``_UNLABELLED`` for an ignored one.
@@ -194,12 +221,12 @@ def _code_table(
             )
         if hits:
             table[position] = hits[0]
-        elif any(_matches(ref, key) for ref in ignore):
+        elif any(_matches(ref, key) for ref in ignore.refs):
             table[position] = _UNLABELLED
         else:
             raise ValueError(
                 f"{LabelStatistics.name}: {shown[position]!r} is in neither states "
-                f"{list(states)} nor ignore {list(ignore)}. Add it to one, so the "
+                f"{list(states)} nor ignore {ignore}. Add it to one, so the "
                 "statistics say what was done with it."
             )
     return table
@@ -801,7 +828,7 @@ class LabelStatistics:
         table = _code_table(
             [_value_key(value) for value in distinct],
             states,
-            self.params.ignore,
+            _Ignore(tuple(self.params.ignore)),
             distinct,
         )
         row_codes = np.asarray(factor_codes, dtype=np.int64)
@@ -825,15 +852,16 @@ class LabelStatistics:
         frame is never mapped to ``-1``.
         """
         path = self._entry_label_path(entry, f"labels/{labels.kind} file")
-        vocabulary, content = self._read_label_file(path, entry)
-        states = self._ground_truth_states(vocabulary, entry)
+        vocabulary, content, quality_label_ids = self._read_label_file(path, entry)
+        ignore = _Ignore(tuple(self.params.ignore), quality_label_ids)
+        states = self._ground_truth_states(vocabulary, ignore, entry)
 
         if isinstance(content, LabelSegments):
             kept = ~labels.masked(content.label)
             distinct, inverse = np.unique(
                 labels.relabel(content.label[kept]), return_inverse=True
             )
-            code = self._label_table(vocabulary, distinct, states)[inverse]
+            code = self._label_table(vocabulary, distinct, states, ignore)[inverse]
             keep = code != _UNLABELLED
             return states, _Intervals(
                 start=content.start_frame[kept][keep],
@@ -849,7 +877,7 @@ class LabelStatistics:
             distinct, inverse = np.unique(
                 labels.relabel(content.label[kept]), return_inverse=True
             )
-            table = self._label_table(vocabulary, distinct, states)
+            table = self._label_table(vocabulary, distinct, states, ignore)
             return states, _Events(
                 frame=content.frame[kept],
                 code=table[inverse],
@@ -867,13 +895,22 @@ class LabelStatistics:
         distinct, inverse = np.unique(per_frame, return_inverse=True)
         labelled = distinct != _NO_LABEL
         table = np.full(distinct.size, _UNLABELLED, dtype=np.int32)
-        table[labelled] = self._label_table(vocabulary, distinct[labelled], states)
+        table[labelled] = self._label_table(
+            vocabulary, distinct[labelled], states, ignore
+        )
         return states, _PerFrame(codes=table[inverse][frame_inverse])
 
     def _read_label_file(
         self, path: Path, entry: tuple[str, str]
-    ) -> tuple[dict[int, str], LabelSegments | _EventFile | NDArray[np.int64]]:
-        """The file's vocabulary, and its segments, its events or its dense array.
+    ) -> tuple[
+        dict[int, str],
+        LabelSegments | _EventFile | NDArray[np.int64],
+        tuple[int, ...],
+    ]:
+        """The file's vocabulary, its content and its quality label ids.
+
+        The content is its segments, its events or its dense array. The quality
+        label ids are the file's ``quality_label_ids``, empty when it has none.
 
         Without a sidecar the file is told apart the way
         ``load_labels_for_feature_frames`` tells it apart -- an event file by
@@ -886,9 +923,15 @@ class LabelStatistics:
         with np.load(path, allow_pickle=True) as npz:
             archive: Mapping[str, object] = npz
             vocabulary = label_vocabulary(archive)
+            quality = tuple(
+                int(label_id)
+                for label_id in np.asarray(
+                    archive.get("quality_label_ids", ()), dtype=np.int64
+                ).ravel()
+            )
             segments = segments_from_npz(archive)
             if segments is not None:
-                return vocabulary, segments
+                return vocabulary, segments, quality
             if detect_label_format(npz) == _EVENT_FORMAT:
                 pairs = np.asarray(npz["individual_ids"], dtype=np.int64)
                 events = _EventFile(
@@ -902,18 +945,23 @@ class LabelStatistics:
                         f"{events.frame.size} frames, {events.label.size} labels "
                         f"and {events.actor.size} individual_ids"
                     )
-                return vocabulary, events
+                return vocabulary, events, quality
             if "labels" in archive:
-                return vocabulary, np.asarray(npz["labels"], dtype=np.int64).ravel()
+                dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
+                return vocabulary, dense, quality
         raise ValueError(
             f"{self.name}: the label file for {entry} holds no segment sidecar, "
             "no events and no labels array"
         )
 
     def _ground_truth_states(
-        self, vocabulary: dict[int, str], entry: tuple[str, str]
+        self,
+        vocabulary: dict[int, str],
+        ignore: _Ignore,
+        entry: tuple[str, str],
     ) -> tuple[str | int, ...]:
-        """``states`` when set, else the file's label names less those ignored.
+        """``states`` when set, else the file's label names less *ignore*.
+
 
         A file declaring no ``label_ids`` is refused rather than given the
         labels it happens to hold: those differ between entries, and the
@@ -928,15 +976,14 @@ class LabelStatistics:
                 "label_ids, so it has no vocabulary to default states to. Set "
                 "states, so every entry gets the same columns."
             )
-        ignore = self.params.ignore
         states = tuple(
             name
             for label_id, name in vocabulary.items()
-            if not any(_matches(ref, (label_id, name)) for ref in ignore)
+            if not any(_matches(ref, (label_id, name)) for ref in ignore.refs)
         )
         if not states:
             raise ValueError(
-                f"{self.name}: ignore {list(ignore)} removes every label the "
+                f"{self.name}: ignore {ignore} removes every label the "
                 f"file for {entry} declares, {list(vocabulary.values())}, so "
                 "there is no state left to describe"
             )
@@ -947,6 +994,7 @@ class LabelStatistics:
         vocabulary: dict[int, str],
         label_ids: NDArray[np.int64],
         states: Sequence[str | int],
+        ignore: _Ignore,
     ) -> NDArray[np.int32]:
         """Each label id's state index, matched by id and by name."""
         ids = [int(label_id) for label_id in label_ids.tolist()]
@@ -954,7 +1002,7 @@ class LabelStatistics:
         return _code_table(
             [(label_id, vocabulary.get(label_id)) for label_id in ids],
             states,
-            self.params.ignore,
+            ignore,
             shown,
         )
 
