@@ -69,16 +69,92 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
+    "LMT_EVENT_NAMES",
     "LmtFrames",
     "LmtSqliteConverter",
     "LmtSqliteParams",
     "frame_origin",
     "frame_seconds",
     "open_lmt_database",
+    "table_columns",
     "write_lmt_sequence_tags",
 ]
 
 _JOURNAL_SUFFIXES = ("-journal", "-wal")
+
+LMT_EVENT_NAMES: Final[tuple[str, ...]] = (
+    "Approach",
+    "Approach contact",
+    "Approach rear",
+    "Behind",
+    "Break contact",
+    "Center Zone",
+    "Contact",
+    "Detection",
+    "Escape",
+    "Follow",
+    "FollowZone",
+    "FollowZone Isolated",
+    "Get away",
+    "Group 3 break",
+    "Group 3 make",
+    "Group 4 break",
+    "Group 4 make",
+    "Group2",
+    "Group3",
+    "Group4",
+    "Head detected",
+    "Look down",
+    "MACHINE LEARNING ASSOCIATION",
+    "Move in contact",
+    "Move isolated",
+    "Nest3_",
+    "Nest4_",
+    "Oral-genital Contact",
+    "Oral-oral Contact",
+    "Periphery Zone",
+    "RFID ASSIGN ANONYMOUS TRACK",
+    "RFID MATCH",
+    "RFID MISMATCH",
+    "Rear at periphery",
+    "Rear in centerWindow",
+    "Rear in contact",
+    "Rear isolated",
+    "Rearing",
+    "SAP",
+    "Side by side Contact",
+    "Side by side Contact, opposite way",
+    "Social approach",
+    "Social escape",
+    "Stop",
+    "Stop in contact",
+    "Stop isolated",
+    "Train2",
+    "WallJump",
+    "Water Stop",
+    "Water Zone",
+    "badIdentity",
+    "badOrientation",
+    "badSegmentation",
+    "manualContact",
+    "manualOralGenital",
+    "manualOralOralContact",
+    "manualSideSideOpposite",
+    "manualSideSideSame",
+    "seq oral geni - oral oral",
+    "seq oral oral - oral genital",
+    "Flickering",
+    "night",
+    "Undetected",
+)
+"""The event names of the ``lmt_events`` vocabulary, as ``EVENT.NAME`` stores them.
+
+A name's position is its label id. The first 60 names are those of the demo
+database other than ``coucou`` and ``event``, in SQLite's ``BINARY`` order, and
+``Flickering``, ``night`` and ``Undetected`` follow. A name is appended with a
+version bump of the converter, and every existing id keeps its event. Removing
+or reordering a name is a new converter version.
+"""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -126,6 +202,23 @@ def _database_file(connection: sqlite3.Connection) -> str:
     return str(row[2]) if row is not None and row[2] else "<database>"
 
 
+def table_columns(connection: sqlite3.Connection, table: str, file: str) -> set[str]:
+    """The column names of *table*.
+
+    Args:
+        connection: An open database.
+        table: A table name, written by the caller and never a user's text.
+        file: The database's name for an error message.
+
+    Raises:
+        ValueError: The database has no such table, naming *file*.
+    """
+    columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+    if not columns:
+        raise ValueError(f"{file}: the database has no {table} table")
+    return columns
+
+
 def frame_seconds(connection: sqlite3.Connection) -> LmtFrames:
     """Read the ``FRAME`` table, ordered by ``FRAMENUMBER``.
 
@@ -136,9 +229,7 @@ def frame_seconds(connection: sqlite3.Connection) -> LmtFrames:
             names the file and the frame.
     """
     file = _database_file(connection)
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(FRAME)")}
-    if not columns:
-        raise ValueError(f"{file}: the database has no FRAME table")
+    columns = table_columns(connection, "FRAME", file)
     for required in ("FRAMENUMBER", "TIMESTAMP"):
         if required not in columns:
             raise ValueError(f"{file}: the FRAME table has no {required} column")
@@ -204,9 +295,7 @@ def _recording_start(connection: sqlite3.Connection) -> str:
 
 def _animal_summary(connection: sqlite3.Connection, file: str) -> tuple[str, int]:
     """The joined distinct genotypes and the animal count of the ``ANIMAL`` table."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(ANIMAL)")}
-    if not columns:
-        raise ValueError(f"{file}: the database has no ANIMAL table")
+    columns = table_columns(connection, "ANIMAL", file)
     row = connection.execute("SELECT COUNT(*) FROM ANIMAL").fetchone()
     genotypes: set[str] = set()
     if "GENOTYPE" in columns:
@@ -359,9 +448,7 @@ class _Detections:
 
 def _detection_columns(connection: sqlite3.Connection, file: str) -> set[str]:
     """The columns of ``DETECTION``, refusing a table that lacks a required one."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(DETECTION)")}
-    if not columns:
-        raise ValueError(f"{file}: the database has no DETECTION table")
+    columns = table_columns(connection, "DETECTION", file)
     for required in _REQUIRED_COLUMNS:
         if required not in columns:
             raise ValueError(f"{file}: the DETECTION table has no {required} column")

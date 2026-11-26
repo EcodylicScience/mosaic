@@ -4,7 +4,7 @@
 # Track formats, schemas and label formats
 
 19 track converters read a tracker's output into one of
-6 registered schemas, and 5 label
+6 registered schemas, and 6 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
 validation and the tracks index both read.
@@ -433,4 +433,5 @@ Applied by `mosaic convert-labels --kind <label_kind>`.
 | `boris_pandas_pickle` | `behavior` | Convert BORIS Pandas DataFrame pickle to behavior dataset format. |
 | `calms21_npy` | `behavior` | Convert CalMS21 npy/json behavior annotations to the behavior format. |
 | `lmt_sqlite` | `id_tags` | A Live Mouse Tracker database -> its animals as individual tags. |
+| `lmt_sqlite` | `lmt_events` | A Live Mouse Tracker database -> its events as segments on its tracks. |
 | `predictions_table` | `predictions` | Read a per-frame table of predictions, with optional probabilities and folds. |

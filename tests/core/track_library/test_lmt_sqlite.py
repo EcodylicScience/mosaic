@@ -11,8 +11,8 @@ LMT's heights and flags, under the frame numbers and times of the file.
 
 from __future__ import annotations
 
-import sqlite3
 import csv
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -36,6 +36,7 @@ from mosaic.core.track_library.lmt import (
     frame_origin,
     frame_seconds,
     open_lmt_database,
+    table_columns,
     write_lmt_sequence_tags,
 )
 from tests.helpers import (
@@ -44,6 +45,7 @@ from tests.helpers import (
     LmtDetection,
     LmtFrame,
     LmtRecording,
+    alter_lmt_sqlite,
     assert_tree_unchanged,
     default_lmt_recording,
     file_digests,
@@ -192,12 +194,7 @@ def test_a_frame_table_without_paused_reads_every_frame_as_running(
     tmp_path: Path,
 ) -> None:
     path = _write(tmp_path / "recording.sqlite", default_lmt_recording())
-    writable = sqlite3.connect(path)
-    try:
-        writable.execute("ALTER TABLE FRAME DROP COLUMN PAUSED")
-        writable.commit()
-    finally:
-        writable.close()
+    alter_lmt_sqlite(path, "ALTER TABLE FRAME DROP COLUMN PAUSED")
 
     frames = _read_frames(path)
 
@@ -205,20 +202,11 @@ def test_a_frame_table_without_paused_reads_every_frame_as_running(
     assert not frames.paused.any()
 
 
-def _alter(path: Path, statement: str) -> None:
-    writable = sqlite3.connect(path)
-    try:
-        writable.execute(statement)
-        writable.commit()
-    finally:
-        writable.close()
-
-
 def test_a_database_without_a_frame_table_names_the_file_and_table(
     tmp_path: Path,
 ) -> None:
     path = _write(tmp_path / "recording.sqlite", default_lmt_recording())
-    _alter(path, "DROP TABLE FRAME")
+    alter_lmt_sqlite(path, "DROP TABLE FRAME")
 
     with pytest.raises(ValueError, match="FRAME") as raised:
         _read_frames(path)
@@ -230,7 +218,7 @@ def test_a_frame_table_without_timestamps_names_the_file_and_column(
     tmp_path: Path,
 ) -> None:
     path = _write(tmp_path / "recording.sqlite", default_lmt_recording())
-    _alter(path, "ALTER TABLE FRAME DROP COLUMN TIMESTAMP")
+    alter_lmt_sqlite(path, "ALTER TABLE FRAME DROP COLUMN TIMESTAMP")
 
     with pytest.raises(ValueError, match="TIMESTAMP") as raised:
         _read_frames(path)
@@ -796,7 +784,7 @@ def test_keep_unidentified_gives_a_paused_frame_no_row_of_any_id(
 
 def test_a_null_frame_number_names_the_file_and_the_row_key(tmp_path: Path) -> None:
     path = _recording_file(tmp_path)
-    _alter(path, "UPDATE DETECTION SET FRAMENUMBER = NULL WHERE ID = 5")
+    alter_lmt_sqlite(path, "UPDATE DETECTION SET FRAMENUMBER = NULL WHERE ID = 5")
 
     with pytest.raises(ValueError, match="NULL FRAMENUMBER") as raised:
         _convert(path)
@@ -807,7 +795,7 @@ def test_a_null_frame_number_names_the_file_and_the_row_key(tmp_path: Path) -> N
 
 def test_a_non_numeric_cell_names_the_file(tmp_path: Path) -> None:
     path = _recording_file(tmp_path)
-    _alter(path, "UPDATE DETECTION SET MASS_X = 'left' WHERE ID = 7")
+    alter_lmt_sqlite(path, "UPDATE DETECTION SET MASS_X = 'left' WHERE ID = 7")
 
     with pytest.raises(ValueError, match="not a number") as raised:
         _convert(path)
@@ -1036,7 +1024,7 @@ def test_the_genotypes_of_a_table_without_the_column_are_empty(tmp_path: Path) -
     raw = ds.base_dir / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     path = _write(raw / "bare.sqlite", default_lmt_recording())
-    _alter(path, "ALTER TABLE ANIMAL DROP COLUMN GENOTYPE")
+    alter_lmt_sqlite(path, "ALTER TABLE ANIMAL DROP COLUMN GENOTYPE")
     _ = ds.index_tracks_raw([raw], patterns=["*.sqlite"], src_format="lmt_sqlite")
     csv_path = tmp_path / "tags.csv"
 
@@ -1083,3 +1071,41 @@ def test_writing_sequence_tags_leaves_the_dataset_and_the_databases_unchanged(
     assert file_digests(ds.base_dir) == dataset_digests
     assert_tree_unchanged(ds.base_dir, dataset_before)
     assert [path.stat().st_mtime_ns for path in sources] == mtimes
+
+
+def test_a_database_without_an_animal_table_fails_the_sequence_tags_and_writes_no_csv(
+    tmp_path: Path,
+) -> None:
+    ds = _two_recording_dataset(tmp_path / "ds")
+    broken = ds.base_dir / "raw" / "without.sqlite"
+    alter_lmt_sqlite(broken, "DROP TABLE ANIMAL")
+    csv_path = tmp_path / "tags.csv"
+
+    with pytest.raises(ValueError, match="no ANIMAL table") as raised:
+        _ = write_lmt_sequence_tags(ds, csv_path)
+
+    assert str(broken) in str(raised.value)
+    assert not csv_path.exists()
+
+
+def test_table_columns_names_the_columns_of_the_table(tmp_path: Path) -> None:
+    path = _recording_file(tmp_path)
+    connection = open_lmt_database(path)
+    try:
+        columns = table_columns(connection, "ANIMAL", str(path))
+    finally:
+        connection.close()
+
+    assert columns == set(DEFAULT_ANIMAL_COLUMNS)
+
+
+def test_table_columns_refuses_a_missing_table_naming_the_file(tmp_path: Path) -> None:
+    path = _recording_file(tmp_path)
+    connection = open_lmt_database(path)
+    try:
+        with pytest.raises(ValueError, match="no NOPE table") as raised:
+            _ = table_columns(connection, "NOPE", str(path))
+    finally:
+        connection.close()
+
+    assert str(path) in str(raised.value)

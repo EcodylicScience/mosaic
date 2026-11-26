@@ -442,6 +442,20 @@ imgstore
   Stores are also written by Motif, the proprietary recording system of
   loopbio gmbh (https://www.loopbio.com/recording/). Mosaic does not run it.
 
+Live Mouse Tracker
+  Origin:      https://livemousetracker.org
+  License:     GPL-3.0 (lmt-analysis, which defines the database layout)
+  Read by:     src/mosaic/core/track_library/lmt.py and
+               src/mosaic/behavior/label_library/lmt_sqlite.py, which read
+               the SQLite databases that Live Mouse Tracker writes.
+  Citation:    de Chaumont, F., Ey, E., Torquet, N., Lagache, T.,
+               Dallongeville, S., Imbert, A., Legou, T., Le Sourd, A.-M.,
+               Faure, P., Bourgeron, T., Olivo-Marin, J.-C. (2019).
+               Real-time analysis of the behaviour of groups of mice via a
+               depth-sensing camera and machine learning. Nature Biomedical
+               Engineering 3:930-942.
+               https://doi.org/10.1038/s41551-019-0396-1
+
 
 OPTIONAL DISTRIBUTIONS
 ======================

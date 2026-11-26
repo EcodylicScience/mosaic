@@ -69,6 +69,7 @@ custom template) places each event on the entry's tracks, and so needs them firs
 | `boris_aggregated_csv` | BORIS Aggregated Events export, CSV or TSV |
 | `boris_pandas_pickle` | BORIS pandas DataFrame pickle, only with `MOSAIC_TRUST_PICKLED_FILES=1` |
 | `calms21_npy` | CalMS21 `.npy` / `.json` behavior annotations; the `.npy` needs `MOSAIC_TRUST_PICKLED_FILES=1`, the `.json` does not |
+| `lmt_sqlite` | Live Mouse Tracker events (kind `lmt_events`) and animals (kind `id_tags`) |
 
 A pickle or a CalMS21 `.npy` can run code when it loads, so mosaic refuses one unless
 you set `MOSAIC_TRUST_PICKLED_FILES=1` for files you trust. A refused file fails the
@@ -76,11 +77,33 @@ whole conversion and the message names it. The safe forms are the BORIS aggregat
 CSV/TSV export and the original CalMS21 `.json`, which load without the flag. See
 [files mosaic will not unpickle](../tracking/import.md#files-mosaic-will-not-unpickle).
 
-All three produce the `behavior` label kind. `predictions_table` reads a model's or a
-second annotator's per-frame predictions into the `predictions` kind instead: see
+`boris_aggregated_csv`, `boris_pandas_pickle` and `calms21_npy` produce the `behavior`
+label kind. `predictions_table` reads a model's or a second annotator's per-frame
+predictions into the `predictions` kind instead: see
 [score predictions made outside mosaic](classifier-score-and-evaluate.md#score-predictions-made-outside-mosaic).
 If your annotation tool is not here, the label converter registry works the same way the
 track converter registry does.
+
+`lmt_sqlite` reads the same Live Mouse Tracker `.sqlite` that the track converter of
+that name reads, and the kind you convert picks what it reads. `--kind id_tags` writes
+the file's animals (RFID, name, genotype, age, sex, strain, setup, treatment and ind,
+whichever the file has) for `id-tag-columns` to attach to a run.
+`write_lmt_sequence_tags`, from `mosaic.core.track_library.lmt`, writes the CSV of
+sequence tags for `mosaic sequence-tags import`.
+
+`--kind lmt_events` reads the file's events, one segment per event, into one
+dataset-wide vocabulary of the stored event names, so every file of a variant gives the
+same name the same label id. A name with a comma is written without it in `label_names`.
+An event name the converter does not know refuses the whole conversion: name it in
+`extra_event_names` to label it, or in `skip_event_names` to leave it out.
+`quality_events` (by default `Flickering`, `Detection` and `Undetected`) marks the names
+that record the quality of the tracking instead of a behavior, and `label-statistics`
+ignores their frames unless its states name them. Each event is placed by its time on
+the frames of the tracks variant named by `tracks_run_id`, and an event whose time holds
+no tracks frame is left out and listed in the file's `dropped_event_ids`. The file is in
+the `segments_v1` format: segments alone, with no label per frame, because events
+overlap and involve up to four animals. `label-statistics` reads it. Every reader that
+goes frame by frame refuses it and names the file.
 
 ## Settings worth knowing
 

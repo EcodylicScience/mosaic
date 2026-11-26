@@ -108,13 +108,14 @@ has to be mapped through the store's own index before it is joined on `frame`.
 
 ## The schema families
 
-Five schemas are registered. Which one a table carries is declared by the converter or
+Six schemas are registered. Which one a table carries is declared by the converter or
 tracker that produced it, and recorded in the tracks index.
 
 | Schema | Units | `X`/`Y` | Use it for |
 |---|---|---|---|
 | `mosaic_v1` | pixels | body center | The tracker-neutral standard. Keypoints optional |
 | `trex_v2` | pixels | body center | `mosaic_v1` plus what TRex measures: `SPEED`, `ANGLE`, the midline family, and `X#head`/`Y#head` |
+| `lmt_v1` | pixels | body center | `mosaic_v1` plus Live Mouse Tracker's heights in millimeters (`Z#mass`, `Z#front`, `Z#back`) and its `rearing`, `look_up` and `look_down` flags |
 | `mosaic_cm_v1` | centimeters | body center | Archived data whose pixel factor is lost. Its own family |
 | `mosaic_world_v1` | meters | body center, with `Z` | 3D tracks in a right-handed world frame, +Z up, no `camera`. Its own family |
 | `trex_v1` | centimeters | head | Legacy. Registered so archived datasets keep resolving |

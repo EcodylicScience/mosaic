@@ -372,6 +372,17 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `seconds_total`, because the recording drops frames and no frame rate gives a frame's
   time. The raw format reads that time from the corrected `.tsv` beside it. The table
   is in pixels, so scale it with `scale-to-cm` and an explicit `cm_per_pixel`.
+- A Live Mouse Tracker database is read by `lmt_sqlite`, one `.sqlite` per entry, into
+  `lmt_v1` (pixels). The `Z#` heights are in millimeters, and `scale-to-cm` does not
+  scale them; pass `cm_per_pixel` 10/57 to it for mice. Detections of an animal the
+  database did not identify and detections on paused frames are dropped and counted,
+  and `keep_unidentified` keeps the first. A file with a `-journal` or `-wal` beside it
+  is refused. `convert-labels --kind lmt_events` and `--kind id_tags` read the same
+  files. An event name the converter does not know is refused until it is named in
+  `extra_event_names` or `skip_event_names`, and only `label-statistics` reads an
+  `lmt_events` file. `write_lmt_sequence_tags` (in `mosaic.core.track_library.lmt`)
+  writes the CSV for `mosaic sequence-tags import`:
+  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#the-formats-mosaic-reads.
 - Synthetic tracks come from a TOML file of generator parameters, one file per sequence,
   read by `synthetic` (2D, `mosaic_v1`, pixels) and `synthetic_3d` (3D,
   `mosaic_world_v1`, meters). The file declares every generator parameter, and the

@@ -33,6 +33,7 @@ __all__ = [
     "LmtFrame",
     "LmtLog",
     "LmtRecording",
+    "alter_lmt_sqlite",
     "default_lmt_recording",
     "lmt_detection_grid",
     "write_lmt_sqlite",
@@ -405,7 +406,8 @@ def default_lmt_recording() -> LmtRecording:
     which carry the explicit ids 10001 and 10000, inserted in that order and
     after the others.
 
-    No event starts or ends on frame 180 or frame 250.
+    The nine events have the ids 1 to 9 and names of the event vocabulary. No
+    event starts or ends on frame 180 or frame 250.
     """
     animals = (
         LmtAnimal(id=1, rfid="000004395862", genotype="WT", name="mouse one"),
@@ -427,15 +429,15 @@ def default_lmt_recording() -> LmtRecording:
         replace(_grid_detection(2, 120), animal=None, id=10000),
     ]
     events = (
-        LmtEvent("Move isolated", 110, 130, a=1),
-        LmtEvent("Contact", 140, 160, a=1, b=2),
-        LmtEvent("Contact", 140, 160, a=2, b=1),
-        LmtEvent("Group3 make", 200, 230, a=1, b=2, c=3),
-        LmtEvent("night", 120, 380),
-        LmtEvent("Flickering", 260, 262, a=3),
-        LmtEvent("Side by side Contact, opposite way", 270, 290, a=1, b=3),
-        LmtEvent("Move in contact", 330, 350, a=2, b=3),
-        LmtEvent("Stop isolated", 340, 360, a=2),
+        LmtEvent("Move isolated", 110, 130, a=1, id=1),
+        LmtEvent("Contact", 140, 160, a=1, b=2, id=2),
+        LmtEvent("Contact", 140, 160, a=2, b=1, id=3),
+        LmtEvent("Group 3 make", 200, 230, a=1, b=2, c=3, id=4),
+        LmtEvent("night", 120, 380, id=5),
+        LmtEvent("Flickering", 260, 262, a=3, id=6),
+        LmtEvent("Side by side Contact, opposite way", 270, 290, a=1, b=3, id=7),
+        LmtEvent("Move in contact", 330, 350, a=2, b=3, id=8),
+        LmtEvent("Stop isolated", 340, 360, a=2, id=9),
     )
     log = (
         LmtLog("Build DataBase Index", "0", "2022-09-08 13:35:55", 0, -1),
@@ -448,3 +450,17 @@ def default_lmt_recording() -> LmtRecording:
         events=events,
         log=log,
     )
+
+
+def alter_lmt_sqlite(path: Path, sql: str) -> None:
+    """Run the SQL statements of *sql* on the database at *path* and commit them.
+
+    A test breaks a database the writer made, by dropping a table or a column or by
+    changing a cell, to see what a reader refuses.
+    """
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(sql)
+        connection.commit()
+    finally:
+        connection.close()

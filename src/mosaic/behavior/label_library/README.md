@@ -882,6 +882,7 @@ replace files within the *same* variant, pass `overwrite=True` to
 - [calms21_behavior.py](calms21_behavior.py) - CalMS21 format (the reference converter)
 - [boris_aggregated_csv.py](boris_aggregated_csv.py) - BORIS CSV/TSV
 - [boris_pandas_pickle.py](boris_pandas_pickle.py) - BORIS pickle
+- [lmt_sqlite.py](lmt_sqlite.py) - Live Mouse Tracker animals and events
 
 ## Summary Workflow
 

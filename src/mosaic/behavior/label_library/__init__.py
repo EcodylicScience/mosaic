@@ -82,6 +82,8 @@ lmt_sqlite.LmtAnimalsConverter = register_label_converter(
     lmt_sqlite.LmtAnimalsConverter
 )
 
+lmt_sqlite.LmtEventsConverter = register_label_converter(lmt_sqlite.LmtEventsConverter)
+
 predictions_table.PredictionsTableConverter = register_label_converter(
     predictions_table.PredictionsTableConverter
 )
