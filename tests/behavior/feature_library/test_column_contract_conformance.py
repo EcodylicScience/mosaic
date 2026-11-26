@@ -17,6 +17,12 @@ feature fits on its merged input before it applies. The tracks are the planar
 ``resolved_columns`` over the same recipe gives the columns each output must and
 may contain.
 
+A process worker keeps one instance for every entry it applies. A
+process-capable feature therefore also runs over a second entry,
+:data:`SECOND_SEQUENCE`, whose tracks come from another seed: the instance that
+applied the first entry must give the second the output that a fresh instance,
+loaded from the same state, gives it.
+
 Every registered feature declares both halves. A feature registered outside
 mosaic may declare neither, and validation then reports its steps as unchecked.
 """
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -66,6 +73,7 @@ from mosaic.core.pipeline.loading import (
     input_projection,
     load_entry_data,
 )
+from mosaic.core.pipeline.parallelism import process_capable
 from mosaic.core.pipeline.track_space import (
     DEFAULT_TRACK_SPACES,
     feature_track_spaces,
@@ -265,7 +273,11 @@ nowhere.
 
 GROUP = "g"
 SEQUENCE = "s"
+SECOND_SEQUENCE = "s2"
 FRAMES = 60
+
+Entries = tuple[tuple[str, pd.DataFrame], ...]
+"""The entries of a run, each a sequence of :data:`GROUP` and its tracks."""
 
 
 def _slug(cls: type) -> str:
@@ -328,14 +340,19 @@ def test_every_params_field_a_declaration_reads_is_a_params_field(cls: type) -> 
 # --- the fixture --------------------------------------------------------------------
 
 
-def _tracks(n_frames: int = FRAMES, n_ids: int = 3) -> pd.DataFrame:
+def _tracks(
+    n_frames: int = FRAMES,
+    n_ids: int = 3,
+    sequence: str = SEQUENCE,
+    seed: int = 0,
+) -> pd.DataFrame:
     """A ``mosaic_v1`` table: three swimmers close together, with three keypoints.
 
     No ``ANGLE``, which ``mosaic_v1`` forbids: a feature reading one runs
-    ``heading`` first, as a real chain does.
+    ``heading`` first, as a real chain does. *seed* seeds the positions' noise.
     """
     rows: list[dict[str, object]] = []
-    noise = np.random.default_rng(0)
+    noise = np.random.default_rng(seed)
     for frame in range(n_frames):
         for identity in range(n_ids):
             phase = frame / 8.0 + identity
@@ -347,7 +364,7 @@ def _tracks(n_frames: int = FRAMES, n_ids: int = 3) -> pd.DataFrame:
                 "time": frame / 30.0,
                 "id": identity,
                 "group": GROUP,
-                "sequence": SEQUENCE,
+                "sequence": sequence,
                 "X": x,
                 "Y": y,
             }
@@ -358,14 +375,14 @@ def _tracks(n_frames: int = FRAMES, n_ids: int = 3) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _world_tracks() -> pd.DataFrame:
+def _world_tracks(sequence: str = SEQUENCE, seed: int = 0) -> pd.DataFrame:
     """:func:`_tracks` lifted into 3D, for a feature that refuses planar tables.
 
     Every keypoint gains a ``poseZ`` and the row a ``Z``. The height rises
     slowly with the frame, the same for every keypoint of a row, so the pair
     vector from one keypoint to another is horizontal and fixes a heading.
     """
-    tracks = _tracks()
+    tracks = _tracks(sequence=sequence, seed=seed)
     height = 0.01 * tracks["frame"].to_numpy(dtype=np.float64)
     tracks["Z"] = height
     for keypoint in range(3):
@@ -379,21 +396,41 @@ def _planar(slug: str) -> bool:
     return bool(spaces & DEFAULT_TRACK_SPACES)
 
 
-def _labels(directory: Path) -> Path:
-    """One ``id_tags`` labels file: individual 0 is the focal."""
-    path = directory / "labels.npz"
-    np.savez(path, ids=np.array([0, 1, 2]), focal=np.array([1, 0, 0]))
+def _first(sequence: str) -> bool:
+    """Whether *sequence* is the first entry, :data:`SEQUENCE`.
+
+    A later entry's labels, predictions and tags differ from the first's, so an
+    instance that keeps the first entry's lookup gives the later entry a wrong
+    output.
+    """
+    return sequence == SEQUENCE
+
+
+def _labels(directory: Path, sequence: str) -> Path:
+    """The ``id_tags`` labels of *sequence*.
+
+    Individual 0 is the first entry's focal, and individual 1 a later one's.
+    """
+    path = directory / f"labels-{sequence}.npz"
+    focal = np.array([1, 0, 0]) if _first(sequence) else np.array([0, 1, 0])
+    np.savez(path, ids=np.array([0, 1, 2]), focal=focal)
     return path
 
 
-def _behavior_labels(directory: Path) -> Path:
-    """One dense behavior labels file: classes 0 and 1 in turn, ten frames each."""
-    path = directory / "behavior.npz"
-    np.savez(path, labels=(np.arange(FRAMES) // 10) % 2)
+def _classes(sequence: str) -> np.ndarray:
+    """Classes 0 and 1 in turn, ten frames each, shifted by five after the first entry."""
+    shift = 0 if _first(sequence) else 5
+    return ((np.arange(FRAMES) + shift) // 10) % 2
+
+
+def _behavior_labels(directory: Path, sequence: str) -> Path:
+    """The dense behavior labels of *sequence*, :func:`_classes`."""
+    path = directory / f"behavior-{sequence}.npz"
+    np.savez(path, labels=_classes(sequence))
     return path
 
 
-LABELS: dict[str, Callable[[Path], Path]] = {
+LABELS: dict[str, Callable[[Path, str], Path]] = {
     "evaluate-labels": _behavior_labels,
     "extract-labeled-templates": _behavior_labels,
     "fit-label-map": _behavior_labels,
@@ -403,19 +440,30 @@ LABELS: dict[str, Callable[[Path], Path]] = {
 """The labels file that a feature reads, where it is not the ``id_tags`` one."""
 
 
-def _predictions(directory: Path) -> Path:
-    """One predictions file with probabilities: classes 0 and 1 in turn, ten frames each."""
-    labels = (np.arange(FRAMES) // 10) % 2
+def _predictions(directory: Path, sequence: str) -> Path:
+    """The predictions of *sequence*, :func:`_classes` with their probabilities."""
+    labels = _classes(sequence)
     return write_predictions(
-        directory / "predictions.npz",
+        directory / f"predictions-{sequence}.npz",
         [(frame, -1, -1, int(label)) for frame, label in enumerate(labels)],
         probabilities=np.column_stack([1 - labels, labels]).astype(float).tolist(),
     )
 
 
-def _tag_revision(directory: Path) -> Path:
-    """A tag table payload with the tag ``condition`` on the harness entry."""
-    table = tag_table({(GROUP, SEQUENCE): {"condition": "treated"}}, TAG_TYPES)
+def _tag_revision(directory: Path, sequences: tuple[str, ...]) -> Path:
+    """A tag table payload with the tag ``condition`` on each of *sequences*.
+
+    The first entry is ``treated`` and every later one ``control``.
+    """
+    table = tag_table(
+        {
+            (GROUP, sequence): {
+                "condition": "treated" if _first(sequence) else "control"
+            }
+            for sequence in sequences
+        },
+        TAG_TYPES,
+    )
     path = directory / "tags.mosaic.json"
     _ = path.write_bytes(tag_table_payload(table))
     return path
@@ -425,7 +473,7 @@ TAG_TYPES: dict[str, TypedAttributeType] = {"condition": "categorical"}
 """The sequence tags of the table a feature that reads tags is given."""
 
 
-PREDICTIONS: dict[str, Callable[[Path], Path]] = {
+PREDICTIONS: dict[str, Callable[[Path, str], Path]] = {
     "label-predictions": _predictions,
 }
 """The predictions file that a feature reads through its ``predictions`` field."""
@@ -531,44 +579,53 @@ class _ReadsTheDataset(Protocol):
     def bind_dataset(self, ds: Dataset) -> None: ...
 
 
-def _fold_lookup(directory: Path) -> DependencyLookup:
-    """The input of a step that tunes on out-of-fold rows: one entry, in one fold.
+def _fold_lookup(directory: Path, sequences: tuple[str, ...]) -> DependencyLookup:
+    """The input of a step that tunes on out-of-fold rows, keyed by each entry.
 
     The fold table is read from beside an output of the classifier run, which is
-    only named here. ``tune-threshold`` reads the table and no output.
+    only named here. ``tune-threshold`` reads the table and no output. The table
+    holds the first entry alone, in one fold, because the fit streams that entry
+    alone, and ``tune-threshold`` refuses a fit that misses an entry of its
+    folds. The later entries are applied with the stored result.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([{"group": GROUP, "sequence": SEQUENCE, "fold": 0}]).to_parquet(
+    pd.DataFrame([{"group": GROUP, "sequence": sequences[0], "fold": 0}]).to_parquet(
         directory / "cv_folds.parquet"
     )
-    return {(GROUP, SEQUENCE): directory / f"{GROUP}__{SEQUENCE}.parquet"}
+    return {
+        (GROUP, sequence): directory / f"{GROUP}__{sequence}.parquet"
+        for sequence in sequences
+    }
 
 
-def _entry_dataset(directory: Path, tracks: pd.DataFrame) -> Dataset:
-    """Return a dataset containing *tracks* and a video of the entry.
+def _entry_dataset(directory: Path, entries: Entries) -> Dataset:
+    """Return a dataset containing the tracks and a video of each of *entries*.
 
-    The tracks row is written first, because ``index_media`` reads the tracks
+    The tracks rows are written first, because ``index_media`` reads the tracks
     index for the group and sequence of a video.
     """
     require_ffmpeg()
     dataset = make_dataset(directory)
-    table = dataset.get_root("tracks") / f"{GROUP}__{SEQUENCE}.parquet"
-    tracks.to_parquet(table)
-    write_tracks_row(
-        dataset,
-        run_id="convert-fixture.0.1-aaaaaaaaaa",
-        group=GROUP,
-        sequence=SEQUENCE,
-        out_path=table,
-        producer="convert-fixture",
-        std_format="mosaic_v1",
-        n_rows=len(tracks),
-        carries_tracklets=None,
-    )
     media = dataset.get_root("media_raw")
-    write_h264_mp4(
-        media / f"{SEQUENCE}.mp4", frames=int(tracks["frame"].max()) + 1, size=(96, 64)
-    )
+    for sequence, tracks in entries:
+        table = dataset.get_root("tracks") / f"{GROUP}__{sequence}.parquet"
+        tracks.to_parquet(table)
+        write_tracks_row(
+            dataset,
+            run_id="convert-fixture.0.1-aaaaaaaaaa",
+            group=GROUP,
+            sequence=sequence,
+            out_path=table,
+            producer="convert-fixture",
+            std_format="mosaic_v1",
+            n_rows=len(tracks),
+            carries_tracklets=None,
+        )
+        write_h264_mp4(
+            media / f"{sequence}.mp4",
+            frames=int(tracks["frame"].max()) + 1,
+            size=(96, 64),
+        )
     _ = dataset.index_media([media])
     return dataset
 
@@ -603,57 +660,126 @@ def _artifacts(
     return found
 
 
-def _stream(merged: pd.DataFrame) -> InputStream:
-    """The one entry of the fixture, as a fit reads its entries."""
+def _stream(sequence: str, merged: pd.DataFrame) -> InputStream:
+    """The entry *sequence* alone, as a fit reads its entries."""
     return InputStream(
-        lambda: iter([(make_entry_key(GROUP, SEQUENCE), merged)]), n_entries=1
+        lambda: iter([(make_entry_key(GROUP, sequence), merged)]), n_entries=1
     )
 
 
-def _run(
-    recipe: Recipe, directory: Path, target: str
-) -> dict[str, tuple[Feature, pd.DataFrame, pd.DataFrame]]:
-    """Every step's feature, merged input and output, run in topological order.
+@dataclass(frozen=True)
+class _Ran:
+    """One step's instance, and each entry's merged input and output by sequence.
 
-    The tracks are :func:`_tracks` when *target*, the feature the chain is built
-    for, computes in a planar space, and :func:`_world_tracks` when its
-    ``track_spaces`` names neither ``image_px`` nor ``plane_cm``. A feature that
-    reads the dataset is bound to one containing the same tracks and a video of
-    the entry. A step without a saved state fits on its merged input, as
-    ``run_feature`` fits on every entry before it applies.
+    *dataset* is the dataset the instance is bound to, ``None`` for a feature
+    that does not read one.
     """
-    tracks = _tracks() if _planar(target) else _world_tracks()
-    dataset: Dataset | None = None
-    ran: dict[str, tuple[Feature, pd.DataFrame, pd.DataFrame]] = {}
+
+    feature: Feature
+    merged: dict[str, pd.DataFrame]
+    outputs: dict[str, pd.DataFrame]
+    dataset: Dataset | None
+
+
+def _prepared(
+    recipe: Recipe,
+    step: FeatureStepSpec,
+    directory: Path,
+    sequences: tuple[str, ...],
+    dataset: Callable[[], Dataset],
+) -> tuple[Feature, bool]:
+    """The feature that *step* runs, bound and given its state, as a worker builds it.
+
+    A feature that reads the dataset is bound to *dataset*'s. Every lookup keys
+    each of *sequences*. Returns the feature and whether ``load_state`` found
+    a saved state.
+    """
+    feature = _built(recipe, step)
+    if isinstance(feature, _ReadsTheDataset):
+        feature.bind_dataset(dataset())
+    labels = LABELS.get(step.feature, _labels)
+    lookups: dict[str, DependencyLookup] = {
+        "labels": {
+            (GROUP, sequence): labels(directory, sequence) for sequence in sequences
+        }
+    }
+    if step.feature in PREDICTIONS:
+        predictions = PREDICTIONS[step.feature]
+        lookups["predictions"] = {
+            (GROUP, sequence): predictions(directory, sequence)
+            for sequence in sequences
+        }
+    if step.feature in FOLD_TABLES:
+        lookups["_input_0"] = _fold_lookup(
+            directory / step.id / "classifier", sequences
+        )
+    if isinstance(feature, ReadsTags):
+        tags = _tag_revision(directory, sequences)
+        lookups["_tags"] = {(GROUP, sequence): tags for sequence in sequences}
+    loaded = feature.load_state(
+        _state(directory, step.id), _artifacts(feature, step, directory), lookups
+    )
+    return feature, loaded
+
+
+def _default_entries(target: str) -> Entries:
+    """The one entry of :data:`SEQUENCE`, its tracks in *target*'s track space."""
+    return ((SEQUENCE, _tracks() if _planar(target) else _world_tracks()),)
+
+
+def _run(
+    recipe: Recipe, directory: Path, target: str, entries: Entries | None = None
+) -> dict[str, _Ran]:
+    """Every step's instance, merged inputs and outputs, run in topological order.
+
+    *entries* default to the one entry of :data:`SEQUENCE`, whose tracks are
+    :func:`_tracks` when *target*, the feature the chain is built for, computes
+    in a planar space, and :func:`_world_tracks` when its ``track_spaces`` names
+    neither ``image_px`` nor ``plane_cm``. A feature that reads the dataset is
+    bound to one containing the tracks and a video of every entry. A step
+    without a saved state fits on its first entry's merged input, as
+    ``run_feature`` fits before it applies. One instance then applies every
+    entry in order, as a process worker does.
+    """
+    entries = _default_entries(target) if entries is None else entries
+    sequences = tuple(sequence for sequence, _ in entries)
+    built: list[Dataset] = []
+
+    def dataset() -> Dataset:
+        if not built:
+            built.append(_entry_dataset(directory / "dataset", entries))
+        return built[0]
+
+    ran: dict[str, _Ran] = {}
     for step in topological_order(recipe):
         assert isinstance(step, FeatureStepSpec)
-        frames = [
-            tracks if isinstance(item, str) else ran[item.step][2]
-            for item in step.inputs
-        ]
-        merged = _merged(frames, directory / step.id, step.feature)
-        feature = _built(recipe, step)
-        if isinstance(feature, _ReadsTheDataset):
-            if dataset is None:
-                dataset = _entry_dataset(directory / "dataset", tracks)
-            feature.bind_dataset(dataset)
-        labels = LABELS.get(step.feature, _labels)(directory)
-        lookups: dict[str, DependencyLookup] = {"labels": {(GROUP, SEQUENCE): labels}}
-        if step.feature in PREDICTIONS:
-            predictions = PREDICTIONS[step.feature](directory)
-            lookups["predictions"] = {(GROUP, SEQUENCE): predictions}
-        if step.feature in FOLD_TABLES:
-            lookups["_input_0"] = _fold_lookup(directory / step.id / "classifier")
-        if isinstance(feature, ReadsTags):
-            lookups["_tags"] = {(GROUP, SEQUENCE): _tag_revision(directory)}
-        state = _state(directory, step.id)
-        if not feature.load_state(state, _artifacts(feature, step, directory), lookups):
-            feature.fit(_stream(merged))
-            feature.save_state(state)
-        check_input_columns(
-            feature, merged.columns, numeric=merged.select_dtypes("number").columns
-        )
-        ran[step.id] = (feature, merged, feature.apply(merged))
+        merged = {
+            sequence: _merged(
+                [
+                    tracks
+                    if isinstance(item, str)
+                    else ran[item.step].outputs[sequence]
+                    for item in step.inputs
+                ],
+                directory / step.id / sequence,
+                step.feature,
+            )
+            for sequence, tracks in entries
+        }
+        feature, loaded = _prepared(recipe, step, directory, sequences, dataset)
+        if not loaded:
+            feature.fit(_stream(sequences[0], merged[sequences[0]]))
+            feature.save_state(_state(directory, step.id))
+        outputs: dict[str, pd.DataFrame] = {}
+        for sequence in sequences:
+            check_input_columns(
+                feature,
+                merged[sequence].columns,
+                numeric=merged[sequence].select_dtypes("number").columns,
+            )
+            outputs[sequence] = feature.apply(merged[sequence])
+        bound = built[0] if isinstance(feature, _ReadsTheDataset) else None
+        ran[step.id] = _Ran(feature, merged, outputs, bound)
     return ran
 
 
@@ -680,7 +806,8 @@ def test_a_feature_writes_the_columns_it_declares(slug: str, tmp_path: Path) -> 
     _skip_unless_runnable(slug)
     recipe = _chain(slug)
     predicted = resolved_columns(recipe)[slug]
-    _, merged, output = _run(recipe, tmp_path, slug)[slug]
+    ran = _run(recipe, tmp_path, slug)[slug]
+    merged, output = ran.merged[SEQUENCE], ran.outputs[SEQUENCE]
     provides = declared_provides(FEATURES[_class_name(slug)])
     assert provides is not None
 
@@ -698,7 +825,8 @@ def test_a_feature_writes_the_same_output_from_the_columns_it_is_read_for(
 ) -> None:
     """A run reads only the columns that ``input_projection`` selects."""
     _skip_unless_runnable(slug)
-    feature, merged, output = _run(_chain(slug), tmp_path, slug)[slug]
+    ran = _run(_chain(slug), tmp_path, slug)[slug]
+    feature, merged, output = ran.feature, ran.merged[SEQUENCE], ran.outputs[SEQUENCE]
     projection = input_projection(feature)
     if projection is None:
         return
@@ -714,7 +842,8 @@ def test_removing_a_required_column_raises_the_uniform_error(
     slug: str, tmp_path: Path
 ) -> None:
     _skip_unless_runnable(slug)
-    feature, merged, _ = _run(_chain(slug), tmp_path, slug)[slug]
+    ran = _run(_chain(slug), tmp_path, slug)[slug]
+    feature, merged = ran.feature, ran.merged[SEQUENCE]
     requires = declared_requires(type(feature))
     assert requires is not None
     values = param_values(feature.params, contract_fields(requires, None))
@@ -725,6 +854,45 @@ def test_removing_a_required_column_raises_the_uniform_error(
             check_input_columns(feature, merged.drop(columns=meeting).columns)
         assert need in raised.value.missing, (slug, need.label)
         assert need.label in str(raised.value)
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_one_instance_applies_two_entries_as_fresh_instances_do(
+    slug: str, tmp_path: Path
+) -> None:
+    """A process worker applies every entry it is given with the instance it built.
+
+    The instance of :func:`_run` has fitted or loaded, and a worker's has loaded,
+    so both are compared with a fresh instance. A step that saved a state loads it.
+    """
+    _skip_unless_runnable(slug)
+    if not process_capable(FEATURES[_class_name(slug)]):
+        pytest.skip(f"{slug} is not process-capable, and no worker reuses it")
+    tracks = _tracks if _planar(slug) else _world_tracks
+    entries: Entries = (
+        (SEQUENCE, tracks(sequence=SEQUENCE)),
+        (SECOND_SEQUENCE, tracks(sequence=SECOND_SEQUENCE, seed=1)),
+    )
+    recipe = _chain(slug)
+    ran = _run(recipe, tmp_path, slug, entries)[slug]
+    step = next(step for step in recipe.steps if step.id == slug)
+    assert isinstance(step, FeatureStepSpec)
+
+    def dataset() -> Dataset:
+        assert ran.dataset is not None
+        return ran.dataset
+
+    sequences = (SEQUENCE, SECOND_SEQUENCE)
+    worker, loaded = _prepared(recipe, step, tmp_path, sequences, dataset)
+    assert loaded or not _state(tmp_path, slug).exists(), (
+        f"{slug} saved a state that load_state does not load"
+    )
+    _ = worker.apply(ran.merged[SEQUENCE])
+    fresh, _ = _prepared(recipe, step, tmp_path, sequences, dataset)
+    expected = fresh.apply(ran.merged[SECOND_SEQUENCE])
+
+    pd.testing.assert_frame_equal(ran.outputs[SECOND_SEQUENCE], expected)
+    pd.testing.assert_frame_equal(worker.apply(ran.merged[SECOND_SEQUENCE]), expected)
 
 
 def _class_name(slug: str) -> str:
