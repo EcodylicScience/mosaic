@@ -1008,8 +1008,8 @@ class SubmitPipelineInput(ToolInput):
             "per-entry work is a Python loop, which holds the interpreter lock "
             "in threads. Each process worker holds about one entry's tables of "
             "its own, so memory grows with the worker count, under the server's "
-            "memory floor. The server must allow it. A feature that needs "
-            "set_scope runs in threads either way."
+            "memory floor. The server must allow it. A set_scope or "
+            "close() feature never runs in process workers."
         ),
     )
     confirm: bool = Field(
@@ -1689,7 +1689,7 @@ class SubmittedPipeline(StrictModel):
         cleanup_bytes: The bytes they hold.
         workers: How many entries a parallelizable step computes at once.
         parallel_mode: How it computes them. A feature that defines
-            ``set_scope`` runs in threads whatever this is.
+            ``set_scope`` or declares ``close()`` runs in threads whatever this is.
     """
 
     request_id: str

@@ -727,8 +727,10 @@ itself, or is handed it for overlap, a feature that widens an individual-level i
 onto the pair rows of another input, a nearest-neighbor pair filter and the cross join,
 so memory grows by a whole interpreter and about one entry's tables per worker. A
 feature that does not fit in memory at four process workers may fit at two, or in
-threads. A feature that defines `set_scope`, such as the interaction crop, runs in
-threads whatever the mode is, because a process worker rebuilds the feature without it.
+threads. A feature that defines `set_scope`, such as the interaction crop, or declares
+`close()` runs in threads whatever the mode is, because a process worker's instance gets
+neither call. A process worker builds the feature once, at its first entry, and applies
+every entry it is handed with that instance.
 
 The agent sees what it needs to choose:
 

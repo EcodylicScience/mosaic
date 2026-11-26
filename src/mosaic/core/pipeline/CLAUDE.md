@@ -59,24 +59,24 @@ are in `graph/CLAUDE.md`.
   `.stage-*.staged` name beside its final one (`staged_tables.py`) and returns it with
   its index row (`TracksRowDraft`). The calling process, through `OrderedResults`, in
   submission order, publishes the tables in batches (`TableCommitter`: the tables of a
-  batch move into place, then one write of the index records their rows, so a run is
-  not quadratic in the index; a batch is due after `max_batch` tables, or after the
-  longer of 10 s and four times the duration of the last write; a batch with a key
-  collision is refused before any table moves), reports the failures and the progress, so the
-  outputs do not depend on the worker count. The caller flushes the committer at the
-  end of the run and when it stops early. Of two
-  files naming one entry the first keeps it, or the last when overwriting. The op
-  removes the staged files of an earlier run at its start, and a table with no row is
-  made again, not skipped. A process worker reopens the dataset from its manifest path
-  (`dataset_ref`, `worker_dataset`). An op that ends on an exception settles the pool
-  first and publishes what its workers finished
+  batch move into place, then one write of the index records their rows, so a run is not
+  quadratic in the index; a batch is due after `max_batch` tables, or after the longer
+  of 10 s and four times the duration of the last write; a batch with a key collision is
+  refused before any table moves), reports the failures and the progress, so the outputs
+  do not depend on the worker count. The caller flushes the committer at the end of the
+  run and when it stops early. Of two files naming one entry the first keeps it, or the
+  last when overwriting. The op removes the staged files of an earlier run at its start,
+  and a table with no row is made again, not skipped. A process worker reopens the
+  dataset from its manifest path (`dataset_ref`, `worker_dataset`). An op that ends on
+  an exception settles the pool first and publishes what its workers finished
   (`tests/core/pipeline/test_op_parallelism.py`). A cancel signals the run's process
-  group and kills the process workers, so a pool that breaks while a cancel is requested
-  ends the run `cancelled`, not `failed` with `WorkerProcessDied`, which
-  `run_cost.stopped_for_memory` reads as a memory stop. A pool takes the caller's
-  `cancel_check` and polls it for `CANCEL_ARRIVAL_SECONDS`, because the caller's SIGTERM
-  handler can run after the pool sees the break
-  (`tests/core/pipeline/test_parallel_run.py`).
+  group, and an op's process workers, which keep the default dispositions, die of it. A
+  pool that breaks while a cancel is requested ends the run `cancelled`, not `failed`
+  with `WorkerProcessDied`, which `run_cost.stopped_for_memory` reads as a memory stop.
+  A feature run's pool breaks on a cancel only through a second signal or a worker's
+  death. A pool takes the caller's `cancel_check` and polls it for
+  `CANCEL_ARRIVAL_SECONDS`, because the caller's SIGTERM handler can run after the pool
+  sees the break (`tests/core/pipeline/test_parallel_run.py`).
 
 ## Public types and imports
 
@@ -382,9 +382,22 @@ are in `graph/CLAUDE.md`.
   a caller killed by SIGKILL never gives it end of file. The sentinel is a pipe that the
   caller holds under every start method, whereas the worker's own parent is the
   forkserver under `forkserver`. The guard reads no process id and no clock, sets no
-  `PR_SET_PDEATHSIG`, which fires on the death of the thread that spawned the worker, and
-  leaves signals and process groups alone
-  (`tests/core/pipeline/test_worker_caller_guard.py`).
+  `PR_SET_PDEATHSIG`, which fires on the death of the thread that spawned the worker,
+  and leaves signals and process groups alone. The caller's own initializer runs after
+  the guard, so an initializer that hangs or raises leaves a worker that ends with the
+  caller. The pool is a `CallerGuardedPool`: a watcher thread, started after its first
+  `submit`, polls the executor's broken flag and kills the live workers
+  (`CallerGuardedPool.kill_workers`) once it is set, because a worker that ignores
+  SIGTERM keeps the manager thread's join waiting under the executor's shutdown lock,
+  and a kill from any thread that waits for that lock never runs. `EntryPool.drain_one`
+  and both settles also call `kill_workers()` before they hand back, raise or return.
+  The watcher holds the pool weakly, so that a pool dropped without a shutdown is
+  collected, and a pool shut down stays alive until the watcher returns, because a break
+  during a shutdown needs the kill. It also wakes the executor's manager thread when a
+  started worker has exited while the pool is live, since CPython's `submit` wakes the
+  manager before it starts the worker it adds, and a worker that dies alone after the
+  last submission would otherwise go unseen and the pool would hang
+  (`tests/core/pipeline/test_worker_caller_guard.py`, `test_entry_pool.py`).
 - The memory limit comes from `read_memory_limit` (`memory_limit.py`): a container's
   cgroup limit, else the host's memory. The floor, the gate and the run-log's limit
   figures read it, never `psutil.virtual_memory()` alone.
@@ -404,61 +417,76 @@ are in `graph/CLAUDE.md`.
 - Every exit of an entry lowers `EntriesInFlight`: an output written, a load of no rows,
   a failure, a skip without a table, and missing pair rows. An exit that does not would
   stall the gate (`tests/core/pipeline/test_run_measures.py`).
-- Each computed entry runs as an `EntryTask` through `run_entry`
-  (`entry_task.py`) in every mode. The task's `source` is the table the parent
-  loaded or an `EntryLoad`, which the worker loads through `load_entry_data`
-  and `entry_bounds_filters` inside a memo that
-  `ParquetFooterMemo.from_records` builds from the parent's `FooterRecord`s,
-  keyed by the path as the load spells it. The worker checks the columns,
-  refuses an arena-blind input, applies, trims and writes the output with
-  `create_parent=False`, and the parent records the row from the report. A load
-  that returns no table reports `written=False`, and the entry leaves the
-  in-flight record without a row. A process worker runs it through
-  `run_entry_in_process` after its per-entry build, reads its base before the
-  load, and subtracts only a handed table. An input failure (any load error but
-  `PairRowsMissing`) and a trim or write failure return as an `EntryFailure`,
-  and the run raises it. `PairRowsMissing` and any other entry error raise in
-  the task and are recorded as an `entry_error`. The task loads its entry's
-  input unless the run asks for overlap, the feature widens individual inputs
-  onto pair rows (`expands_individuals` with more than one input, since a
-  single input has nothing to widen and loads alike without the flag), a pair
-  filter applies or the feature is the cross join. Those shapes load in the
-  parent through `iter_manifest`, which hands the task the table. Both sites
-  call `load_entry_data`. `entry_task.py` names no index module, the run-log or
-  `job` in its own imports (`tests/core/pipeline/test_entry_task.py`,
-  `test_entry_errors.py`, `tests/meta/test_entry_task_imports.py`).
-- `apply_seconds` runs from the dispatch, so it contains the load of an entry
-  whose worker loads it, and ends at the end of `apply`. `after_apply` stamps it
-  in serial and thread mode, and in process mode it is the moment the outcome
-  was set less the worker's `seconds_after_apply`, which runs from the end of
-  `apply` to the worker's return.
-- Every exit of `run_feature`'s apply loop, a cancel, an interrupt or an error,
-  flushes the index rows, prints one stderr line when entries are in flight,
-  and settles the pool with `settle(results_only=True)`: a call that returns
-  has written its output and gets its row, and a call that raises is not
-  recorded. It flushes again, records `entries_written` once, and raises the
-  exception that ended the loop. A failed flush and a settle that raises are
-  each a note on the exception raised. The errors raised while recording the
-  outputs in flight, which the settle dropped, are one note:
+- Each computed entry runs as an `EntryTask` through `run_entry` (`entry_task.py`) in
+  every mode. The task's `source` is the table the parent loaded or an `EntryLoad`,
+  which the worker loads through `load_entry_data` and `entry_bounds_filters` inside a
+  memo that `ParquetFooterMemo.from_records` builds from the parent's `FooterRecord`s,
+  keyed by the path as the load spells it. The worker checks the columns, refuses an
+  arena-blind input, applies, trims and writes the output with `create_parent=False`,
+  and the parent records the row from the report. A load that returns no table reports
+  `written=False`, and the entry leaves the in-flight record without a row. A process
+  worker runs it through `run_entry_in_process` with the feature its `FeatureWorker`
+  holds, which the worker builds at its first task (`_built_feature`) and keeps for the
+  pool's life, and which a build that raised leaves unbuilt, so the worker's next task
+  builds again. The pool's initializer (`start_feature_worker`) builds nothing. The
+  worker reads its base before the load, which for the task that built the feature
+  contains the feature's state, and subtracts only a handed table. An input failure (any
+  load error but `PairRowsMissing`) and a trim or write failure return as an
+  `EntryFailure`, and the run raises it. `PairRowsMissing` and any other entry error
+  raise in the task and are recorded as an `entry_error`. The task loads its entry's
+  input unless the run asks for overlap, the feature widens individual inputs onto pair
+  rows (`expands_individuals` with more than one input, since a single input has nothing
+  to widen and loads alike without the flag), a pair filter applies or the feature is
+  the cross join. Those shapes load in the parent through `iter_manifest`, which hands
+  the task the table. Both sites call `load_entry_data`. `entry_task.py` names no index
+  module, the run-log or `job` in its own imports
+  (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
+  `tests/meta/test_entry_task_imports.py`).
+- `apply_seconds` runs from the dispatch, so it contains the load of an entry whose
+  worker loads it and, for the entry whose worker built the feature for it, that build,
+  and ends at the end of `apply`. `after_apply` stamps it in serial and thread mode, and
+  in process mode it is the moment the outcome was set less the worker's
+  `seconds_after_apply`, which runs from the end of `apply` to the worker's return.
+- A feature run's process workers start through `start_feature_worker`, which makes
+  SIGTERM and SIGINT do nothing in them (`ignore_stop_signals`: a handler, because an
+  ignored disposition survives `exec` into a subprocess of `apply`). A stop signal to
+  the process group does not stop a worker. With the cancel handler of
+  `install_signal_handler` (`mosaic run`, the pipeline driver), either signal cancels
+  the run, and the workers finish their entries. Without it SIGINT raises
+  `KeyboardInterrupt` in the run's process, which waits for the workers to finish their
+  entries, and SIGTERM ends that process by default, so the caller guard
+  (`_exit_when_caller_ends`) ends its workers mid-entry. A second signal to a process
+  with the handler kills the live workers of every guarded pool
+  (`kill_guarded_workers`), and an abandoned settle kills them
+  (`EntryPool.kill_workers`), so the run's process can exit. `run_feature` checks for a
+  cancel after the pool finishes, so a cancel that arrives while the last entries are in
+  flight ends the run `cancelled` in every mode, with every row recorded. The ops'
+  pools, the TRex and frame-extraction pools and the worker-base probe keep the default
+  dispositions (`tests/core/pipeline/test_run_exits.py`, `test_parallel_run.py`).
+- Every exit of `run_feature`'s apply loop, a cancel, an interrupt or an error, flushes
+  the index rows, prints one stderr line when entries are in flight, and settles the
+  pool with `settle(results_only=True)`: a call that returns has written its output and
+  gets its row, and a call that raises is not recorded. It flushes again, records
+  `entries_written` once, and raises the exception that ended the loop. A failed flush
+  and a settle that raises are each a note on the exception raised. The errors raised
+  while recording the outputs in flight, which the settle dropped, are one note:
   `N of the outputs of the entries in flight raised while being recorded, the first: <type>: <message>`.
-  In a notebook or the Python API, a second `KeyboardInterrupt` during the
-  settle abandons it and is raised instead, with the first exception as its
-  context, after the second flush has run. A feature run's pool
-  (`hand_back_on_break`) hands back every call finished before a break of a
-  process pool, results first, before it raises; a worker's `KeyboardInterrupt`
-  is dropped. The ops' pools (`EntryPool.for_settings`) do not hand back. A
-  process worker that a signal to the process group reaches, such as a
-  terminal's Ctrl-C, a notebook's interrupt in process mode or a group cancel,
-  still loses its entry in flight, whether the worker is killed or its call
-  raises `KeyboardInterrupt` (`tests/core/pipeline/test_run_exits.py`,
-  `test_entry_pool.py`). These leave an output on disk without a row: a parent
-  killed by SIGKILL or the out-of-memory killer, for each output its workers
-  wrote whose row it had not yet flushed; thread workers still running after a
-  second interrupt; process workers still running after a second interrupt sent
-  to the parent alone; a process worker killed, or reached by a group SIGINT,
-  after its rename and before it returned. A rerun serves such an output when
-  its provenance is blank on both sides and recomputes it otherwise. A process
-  worker killed while it writes leaves a hidden temporary file and no output.
+  In a notebook or the Python API, a second `KeyboardInterrupt` during the settle
+  abandons it and is raised instead, with the first exception as its context, after the
+  second flush has run. A feature run's pool (`hand_back_on_break`) hands back every
+  call finished before a break of a process pool, results first, before it raises; a
+  worker's `KeyboardInterrupt` is dropped. The ops' pools (`EntryPool.for_settings`) do
+  not hand back. A feature run's process worker that a signal to the process group
+  reaches, such as a terminal's Ctrl-C, a notebook's interrupt in process mode or a
+  group cancel the run handles, finishes its entry, which the run records
+  (`tests/core/pipeline/test_run_exits.py`, `test_entry_pool.py`). A group SIGTERM that
+  the run does not handle ends its process and, through the caller guard, its workers
+  mid-entry. These leave an output on disk without a row: a parent killed by SIGKILL or
+  the out-of-memory killer, for each output its workers wrote whose row it had not yet
+  flushed; thread workers still running after a second interrupt; a process worker
+  killed after its rename and before it returned. A rerun serves such an output when its
+  provenance is blank on both sides and recomputes it otherwise. A process worker killed
+  while it writes leaves a hidden temporary file and no output.
 - For an entry whose task loads it, the parent checks for a cancel, waits for a free
   worker (`EntryPool.wait_for_worker`), runs the gate (`admission_margin` above 0) and
   then the floor when there are several workers, enters the entry in flight and
@@ -486,14 +514,17 @@ are in `graph/CLAUDE.md`.
 - A run keeps each written entry's flight, from its dispatch, or from the parent's load
   of an entry the parent loads, to its output written, and `in_flight_levels` of the
   `resources` event is the time, rows and tree CPU at each count of entries in flight
-  together. An entry's rows spread evenly over its flight, an entry whose output was
-  not written adds neither rows nor time, and level 0 is not written, so `RunCost`
-  rebuilds the same levels from the `entry_end` events of a log that wrote none. The
-  peak sample sums the covariates of the entries in flight into
-  `peak_in_flight_pair_frames`, flagged by `peak_in_flight_pair_frames_bound` when any
-  carries the lower bound of a blank cell. An entry's covariates are read once, from the
-  tracks and media indexes (`tracks_covariates`), before the first entry loads, so the
-  read falls in no flight (`tests/core/pipeline/test_run_measures.py`).
+  together. An entry's rows spread evenly over its flight, an entry whose output was not
+  written adds neither rows nor time, and level 0 is not written, so `RunCost` rebuilds
+  the same levels from the `entry_end` events of a log that wrote none. The peak sample
+  sums the covariates of the entries in flight into `peak_in_flight_pair_frames`,
+  flagged by `peak_in_flight_pair_frames_bound` when any carries the lower bound of a
+  blank cell. An entry's covariates are read once, from the tracks and media indexes
+  (`tracks_covariates`), before the first entry loads, so the read falls in no flight
+  (`tests/core/pipeline/test_run_measures.py`). The flight of the entry whose
+  process worker built the feature for it contains that build, and its
+  `entry_end` records the build's seconds as `build_seconds` (`EntryMeasure`,
+  `EntryCost`), left out where no build ran.
 - `MemoryWatch` keeps the processes below this one and walks the tree
   (`children(recursive=True)`) to find them: in `begin()`, when a read finds the last walk
   `ESTIMATE_SAMPLE_INTERVAL_SECONDS` old, and after an `EntryPool` process submission when

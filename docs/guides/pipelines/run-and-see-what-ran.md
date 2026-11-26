@@ -157,6 +157,11 @@ request's driver, which stops the running step and records the others `cancelled
 A request without a running driver has its running steps signalled and its other
 steps recorded `cancelled`. A process on another machine is not signalled.
 
+A cancel of a run in process mode waits for the entries its workers hold and records
+them, and a second cancel signal stops the workers. A cancel that arrives while the last
+entries are in flight ends the run `cancelled` in every mode, with every row recorded,
+and not `finished` or `partial`.
+
 `mosaic pipeline status -m dataset.yaml --request <request id>` reports a submitted
 request step by step. `--wait-seconds 45` holds the report until a step of the request
 ends, the request does, or the time is up, so a script need not poll or watch the
@@ -333,12 +338,14 @@ whose output was written, and spreads an entry's rows evenly over its flight. Th
 runs from the entry's dispatch to its output written, or from the run's load of its
 input when the run loads it. A log written before levels were recorded has them rebuilt
 from its entries on the same rule, and `rebuilt` says so. `cost.entries` lists each
-measured entry with its mode, times, CPU and covariates, and `cost.skipped_lines` counts
-the lines of the log that could not be read. `cost.peak_points` holds the largest memory
-sample of each mode, with the rows and pair frames in flight (`pair_frames_bound` is
-true when one of those entries carried a lower bound). `cost.params_digest`,
-`cost.params_default` and `cost.emits` identify the feature's params and the level it
-emits.
+measured entry with its mode, times, CPU, covariates and `build_seconds`, the seconds a
+process worker spent building the feature before the entry (`None` for an entry whose
+worker found the feature built, or that ran in the run's own process), and
+`cost.skipped_lines` counts the lines of the log that could not be read.
+`cost.peak_points` holds the largest memory sample of each mode, with the rows and pair
+frames in flight (`pair_frames_bound` is true when one of those entries carried a lower
+bound). `cost.params_digest`, `cost.params_default` and `cost.emits` identify the
+feature's params and the level it emits.
 
 `cost.machine` names the machine the job ran on: its CPU model, logical CPUs, threads per
 core and memory. Set the environment variable `MOSAIC_MACHINE_CLASS` to a name of your own

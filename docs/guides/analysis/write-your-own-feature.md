@@ -26,7 +26,7 @@ Nine attributes and four methods.
 | `name` | The registry slug, as typed at `--feature` |
 | `version` | Bump it when the meaning of the output changes; it re-addresses every run |
 | `category` | Which group it appears under in the reference and in a diagram |
-| `parallelizable` | Whether sequences may be processed concurrently |
+| `parallelizable` | Whether sequences may be processed concurrently. One instance applies every entry it is handed, in every mode |
 | `scope_dependent` | Whether the output depends on which sequences were in scope |
 | `accepts_overlap` | Whether `apply` may be handed rows from neighboring sequences |
 | `emits` | At what entity level the output rows are keyed |

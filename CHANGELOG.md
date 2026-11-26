@@ -8,6 +8,42 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: process workers build the feature once
+
+No run id or output moves, and no feature `version` changes. A feature run's process
+workers build the feature at their first entry and apply every entry they are handed
+with that instance, as a run in threads does. They built it again for each entry, and
+the run sent the build's arguments with each one. A build that fails costs its entry,
+and the worker builds again for its next. The bench (`benchmarks/step-cost/README.md`,
+"Workers built once, before and after") shows the bytes sent to the workers per entry
+falling from 2,294 to 2,067, a build of about 1.9 s per worker that its first entry
+contains, and the mean `apply_seconds` over all entries about the same, 0.222 s before
+and about 0.202 s after. The workers' mean CPU stays near 102%.
+
+The entry whose worker built the feature for it contains the build in its
+`apply_seconds` and its flight, and its `entry_end` event records `build_seconds`.
+`EntryMeasure` and `EntryCost` declare it as an optional last field, `None` for an entry
+whose worker found the feature built or that ran in the run's own process, and the event
+leaves it out then.
+
+A stop signal to the process group no longer kills a feature run's process workers. They
+finish the entries they hold while the run's process lives. A run that cancels on the
+signal (`mosaic run` and the pipeline driver), or that raises `KeyboardInterrupt` on
+SIGINT, records those entries and ends `cancelled`, where it lost them. A SIGTERM to a
+run without the cancel handler ends its process, and its workers end with it. A second
+signal to a process with the cancel handler kills the workers, and so does a second
+interrupt that abandons the settle in a notebook. A worker that dies stops the others,
+whether other calls are in flight, the pool is idle or the worker was the last one
+started, so the run's process ends promptly.
+
+A cancel that arrives while a run's last entries are in flight, in threads or in process
+workers, ends the run `cancelled` with every row recorded, where it ended `finished`, or
+`partial` with failed entries.
+
+A feature that declares `close()` runs in threads when process mode is asked, as a
+feature that defines `set_scope` does, because a worker keeps its instance for the
+pool's life and nothing would close it.
+
 ## Unreleased: example downloads and Claude Desktop registration
 
 No run id or output moves. `mosaic examples list` and `mosaic examples fetch` download

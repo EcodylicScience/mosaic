@@ -301,13 +301,17 @@ class ClosesResources(Protocol):
     ``run_feature`` is called with it again, as in a notebook that runs one
     instance twice.
 
-    A cancel in thread-parallel mode shuts the executor down without waiting for
-    the threads that are running ``apply``. ``close()`` can then run while
-    ``apply`` is still running on the same instance, and a parallelizable
-    feature must allow that order. If such an ``apply`` reacquires the resource
-    after ``close()`` returns, the resource stays open until the process exits
-    or until the instance's next ``close()``. ``run_feature`` makes that call at
-    the end of the instance's next run.
+    A feature that declares ``close()`` runs in threads when process workers are
+    asked for, because a process worker keeps its instance for the pool's life and
+    nothing would close it.
+
+    A cancel in thread-parallel mode waits for the threads that are running ``apply``,
+    but a second interrupt that abandons that wait shuts the executor down without them.
+    ``close()`` can then run while ``apply`` is still running on the same instance, and
+    a parallelizable feature must allow that order. If such an ``apply`` reacquires the
+    resource after ``close()`` returns, the resource stays open until the process exits
+    or until the instance's next ``close()``. ``run_feature`` makes that call at the end
+    of the instance's next run.
     """
 
     def close(self) -> None: ...
