@@ -13,11 +13,14 @@ nothing, and ends the loop once ``seq_c`` is computed. Under overlap the run loa
 ``seq_d`` in its own process, and an input that fails there ends the loop after
 ``seq_c``'s dispatch, with ``seq_a`` to ``seq_c`` recorded. A worker that dies
 ends the loop at the dispatch of ``seq_d`` or ends the settle, and a second
-interrupt abandons the settle. A worker killed in its write leaves its temporary
-file, and one killed after its rename an output without a row. A SIGTERM or SIGINT
-sent to the process group of a child running the run ends the loop once the
-dispatch of ``seq_c`` returns, and a SIGKILL of the child alone ends its process
-workers with it.
+interrupt abandons the settle and kills the process workers. A worker that dies
+while another is idle and a third holds an entry ends the run's process too. A
+worker killed in its write leaves its temporary file, and one killed after its
+rename an output without a row. A cancel that arrives while the last entries are in
+flight ends the run cancelled with their rows. A SIGTERM or SIGINT sent to the
+process group of a child running the run ends the loop once the dispatch of
+``seq_c`` returns, the process workers finish the entries they hold, and a SIGKILL
+of the child alone ends its process workers with it.
 
 The run's own threads alone write the index and the run-log, and a pool's threads
 do not.
@@ -78,13 +81,16 @@ from mosaic.runlog import JsonlRunLog, read_run, run_log_dir
 from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
     HOLD_DIRECTORY_VARIABLE,
+    HoldsBC,
     HoldsUntilReleased,
     SignalledGroup,
     add_tracks_variant,
+    kill_running,
     logged_events,
     make_dataset,
     observed,
     process_alive,
+    run_child_to_files,
     signal_group_when,
     wait_for,
     wrapped_write,
@@ -104,12 +110,6 @@ RunPool = EntryPool[FeatureMeta, RunOutcome]
 
 type OnResult = Callable[[FeatureMeta, RunOutcome], None]
 """The callback a feature run's pool hands each result to."""
-
-
-class HoldsBC(HoldsUntilReleased):
-    """Holds ``seq_b`` and ``seq_c`` until the test releases them."""
-
-    hold_on = _HELD
 
 
 class HoldsBCWithOverlap(HoldsBC):
@@ -536,6 +536,45 @@ def _check_disk_and_rerun(
 
 
 # --- Cancel and interrupt -------------------------------------------------------
+
+
+class HoldsD(HoldsUntilReleased):
+    """Holds ``seq_d`` until the test releases it."""
+
+    hold_on = ("seq_d",)
+
+
+def test_a_cancel_during_the_final_drain_ends_the_run_cancelled(
+    exits: Exits, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every entry is dispatched before the cancel, so only the check after the
+    # last entries are drained sees it.
+    _wrap_pools(monkeypatch, exits.marks)
+
+    def cancel_then_release() -> None:
+        wait_for(
+            lambda: (
+                (exits.marks / "seq_d").exists()
+                and _computed(exits.marks, "seq_a", "seq_b", "seq_c")
+            ),
+            CHILD_TIMEOUT_SECONDS,
+            "seq_d was never held with seq_a to seq_c computed",
+        )
+        exits.token.cancel()
+        (exits.marks / "release").touch()
+
+    canceller = threading.Thread(target=cancel_then_release, daemon=True)
+    canceller.start()
+    with pytest.raises(Cancelled):
+        _ = exits.run(HoldsD(), "thread", "TESTEXITFINALDRAIN", RunOptions(workers=2))
+    canceller.join(CHILD_TIMEOUT_SECONDS)
+
+    snapshot = read_run(run_log_dir(exits.ds.base_dir), "TESTEXITFINALDRAIN")
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+    index = _indexed(exits.ds, snapshot["run_id"])
+    assert sorted(index["sequence"]) == list(_SEQUENCES)
+    assert set(index["finished_at"]) == {""}
 
 
 @pytest.mark.parametrize("mode", _EVERY_MODE)
@@ -980,6 +1019,38 @@ class HoldsBCThenDiesOnSeqC(DiesOnSeqC):
     hold_on = _HELD
 
 
+class HoldsBDiesOnSeqC(HoldsUntilReleased):
+    """Runs ``seq_a`` to ``seq_c`` in three workers, holds ``seq_b``, kills ``seq_c``'s.
+
+    ``seq_a``'s worker waits until ``seq_c`` is applied, so the three entries run in
+    three workers. Once ``seq_a`` is computed, ``seq_c``'s worker touches ``killed``
+    in the hold directory and ends itself with SIGKILL, so at its death one worker is
+    idle and one holds ``seq_b``.
+    """
+
+    hold_on = ("seq_b",)
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
+        marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
+        if sequence == "seq_a":
+            wait_for(
+                (marks / "applied-seq_c").exists,
+                CHILD_TIMEOUT_SECONDS,
+                "seq_c was never applied",
+            )
+        output = super().apply(df)
+        if sequence == "seq_c":
+            wait_for(
+                lambda: _computed(marks, "seq_a"),
+                CHILD_TIMEOUT_SECONDS,
+                "seq_a was never computed",
+            )
+            (marks / "killed").touch()
+            os.kill(os.getpid(), signal.SIGKILL)
+        return output
+
+
 def _wrap_pools(
     monkeypatch: pytest.MonkeyPatch,
     marks: Path,
@@ -1205,28 +1276,43 @@ def _pool_threads(before: Iterable[threading.Thread]) -> list[threading.Thread]:
     ]
 
 
-def _interrupt_twice(exits: Exits, execution_id: str) -> KeyboardInterrupt:
-    """Run until a second interrupt abandons the settle, then release the held threads.
+_WORKERS_GONE_AFTER_THE_RAISE_SECONDS = 10.0
+"""How long a held process worker may outlive the raise of a second interrupt."""
+
+
+def _interrupt_twice(
+    exits: Exits, execution_id: str, mode: Literal["thread", "process"] = "thread"
+) -> KeyboardInterrupt:
+    """Run until a second interrupt abandons the settle, then check the held workers.
 
     The settle does not release ``seq_b`` and ``seq_c``, so it hands back ``seq_a``
-    alone before the second interrupt. Once the release exists, after the run has
-    raised, the held threads write ``seq_b`` and ``seq_c``, which get no row, and
-    end.
+    alone before the second interrupt. In thread mode, once the release exists,
+    after the run has raised, the held threads write ``seq_b`` and ``seq_c``, which
+    get no row, and end. In process mode the held workers are gone within
+    :data:`_WORKERS_GONE_AFTER_THE_RAISE_SECONDS` of the raise, without a release.
     """
     exits.releases = False
     threads = threading.enumerate()
     with pytest.MonkeyPatch.context() as faults:
         _wrap_pools(faults, exits.marks, _interrupt_after_seq_a_in_the_settle(exits))
-        _once_seq_c_is_dispatched(faults, exits, "thread", _interrupt)
+        _once_seq_c_is_dispatched(faults, exits, mode, _interrupt)
         with pytest.raises(KeyboardInterrupt) as raised:
-            _ = exits.run(HoldsBC(), "thread", execution_id)
+            _ = exits.run(HoldsBC(), mode, execution_id)
         held = _pool_threads(threads)
 
-    assert len(held) >= len(_HELD)
-    (exits.marks / "release").touch()
-    for thread in held:
-        thread.join(CHILD_TIMEOUT_SECONDS)
-        assert not thread.is_alive()
+    if mode == "process":
+        workers = [int((exits.marks / sequence).read_text()) for sequence in _HELD]
+        wait_for(
+            lambda: not any(process_alive(worker) for worker in workers),
+            _WORKERS_GONE_AFTER_THE_RAISE_SECONDS,
+            "a held worker outlived the second interrupt",
+        )
+    else:
+        assert len(held) >= len(_HELD)
+        (exits.marks / "release").touch()
+        for thread in held:
+            thread.join(CHILD_TIMEOUT_SECONDS)
+            assert not thread.is_alive()
     first = raised.value.__context__
     assert raised.value.args == (_SECOND_INTERRUPT,)
     assert isinstance(first, KeyboardInterrupt)
@@ -1247,6 +1333,22 @@ def test_a_second_interrupt_abandons_the_settle_and_keeps_what_it_recorded(
         rows=frozenset({"seq_a"}),
         unrecorded=frozenset({"seq_b", "seq_c"}),
         mode="thread",
+    )
+    assert exits.settles == [True]
+
+
+def test_a_second_interrupt_kills_the_process_workers_it_abandoned(
+    exits: Exits,
+) -> None:
+    _ = _interrupt_twice(exits, "TESTEXITTWICEPROCESS", "process")
+
+    _check_exit(
+        exits,
+        "TESTEXITTWICEPROCESS",
+        status="cancelled",
+        failed=set(),
+        rows=frozenset({"seq_a"}),
+        mode="process",
     )
     assert exits.settles == [True]
 
@@ -1434,12 +1536,12 @@ def test_an_interrupt_of_the_group_records_the_outputs_of_the_threads_in_flight(
     )
 
 
-def test_an_interrupt_of_the_group_ends_a_process_mode_run_and_its_workers(
+def test_an_interrupt_of_the_group_records_the_outputs_of_the_process_workers_in_flight(
     exits: Exits,
 ) -> None:
-    # The interrupt reaches the workers too: the held calls return it, the idle
-    # worker ends and the pool breaks, so only seq_a, computed before the signal,
-    # is recorded.
+    # The interrupt reaches the workers too, and they ignore it: the run's process
+    # raises it, its settle releases the held entries, and the workers finish them,
+    # so seq_b and seq_c are recorded beside seq_a.
     child = _signal_held_child(
         exits, "process", "default-handler", signal.SIGINT, "TESTEXITGROUPINTPROCESS"
     )
@@ -1453,7 +1555,7 @@ def test_an_interrupt_of_the_group_ends_a_process_mode_run_and_its_workers(
         "TESTEXITGROUPINTPROCESS",
         status="cancelled",
         failed=set(),
-        rows=frozenset({"seq_a"}),
+        rows=_COMPUTED_BEFORE_THE_EXIT,
         mode="process",
     )
 
@@ -1501,6 +1603,120 @@ def test_a_sigkill_of_the_runs_process_ends_its_process_workers(
     finally:
         with suppress(ProcessLookupError):
             os.killpg(child.pid, signal.SIGKILL)
+
+
+# --- A worker death with a worker idle and one held -----------------------------
+
+_DIED_EXIT = 4
+"""The exit status of a child whose run raised :class:`WorkerProcessDied`."""
+
+type DeathCase = Literal["dispatch", "settle"]
+"""Where a child of :func:`run_until_a_worker_dies` meets the death: in the dispatch
+of ``seq_d``, or in the settle of a cancel."""
+
+_DYING_CHILD = """
+import sys
+from tests.core.pipeline.test_run_exits import run_until_a_worker_dies
+run_until_a_worker_dies(sys.argv[1:])
+"""
+
+
+def _seq_c_failed(exits: Exits) -> Fault:
+    def fault() -> None:
+        wait_for(
+            lambda: _computed(exits.marks, "seq_c"),
+            CHILD_TIMEOUT_SECONDS,
+            "seq_c never failed with the break",
+        )
+
+    return fault
+
+
+def run_until_a_worker_dies(arguments: Sequence[str]) -> None:
+    """Run :class:`HoldsBDiesOnSeqC` in a child process until ``seq_c``'s worker dies.
+
+    *arguments* are the dataset's manifest, the :data:`DeathCase` and the execution
+    id. Three process workers compute the run, the pools mark their computed calls,
+    and the settles are recorded and release nothing, so ``seq_b`` stays held. With
+    ``dispatch`` the run waits after the dispatch of ``seq_c`` until ``seq_c``'s
+    call fails with the break, and the wait for a worker before ``seq_d`` meets the
+    broken pool. The child exits with :data:`_DIED_EXIT` on
+    :class:`WorkerProcessDied`. With ``settle`` the run is cancelled once ``seq_c``
+    is dispatched, and the settle of the cancel meets the break. The child exits
+    with :data:`_CANCELLED_EXIT` on :class:`Cancelled`.
+    """
+    manifest, case, execution_id = arguments
+    exits = Exits(
+        ds=Dataset(manifest_path=Path(manifest)).load(),
+        marks=Path(os.environ[HOLD_DIRECTORY_VARIABLE]),
+        releases=False,
+    )
+    patches = pytest.MonkeyPatch()
+    _record_settles(patches, exits)
+    _wrap_pools(patches, exits.marks)
+    fault = _seq_c_failed(exits) if case == "dispatch" else _cancel(exits)
+    _once_seq_c_is_dispatched(patches, exits, "process", fault, holding=False)
+    try:
+        _ = exits.run(HoldsBDiesOnSeqC(), "process", execution_id)
+    except Cancelled:
+        sys.exit(_CANCELLED_EXIT)
+    except WorkerProcessDied:
+        sys.exit(_DIED_EXIT)
+
+
+def _written_pids(marks: Path) -> list[int]:
+    """The process ids that the held entries wrote into *marks*."""
+    texts = (path.read_text() for path in marks.iterdir() if path.is_file())
+    return [int(text) for text in texts if text.isdigit()]
+
+
+_EXIT_AFTER_THE_DEATH_SECONDS = 10.0
+"""How long a child may take to exit after one of its process workers died."""
+
+
+@pytest.mark.parametrize(
+    ("case", "status", "exit_status"),
+    [("dispatch", "failed", _DIED_EXIT), ("settle", "cancelled", _CANCELLED_EXIT)],
+    ids=["dispatch", "settle"],
+)
+def test_a_worker_death_ends_the_runs_process_with_a_worker_idle_and_one_held(
+    exits: Exits, case: DeathCase, status: str, exit_status: int
+) -> None:
+    # The held worker ignores the executor's SIGTERM, and the idle one waits on its
+    # call queue: the pool kills both, so the child exits soon after the death.
+    execution_id = f"TESTEXITBROKEN{case.upper()}"
+    errors = exits.marks.parent / f"{execution_id}.stderr"
+    try:
+        child_status = run_child_to_files(
+            [
+                sys.executable,
+                "-c",
+                _DYING_CHILD,
+                str(exits.ds.manifest_path),
+                case,
+                execution_id,
+            ],
+            errors=errors,
+            timeout=CHILD_TIMEOUT_SECONDS,
+        )
+        exited = time.time()
+
+        assert child_status == exit_status, errors.read_text()
+        killed = (exits.marks / "killed").stat().st_mtime
+        assert exited - killed < _EXIT_AFTER_THE_DEATH_SECONDS
+        held = _written_pids(exits.marks)
+        assert held
+        assert not any(process_alive(worker) for worker in held)
+        _check_exit(
+            exits,
+            execution_id,
+            status=status,
+            failed=set(),
+            rows=frozenset({"seq_a"}),
+            mode="process",
+        )
+    finally:
+        kill_running(_written_pids(exits.marks))
 
 
 # --- Who writes the index and the run-log ---------------------------------------

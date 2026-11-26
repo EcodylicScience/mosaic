@@ -204,7 +204,7 @@ from .parallelism import (
 )
 from .params_facts import params_equal_defaults, params_identity_digest
 from .parquet_reader import ParquetFooterMemo, memoized_footers, output_n_rows
-from .process_pool import caller_guarded_process_pool
+from .process_pool import caller_guarded_process_pool, ignore_stop_signals
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
 from .writers import default_check_output
@@ -797,8 +797,20 @@ def start_feature_worker(build: FeatureBuild) -> None:
 
     It builds nothing: an initializer that raises breaks the pool, and a build
     that fails is its task's error instead.
+
+    It first makes SIGTERM and SIGINT do nothing in the worker
+    (:func:`~mosaic.core.pipeline.process_pool.ignore_stop_signals`), so a stop
+    signal to the process group lets the worker finish the entry it holds and
+    leaves the end of the run to the run's own process: its cancel handler cancels
+    the run, which records the outputs in flight and ends ``cancelled``, and
+    without one SIGINT raises ``KeyboardInterrupt`` there. The worker stays in the
+    group, so a SIGKILL of the group still ends it, and it ends with the run's
+    process (:func:`~mosaic.core.pipeline.process_pool.caller_guarded_process_pool`).
+    A second SIGTERM or SIGINT to a run's process with the cancel handler kills its
+    workers (:func:`~mosaic.core.pipeline.job.install_signal_handler`).
     """
     global _feature_worker
+    ignore_stop_signals()
     _feature_worker = FeatureWorker(build)
 
 
@@ -4436,6 +4448,10 @@ def _run_feature_impl(
                 _lower_unhanded()
 
                 active.finish()
+                # Process workers finish their entries on a stop signal, so a cancel
+                # that arrives once every entry is dispatched is seen only here. The
+                # run then ends cancelled, with every row recorded, in every mode.
+                ctx.check_cancel()
             except BaseException as stopped:
                 # Every exit flushes the rows of the outputs already written, waits for
                 # the entries in flight, records the outputs they write, and flushes
@@ -4449,7 +4465,12 @@ def _run_feature_impl(
                 # exception, which is the one raised, and so is the count of the errors
                 # raised while recording the outputs in flight, which the settle
                 # dropped. A second interrupt during the settle abandons it and is
-                # raised instead, with the first exception as its context.
+                # raised instead, with the first exception as its context. The
+                # process workers, which ignore the stop signals, are killed before
+                # the second flush, so that the run's process can exit once it ends.
+                # Thread workers cannot be killed and finish their calls. A cancel
+                # that the check after the drain raises takes this path with nothing
+                # in flight.
                 _flush_noting("first", stopped)
                 abandoned: BaseException | None = None
                 try:
@@ -4474,6 +4495,7 @@ def _run_feature_impl(
                     )
                 except BaseException as interrupt:
                     abandoned = interrupt
+                    active.kill_workers()
                 _flush_noting("second", stopped if abandoned is None else abandoned)
                 # Recorded after the last flush, the last moment the count is true.
                 ctx.entries_written(_total_written)

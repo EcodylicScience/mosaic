@@ -11,7 +11,8 @@ token from another thread once a condition is true. :data:`SLEEPER_COMMAND` stan
 in for a long step.
 
 :func:`signal_group_when` runs a child in its own process group and signals the
-group, or the child alone, once a condition is true.
+group, or the child alone, once a condition is true, and the child alone again once
+a second condition is.
 
 :func:`process_alive` tells whether a process is running, and
 :func:`count_process_tree_walks` counts the walks of the process tree that a test's
@@ -390,8 +391,9 @@ class SignalledGroup:
     Attributes:
         pid: The child's process id, which is also its process group's.
         status: The child's exit status, negative for the signal that ended it.
-        signalled_at: The ``time.time()`` reading taken just before the signal.
-        seconds: From the signal to the child's exit.
+        signalled_at: The ``time.time()`` reading taken just before the first
+            signal.
+        seconds: From the last signal to the child's exit.
         errors: What the child wrote to standard error.
     """
 
@@ -411,6 +413,7 @@ def signal_group_when(
     errors: Path,
     waiting: str,
     child_only: bool = False,
+    then_child_when: Callable[[], bool] | None = None,
 ) -> SignalledGroup:
     """Run *argv* in its own process group, and signal the group once *ready* is true.
 
@@ -419,7 +422,9 @@ def signal_group_when(
     standard error goes to *errors*. The wait for *ready*, and then for the child to
     exit, are each bounded by :data:`CHILD_TIMEOUT_SECONDS`, and the group is killed
     on the way out while the child lives. With *child_only* the signal goes to the
-    child's process alone, and the rest of its group is the caller's to end.
+    child's process alone, and the rest of its group is the caller's to end. With
+    *then_child_when* the child alone gets *signum* again once it is true, a wait
+    bounded as the first.
 
     Args:
         argv: The command of the child.
@@ -430,11 +435,12 @@ def signal_group_when(
         waiting: What *ready* waits for, as a clause that follows "before" in a
             failure's message.
         child_only: Whether to signal the child alone instead of its group.
+        then_child_when: True once the child should get its second signal.
 
     Raises:
         AssertionError: The child exited before *ready* was true, with its
-            standard error in the message, or *ready* stayed false, or the child
-            outlived the wait after the signal.
+            standard error in the message, or *ready* or *then_child_when*
+            stayed false, or the child outlived the wait after the last signal.
     """
     with errors.open("w") as stream:
         child = subprocess.Popen(
@@ -466,6 +472,14 @@ def signal_group_when(
                 os.kill(child.pid, signum)
             else:
                 os.killpg(child.pid, signum)
+            if then_child_when is not None:
+                wait_for(
+                    then_child_when,
+                    CHILD_TIMEOUT_SECONDS,
+                    f"the second signal never became due after {waiting}",
+                )
+                signalled = time.monotonic()
+                os.kill(child.pid, signum)
             status = child.wait(timeout=CHILD_TIMEOUT_SECONDS)
             seconds = time.monotonic() - signalled
         finally:

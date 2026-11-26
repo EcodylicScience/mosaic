@@ -25,7 +25,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.entry import Entry
+from mosaic.core.entry import Entry, parse_entry_key
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import memory_watch
@@ -162,11 +162,19 @@ def test_every_computed_entry_records_its_cost(
         assert _number(end, "input_rows") > 0
         assert _number(end, "wall_seconds") >= _number(end, "apply_seconds") >= 0
         assert _number(end, "cpu_seconds") >= 0
-    in_flight = [int(_number(end, "in_flight")) for end in ends]
+    in_flight = {
+        parse_entry_key(str(end["key"]))[1]: int(_number(end, "in_flight"))
+        for end in ends
+    }
     if workers == 1:
-        assert in_flight == [1, 1, 1]
+        assert in_flight == dict.fromkeys(_SEQUENCES, 1)
     else:
-        assert all(least_in_flight <= count <= workers + 1 for count in in_flight)
+        # seq_a and seq_b are dispatched together and always overlap. seq_c waits
+        # for a worker, and runs alone when both finish before that wait drains.
+        assert all(count <= workers + 1 for count in in_flight.values())
+        assert all(
+            in_flight[sequence] >= least_in_flight for sequence in ("seq_a", "seq_b")
+        )
 
 
 class _SleepsHalfASecond(ParallelFeature):

@@ -49,12 +49,16 @@ from tests.helpers import (
     AlwaysFailsItsBuild,
     CountsItsBuilds,
     FailsItsFirstBuild,
-    HoldsOnSequences,
+    HoldsBC,
     ParallelFeature,
+    SignalledGroup,
     add_tracks_variant,
+    kill_running,
     logged_events,
     make_dataset,
+    process_alive,
     signal_group_when,
+    wait_for,
     wrapped_write,
 )
 
@@ -78,12 +82,6 @@ class _MarksThenKillsOnSeqB(_KillsOnSeqB):
         if not df.empty and str(df["sequence"].iloc[0]) in self.kill_on:
             (Path(os.environ[HOLD_DIRECTORY_VARIABLE]) / "killed").touch()
         return super().apply(df)
-
-
-class HoldsOnSeqBC(HoldsOnSequences):
-    """Holds both workers on ``seq_b`` and ``seq_c`` once ``seq_a`` has returned."""
-
-    hold_on = ("seq_b", "seq_c")
 
 
 def _outputs(ds: Dataset, storage: str, run_id: str) -> dict[str, pd.DataFrame]:
@@ -166,7 +164,8 @@ def _assert_cpu_holds_after(ds: Dataset, execution_id: str, instant: float) -> N
     """The run's last CPU figure is at least each one written before *instant*.
 
     *instant* is a ``time.time()`` reading. The reports after it read a membership
-    whose workers were killed, and are not compared with each other.
+    whose workers finished their entries, or were killed in the test of a dead
+    worker, and are not compared with each other.
     """
     events = logged_events(ds.base_dir, execution_id, "resources")
     earlier: list[float] = []
@@ -183,20 +182,33 @@ def _assert_cpu_holds_after(ds: Dataset, execution_id: str, instant: float) -> N
 
 
 _CANCELLED_CHILD = """
+import os
 import sys
+import threading
+from pathlib import Path
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
 from mosaic.core.pipeline.parallelism import WorkerProcessDied
 from mosaic.core.pipeline.run import run_feature
-from tests.core.pipeline.test_parallel_run import HoldsOnSeqBC
+from tests.helpers import HOLD_DIRECTORY_VARIABLE, HoldsBC
 
-token = CancelToken()
+cancelled = threading.Event()
+token = CancelToken(cancelled)
 install_signal_handler(token)
+mark = Path(os.environ[HOLD_DIRECTORY_VARIABLE]) / sys.argv[3]
+
+
+def touch_once_cancelled():
+    cancelled.wait()
+    mark.touch()
+
+
+threading.Thread(target=touch_once_cancelled, daemon=True).start()
 ds = Dataset(manifest_path=sys.argv[1]).load()
 try:
     run_feature(
         ds,
-        HoldsOnSeqBC(),
+        HoldsBC(),
         parallel_workers=2,
         parallel_mode="process",
         cancel_token=token,
@@ -207,6 +219,49 @@ except Cancelled:
 except WorkerProcessDied:
     sys.exit(4)
 """
+"""A process-mode run of :class:`HoldsBC` with two workers, which a signal cancels.
+
+Its arguments are the dataset's manifest, the execution id and the name of the mark
+that a thread of the child touches in the hold directory once the run's token is
+cancelled. It exits 3 on :class:`Cancelled` and 4 on :class:`WorkerProcessDied`.
+"""
+
+_STORAGE_HELD = f"{HoldsBC.name}__from__tracks"
+
+_WORKERS_GONE_AFTER_THE_CHILD_SECONDS = 2.0
+"""How long a held worker may outlive the child whose run it computed for."""
+
+
+def _held_child(
+    ds: Dataset,
+    marks: Path,
+    execution_id: str,
+    mark: str,
+    *,
+    then_child_when: Callable[[], bool] | None = None,
+) -> SignalledGroup:
+    """Run :data:`_CANCELLED_CHILD` in its own process group, and SIGTERM the group.
+
+    The signal goes out once both workers hold an entry, and the child's thread
+    touches *mark* once the run's token is cancelled. With *then_child_when* the
+    child alone gets a second SIGTERM once it is true.
+    """
+    return signal_group_when(
+        [
+            sys.executable,
+            "-c",
+            _CANCELLED_CHILD,
+            str(ds.manifest_path),
+            execution_id,
+            mark,
+        ],
+        lambda: (marks / "seq_b").exists() and (marks / "seq_c").exists(),
+        signal.SIGTERM,
+        extra_env={HOLD_DIRECTORY_VARIABLE: str(marks)},
+        errors=marks.parent / f"{execution_id}.stderr",
+        waiting="both workers began a held entry",
+        then_child_when=then_child_when,
+    )
 
 
 def _cancel_held_child(
@@ -214,33 +269,25 @@ def _cancel_held_child(
 ) -> tuple[int, float]:
     """Run a process-mode run in its own process group and cancel it while held.
 
-    Both workers hold an entry when the group is signalled.
+    Both workers hold an entry when the group is signalled, and the cancel releases
+    them.
 
     Returns:
         The child's exit status and the ``time.time()`` reading taken just before
         the signal.
     """
-    child = signal_group_when(
-        [sys.executable, "-c", _CANCELLED_CHILD, str(ds.manifest_path), execution_id],
-        lambda: (marks / "seq_b").exists() and (marks / "seq_c").exists(),
-        signal.SIGTERM,
-        extra_env={HOLD_DIRECTORY_VARIABLE: str(marks)},
-        errors=marks.parent / f"{execution_id}.stderr",
-        waiting="both workers began a held entry",
-    )
+    child = _held_child(ds, marks, execution_id, "release")
     return child.status, child.signalled_at
 
 
-def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
-    tmp_path: Path,
-) -> None:
-    ds = _dataset(tmp_path)
-    marks = tmp_path / "marks"
-    marks.mkdir()
-    execution_id = "TESTPARALLELCANCEL"
-    status, _ = _cancel_held_child(ds, marks, execution_id)
+def _held_workers(marks: Path) -> list[int]:
+    """The process ids that the holds of ``seq_b`` and ``seq_c`` wrote, where marked."""
+    held = (marks / sequence for sequence in ("seq_b", "seq_c"))
+    return [int(path.read_text()) for path in held if path.exists()]
 
-    assert status == 3
+
+def _assert_cancelled_with(ds: Dataset, execution_id: str, rows: list[str]) -> None:
+    """The run-log of *execution_id* reads ``cancelled``, with the index rows *rows*."""
     run_dir = run_log_dir(ds.base_dir)
     snapshot = read_run(run_dir, execution_id)
     assert snapshot is not None
@@ -253,13 +300,67 @@ def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
         False,
         None,
     )
-    assert snapshot["entries_written"] == 1
-    storage = "prov-parallel-holds__from__tracks"
+    assert snapshot["entries_written"] == len(rows)
     assert snapshot["run_id"]
-    kept = feature_index(feature_index_path(ds, storage)).read(
+    kept = feature_index(feature_index_path(ds, _STORAGE_HELD)).read(
         run_id=snapshot["run_id"]
     )
-    assert list(kept["sequence"]) == ["seq_a"]
+    assert sorted(kept["sequence"]) == rows
+
+
+def test_a_cancel_of_the_process_group_ends_a_process_mode_run_cancelled(
+    tmp_path: Path,
+) -> None:
+    # The workers finish the entries they hold, and the run records them.
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    execution_id = "TESTPARALLELCANCEL"
+    try:
+        status, _ = _cancel_held_child(ds, marks, execution_id)
+
+        assert status == 3
+        workers = _held_workers(marks)
+        assert len(workers) == 2
+        wait_for(
+            lambda: not any(process_alive(worker) for worker in workers),
+            _WORKERS_GONE_AFTER_THE_CHILD_SECONDS,
+            "a held worker outlived the child",
+        )
+        _assert_cancelled_with(ds, execution_id, list(_SEQUENCES))
+    finally:
+        (marks / "release").touch()
+
+
+_SECOND_SIGNAL_EXIT_SECONDS = 10.0
+"""How long a child may take to exit after a second SIGTERM to it alone."""
+
+
+def test_a_second_signal_kills_the_process_workers_and_ends_the_run_cancelled(
+    tmp_path: Path,
+) -> None:
+    # The held workers are never released: the first SIGTERM cancels the run,
+    # which waits for them, and the second, to the child alone, kills them.
+    ds = _dataset(tmp_path)
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    execution_id = "TESTPARALLELSECONDSIGNAL"
+    try:
+        child = _held_child(
+            ds,
+            marks,
+            execution_id,
+            "cancelled",
+            then_child_when=(marks / "cancelled").exists,
+        )
+
+        assert child.status == 3, child.errors
+        assert child.seconds < _SECOND_SIGNAL_EXIT_SECONDS
+        assert not any(process_alive(worker) for worker in _held_workers(marks))
+        _assert_cancelled_with(ds, execution_id, ["seq_a"])
+    finally:
+        (marks / "release").touch()
+        kill_running(_held_workers(marks))
 
 
 def _free_fractions(values: list[float]) -> Callable[[MemoryWatch], float]:

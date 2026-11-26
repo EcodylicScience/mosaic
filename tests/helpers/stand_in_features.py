@@ -1,8 +1,8 @@
 """Stand-in features that declare which source roots they consume.
 
 The provenance walk, delete sets, media rearrangement and source staleness are all
-decided by a feature's ``consumed_roots``. Their tests run a feature that does
-nothing but declare one. :class:`LossyFeature` loses the entries it is told to and
+decided by a feature's ``consumed_roots``. Their tests run a feature that does nothing
+but declare one. :class:`LossyFeature` loses the entries it is told to and
 :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of how a run is
 measured against the entries it was asked for. :class:`PairClusterFeature` writes pair
 rows for the tests of scoring them. :class:`FittingFeature` fits once per run root and
@@ -14,15 +14,14 @@ processes too, for the tests of a fit that a linked dataset holds.
 ``kill_on`` ends the process computing those sequences, for the tests of a run that
 computes several entries at once. :class:`LabelsClassifier` reads ground-truth labels
 and records the file of each entry it is handed, for the tests of labels that a linked
-dataset holds. :class:`HoldsOnSequences` stops in the entries it names until it is
-killed, for the tests of a cancel that reaches a run's workers.
-:class:`CountsItsBuilds`, :class:`FailsItsFirstBuild` and :class:`AlwaysFailsItsBuild`
-count or fail the builds of a process worker, for the tests of a worker that builds
-its feature once. :class:`HoldsUntilReleased` stops in the entries it names until the
-test releases them, and can make the write or the trim of an entry fail, slow or end in
-the worker process that computes it, for the tests of how a run ends with entries in
-flight and of what it measures. Its ``unreadable-input`` fault fails the load of an
-entry in the worker process that loads it.
+dataset holds. :class:`CountsItsBuilds`, :class:`FailsItsFirstBuild` and
+:class:`AlwaysFailsItsBuild` count or fail the builds of a process worker, for the tests
+of a worker that builds its feature once. :class:`HoldsUntilReleased` stops in the
+entries it names until the test releases them, and can make the write or the trim of an
+entry fail, slow or end in the worker process that computes it, for the tests of how a
+run ends with entries in flight and of what it measures. Its ``unreadable-input`` fault
+fails the load of an entry in the worker process that loads it. :class:`HoldsBC` holds
+``seq_b`` and ``seq_c``.
 """
 
 from __future__ import annotations
@@ -174,29 +173,9 @@ class ParallelFeature(PlainFeature):
 
 
 HOLD_DIRECTORY_VARIABLE = "MOSAIC_TEST_HOLD_DIRECTORY"
-"""The environment variable naming the directory a :class:`HoldsOnSequences` marks in."""
+"""The variable naming the directory that :class:`HoldsUntilReleased` marks in."""
 
 _HOLD_SECONDS = 120.0
-
-
-class HoldsOnSequences(ParallelFeature):
-    """Sleeps in each entry named in ``hold_on`` until its process is killed.
-
-    On entering such an entry it writes an empty file named for the sequence into the
-    directory that ``HOLD_DIRECTORY_VARIABLE`` names, so a test sees which workers
-    are busy. The names are a class attribute for the reason ``kill_on`` is.
-    """
-
-    name = "prov-parallel-holds"
-    hold_on: tuple[str, ...] = ()
-
-    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        sequence = str(df["sequence"].iloc[0]) if not df.empty else ""
-        if sequence in self.hold_on:
-            marks = Path(os.environ[HOLD_DIRECTORY_VARIABLE])
-            (marks / sequence).touch()
-            time.sleep(_HOLD_SECONDS)
-        return df
 
 
 _RELEASE_POLL_SECONDS = 0.02
@@ -401,6 +380,12 @@ class HoldsUntilReleased(ParallelFeature):
             atomic_write(marks / sequence, lambda temp: temp.write_text(process))
             _await_files([marks / "release"], f"the test never released {sequence}")
         return super().apply(df)
+
+
+class HoldsBC(HoldsUntilReleased):
+    """Holds ``seq_b`` and ``seq_c`` until the test releases them."""
+
+    hold_on = ("seq_b", "seq_c")
 
 
 def _in_a_spawned_worker() -> bool:

@@ -46,6 +46,7 @@ from .gpu_lease import leased_card
 from .machine import current_machine
 from .markers import current_boot_id, current_pid_namespace
 from .parallelism import ParallelSettings
+from .process_pool import kill_guarded_workers
 from .progress import (
     CompositeProgressCallback,
     NullProgressCallback,
@@ -104,11 +105,20 @@ def cancel_check(token: CancelToken | None) -> CancelCheck | None:
 def install_signal_handler(token: CancelToken) -> None:
     """Route SIGTERM/SIGINT to ``token.cancel()`` (for ``mosaic run``).
 
+    A signal that finds the token already cancelled is the second: it kills the
+    live workers of every process pool this process built
+    (:func:`~mosaic.core.pipeline.process_pool.kill_guarded_workers`). A feature
+    run's process workers ignore the stop signals and finish the entries they hold,
+    so the second signal is the escape from a worker hung in ``apply``. The pool
+    breaks and the run ends ``cancelled`` with the rows recorded before the kill.
+
     No-ops silently when not on the main thread (where signal handlers can't be
     installed), e.g. inside a worker pool.
     """
 
     def _handler(signum: int, frame: object) -> None:
+        if token.is_cancelled():
+            kill_guarded_workers()
         token.cancel()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
