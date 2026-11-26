@@ -5,7 +5,7 @@ per individual, with `frame, time, id, group, sequence, X, Y`. Keypoints
 (`poseX*` / `poseY*`) are optional. mosaic writes the result to
 `tracks/<variant>/<group>__<sequence>.parquet` and indexes it.
 
-Check [the track formats reference](../../reference/track-formats.md) first — seventeen
+Check [the track formats reference](../../reference/track-formats.md) first. Eighteen
 converters ship, and one may already read your files.
 
 ## Two worked examples
@@ -44,8 +44,9 @@ different hard case, and together they are the fastest way in.
    the factor from the file rather than from a parameter. A 3D source is not in pixels
    at all: declare `mosaic_world_v1` (meters, right-handed, +Z up, with a `Z` column)
    and convert into that frame. When the file records no factor, make the factor and any
-   axis change parameters, as `zebrafish_3d_workflow_csv` does, so that they enter the
-   variant's identifier.
+   axis change parameters, as `zebrafish_3d_workflow_csv` and `sdannce_mat` do, so that
+   they enter the variant's identifier. `track_library/world_frame.py` holds the
+   validator of the unit and axes parameters, the transform and the body center.
 
 [What a tracker reports, and in what units](../../concepts/tracks.md) has the rules
 behind all three.

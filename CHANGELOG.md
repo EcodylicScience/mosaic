@@ -8,6 +8,47 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the s-DANNCE track converter
+
+No existing run id or output moves, and `zebrafish_3d_workflow_csv` is
+unchanged. A new track converter, `sdannce_mat` (version 0.1), reads the `.mat`
+file of the social s-DANNCE rat dataset (Klibaite et al. 2025) into
+`mosaic_world_v1`. A file is a MATLAB v5 MAT-file with one `sdannce` struct.
+The converter reads `m1` and `m2` (`(frames, 3, 23)`, millimeters), `ratint`,
+`ratp_int` and `issoc`, and writes the base columns of the schema: `frame`,
+`time`, `id`, `X`, `Y`, `Z`, `group`, `sequence` and `poseX/Y/Z{k}`. The
+cluster labels, the embeddings and the recording metadata stay out of the
+table. `RAT23_KEYPOINT_NAMES` in `core/track_library/sdannce.py` lists the 23
+keypoints for a feature's `keypoint_names`.
+
+Its params are `meters_per_unit` (default 0.001), `axes` (default
+`["x", "y", "z"]`, a proper rotation, so a reflection is refused at
+construction), `fps` and `fallback_fps`. The file records no frame rate, so a
+table is timed as SLEAP and the zebrafish converter time one: `fps`, else the
+entry's measured media rate, else the dataset's `fps_default` (the published
+files run at 50 Hz), else `FrameRateUnknownError`.
+
+`id` is the animal's `ratint` number, and the converter declares
+`carries_tracklets`. A social file gives two animals, `m1` under `ratint` and
+`m2` under `ratp_int`, and a lone file, whose `m2` is empty, gives one. The
+release publishes a dyad session once for each focal animal, with `m1` and `m2`
+swapped, so index one file per session. Every animal has a row on every frame
+of its array, an all-NaN animal-frame included, with its NaN keypoints kept.
+`X`/`Y`/`Z` is the mean of the keypoints with all three axes on that row, and
+NaN where none has. Rows are sorted by `frame`, then `id`.
+
+The converter refuses a v7.3 (HDF5) file with the command that saves it again,
+a file that is not a MAT-file or has no `sdannce` struct, an `m1` or `m2` that
+is not a float array of `(frames, 3, 23)`, a file whose `issoc` disagrees with
+`m2`, a full `m2` with an empty `ratp_int`, and equal `ratint` and `ratp_int`.
+It reads the rat cohorts, and files of the dataset's mouse cohort are
+unchecked. It loads a file with `scipy.io.loadmat` and no memory bound, unlike
+the loaders of `core/track_library/safe_load.py`.
+
+The axes validator, the unit and axis transform and the table rows of a 3D
+converter move into `core/track_library/world_frame.py` (`WorldAxes`,
+`to_world`, `animal_columns`, `stacked_table`), which both 3D converters import.
+
 ## Unreleased: process workers build the feature once
 
 No run id or output moves, and no feature `version` changes. A feature run's process

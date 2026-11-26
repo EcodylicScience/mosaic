@@ -435,7 +435,7 @@ says what mosaic refuses.
 | Variable | Does |
 | -------- | ---- |
 | `MOSAIC_TRUST_PICKLED_FILES` | Set to exactly `1` to load formats that can only be read by unpickling: CalMS21 `.npy` and BORIS `.pkl`. It also lets a DeepLabCut `.h5` of an unrecognized layout load through pandas. Unset, mosaic refuses those files and names the safe form. Unpickling can run code in the file, so set it only for files you trust, and never on a deployment that accepts uploads |
-| `MOSAIC_RAW_ARRAY_LIMIT_BYTES` | The most array data one raw file may declare, in bytes. The default is 2 GiB (`2147483648`). A value that is not an integer raises an error naming the variable |
+| `MOSAIC_RAW_ARRAY_LIMIT_BYTES` | The most array data one raw file may declare, in bytes. The default is 2 GiB (`2147483648`). A value that is not an integer raises an error naming the variable. `sdannce_mat` reads a `.mat` file without this bound, so convert only files from a trusted source |
 
 ## Docker images
 

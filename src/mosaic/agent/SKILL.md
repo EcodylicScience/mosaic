@@ -351,9 +351,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   referencing it. Do not rescale a tracks table yourself. The overlay and the crop
   features refuse a table recorded in centimeters (`trex_v1`, `mosaic_cm_v1`) and one in
   the world frame. `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
-- A 3D table (`mosaic_world_v1`, from the `zebrafish_3d_workflow_csv` and `synthetic_3d`
-  converters) is in **meters** in a right-handed world frame with +Z up, and `Z` is the
-  body center's height. The media calibration does not apply to it. Run
+- A 3D table (`mosaic_world_v1`, from the `zebrafish_3d_workflow_csv`, `sdannce_mat` and
+  `synthetic_3d` converters) is in **meters** in a right-handed world frame with +Z up,
+  and `Z` is the body center's height. The media calibration does not apply to it. Run
   `pose-egocentric` (keypoints in each animal's body frame), `pair-world` (distance,
   bearing and elevation between animals) and `keypoint-kinematics` (per-keypoint speeds
   in m/s) on it. A planar feature refuses it with `schema_family_mismatch`, as a recipe
@@ -412,22 +412,26 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - A format mosaic does not read needs a converter in the user's project:
   https://ecodylicscience.github.io/mosaic/guides/tracking/write-a-converter/.
 - A converter refuses a raw file it cannot load without unpickling or within
-  `MOSAIC_RAW_ARRAY_LIMIT_BYTES`, and `convert-tracks` reports it as an entry error. A
-  CalMS21 `.npy`, a BORIS `.pkl` and a DeepLabCut `.h5` of an unrecognized layout load
-  only with `MOSAIC_TRUST_PICKLED_FILES=1`. Never set that variable yourself. When a
-  refusal names it, use the JSON or CSV form of the data (CalMS21 `.json`, BORIS
-  aggregated CSV/TSV, DeepLabCut CSV), or ask the user whether they trust the file's
-  source, since only the user sets the variable:
+  `MOSAIC_RAW_ARRAY_LIMIT_BYTES`, and `convert-tracks` reports it as an entry error.
+  `sdannce_mat` reads a `.mat` file without this bound, so convert only files from a
+  trusted source. A CalMS21 `.npy`, a BORIS `.pkl` and a DeepLabCut `.h5` of an
+  unrecognized layout load only with `MOSAIC_TRUST_PICKLED_FILES=1`. Never set that
+  variable yourself. When a refusal names it, use the JSON or CSV form of the data
+  (CalMS21 `.json`, BORIS aggregated CSV/TSV, DeepLabCut CSV), or ask the user whether
+  they trust the file's source, since only the user sets the variable:
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/#files-mosaic-will-not-unpickle.
-- A SLEAP, DeepLabCut, Ultralytics or zebrafish 3D workflow CSV file records no frame
-  rate. `convert-tracks` times each entry at `--params '{"fps": ...}'`, else the rate its
-  indexed media measured, else `meta.fps_default`. An entry with none fails. The run
-  reports `partial` and exits 0, or `failed` and exits non-zero when every entry fails:
-  scan the media, set `fps_default`, or pass `fps`. A dataset of the
+- A SLEAP, DeepLabCut, Ultralytics, zebrafish 3D workflow CSV or s-DANNCE `.mat` file
+  records no frame rate. `convert-tracks` times each entry at `--params '{"fps": ...}'`,
+  else the rate its indexed media measured, else `meta.fps_default`. An entry with none
+  fails. The run reports `partial` and exits 0, or `failed` and exits non-zero when
+  every entry fails: scan the media, set `fps_default`, or pass `fps`. A dataset of the
   published zebrafish 3D tracks (Zenodo 18569873) ships no media, so it sets
-  `fps_default: 140`. An older mosaic never read the media's rate for SLEAP, DeepLabCut or
-  Ultralytics. It timed a table at `fps`, else `fps_default`, else 30 fps. Convert again
-  any table converted without `fps` or `fps_default`.
+  `fps_default: 140`. The published s-DANNCE files (`sdannce_mat`, indexed with
+  `--patterns '*.mat'`) run at 50 Hz, so their dataset sets `fps_default: 50`. The
+  release publishes a dyad session as two files, one per focal animal. Index one file
+  per session, or its animals appear twice. An older mosaic never read the media's rate
+  for SLEAP, DeepLabCut or Ultralytics. It timed a table at `fps`, else `fps_default`,
+  else 30 fps. Convert again any table converted without `fps` or `fps_default`.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.

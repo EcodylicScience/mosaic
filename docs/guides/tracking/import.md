@@ -58,7 +58,7 @@ starts.
 
 ## The formats mosaic reads
 
-Seventeen converters are registered. `--src-format` names one, and the choice also fixes
+Eighteen converters are registered. `--src-format` names one, and the choice also fixes
 which schema the output carries.
 
 | `--src-format` | Reads | Emits |
@@ -72,6 +72,7 @@ which schema the output carries.
 | `calms21_npy` | CalMS21 `.npy` arrays, when [you trust the files](#files-mosaic-will-not-unpickle) | `mosaic_v1` |
 | `calms21_json` | The `.json` spelling of CalMS21 | `mosaic_v1` |
 | `zebrafish_3d_workflow_csv` | The per-experiment `.csv` of a zebrafish 3D tracking workflow: `frame_index` and `fish{n}_{part}_{axis}` columns in centimeters, empty fields as gaps. It records no frame rate. The workflow's default rate, and the published release's, is 140 fps: set `fps_default: 140` or pass `fps=140` for those files | `mosaic_world_v1` |
+| `sdannce_mat` | The `.mat` files of an s-DANNCE study: the `sdannce` struct, with `m1` and `m2` in millimeters and ids from `ratint` and `ratp_int`. It records no frame rate. Set `fps_default: 50` or pass `fps=50` for the Klibaite et al. 2025 release. The release publishes a dyad session as two files, one per focal animal, and some cohorts add `_S-1` files. Index one file per session, or the session's animals appear twice. Index the files with `--patterns '*.mat'`, because the default track patterns are `*.npy`, `*.h5` and `*.csv`. The converter reads the rat cohorts' 23-keypoint layout, and files of the release's mouse cohort are unchecked | `mosaic_world_v1` |
 | `tracktor_corrected_tsv` | The corrected `*_tracked_fixed_final.tsv` of a Tracktor run, as the DGRP looming release writes it: one arena per file, `Fly<n>` ids that follow the animals. Time is its `seconds_total`. Frames before 62 are dropped (`first_frame`). Pixels, with `stimuli` and the recording's labels carried as columns | `mosaic_v1` |
 | `tracktor_raw_csv` | The raw `*_tracked.csv` of the same run, whose ids swap between animals. It has no time column, so the corrected `.tsv` beside it times the table, and a missing `.tsv` fails the entry | `mosaic_v1` |
 | `synthetic` | A [synthetic track file](#synthetic-tracks) describing a 2D simulation, in pixels | `mosaic_v1` |
@@ -87,9 +88,9 @@ explain why the three TRex rows differ.
 
 ## The frame rate of an imported table
 
-A SLEAP, DeepLabCut, Ultralytics or zebrafish 3D workflow file records frame numbers and
-no frame rate, so mosaic times each entry (`time` is `frame` divided by the rate) at the
-first of these that it has:
+A SLEAP, DeepLabCut, Ultralytics, zebrafish 3D workflow or s-DANNCE file records frame
+numbers and no frame rate, so mosaic times each entry (`time` is `frame` divided by the
+rate) at the first of these that it has:
 
 1. The `fps` parameter, `--params '{"fps": 25}'`.
 2. The frame rate that the entry's indexed media measured.
@@ -102,6 +103,27 @@ manifest, or pass `fps`.
 An earlier mosaic never read the media's rate. It timed a table at `fps`, else
 `fps_default`, else 30 fps, whether or not the media was indexed. Convert again any
 table that was converted without `fps` or `fps_default`.
+
+## s-DANNCE keypoints
+
+A track table names a keypoint by its index (`poseX0`, `poseX1`, and so on), and a
+feature takes the names through `keypoint_names`. The converter's 23 keypoints are the
+rat skeleton of the paper, in file order:
+
+```json
+{"keypoint_names": ["Snout", "EarL", "EarR", "SpineF", "SpineM", "SpineL", "TailBase",
+  "ShoulderL", "ElbowL", "WristL", "HandL", "ShoulderR", "ElbowR", "WristR", "HandR",
+  "HipL", "KneeL", "AnkleL", "FootL", "HipR", "KneeR", "AnkleR", "FootR"]}
+```
+
+`mosaic.core.track_library.sdannce.RAT23_KEYPOINT_NAMES` holds the same tuple. A file
+whose keypoint axis is not 23 long is refused. The converter reads a `.mat` file
+without a memory bound, so convert only files from a trusted source.
+
+The recording's metadata (`ratid`, `ratgroup`, `ratdate`, `ratgen`, `issoc`, `isamph`
+and the partner's id and genotype) stay in the file and do not reach the table. Write
+them to a CSV with one row per sequence and import it with
+`mosaic sequence-tags import`.
 
 ## Tracktor tables carry their own time
 
@@ -329,7 +351,8 @@ converter reads the same flag.
 
 `MOSAIC_RAW_ARRAY_LIMIT_BYTES` sets the most array data one raw file may declare, 2 GiB
 (`2147483648`) by default. Raise it for a larger export. A value that is not an integer
-raises an error naming the variable.
+raises an error naming the variable. `sdannce_mat` reads a `.mat` file without this
+bound, so convert only files from a trusted source.
 
 ## Several recipes over one dataset
 
