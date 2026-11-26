@@ -444,3 +444,95 @@ def test_a_derived_result_shows_its_reader_no_space(world: Dataset) -> None:
     after = plan_pipeline(world, POSE_CLUSTERS)
     assert after.is_complete
     assert after.track_space_refusals == {}
+
+
+def test_a_wavelet_reads_world_tracks_directly(world: Dataset) -> None:
+    """``individual-wavelet`` interprets no coordinate, so it computes in every space."""
+    recipe = _single("individual-wavelet")
+
+    plan = plan_pipeline(world, recipe, refuse=False)
+
+    assert plan.problems == ()
+    assert plan.track_space_refusals == {}
+    assert submit_request(world, recipe).request
+
+
+_WAVELET: dict[str, JsonValue] = {
+    "id": "wavelet",
+    "type": "feature",
+    "feature": "individual-wavelet",
+    "inputs": ["tracks"],
+    "params": {"cols": ["X", "Y", "Z"]},
+}
+_POSE_EGOCENTRIC: dict[str, JsonValue] = {
+    "id": "pose",
+    "type": "feature",
+    "feature": "pose-egocentric",
+    "inputs": ["tracks"],
+    "params": {"origin": [0], "heading": [1, 2]},
+}
+_WAVELET_ON_POSE: dict[str, JsonValue] = {
+    "id": "wavelet",
+    "type": "feature",
+    "feature": "individual-wavelet",
+    "inputs": [{"step": "pose"}],
+}
+_AFTER_THE_WAVELET: list[JsonValue] = [
+    {
+        "id": "templates",
+        "type": "feature",
+        "feature": "extract-templates",
+        "inputs": [{"step": "wavelet"}],
+        "params": {"n_templates": 4},
+    },
+    {
+        "id": "tsne",
+        "type": "feature",
+        "feature": "global-tsne",
+        "inputs": [{"step": "wavelet"}],
+        "params": {"templates": {"step": "templates"}},
+    },
+    {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": [{"step": "tsne"}],
+        "params": {"templates": {"step": "templates"}, "k": 2},
+    },
+]
+
+
+def _map_chain(*first_steps: dict[str, JsonValue]) -> Recipe:
+    return read_recipe({"steps": [*first_steps, *_AFTER_THE_WAVELET]})
+
+
+WORLD_MAP = _map_chain(_WAVELET)
+POSE_MAP = _map_chain(_POSE_EGOCENTRIC, _WAVELET_ON_POSE)
+
+
+def test_a_world_map_chain_is_not_refused(world: Dataset) -> None:
+    """A map over world tracks starts at a wavelet reading them, the one step checked.
+
+    The steps after it read results only, which are not space-checked.
+    """
+    plan = plan_pipeline(world, WORLD_MAP, refuse=False)
+
+    assert plan.problems == ()
+    assert plan.track_space_refusals == {}
+    assert submit_request(world, WORLD_MAP).request
+
+
+def test_a_map_chain_through_pose_egocentric_plans_without_problems(
+    world: Dataset,
+) -> None:
+    """Guards that ``pose-egocentric`` over world tracks, a wavelet on its ``pose``,
+    then templates, t-SNE and k-means plan with no problems and no refusals.
+
+    It does not discriminate the wavelet's declaration: a stored ``pose-egocentric``
+    parent is never space-checked.
+    """
+    plan = plan_pipeline(world, POSE_MAP, refuse=False)
+
+    assert plan.problems == ()
+    assert plan.track_space_refusals == {}
+    assert submit_request(world, POSE_MAP).request

@@ -7,6 +7,8 @@ frame reads as NaN, and a coefficient is NaN where its wavelet support covers on
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
@@ -19,7 +21,10 @@ from mosaic.behavior.feature_library.wavelet import (
     wavelet_band,
     wavelet_columns,
 )
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Result
+from tests.helpers import add_tracks_table, make_dataset, world_track_table
 
 type FloatArray = npt.NDArray[np.float64]
 
@@ -379,3 +384,36 @@ def test_twenty_frequencies_give_twenty_columns_per_input_column() -> None:
             f"W_{column}_f{fi}" for fi in range(20)
         ]
     assert len(out.attrs["frequencies_hz"]) == len(out.attrs["scales"]) == 20
+
+
+def test_a_world_frame_tracks_table_is_computed_with_z_as_one_more_series(
+    tmp_path: Path,
+) -> None:
+    """The transform interprets no coordinate, so a ``mosaic_world_v1`` table runs."""
+    table = world_track_table("", "seq", n_rows=120)
+    dataset = make_dataset(tmp_path / "ds")
+    add_tracks_table(
+        dataset, "convert-world.0.1-aaaaaaaaaa", table, std_format="mosaic_world_v1"
+    )
+    feature = IndividualWavelet(
+        IndividualWavelet.Inputs(("tracks",)), params={"cols": ["X", "Y", "Z"]}
+    )
+
+    result = run_feature(dataset, feature)
+
+    assert result.run_id
+    parquets = sorted(
+        feature_run_root(dataset, result.feature, result.run_id).glob("*.parquet")
+    )
+    assert len(parquets) == 1
+    out = pd.read_parquet(parquets[0])
+    assert "W_Z_f0" in out.columns
+    expected = _feature({"cols": ["X", "Y", "Z"]}).apply(table)
+    assert _w_columns(out) == _w_columns(expected)
+    assert any(column.startswith("W_Z_f") for column in _w_columns(out))
+    for column in _w_columns(expected):
+        np.testing.assert_allclose(
+            out[column].to_numpy(dtype=float),
+            expected[column].to_numpy(dtype=float),
+            equal_nan=True,
+        )

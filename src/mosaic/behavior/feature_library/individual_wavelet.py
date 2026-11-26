@@ -34,6 +34,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.timebase import uniform_grid_rate
 
 from .derivatives import IntArray, frame_axis
@@ -89,6 +90,10 @@ class IndividualWavelet:
     blank longer: a dropout blanks each frequency for half its wavelet's support
     on each side.
 
+    **Track spaces.** The transform reads the columns it is given as series and
+    interprets no coordinate, so it computes in every track space. Over
+    ``mosaic_world_v1`` tracks a ``Z`` column is one more series.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet.Params`.
     """
@@ -105,6 +110,7 @@ class IndividualWavelet:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # apply transforms the columns that cols names and needs only one of them.
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (

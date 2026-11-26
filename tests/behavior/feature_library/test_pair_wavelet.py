@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -19,9 +20,12 @@ import pytest
 import pywt
 
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
+from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.manifest import CoreSelector
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Result
 from mosaic.core.pipeline.writers import trim_feature_output
+from tests.helpers import add_tracks_table, make_dataset, world_track_table
 
 type FloatArray = npt.NDArray[np.float64]
 type Float32Array = npt.NDArray[np.float32]
@@ -368,3 +372,39 @@ def test_overlapped_rows_carry_the_entry_of_their_own_frames() -> None:
         ["id1", "id2", "perspective", "frame"], ignore_index=True
     )
     assert out[["id1", "id2", "perspective", "frame"]].equals(expected)
+
+
+def test_a_world_frame_tracks_table_is_computed_with_z_as_one_more_series(
+    tmp_path: Path,
+) -> None:
+    """The transform interprets no coordinate, so a ``mosaic_world_v1`` table runs.
+
+    The table is one animal's rows given the ``perspective`` column that the
+    feature requires and no converter writes.
+    """
+    table = world_track_table("", "seq", n_rows=120)
+    table["perspective"] = 0
+    dataset = make_dataset(tmp_path / "ds")
+    add_tracks_table(
+        dataset, "convert-world.0.1-aaaaaaaaaa", table, std_format="mosaic_world_v1"
+    )
+    params: dict[str, object] = {"cols": ["X", "Y", "Z"]}
+
+    result = run_feature(dataset, PairWavelet(PairWavelet.Inputs(("tracks",)), params))
+
+    assert result.run_id
+    parquets = sorted(
+        feature_run_root(dataset, result.feature, result.run_id).glob("*.parquet")
+    )
+    assert len(parquets) == 1
+    out = pd.read_parquet(parquets[0])
+    expected = _feature(params).apply(table)
+    w_columns = [column for column in expected.columns if column.startswith("W_")]
+    assert any(column.startswith("W_Z_f") for column in w_columns)
+    assert [column for column in out.columns if column.startswith("W_")] == w_columns
+    for column in w_columns:
+        np.testing.assert_allclose(
+            out[column].to_numpy(dtype=float),
+            expected[column].to_numpy(dtype=float),
+            equal_nan=True,
+        )

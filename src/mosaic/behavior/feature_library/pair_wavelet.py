@@ -32,6 +32,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.timebase import uniform_grid_rate
 
 from .helpers import ensure_columns
@@ -91,6 +92,10 @@ class PairWavelet:
       columns are the clamped log power, and a ``global-scaler`` downstream
       standardizes each column across the templates instead.
 
+    **Track spaces.** The transform reads the columns it is given as series and
+    interprets no coordinate, so it computes in every track space. Over
+    ``mosaic_world_v1`` tracks a ``Z`` column is one more series.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.pair_wavelet.PairWavelet.Params`.
     """
@@ -105,6 +110,7 @@ class PairWavelet:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # apply transforms the columns that cols names and needs only one of them.
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (

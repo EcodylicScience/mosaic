@@ -145,7 +145,7 @@ HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
 
 ### `individual-wavelet`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 CWT spectrograms of numeric columns of each individual. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. A pair model reads them through a join to its pair rows.
 
@@ -508,7 +508,7 @@ Egocentric and kinematic features of every pair, from position and heading.
 
 ### `pair-wavelet`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 CWT spectrograms of numeric columns of pair rows. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. It is the spectral stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper.
 
