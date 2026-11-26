@@ -15,6 +15,7 @@ from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -272,6 +273,7 @@ class TemporalStackingFeature:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # ``apply`` also sorts a pair input, one with ``id1`` and ``id2``, by
     # ``frame``. A requirement cannot depend on the input's other columns.
     # ``columns`` is not declared, because a requirement on a list param is met

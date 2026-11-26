@@ -16,6 +16,7 @@ from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Column,
@@ -292,6 +293,7 @@ class GlobalTSNE:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Apply maps the template columns to two coordinates and keeps every other
     # column. Templates sampled from the same input contain its numeric payload
     # columns, which leaves the identity and bookkeeping ones.

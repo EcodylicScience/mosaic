@@ -680,6 +680,20 @@ def test_features_list_ranks_the_features_a_query_matches() -> None:
     assert plain.stdout.splitlines()[1].split()[0] == "speed-angvel"
 
 
+RESULT_READING_FEATURES = frozenset(
+    {
+        "arhmm",
+        "global-kmeans",
+        "global-ward",
+        "global-tsne",
+        "global-scaler",
+        "extract-templates",
+        "extract-labeled-templates",
+        "temporal-stack",
+    }
+)
+
+
 def test_features_list_filters_by_track_space_and_shows_the_spaces() -> None:
     every = json.loads(runner.invoke(app, ["features", "list", "--json"]).stdout)
     world = json.loads(
@@ -698,6 +712,7 @@ def test_features_list_filters_by_track_space_and_shows_the_spaces() -> None:
     assert by_name["pose-egocentric"]["track_spaces"] == ["world_m"]
     assert "pose-egocentric" in names
     assert "heading" not in names
+    assert RESULT_READING_FEATURES <= names
     assert names == {row["name"] for row in every if "world_m" in row["track_spaces"]}
     assert refused.exit_code == 2
     assert plain.exit_code == 0

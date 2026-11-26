@@ -185,6 +185,7 @@ def test_each_row_lists_the_track_spaces_its_step_type_computes_in() -> None:
         "plane_cm",
         "world_m",
     )
+    assert rows["global-kmeans"].track_spaces == ("image_px", "plane_cm", "world_m")
     assert rows[TRACKS_INPUT].track_spaces == ()
     assert rows["convert-tracks"].track_spaces == ()
     assert step_type_detail("pose-egocentric").track_spaces == ("world_m",)

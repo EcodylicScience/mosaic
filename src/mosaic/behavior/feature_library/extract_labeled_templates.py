@@ -10,6 +10,7 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.column_contract import (
@@ -262,6 +263,7 @@ class ExtractLabeledTemplates:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Fit aligns each entry's labels by frame and samples its payload columns,
     # every one or those that ``columns`` names. Apply returns an empty table,
     # because the sample in ``save_state`` is the output. ``columns`` is not

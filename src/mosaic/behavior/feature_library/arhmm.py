@@ -26,6 +26,7 @@ from pydantic import Field
 from sklearn.decomposition import PCA
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -235,6 +236,7 @@ class ArHmmFeature:
     # pair for a pair table.
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Apply decodes each series' payload columns in frame order, every one or
     # those that ``columns`` names. A series is an individual or an ordered
     # pair. Its code names the frame column literally, and so does this

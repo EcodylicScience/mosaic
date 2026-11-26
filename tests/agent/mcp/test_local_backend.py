@@ -554,6 +554,16 @@ def test_step_types_are_filtered_by_the_track_space_they_compute_in(
 
     assert "heading" not in world
     assert {"pose-egocentric", "convert-tracks", "keypoint-kinematics"} <= set(world)
+    assert {
+        "arhmm",
+        "global-kmeans",
+        "global-ward",
+        "global-tsne",
+        "global-scaler",
+        "extract-templates",
+        "extract-labeled-templates",
+        "temporal-stack",
+    } <= set(world)
     assert "pose-egocentric" not in image
     assert {"heading", "convert-tracks"} <= set(image)
     assert {detail.name: detail.track_spaces for detail in details} == {

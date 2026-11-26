@@ -704,7 +704,7 @@ Per-sequence feature computing translational speed and angular velocity.
 
 ### `temporal-stack`
 
-Version `0.6` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.6` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Build temporal context windows over per-sequence feature data.
 
@@ -1063,7 +1063,7 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 
 ### `arhmm`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.3` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 AR-HMM behavioral syllable discovery as a pipeline feature.
 
@@ -1106,7 +1106,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.7` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.7` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -1139,7 +1139,7 @@ Extract labeled, split-annotated templates from upstream features.
 
 ### `extract-templates`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.4` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Subsample per-sequence data into a representative template matrix.
 
@@ -1426,7 +1426,7 @@ Train a visual identity model from individual animal sequences.
 
 ### `global-kmeans`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply(). It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with k-means in place of a watershed segmentation of a density estimate.
 
@@ -1499,7 +1499,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 ### `global-scaler`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.3` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Fit a StandardScaler on templates and scale per-sequence data.
 
@@ -1554,7 +1554,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
 ### `global-tsne`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Fit an openTSNE embedding on templates and map per-sequence data.
 
@@ -1637,7 +1637,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 ### `global-ward`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.4` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with Ward clustering in place of a watershed segmentation of a density estimate.
 

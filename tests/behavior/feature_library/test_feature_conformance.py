@@ -495,6 +495,14 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "id-tag-columns": _EVERY_SPACE,
     "sequence-tag-columns": _EVERY_SPACE,
     "label-predictions": _EVERY_SPACE,
+    "arhmm": _EVERY_SPACE,
+    "global-kmeans": _EVERY_SPACE,
+    "global-ward": _EVERY_SPACE,
+    "global-tsne": _EVERY_SPACE,
+    "global-scaler": _EVERY_SPACE,
+    "extract-templates": _EVERY_SPACE,
+    "extract-labeled-templates": _EVERY_SPACE,
+    "temporal-stack": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
     "pair-world": frozenset({"world_m"}),
     "pair-posedistance-pca": _EVERY_SPACE,
@@ -502,13 +510,13 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
 }
 """The features that declare their track spaces, and the spaces each declares.
 
-Every space for a feature that reads no spatial column, or whose computation is
-independent of the space, and every space for one with a ``dimensions`` param
-that refuses a table of the other kind when it runs. ``world_m`` alone for one
-defined on world up, which a planar table does not have. ``image_px`` alone for
-one whose geometry is in the pixels of the arena layouts. Every other registered
-feature declares nothing and so computes in the two 2D spaces, which is what
-refuses it a world-frame table.
+Every space for a feature that reads no spatial column, such as one that reads
+only other features' columns, or whose computation is independent of the space,
+and every space for one with a ``dimensions`` param that refuses a table of the
+other kind when it runs. ``world_m`` alone for one defined on world up, which a
+planar table does not have. ``image_px`` alone for one whose geometry is in the
+pixels of the arena layouts. Every other registered feature declares nothing and
+so computes in the two 2D spaces, which is what refuses it a world-frame table.
 """
 
 

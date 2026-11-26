@@ -9,6 +9,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -127,6 +128,7 @@ class ExtractTemplates:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Fit reads each entry's sequence and samples its payload columns, every one
     # or those that ``columns`` names. Apply returns an empty table, because the
     # sample in ``save_state`` is the output. ``columns`` is not declared, because

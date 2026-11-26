@@ -9,6 +9,7 @@ from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Payload,
@@ -108,6 +109,7 @@ class GlobalScaler:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = False
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
     # The templates decide the fitted columns, which a declaration cannot name.
     # Each is a payload column of the input under the same name. Validation reads
