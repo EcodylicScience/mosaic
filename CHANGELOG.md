@@ -8,6 +8,21 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: 3D `pair-posedistance-pca`
+
+No run id or output moves. `pair-posedistance-pca` has a `dimensions` param, 2 by
+default. `dimensions: 3` reads `poseZ{k}` as well and measures the distances between
+keypoints in 3D on a world-frame table. A model fitted at `dimensions: 3` records its
+axes, so the feature refuses to apply it at `dimensions: 2`, and a model fitted before
+the param existed is applied at 2 only.
+
+The feature now accepts every track space. At `dimensions: 2`, a world-frame table fails
+with a message that names `dimensions: 3`, where a plan refused the table as
+`schema_family_mismatch` before. A fit fails the run, and a step that applies a `model`
+fails each entry. The failure comes when the step runs, not when it is planned. At
+`dimensions: 3`, a planar table fails with a missing-columns error that names the
+`poseZ` columns.
+
 ## Unreleased: the s-DANNCE track converter
 
 No existing run id or output moves, and `zebrafish_3d_workflow_csv` is

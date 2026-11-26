@@ -199,9 +199,11 @@ Start from the per-sequence template above, with these differences:
   `schema_family_mismatch`. `define` reads no tracks and cannot see that. Declare
   `track_spaces = frozenset({"world_m"})` for a feature that reads `Z`. Declare every
   space (`frozenset(TRACK_SPACES)`, from `mosaic.core.spaces`) only for a feature whose
-  result does not depend on the units or on the number of axes. The per-sequence
-  template declares the two planar spaces, so a feature copied from it stays refused
-  over world-frame tracks until its author widens the set.
+  result does not depend on the units or on the number of axes, or one with a
+  `dimensions` param that refuses a table of the other kind when it runs, through
+  `refuse_dimension_mismatch` (`mosaic.behavior.feature_library.helpers`). The
+  per-sequence template declares the two planar spaces, so a feature copied from it
+  stays refused over world-frame tracks until its author widens the set.
 - **Give `temporal_reach` as an int or `None`.** A function of the params and a
   `temporal_reach_by_option` are refused, because planning reads the reach without
   the class.

@@ -355,16 +355,19 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `synthetic_3d` converters) is in **meters** in a right-handed world frame with +Z up,
   and `Z` is the body center's height. The media calibration does not apply to it. Run
   `pose-egocentric` (keypoints in each animal's body frame), `pair-world` (distance,
-  bearing and elevation between animals) and `keypoint-kinematics` (per-keypoint speeds
-  in m/s) on it. A planar feature refuses it with `schema_family_mismatch`, as a recipe
-  does when it is planned or, for tracks the recipe itself writes, when the step starts.
-  `pose-egocentric` and `pair-world` refuse a pixel or centimeter table. A feature whose
-  computation does not depend on the space (`keypoint-kinematics`, `label-statistics`)
-  or that reads no spatial column (the aggregates) accepts every space. Before planning
-  on world-frame tracks, find the step types that compute in `world_m` with
-  `describe_step_types(track_space="world_m")` or
-  `mosaic features list --track-space world_m`. Each step type lists its
-  `track_spaces`, and an op, which computes in none, passes the filter.
+  bearing and elevation between animals), `keypoint-kinematics` (per-keypoint speeds in
+  m/s) and `pair-posedistance-pca` with `dimensions: 3` on it. A planar feature refuses
+  it with `schema_family_mismatch`, as a recipe does when it is planned or, for tracks
+  the recipe itself writes, when the step starts. `pair-posedistance-pca` at its default
+  `dimensions: 2` accepts the table when planned and fails when the step runs, with a
+  message that names `dimensions: 3`: the fit fails, or each entry of a step that
+  applies a `model` fails. `pose-egocentric` and `pair-world` refuse a pixel or
+  centimeter table. A feature whose computation does not depend on the space
+  (`keypoint-kinematics`, `label-statistics`) or that reads no spatial column (the
+  aggregates) accepts every space. Before planning on world-frame tracks, find the step
+  types that compute in `world_m` with `describe_step_types(track_space="world_m")` or
+  `mosaic features list --track-space world_m`. Each step type lists its `track_spaces`,
+  and an op, which computes in none, passes the filter.
 - A Tracktor table (`tracktor_corrected_tsv`, `tracktor_raw_csv`) is timed by the file's
   `seconds_total`, because the recording drops frames and no frame rate gives a frame's
   time. The raw format reads that time from the corrected `.tsv` beside it. The table
@@ -690,7 +693,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
     world-frame tracks refuses it with `schema_family_mismatch`, which `define` cannot
     see. Use `frozenset({"world_m"})` for a feature that reads `Z`, and
     `frozenset(TRACK_SPACES)` (`mosaic.core.spaces`) only for one whose result does not
-    depend on the units or on the number of axes;
+    depend on the units or on the number of axes, or one with a `dimensions` param that
+    refuses a table of the other kind when it runs, through `refuse_dimension_mismatch`
+    (`mosaic.behavior.feature_library.helpers`);
   - params with a default on every field, typed from scalars, `Literal`, `list`,
     `tuple`, `dict` with `str` keys, unions of these, toolkit config models such as
     `PoseConfig` and models defined in the file from the same types, with `Declared` and

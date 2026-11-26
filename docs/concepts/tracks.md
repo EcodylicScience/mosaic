@@ -41,6 +41,9 @@ nearly every feature, refuses a world-frame table, and `pose-egocentric` and
 planned or, for tracks the recipe itself writes, when the step starts. Features whose
 computation does not depend on the space (`keypoint-kinematics` measures in the table's
 own units) and features that read no spatial column (the aggregates) accept every space.
+`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at
+`dimensions: 2` a world-frame table fails when the step runs, not when it is planned,
+and the message names `dimensions: 3`.
 
 ## `X` and `Y` are the body center
 

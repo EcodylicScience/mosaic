@@ -60,7 +60,8 @@ the focal's body frame, and chosen distances between the two animals' keypoints)
 `pair-facing`, `pair-wavelet`, `pair-posedistance-pca`, `pair-interaction-filter` — plus
 `orientation-rel` and `approach-avoidance`. For 3D tracks in the world frame,
 `pair-world` measures distance, bearing, elevation, relative heading and approach speed
-in meters and radians. `visual-network` says which individuals each one can see, by
+in meters and radians, and `pair-posedistance-pca` with `dimensions: 3` measures its
+keypoint distances in 3D. `visual-network` says which individuals each one can see, by
 casting rays from its eyes against every body outline, and writes only the visible
 pairs. Set its `include_hidden` before `temporal-stack` or `frame-aggregate`, which
 expect every pair in every frame.
@@ -188,6 +189,9 @@ runs, from a run and from a recipe when it is planned or, for tracks the recipe 
 writes, when the step starts. Features whose computation does not depend on the space
 (`keypoint-kinematics` measures in the table's own units, meters on a world table) and
 features that read no spatial column (the aggregates) accept every space.
+`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at
+`dimensions: 2` a world-frame table fails when the step runs, not when it is planned,
+and the message names `dimensions: 3`.
 
 ## Chaining
 
