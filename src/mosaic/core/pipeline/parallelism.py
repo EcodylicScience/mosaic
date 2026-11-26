@@ -237,11 +237,17 @@ def host_cpus() -> int:
 def process_capable(feature: object) -> bool:
     """Whether *feature* may compute its entries in worker processes.
 
-    It must be ``parallelizable`` and define no ``set_scope``: a process worker
-    rebuilds the feature without calling it.
+    It must be ``parallelizable`` and define neither hook that a process worker
+    cannot honor. A feature with ``set_scope`` needs the scope that ``run_feature``
+    sets on the instance it holds, which a worker's own instance never gets. A
+    feature with ``close`` (``ClosesResources``) is closed once per instance in the
+    run's own process, while a process worker keeps its own instance for the pool's
+    life, so nothing would close it.
     """
-    return bool(getattr(feature, "parallelizable", False)) and not hasattr(
-        feature, "set_scope"
+    return (
+        bool(getattr(feature, "parallelizable", False))
+        and not hasattr(feature, "set_scope")
+        and not hasattr(feature, "close")
     )
 
 

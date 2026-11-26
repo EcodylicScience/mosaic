@@ -9,21 +9,18 @@ only under load.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.entry_task import EntryTask
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run import (
     AllEntriesFailed,
-    build_feature_meta,
-    process_apply_worker,
     run_feature,
 )
+from mosaic.core.pipeline.parallelism import process_capable
 from mosaic.core.pipeline.types import Inputs, InputStream, TrackInput
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
@@ -31,8 +28,8 @@ from tests.helpers import (
     add_track_sequences,
     entry_error_lines,
     latest_snapshot,
+    logged_events,
     make_dataset,
-    written_by_worker,
 )
 
 
@@ -227,105 +224,39 @@ def test_apply_raising_cancelled_on_the_last_entry_with_the_token_set_is_not_an_
     assert "apply failed" not in capsys.readouterr().err
 
 
-# --- process_apply_worker closes the instance that it builds ---------------
+# --- a closable feature computes in threads when processes are asked -----
 
-# A process-pool worker reconstructs its feature from a module and class
-# name plus pickled inputs/params dumps (see process_apply_worker), builds
-# and discards an instance, and writes the applied frame to the task's output
-# path. The test cannot read ``self.close_calls`` of that instance.
-# Module-level globals are the one channel out, monkeypatched per test so
-# pytest restores them.
-_worker_events: list[str] = []
-_worker_apply_raises: Exception | None = None
-_worker_close_raises: Exception | None = None
+# A process worker keeps its feature instance for the pool's life, and the
+# run's own process calls ``close()`` once on the instance it holds. A feature
+# that closes resources therefore computes in threads, which share that instance.
 
 
-class _WorkerClosingFeature(_ClosingFeature):
-    """Reconstructed by ``process_apply_worker``; records calls via module state."""
-
-    name = "test-worker-close-hook"
-
-    def __init__(
-        self,
-        inputs: Inputs[TrackInput],
-        params: dict[str, object] | None = None,
-    ) -> None:
-        super().__init__()
-        self._inputs = inputs
-        self._params = self.Params.from_overrides(params)
-
-    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        _worker_events.append("apply")
-        if _worker_apply_raises is not None:
-            raise _worker_apply_raises
-        return super().apply(df)
-
-    def close(self) -> None:
-        _worker_events.append("close")
-        if _worker_close_raises is not None:
-            raise _worker_close_raises
+def test_a_parallelizable_feature_with_close_is_not_process_capable() -> None:
+    assert process_capable(_ClosingFeature()) is False
 
 
-def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
-    """Run the worker on *df*, and read back the output it wrote."""
-    task = EntryTask(meta=build_feature_meta("", "seq_a", tmp_path), source=df)
-    outcome = process_apply_worker(
-        __name__,
-        "_WorkerClosingFeature",
-        _WorkerClosingFeature.Inputs(("tracks",)).model_dump(),
-        {},
-        str(tmp_path),
-        {},
-        {},
-        task,
-    )
-    return written_by_worker(task, outcome)
-
-
-def test_process_apply_worker_closes_its_own_instance_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_closable_feature_computes_in_threads_when_processes_are_asked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(sys.modules[__name__], "_worker_apply_raises", None)
-    monkeypatch.setattr(sys.modules[__name__], "_worker_close_raises", None)
-    _worker_events.clear()
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), ("g", "s3"))
+    feature = _ClosingFeature()
+    execution_id = "TESTCLOSEHOOKTHREADS"
 
-    df = pd.DataFrame({"frame": [0, 1], "feat_a": [1.0, 2.0]})
-    result = _call_worker(tmp_path, df)
-
-    assert _worker_events == ["apply", "close"]
-    assert list(result["value"]) == [2.0, 4.0]
-
-
-def test_process_apply_worker_closes_once_when_apply_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        sys.modules[__name__], "_worker_apply_raises", RuntimeError("apply boom")
+    result = run_feature(
+        ds,
+        feature,
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id=execution_id,
     )
-    monkeypatch.setattr(sys.modules[__name__], "_worker_close_raises", None)
-    _worker_events.clear()
 
-    df = pd.DataFrame({"frame": [0], "feat_a": [1.0]})
-    with pytest.raises(RuntimeError, match="apply boom"):
-        _call_worker(tmp_path, df)
-
-    assert _worker_events == ["apply", "close"]
-
-
-def test_process_apply_worker_raising_close_does_not_mask_apply_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        sys.modules[__name__], "_worker_apply_raises", RuntimeError("apply boom")
-    )
-    monkeypatch.setattr(
-        sys.modules[__name__], "_worker_close_raises", RuntimeError("close boom")
-    )
-    _worker_events.clear()
-
-    df = pd.DataFrame({"frame": [0], "feat_a": [1.0]})
-    with pytest.raises(RuntimeError, match="apply boom"):
-        _call_worker(tmp_path, df)
-
-    assert _worker_events == ["apply", "close"]
-    assert "close boom" in capsys.readouterr().err
+    assert result.failed_entries == ()
+    report = logged_events(ds.base_dir, execution_id, "resources")[-1]
+    assert report["parallel_mode"] == "thread"
+    assert report["process_capable"] is False
+    assert (
+        f"[feature:{feature.name}] parallel_mode process requested but feature "
+        "cannot run in worker processes; running in threads."
+    ) in capsys.readouterr().err
+    assert feature.close_calls == 1
