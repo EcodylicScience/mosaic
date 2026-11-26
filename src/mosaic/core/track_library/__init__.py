@@ -20,6 +20,7 @@ Adding a New Track Converter
 5. Import the module here and add its name to ``__all__``.
 
 See docs/guides/tracking/write-a-converter.md for the full contract.
+``conformance.converter_problems(cls, sample)`` checks a converter class against it.
 
 Available Converters
 --------------------
@@ -40,8 +41,12 @@ from . import ultralytics_tracks
 from . import window
 from . import zebrafish_3d_workflow
 
+# The conformance helper registers nothing.
+from . import conformance
+
 __all__ = [
     "calms21",
+    "conformance",
     "deeplabcut",
     "sdannce",
     "sleap",

@@ -20,12 +20,14 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Annotated, ClassVar
 
 import numpy as np
 import pandas as pd
 import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the converters
+from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
     TRACK_CONVERTERS,
     EntryHints,
@@ -36,6 +38,7 @@ from mosaic.core.track_converter import (
     register_track_converter,
 )
 from mosaic.core.track_library.calms21 import Calms21Converter, Calms21Params
+from mosaic.core.track_library.conformance import converter_problems
 from mosaic.core.track_library.sleap import (
     SleapAnalysisH5Converter,
     SleapConvertParams,
@@ -55,9 +58,6 @@ from tests.helpers import (
     write_ultralytics_predictions,
 )
 
-# What entry identity is spelled as. A converter may accept these as hints; none
-# may accept them as parameters.
-ENTRY_KEYS = frozenset({"group", "sequence", "group_from"})
 
 assert TRACK_CONVERTERS, (
     "the built-in converters are not registered, so every parametrize below "
@@ -179,92 +179,50 @@ def test_the_built_in_set_holds_the_library_and_not_a_registered_test_class() ->
 
 # --- The rule -----------------------------------------------------------------
 
-
-@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
-def test_no_converter_can_hash_an_entry_name(src_format: str) -> None:
-    """No registered converter has an entry-identity field in its params.
-
-    Checked over ``identity_dump()`` rather than the field list, since that is
-    the payload the tracks hash is built from. Built with ``model_construct``
-    rather than the validating constructor, because a converter is allowed a
-    *required* parameter -- ``trex_npz_scaled`` has one, being the reader that is
-    told a factor its files do not record -- and this asks what a payload may
-    contain, not whether a default instance exists.
-    """
-    params_cls = TRACK_CONVERTERS[src_format].Params
-    hashed = set(params_cls.model_construct().identity_dump())
-
-    assert not (hashed & ENTRY_KEYS), (
-        f"{src_format} would hash entry identity: {sorted(hashed & ENTRY_KEYS)}"
-    )
-
-
-@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
-def test_every_converter_declares_a_version(src_format: str) -> None:
-    """The version becomes a visible segment of the tracks variant identity."""
-    assert TRACK_CONVERTERS[src_format].version
-
-
 BUILT_IN_FORMATS = sorted(builtin_track_converters())
 """The formats the library registers, as a test module's own converter is not."""
 
 
+class _SequenceParams(TrackConvertParams):
+    """Params that would hash the entry's sequence."""
+
+    sequence: Annotated[str, Declared("A name that belongs to the entry.")] = ""
+
+
+class _HashesASequence(TrackConverter[_SequenceParams]):
+    """A converter whose params hash an entry name, and is never registered."""
+
+    src_format = "hashes_a_sequence_test"
+    Params: ClassVar[type[TrackConvertParams]] = _SequenceParams
+
+
 @pytest.mark.parametrize("src_format", BUILT_IN_FORMATS)
-def test_every_converter_declares_carries_tracklets(src_format: str) -> None:
-    """Each built-in names whether its tracks follow an animal, or that it cannot say."""
-    converter = TRACK_CONVERTERS[src_format]
-    declaring = [
-        cls
-        for cls in converter.__mro__
-        if cls is not TrackConverter and "carries_tracklets" in vars(cls)
-    ]
-    assert declaring, f"{src_format} leaves carries_tracklets to the base class"
-    assert converter.carries_tracklets in (True, False, None)
+def test_no_converter_can_hash_an_entry_name(src_format: str) -> None:
+    """No built-in converter has an entry-identity field in its params.
 
+    The helper checks ``identity_dump()`` rather than the field list, since that
+    is the payload the tracks hash is built from. It builds the params with
+    ``model_construct`` rather than the validating constructor, because a
+    converter is allowed a *required* parameter -- ``trex_npz_scaled`` has one,
+    being the reader that is told a factor its files do not record -- and this
+    asks what a payload may contain, not whether a default instance exists.
 
-@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
-def test_the_registry_key_is_the_declared_format(src_format: str) -> None:
-    """One class per format, so a variant identity names exactly one producer."""
-    assert TRACK_CONVERTERS[src_format].src_format == src_format
-
-
-@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
-def test_a_merging_format_declares_how_a_stem_names_its_sequence(
-    src_format: str,
-) -> None:
-    """Several files are one sequence only if they agree on the name.
-
-    Left at the base's answer the stem *is* the sequence, so every per-individual
-    file would be its own entry and the merge would find one file per group.
+    The class that hashes a sequence is reported first, so the filter on the
+    helper's wording is known to select the rule it stands for.
     """
-    converter_cls = TRACK_CONVERTERS[src_format]
-    declares_a_rule = (
-        converter_cls.sequence_from_stem is not TrackConverter.sequence_from_stem
-    )
+    entry_identity = "entry identity"
+    reported = converter_problems(_HashesASequence)
+    assert [problem for problem in reported if entry_identity in problem]
 
-    assert declares_a_rule or not converter_cls.merges_per_sequence, (
-        f"{src_format} declares merges_per_sequence without overriding "
-        "sequence_from_stem, so each of its files would be its own sequence"
-    )
+    problems = converter_problems(TRACK_CONVERTERS[src_format])
+
+    assert not [problem for problem in problems if entry_identity in problem]
 
 
-@pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
-def test_no_format_claims_both_directions_of_one_relationship(
-    src_format: str,
-) -> None:
-    """``enumerable`` and ``merges_per_sequence`` are opposite claims.
-
-    One says a single file holds several sequences, the other that several files
-    hold one. A format claiming both would have ``convert_one_track`` expand it
-    into per-sequence tables and ``convert_all_tracks`` concatenate those same
-    rows under a blank sequence.
-    """
-    converter_cls = TRACK_CONVERTERS[src_format]
-
-    assert not (converter_cls.enumerable and converter_cls.merges_per_sequence), (
-        f"{src_format} claims both that one file holds many sequences and that "
-        "many files hold one"
-    )
+@pytest.mark.parametrize("src_format", BUILT_IN_FORMATS)
+def test_every_built_in_converter_conforms(src_format: str) -> None:
+    """Each built-in meets the contract that a package's own tests check."""
+    assert converter_problems(TRACK_CONVERTERS[src_format]) == []
 
 
 def test_validation_strictness_is_not_part_of_the_recipe() -> None:
