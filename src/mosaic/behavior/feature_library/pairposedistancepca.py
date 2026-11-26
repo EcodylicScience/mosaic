@@ -4,7 +4,16 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 import json
-from typing import Annotated, ClassVar, Final, TypedDict, TypeGuard, final, override
+from typing import (
+    Annotated,
+    ClassVar,
+    Final,
+    NotRequired,
+    TypedDict,
+    TypeGuard,
+    final,
+    override,
+)
 
 import joblib
 import numpy as np
@@ -94,8 +103,8 @@ _MODEL_DESCRIPTION = (
     "The model.joblib of a pair-posedistance-pca run to apply, such as a fit "
     "step scoped to the training groups. Unset, the feature fits a basis on "
     "the entries in its scope. Set, nothing is fitted, the entries in scope "
-    "leave the run id, and n_components, pose, include_intra_A, include_intra_B "
-    "and include_inter must equal the fit's."
+    "leave the run id, and n_components, pose, dimensions, include_intra_A, "
+    "include_intra_B and include_inter must equal the fit's."
 )
 
 
@@ -109,6 +118,8 @@ class PairPoseDistancePCABundle(TypedDict):
     tri_j: np.ndarray | None
     feat_len: int | None
     version: str
+    axes: NotRequired[Dimensions]
+    """The ``dimensions`` of the fit. A bundle without it was fitted in 2."""
 
 
 def _is_bundle(value: object) -> TypeGuard[PairPoseDistancePCABundle]:
@@ -322,6 +333,8 @@ class PairPoseDistancePCA:
             "feat_len": self._feat_len,
             "version": self.version,
         }
+        if self.params.dimensions == 3:
+            bundle["axes"] = 3
         atomic_write(
             run_root / VARIANCE_FILE,
             lambda tmp: tmp.write_text(
@@ -413,6 +426,12 @@ class PairPoseDistancePCA:
             found.append(
                 f"n_components is {self.params.n_components} and the model "
                 f"holds {n_fitted}"
+            )
+        fitted_axes = bundle.get("axes", 2)
+        if fitted_axes != self.params.dimensions:
+            found.append(
+                f"dimensions is {self.params.dimensions} and the model was "
+                f"fitted with {fitted_axes}"
             )
         if bundle["feat_len"] != feat_len:
             found.append(

@@ -450,3 +450,69 @@ def test_a_spatial_fit_and_apply_score_a_world_frame_table() -> None:
 
     assert not scored.empty
     assert [c for c in scored.columns if c.startswith("PC")] == ["PC0", "PC1"]
+
+
+# --- the axes of a model ------------------------------------------------------------
+
+
+def _model_of(tmp_path: Path, table: pd.DataFrame, dimensions: int) -> Path:
+    """Fit on *table* at *dimensions*, save the state, and return the model file."""
+    feature = _fitted_feature(table, dimensions)
+    feature.save_state(tmp_path / "fit")
+    return tmp_path / "fit" / "model.joblib"
+
+
+def test_a_spatial_fit_records_its_axes_and_a_planar_fit_records_none(
+    tmp_path: Path,
+) -> None:
+    spatial = joblib.load(_model_of(tmp_path / "spatial", _lifted("fit"), 3))
+    planar = joblib.load(_model_of(tmp_path / "planar", _tracks("fit"), 2))
+
+    assert spatial["axes"] == 3
+    assert "axes" not in planar
+
+
+def test_a_planar_model_applied_as_spatial_is_refused_by_name(tmp_path: Path) -> None:
+    model = _model_of(tmp_path, _tracks("fit"), 2)
+
+    with pytest.raises(ValueError, match=r"(?s)dimensions.*Give the apply step"):
+        _ = _applying(tmp_path, model, dimensions=3)
+
+
+def test_a_spatial_model_applied_as_planar_is_refused_by_name(tmp_path: Path) -> None:
+    model = _model_of(tmp_path, _lifted("fit"), 3)
+
+    with pytest.raises(ValueError, match=r"(?s)dimensions.*Give the apply step"):
+        _ = _applying(tmp_path, model, dimensions=2)
+
+
+def test_a_spatial_model_applied_as_spatial_scores_the_spatial_lift(
+    tmp_path: Path,
+) -> None:
+    fit = _lifted("fit")
+    model = _model_of(tmp_path, fit, 3)
+    # Heights that differ from the fit's, so a planar read scores other values.
+    other = _lifted("other", depth=2.0)
+
+    scores = _applying(tmp_path, model, dimensions=3).apply(other)
+
+    fitting = _fitted_feature(fit, 3)
+    components = ["PC0", "PC1"]
+    assert np.allclose(scores[components], fitting.apply(other)[components])
+    flat = [c for c in other.columns if not c.startswith(("Z", "poseZ"))]
+    planar = _fitted_feature(fit[flat], 2).apply(other[flat])
+    assert not np.allclose(scores[components], planar[components])
+
+
+def test_a_model_without_axes_applies_as_planar_and_is_refused_as_spatial(
+    tmp_path: Path,
+) -> None:
+    path = _model_of(tmp_path, _lifted("fit"), 3)
+    bundle = joblib.load(path)
+    del bundle["axes"]
+    joblib.dump(bundle, path)
+
+    with pytest.raises(ValueError, match="dimensions"):
+        _ = _applying(tmp_path, path, dimensions=3)
+    scores = _applying(tmp_path, path, dimensions=2).apply(_tracks("other"))
+    assert list(scores.columns[:2]) == ["PC0", "PC1"]
