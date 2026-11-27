@@ -1371,10 +1371,10 @@ def _fallback_positions(
     sides, the inputs before it, their merged columns, the input read there and
     the decision of :func:`~mosaic.core.pipeline.loading.fallback_join` over the
     guaranteed columns, which takes a summary key only where both sides guarantee
-    it. It yields nothing for a consumer that stacks or
-    cross-joins, and skips a position that widens, one with an unbounded side and
-    one where a shared alignment column is possible: the run decides those by rows
-    or by columns that the recipe leaves open.
+    it. It yields nothing for a consumer that stacks or cross-joins, and skips a
+    position that widens, one with an unbounded side and one where a shared
+    alignment column is possible: the run decides those by rows or by columns that
+    the recipe leaves open.
     """
     consumes = consumer.consumes
     if consumes.stacks_inputs or consumes.cross_joins:

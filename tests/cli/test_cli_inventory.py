@@ -6,13 +6,11 @@ import json
 import re
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline import identity_scheme as identity_scheme_module
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.inventory import ARTIFACT_KINDS, InventoryWire
 from mosaic.core.selections import save_selection
@@ -317,9 +315,9 @@ def test_an_unknown_status_is_refused(scenario_dataset: Dataset) -> None:
 
 
 def test_a_run_merged_before_summary_keys_joined_is_noted_as_reconcile_pending(
-    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    scenario_dataset: Dataset, scheme_seven: None
 ) -> None:
-    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
+    del scheme_seven
     result, _ = old_merged_run(scenario_dataset, unjoined="seq_b")
 
     listed = runner.invoke(

@@ -127,6 +127,15 @@ class PairRowsMissing(EntryRowsMissing):
     """
 
 
+class IndividualRowsMissing(EntryRowsMissing):
+    """An individual-level input of a widening merge holds no rows for an entry.
+
+    Leaving it out would give the entry's pair rows no ``<column>__id1`` and
+    ``<column>__id2`` columns for it, which the run's other entries carry. It is
+    the counterpart of :class:`PairRowsMissing`, whose input 0 is the pair side.
+    """
+
+
 class BroadcastRowsMissing(EntryRowsMissing):
     """An input that joins by the entry or by its summary keys holds no rows.
 
@@ -539,12 +548,12 @@ def merge_step(
 
     Under *expands_individuals* an individual-level input after pair rows
     widens onto them, on the shared order column or else on ``id`` and the
-    summary keys both sides have, and joins no summary key in step 1 either
-    way. Otherwise :func:`alignment_verdict` decides, and a
-    *cross_join* consumer joins on the shared alignment columns it finds. A
-    join on shared keys uses the shared ``ALIGN_COLS`` and every
-    ``SUMMARY_KEYS`` column that both sides have, except for a *cross_join*
-    consumer, which uses the alignment columns alone. Where the sides share no
+    summary keys both sides have, and adds nothing to ``summary_keys`` either way.
+    Otherwise :func:`alignment_verdict` decides, and a *cross_join* consumer joins
+    on the shared alignment columns it finds. A join on shared keys (kind
+    ``"shared"``) uses the shared ``ALIGN_COLS`` and every ``SUMMARY_KEYS`` column
+    that both sides have, except for a *cross_join* consumer, which uses the
+    alignment columns alone. Where the sides share no
     alignment column and the consumer is not a *cross_join* one,
     :func:`fallback_join` decides: a join on the summary keys, a join by the
     entry, or its refusal. Neither adds to ``summary_keys``. A join by the entry
@@ -610,7 +619,7 @@ def summary_join_cell(
     cross_join: bool,
     expands_individuals: bool,
 ) -> str:
-    """The summary keys that step 1 of the merge joins, as an entry's recorded cell.
+    """The summary keys that the shared-key join of the merge joins, as a cell.
 
     Folds :func:`merge_step` over *column_sets* as the merge folds it over the
     loaded frames, and returns the sorted union of each position's
@@ -656,7 +665,7 @@ def entry_summary_join(
     cross_join: bool,
     expands_individuals: bool,
 ) -> str:
-    """The summary keys step 1 joins for one entry, read from its inputs' footers.
+    """The summary keys the shared-key join joins for one entry, read from footers.
 
     Each input's column names and row count come from one
     :func:`~.parquet_reader.read_footer`, which a footer memo answers without a
@@ -1016,6 +1025,9 @@ def _merge_parquet_inputs(
         BroadcastRowsMissing: Another input loaded rows, and an empty input names
             no identity column and shares no alignment column with the merged
             inputs (see :func:`_unplaceable_empty_input`).
+        IndividualRowsMissing: Under *expands_individuals*, the merged inputs are
+            pair rows and an empty input is individual-level (see
+            :func:`_unwidened_empty_input`).
     """
     it = iter(dfs)
     first = next(it, None)
@@ -1049,6 +1061,14 @@ def _merge_parquet_inputs(
             "join it by the entry or by its summary keys. Their rows cannot be "
             "written without its columns"
         )
+    if expands_individuals:
+        unwidened = _unwidened_empty_input(merged, empty_inputs)
+        if unwidened is not None:
+            raise IndividualRowsMissing(
+                f"input {unwidened} holds no individual rows for this entry, so "
+                "the pair rows of the merged inputs would lack the columns it "
+                "widens them with"
+            )
     if merged.empty:
         return None
     return merged
@@ -1116,14 +1136,34 @@ def _unplaceable_empty_input(
     row of the entry.
 
     Args:
-        merged: The merge of the inputs that loaded rows, named as step 1 names
-            them.
+        merged: The merge of the inputs that loaded rows, named as the
+            shared-key join names them.
         empty: Each empty input's declared position and footer names.
     """
     merged_columns = frozenset(_column_names(merged))
     for position, names in empty:
         columns = frozenset(names)
         if not columns & ID_COLS and not columns & merged_columns & _ALIGN_COLS:
+            return position
+    return None
+
+
+def _unwidened_empty_input(
+    merged: pd.DataFrame, empty: Sequence[tuple[int, tuple[str, ...]]]
+) -> int | None:
+    """The first empty individual-level input that would widen the pair rows, else ``None``.
+
+    Applies where the merged inputs are pair rows. An individual-level input
+    that loaded none adds no ``<column>__id1`` or ``<column>__id2`` to them.
+
+    Args:
+        merged: The merge of the inputs that loaded rows.
+        empty: Each empty input's declared position and footer names.
+    """
+    if entity_level_of(_column_names(merged)) != "pair":
+        return None
+    for position, names in empty:
+        if entity_level_of(names) == "individual":
             return position
     return None
 
@@ -1154,6 +1194,9 @@ def load_entry_data(
             none names no identity column and shares no alignment column with the
             merged inputs. Leaving it out would give the entry a frame without the
             columns that the run's other entries have.
+        IndividualRowsMissing: Under *expands_individuals*, input 0 loaded pair
+            rows and an individual-level input loaded none. Leaving it out would
+            give the entry's pair rows no ``__id1`` and ``__id2`` columns for it.
     """
     empty: list[tuple[int, tuple[str, ...]]] = []
 

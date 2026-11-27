@@ -55,6 +55,7 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_run_root,
 )
+from mosaic.core.pipeline.parquet_reader import ParquetUnreadable
 from mosaic.core.pipeline.reconcile import (
     PassBuilder,
     ReconcileFinding,
@@ -313,7 +314,7 @@ class FeatureReconciler:
             for run_id in self._run_ids(storage_name):
                 try:
                     reads.append(self._read_run(storage_name, run_id))
-                except Exception as exc:  # noqa: BLE001 - a bad run must not abort the sweep
+                except Exception as exc:  # noqa: BLE001 - a user feature's constructor can raise anything; the error is listed and the sweep goes on (rw-losses-reported)
                     builder.error(f"features/{storage_name}/{run_id}: {exc}")
         for read in _topo_order(reads):
             self._process(read, state, builder, apply=apply)
@@ -329,10 +330,15 @@ class FeatureReconciler:
     ) -> None:
         # Before the classification, which points the rebuilt feature at its
         # upstreams' new addresses, and before any move is recorded. A dry run
-        # reads the inputs where they sit.
+        # reads the inputs where they sit. The errors caught are the ones a read
+        # of the inputs raises: a run or file that is gone (OSError, which holds
+        # the manifest's missing-run errors), an input the manifest refuses
+        # (ValueError), a catalog lookup (ClassifiedError) and a table that does
+        # not parse (ParquetUnreadable). Any other error is a defect and stops
+        # the sweep.
         try:
             marks = self._summary_marks(read, state, apply=apply)
-        except Exception as exc:  # noqa: BLE001 - a run whose inputs cannot be read must not abort the sweep
+        except (OSError, ValueError, ClassifiedError, ParquetUnreadable) as exc:
             self._block_unreadable(read, state, builder, exc, apply=apply)
             return
         verdict, new_run_id, reason = self._classify(read, state)
@@ -546,7 +552,7 @@ class FeatureReconciler:
                 overlap_frames=read.overlap_frames,
                 time_window=read.time_window,
             )
-        except Exception as exc:  # noqa: BLE001 - a raising feature is unresolvable, not fatal
+        except Exception as exc:  # noqa: BLE001 - a user feature's identity terms can raise anything; the run is reported unresolvable and the sweep goes on (rw-losses-reported)
             return (
                 "unresolvable_pre_provenance",
                 read.run_id,

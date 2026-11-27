@@ -67,7 +67,8 @@ What lives where:
   labels it reads.
 - ``summary_joins`` -- a step over two runs that both hold ``arena``, and its rows
   as a merge before the summary-key join recorded them, for the tests of what
-  ``mosaic reconcile`` marks and the inventory notes.
+  ``mosaic reconcile`` marks and the inventory notes, the feature identity scheme
+  those tests run under, and a ``may_share_summary_key`` that answers no.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP, DeepLabCut, Tracktor, s-DANNCE and zebrafish 3D workflow exports,
   a synthetic track file and a dataset indexing several of them, a window file, a
@@ -562,6 +563,7 @@ from tests.helpers.aggregates import (
 )
 from tests.helpers.pair_inputs import (
     EMPTY_SEQUENCE,
+    NO_INDIVIDUAL_ROWS,
     EchoFeature,
     IndividualRowsFeature,
     ROWS,
@@ -570,6 +572,7 @@ from tests.helpers.pair_inputs import (
     TracksFeature,
     add_pair_tracks,
     assert_ended_without_an_entry_error,
+    assert_lost_the_entry_without_individual_rows,
     assert_lost_the_entry_without_pair_rows,
     corrupt_output,
     neighbor_pairs,
@@ -681,6 +684,8 @@ from tests.helpers.summary_joins import (
     JoinBeta,
     JoinConsumer,
     JoinDownstream,
+    feature_scheme,
+    no_summary_key,
     old_merged_run,
     summary_cells,
 )
@@ -920,6 +925,8 @@ __all__ = [
     "JoinBeta",
     "JoinConsumer",
     "JoinDownstream",
+    "feature_scheme",
+    "no_summary_key",
     "old_merged_run",
     "summary_cells",
     "GOLDEN_DIR",
@@ -1017,6 +1024,7 @@ __all__ = [
     "MediaClip",
     "MockDataset",
     "EMPTY_SEQUENCE",
+    "NO_INDIVIDUAL_ROWS",
     "EchoFeature",
     "IndividualRowsFeature",
     "Pair",
@@ -1025,6 +1033,7 @@ __all__ = [
     "TracksFeature",
     "add_pair_tracks",
     "assert_ended_without_an_entry_error",
+    "assert_lost_the_entry_without_individual_rows",
     "assert_lost_the_entry_without_pair_rows",
     "corrupt_output",
     "neighbor_pairs",

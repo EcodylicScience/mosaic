@@ -51,6 +51,7 @@ from tests.helpers import (
     add_tracks_variant,
     drifted,
     make_dataset,
+    no_summary_key,
     result_run_root,
     set_tracks_cell,
     track_table,
@@ -1895,11 +1896,6 @@ def test_the_cache_check_reads_one_footer_per_input_file_of_each_cached_entry(
     assert len(set(counter.parsed)) == 4
 
 
-def _no_summary_key(feature: object) -> bool:
-    _ = feature
-    return False
-
-
 def test_the_cache_check_reads_no_input_footer_where_no_summary_key_can_be_shared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1910,7 +1906,7 @@ def test_the_cache_check_reads_no_input_footer_where_no_summary_key_can_be_share
     first = run_feature(ds, consumer)
     counter = _FooterCount(monkeypatch)
     counter.watch(ds, consumer.inputs.feature_inputs)
-    monkeypatch.setattr(graph_columns, "may_share_summary_key", _no_summary_key)
+    monkeypatch.setattr(graph_columns, "may_share_summary_key", no_summary_key)
     serving = _JoinsTwo(consumer.inputs)
 
     second = run_feature(ds, serving)
@@ -2093,7 +2089,7 @@ class _WidensBins(_JoinsTwo):
         return df[["id1", "id2", "pair_value", "id_value__id1", "pair_other"]]
 
 
-def test_the_cell_holds_the_keys_of_the_step_one_join_after_a_widening_by_id(
+def test_the_cell_holds_the_keys_of_the_shared_key_join_after_a_widening_by_id(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")

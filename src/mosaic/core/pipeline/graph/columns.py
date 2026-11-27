@@ -270,9 +270,9 @@ def merged_input(
     dropped. A summary key that both sides have is a key of the join and is neither
     dropped nor numbered, as the merge joins it. Over the guaranteed sets the rule
     gives the columns of every merge. Over the possible sets it gives the columns
-    that some merge may contain, and a summary key that both sides may have and that
-    is not guaranteed on both enters under both names, ``<key>`` and
-    ``<key>__<position>``, because the data decides whether the merge joins it.
+    that some merge may contain. A summary key that only one side holds keeps its
+    name, and one that both hold is joined, so no merge outside a *cross_join*
+    consumer writes a numbered summary key.
 
     A *cross_join* consumer joins on the alignment columns alone, so it numbers a
     collided summary key.
@@ -324,7 +324,6 @@ def merged_input(
         widened = sure.kind == "widen"
         if widened:
             naming = merge_naming(possible, incoming.possible, position, widen=True)
-            numbered: frozenset[str] = _NO_NAMES
         else:
             naming = merge_step(
                 possible,
@@ -333,17 +332,8 @@ def merged_input(
                 cross_join=cross_join,
                 expands_individuals=False,
             ).naming
-            numbered = (
-                _NO_NAMES
-                if cross_join
-                else _undecided_summary_keys(
-                    (guaranteed, incoming.guaranteed),
-                    (possible, incoming.possible),
-                    position,
-                )
-            )
         guaranteed = sure.naming.columns
-        possible = naming.columns | numbered
+        possible = naming.columns
         if widened:
             continue
         symmetric_prefixes.update(incoming.symmetric_prefixes)
@@ -368,27 +358,6 @@ def merged_input(
             ),
             mirrored=bool(pair_inputs) and all(one.mirrored for one in pair_inputs),
         ),
-    )
-
-
-def _undecided_summary_keys(
-    guaranteed: tuple[frozenset[str], frozenset[str]],
-    possible: tuple[frozenset[str], frozenset[str]],
-    position: int,
-) -> frozenset[str]:
-    """The numbered names of the summary keys that the data decides the merge joins.
-
-    A summary key that both sides may have and that not both guarantee is joined
-    where both tables hold it, and kept under its own name where only one does.
-    The merge that does not join it numbers the incoming copy, and
-    :func:`~mosaic.core.pipeline.loading.merge_naming` gives that name.
-    """
-    sure_left, sure_right = guaranteed
-    unjoined = merge_naming(*possible, position).renamed
-    return frozenset(
-        numbered
-        for key, numbered in unjoined.items()
-        if key in SUMMARY_KEYS and not (key in sure_left and key in sure_right)
     )
 
 
@@ -764,13 +733,14 @@ def _producer_columns(item: str | Result, catalog: DeclarationCatalog) -> Column
 def may_share_summary_key(feature: Feature) -> bool:
     """Whether two inputs of a step may both have a summary key.
 
-    The merge joins a summary key at a step-1 position only where both sides
-    have it, so a step whose inputs cannot both hold one joins none, and a run
-    records a blank ``consumed_summary_join`` for every entry without reading an
-    input footer. Each input's columns come from its producer's declaration: the
-    tracks through :func:`tracks_columns` and a feature through the catalog's
-    ``Declaration.provides``, under the definition scope in force. A producer
-    that declares no output may provide any column, so the answer is yes.
+    The merge joins a summary key at a position that joins on shared alignment
+    columns only where both sides have it, so a step whose inputs cannot both hold
+    one joins none, and a run records a blank ``consumed_summary_join`` for every
+    entry without reading an input footer. Each input's columns come from its
+    producer's declaration: the tracks through :func:`tracks_columns` and a feature
+    through the catalog's ``Declaration.provides``, under the definition scope in
+    force. A producer that declares no output may provide any column, so the answer
+    is yes.
 
     A step of one input and a consumer in ``CROSS_JOIN_FEATURES``, which merges
     on its alignment columns alone, answer no.

@@ -25,7 +25,8 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import entry_task, parquet_reader
 from mosaic.core.pipeline.loading import MultiInputAlignmentError, load_entry_data
-from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.manifest import ManifestEntry, iter_manifest
+from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.types import (
     InputStream,
     LoadSpec,
@@ -35,6 +36,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from tests.helpers import (
     EMPTY_SEQUENCE,
+    NO_INDIVIDUAL_ROWS,
     EchoFeature,
     IndividualRowsFeature,
     PairRowsFeature,
@@ -42,6 +44,7 @@ from tests.helpers import (
     add_track_sequences,
     all_logged_events,
     assert_ended_without_an_entry_error,
+    assert_lost_the_entry_without_individual_rows,
     assert_lost_the_entry_without_pair_rows,
     assert_ran_in_mode,
     corrupt_output,
@@ -191,6 +194,128 @@ def test_an_overlapped_widening_run_records_the_entry_without_pair_rows(
 
     assert_ran_in_mode(ds, mode)
     assert_lost_the_entry_without_pair_rows(ds, result)
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_an_entry_without_individual_rows_is_an_entry_error(
+    tmp_path: Path, mode: RunMode
+) -> None:
+    """The entry would hold pair rows without the widened columns, so it is lost."""
+    ds, pairs, individuals = _results(tmp_path, "s1", NO_INDIVIDUAL_ROWS)
+
+    result = run_in_mode(
+        ds, EchoFeature(EchoFeature.Inputs((pairs, individuals))), mode
+    )
+
+    assert_ran_in_mode(ds, mode)
+    assert_lost_the_entry_without_individual_rows(ds, result)
+    assert set(result_outputs(ds, result)) == {make_entry_key("g", "s1")}
+    written = result_outputs(ds, result)[make_entry_key("g", "s1")]
+    assert {"speed__id1", "speed__id2"} <= set(written.columns)
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_an_overlapped_run_records_the_entry_without_individual_rows(
+    tmp_path: Path, mode: RunMode
+) -> None:
+    ds, pairs, individuals = _results(tmp_path, "s1", NO_INDIVIDUAL_ROWS)
+
+    result = run_in_mode(
+        ds,
+        _EchoWithOverlap(_EchoWithOverlap.Inputs((pairs, individuals))),
+        mode,
+        overlap_frames=1,
+    )
+
+    assert_ran_in_mode(ds, mode)
+    assert_lost_the_entry_without_individual_rows(ds, result)
+
+
+def test_every_entry_without_individual_rows_is_a_failed_run(tmp_path: Path) -> None:
+    ds, pairs, individuals = _results(tmp_path, NO_INDIVIDUAL_ROWS)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = run_feature(ds, EchoFeature(EchoFeature.Inputs((pairs, individuals))))
+
+
+def test_a_fit_skips_an_entry_without_individual_rows_and_apply_reports_it(
+    tmp_path: Path,
+) -> None:
+    ds, pairs, individuals = _results(tmp_path, "s1", NO_INDIVIDUAL_ROWS)
+    feature = _FitsEcho(EchoFeature.Inputs((pairs, individuals)))
+
+    result = run_feature(ds, feature)
+
+    assert feature.fitted_entries == [make_entry_key("g", "s1")]
+    assert result.failed_entries == (make_entry_key("g", NO_INDIVIDUAL_ROWS),)
+
+
+def test_a_neighbor_without_individual_rows_gives_no_context(tmp_path: Path) -> None:
+    """The entry is reported, and its neighbor reads it as an absent neighbor."""
+    names = ("s1", "s2", "s3")
+    frames = 4
+    manifest: dict[str, ManifestEntry] = {}
+    specs: dict[str, list[tuple[Path, LoadSpec]]] = {}
+    for index, name in enumerate(names):
+        start = index * frames
+        pairs = tmp_path / f"{name}.pairs.parquet"
+        pd.DataFrame(
+            {
+                "frame": [start + f for f in range(frames) for _ in range(2)],
+                "id1": [0, 1] * frames,
+                "id2": [1, 0] * frames,
+                "dist": 1.0,
+            }
+        ).to_parquet(pairs)
+        individuals = tmp_path / f"{name}.individuals.parquet"
+        rows = 0 if name == "s1" else frames
+        pd.DataFrame(
+            {
+                "frame": [start + f for f in range(rows)] * 2,
+                "id": [0] * rows + [1] * rows,
+                "speed": 1.0,
+            }
+        ).to_parquet(individuals)
+        specs[name] = [(pairs, ParquetLoadSpec()), (individuals, ParquetLoadSpec())]
+    for index, name in enumerate(names):
+        before = names[index - 1] if index > 0 else None
+        after = names[index + 1] if index < len(names) - 1 else None
+        manifest[f"g1__{name}"] = ManifestEntry(
+            file_specs=specs[name],
+            prev_file_specs=None if before is None else specs[before],
+            prev_entry_key=None if before is None else f"g1__{before}",
+            next_file_specs=None if after is None else specs[after],
+            next_entry_key=None if after is None else f"g1__{after}",
+            entry_key=f"g1__{name}",
+            group="g1",
+            sequence=name,
+            continuous=True,
+            core_extent=(index * frames, (index + 1) * frames - 1),
+            prev_extent=None
+            if before is None
+            else (index * frames - frames, index * frames - 1),
+            next_extent=None
+            if after is None
+            else ((index + 1) * frames, (index + 2) * frames - 1),
+        )
+    missing: list[str] = []
+
+    loaded = list(
+        iter_manifest(
+            manifest,
+            overlap_frames=2,
+            expands_individuals=True,
+            on_rows_missing=lambda key, exc: missing.append(
+                f"{key}: {type(exc).__name__}"
+            ),
+        )
+    )
+
+    assert missing == ["g1__s1: IndividualRowsMissing"]
+    assert [key for key, _, _ in loaded] == ["g1__s2", "g1__s3"]
+    _key, df, selector = loaded[0]
+    assert not (df["frame"] < selector.first).any()
+    assert (df["frame"] > selector.last).any()
 
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)

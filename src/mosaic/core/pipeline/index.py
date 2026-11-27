@@ -214,13 +214,13 @@ class FeatureIndexRow(RunIndexRowBase):
     # cell and not a path, so ``merge_linked_rows`` leaves it as stored. Out of
     # the run id, like the cells above.
     consumed_model_state: str = ""
-    # The summary keys that step 1 of the merge joined for this entry, sorted and
-    # joined with ``,`` (``summary_join_cell`` in ``loading.py``). ``""`` when it
-    # joined none, and for a row written before the column existed. A row that
-    # ``mosaic reconcile`` found merged under the earlier rule reads
+    # The summary keys that the shared-key join of the merge joined for this entry,
+    # sorted and joined with ``,`` (``summary_join_cell`` in ``loading.py``). ``""``
+    # when it joined none, and for a row written before the column existed. A row
+    # that ``mosaic reconcile`` found merged under the earlier rule reads
     # ``legacy:<keys>``, which ``reconcile`` alone writes. Recorded and compared
-    # against the cell the entry has now, never hashed. A text cell and not a
-    # path, so ``merge_linked_rows`` leaves it as stored.
+    # against the cell the entry has now, never hashed. A text cell and not a path,
+    # so ``merge_linked_rows`` leaves it as stored.
     consumed_summary_join: str = ""
 
 
@@ -575,8 +575,8 @@ class RecordedTracksReads:
         neighbors: Its ``consumed_neighbors``, empty without overlap.
         model_state: Its ``consumed_model_state``, empty for a row that read no
             fit state.
-        summary_join: Its ``consumed_summary_join``, empty when step 1 joined no
-            summary key.
+        summary_join: Its ``consumed_summary_join``, empty when the shared-key join
+            joined no summary key.
         inputs: Its ``consumed_input_composition``, empty without a feature
             input whose upstream records a declared root.
     """
@@ -869,9 +869,9 @@ def drifted_entries(
       ``consumed_input_composition`` against its feature inputs' parts
       (:func:`~.composition.input_part` of each upstream row's declared roots,
       inputs cell, ``consumed_model_state`` and ``consumed_summary_join``),
-      joined the same way, which
-      recomputes an entry after a fit its upstream read was fitted again, and
-      after its upstream entry was merged under another rule;
+      joined the same way, which recomputes an entry after a fit its upstream read
+      was fitted again, and after its upstream entry was merged under another
+      rule;
     - its merge: a row whose ``consumed_summary_join`` is
       :data:`LEGACY_SUMMARY_JOIN` followed by keys, which ``mosaic reconcile``
       writes on a row that an earlier rule merged differently. It differs from

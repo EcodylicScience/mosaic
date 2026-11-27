@@ -2,8 +2,8 @@
 
 Two features write ``alpha`` and ``beta`` beside an ``arena`` column, and
 :class:`JoinConsumer` merges the runs of both. Its rows record the summary key
-``arena`` that step 1 of the merge joins, which a run before that rule left
-blank. :func:`old_merged_run` writes such a run and blanks the cells of its
+``arena`` that the shared-key join of the merge joins, which a run before that rule
+left blank. :func:`old_merged_run` writes such a run and blanks the cells of its
 rows, for the tests of ``mosaic reconcile`` and of the inventory's pending note.
 :class:`JoinDownstream` reads the consumer's run, for the tests of what a run that
 reconcile cannot mark passes on to the runs that read it.
@@ -11,11 +11,16 @@ reconcile cannot mark passes on to the runs that read it.
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import identity_scheme as identity_scheme_module
+from mosaic.core.pipeline import reconcile_features as reconcile_features_module
 from mosaic.core.params import Params
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.index import feature_index, feature_index_path
@@ -148,6 +153,27 @@ class JoinDownstream(_TracksStep):
 
 JOIN_STEPS = (JoinAlpha, JoinBeta, JoinConsumer, JoinDownstream)
 """The steps to register for ``mosaic reconcile`` to rebuild their runs."""
+
+
+@contextmanager
+def feature_scheme(scheme: str) -> Generator[None]:
+    """Run with *scheme* as the feature identity scheme that the toolkit has reached.
+
+    Patches the two modules that read the constant to decide what a run's marker
+    means: the one that defines it and the one that ``mosaic reconcile`` writes
+    markers from. A run writes the scheme it has when it runs, so the runs of a
+    test keep the marker they had before the patch.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", scheme)
+        patch.setattr(reconcile_features_module, "FEATURE_IDENTITY_SCHEME", scheme)
+        yield
+
+
+def no_summary_key(feature: object) -> bool:
+    """A ``may_share_summary_key`` that finds no input able to hold a summary key."""
+    _ = feature
+    return False
 
 
 def summary_cells(ds: Dataset, result: Result) -> dict[str, str]:

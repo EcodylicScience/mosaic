@@ -64,8 +64,8 @@ values of that bin.
   other identity and bookkeeping columns are dropped.
 - If two inputs would give one widened name, the later one is numbered by its position
   among the inputs, as `<column>__2__id1`.
-- An entry whose pair input holds no rows fails as an entry error, and the run reports it
-  among its failed entries.
+- An entry whose pair input or individual input holds no rows while the other does fails
+  as an entry error, and the run reports it among its failed entries.
 - A feature declared `individual` or `unidentified` (`overlay`, `scale-to-cm`,
   `frame-aggregate`) keeps the refusal.
 - The join holds the individual table's measurements twice for every partner of every

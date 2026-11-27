@@ -72,6 +72,7 @@ from tests.helpers import (
     MediaClip,
     add_media_sequence,
     add_track_sequences,
+    feature_scheme,
     import_runner_program,
     isolate_card_leases,
     lmt_analysis_installer,
@@ -567,6 +568,13 @@ def scenario_dataset_with_media(
     """
     add_media_sequence(scenario_dataset, "seq_a")
     return scenario_dataset
+
+
+@pytest.fixture
+def scheme_seven() -> Iterator[None]:
+    """The release that joins summary keys, with the runs of the test minted before it."""
+    with feature_scheme("7"):
+        yield
 
 
 @pytest.fixture

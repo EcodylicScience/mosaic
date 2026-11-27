@@ -2526,15 +2526,16 @@ def test_a_summary_key_that_a_widening_merge_names_per_individual_is_not_a_key()
     assert {"arena__id1", "arena__id2"} <= merged.guaranteed
 
 
-def test_a_summary_key_possible_on_both_sides_enters_under_both_names() -> None:
-    """The run joins ``arena`` where both tables have it, and the plan cannot tell."""
+def test_a_summary_key_possible_on_both_sides_is_never_numbered() -> None:
+    """The run joins ``arena`` where both tables have it, and keeps it where one does."""
     first = _columns_of("frame", "id", "x", possible={"arena"})
     second = _columns_of("frame", "y", possible={"arena"})
 
     merged = merged_input([first, second])
 
     assert merged.guaranteed == {"frame", "id", "x", "y"}
-    assert {"arena", "arena__1"} <= merged.possible
+    assert "arena" in merged.possible
+    assert "arena__1" not in merged.possible
 
 
 def test_a_summary_key_guaranteed_on_one_side_alone_is_guaranteed_once() -> None:
@@ -2544,7 +2545,16 @@ def test_a_summary_key_guaranteed_on_one_side_alone_is_guaranteed_once() -> None
     merged = merged_input([first, second])
 
     assert merged.guaranteed == {"frame", "id", "arena", "y"}
-    assert "arena__1" in merged.possible
+    assert "arena__1" not in merged.possible
+
+
+def test_a_cross_join_consumer_numbers_a_summary_key_possible_on_both_sides() -> None:
+    first = _columns_of("frame", "id", "x", possible={"arena"})
+    second = _columns_of("frame", "y", possible={"arena"})
+
+    merged = merged_input([first, second], cross_join=True)
+
+    assert {"arena", "arena__1"} <= merged.possible
 
 
 def test_a_summary_key_that_neither_side_may_have_is_not_numbered() -> None:
@@ -2661,6 +2671,46 @@ def test_a_subgroup_by_arena_over_the_tracks_is_a_caution_and_not_a_problem(
             "and none guarantees it",
         )
     ]
+
+
+def _arena_summary_recipe(column: str) -> dict[str, JsonValue]:
+    """A step that subgroups by *column* over two summaries, which both may hold ``arena``."""
+    steps: list[JsonValue] = [
+        {
+            "id": name,
+            "type": "feature",
+            "feature": "frame-aggregate",
+            "inputs": [TRACKS_INPUT],
+            "params": {"columns": [source], "aggs": ["mean"]},
+        }
+        for name, source in (("left", "X"), ("right", "Y"))
+    ]
+    steps.append(
+        {
+            "id": "reader",
+            "type": "feature",
+            "feature": "sequence-aggregate",
+            "inputs": [{"step": "left"}, {"step": "right"}],
+            "params": {"columns": ["frame"], "aggs": ["mean"], "subgroup_col": column},
+        }
+    )
+    return {"steps": steps}
+
+
+def test_a_numbered_summary_key_behind_a_merge_that_joins_it_is_a_problem() -> None:
+    """The merge joins ``arena`` of both tables, so ``arena__1`` is never written."""
+    report = validation_report(_arena_summary_recipe("arena__1"))
+
+    assert [problem.step for problem in report.problems] == ["reader"]
+    assert "'arena__1'" in report.problems[0].message
+    assert "reader" not in [caution.step for caution in report.cautions]
+
+
+def test_the_summary_key_behind_the_same_merge_is_a_caution() -> None:
+    report = validation_report(_arena_summary_recipe("arena"))
+
+    assert report.problems == ()
+    assert "reader" in [caution.step for caution in report.cautions]
 
 
 # --- the join check over a recipe --------------------------------------------

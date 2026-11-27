@@ -46,6 +46,9 @@ Pair = tuple[int, int, int]
 EMPTY_SEQUENCE: Final = "empty"
 """The sequence for which ``PairRowsFeature`` writes no pair rows."""
 
+NO_INDIVIDUAL_ROWS: Final = "no-individuals"
+"""The sequence for which ``IndividualRowsFeature`` writes no individual rows."""
+
 ROWS: Final = 6
 """The frames of each sequence that ``pair_run_results`` writes."""
 
@@ -57,6 +60,12 @@ NO_PAIR_ROWS_MESSAGE: Final = (
     "input 1 have none to widen onto"
 )
 """What the entry without pair rows reports."""
+
+NO_INDIVIDUAL_ROWS_MESSAGE: Final = (
+    "input 1 holds no individual rows for this entry, so the pair rows of the "
+    "merged inputs would lack the columns it widens them with"
+)
+"""What the entry without individual rows reports."""
 
 
 class StubFeature:
@@ -129,18 +138,21 @@ class PairRowsFeature(TracksFeature):
 
 
 class IndividualRowsFeature(TracksFeature):
-    """``speed`` names its cell: ten times the frame plus the id."""
+    """``speed`` names its cell, ten times the frame plus the id, none for ``NO_INDIVIDUAL_ROWS``."""
 
     name = "test-individual-rows"
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        return pd.DataFrame(
+        table = pd.DataFrame(
             {
                 "frame": df["frame"],
                 "id": df["id"],
                 "speed": 10.0 * df["frame"] + df["id"],
             }
         )
+        if (df["sequence"] == NO_INDIVIDUAL_ROWS).all():
+            return table.iloc[0:0]
+        return table
 
 
 class EchoFeature(StubFeature):
@@ -178,6 +190,18 @@ def assert_lost_the_entry_without_pair_rows(ds: Dataset, result: Result) -> None
     assert key == make_entry_key("g", EMPTY_SEQUENCE)
     assert error["type"] == "PairRowsMissing"
     assert error["message"] == NO_PAIR_ROWS_MESSAGE
+    assert latest_snapshot(ds)["status"] == "finished"
+
+
+def assert_lost_the_entry_without_individual_rows(ds: Dataset, result: Result) -> None:
+    """Assert that the run lost the entry of ``NO_INDIVIDUAL_ROWS``, recorded it and went on."""
+    assert result.failed_entries == (make_entry_key("g", NO_INDIVIDUAL_ROWS),)
+    errors = entry_errors(ds)
+    assert len(errors) == 1
+    key, error = errors[0]
+    assert key == make_entry_key("g", NO_INDIVIDUAL_ROWS)
+    assert error["type"] == "IndividualRowsMissing"
+    assert error["message"] == NO_INDIVIDUAL_ROWS_MESSAGE
     assert latest_snapshot(ds)["status"] == "finished"
 
 

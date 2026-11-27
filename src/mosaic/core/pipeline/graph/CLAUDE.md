@@ -641,11 +641,11 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   entry: the run refuses the join where both sides have more than one row, so the plan
   only warns (`test_pipeline_compatibility.py`).
 - `merged_input` names the merged columns by `merge_step`, the merge's own decision. A
-  summary key that both sides have is one column, and over the possible sets a key that
-  both sides may have and not both guarantee also enters as `<key>__<position>`. A
-  cross-join consumer numbers it (`cross_join=`). The tracks may hold `arena`, which
-  `tracks_provides` lists from each schema's `optional_text`, so validation, the plan
-  and `may_share_summary_key` read one answer (`test_pipeline_columns.py`).
+  summary key that both sides have is one column, and one that a side alone has keeps
+  its name, so no possible set holds `<key>__<position>`. A cross-join consumer
+  numbers it (`cross_join=`). The tracks may hold `arena`, which `tracks_provides`
+  lists from each schema's `optional_text`, so validation, the plan and
+  `may_share_summary_key` read one answer (`test_pipeline_columns.py`).
 - A feature declares `requires` and `provides` with the references of
   `core/pipeline/column_contract.py`. Validation checks them with no dataset
   (`columns.py`), the plan against the tracks parquet footers, and `run_feature` per

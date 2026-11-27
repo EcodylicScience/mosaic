@@ -243,8 +243,8 @@ are in `graph/CLAUDE.md`.
 - A step whose inputs may both hold a summary key (`may_share_summary_key`,
   `graph/columns.py`: two inputs whose producers' declarations admit `bin_start`,
   `bin_end` or `arena`, and an undeclared producer admits any) records in
-  `consumed_summary_join` the keys that step 1 of the merge joined for the entry:
-  `summary_join_cell` (`loading.py`) folds `merge_step` over the footers' column
+  `consumed_summary_join` the keys that the shared-key join of the merge joined for the
+  entry: `summary_join_cell` (`loading.py`) folds `merge_step` over the footers' column
   names, which `entry_summary_join` reads under the run's footer memo, leaving out an
   input that records no rows. The cell is sorted keys joined with `,`, and blank for
   none. `_servable` compares it through `cached_entry_disposition` after the other
@@ -397,10 +397,13 @@ are in `graph/CLAUDE.md`.
   where the empty input's footer names none of `ID_COLS` and shares none of `ALIGN_COLS`
   with the columns of the inputs that loaded: the rest would be written without its
   columns, and the run's entries would hold mixed schemas
-  (`tests/core/pipeline/test_partial_entry_failure.py`). A fit's input stream skips such
-  an entry through `iter_manifest`'s `on_rows_missing`, which `skip_rows_missing` fills.
-  An input empty at every entry loses every entry, which raises `AllEntriesFailed`.
-  `load_values` does not widen.
+  (`tests/core/pipeline/test_partial_entry_failure.py`). `IndividualRowsMissing` is an
+  entry of a widening step whose pair rows loaded while an individual-level input
+  loaded none: the pair rows would lack its `<column>__id1` and `<column>__id2`
+  columns (`tests/core/pipeline/test_widening_join.py`). A fit's input stream skips each
+  of these entries through `iter_manifest`'s `on_rows_missing`, which `skip_rows_missing`
+  fills. An input empty at every entry loses every entry, which raises
+  `AllEntriesFailed`. `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
   inputs as runs over disjoint entries: `build_manifest(stack=True)` unions them, takes

@@ -40,7 +40,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Params
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import add_tracks_variant, make_dataset, registered_features
 
 DOOMED = "seq_b"
 VARIANT = "convert-trex.0.2-1111111111"
@@ -112,23 +112,9 @@ class FailsOnOneSequence:
 
 @pytest.fixture(autouse=True)
 def registered() -> Iterator[None]:
-    """Put the fixture feature in the registry for the length of one test.
-
-    The declaration catalog is memoized, so registering a feature after anything
-    else has asked for one leaves it invisible to validation. Cleared on the way
-    in and on the way out, so this suite neither reads a catalog built without it
-    nor leaves one built with it.
-    """
-    from mosaic.behavior.feature_library import FEATURES
-    from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
-
-    FEATURES["FailsOnOneSequence"] = FailsOnOneSequence
-    builtin_declaration_catalog.cache_clear()
-    try:
+    """Put the fixture feature in the registry for the length of one test."""
+    with registered_features(FailsOnOneSequence):
         yield
-    finally:
-        del FEATURES["FailsOnOneSequence"]
-        builtin_declaration_catalog.cache_clear()
 
 
 @pytest.fixture

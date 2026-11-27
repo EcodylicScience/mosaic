@@ -4369,8 +4369,8 @@ def _run_feature_impl(
                 """Record an entry whose input lacks the rows its merge needs as an entry error.
 
                 Only an entry that the run loads itself, under overlap, reaches
-                here. The task raises the error for every other widening entry, a
-                pair-filtered one included, and the pool records it.
+                here. The task raises it for every other entry, a pair-filtered one
+                included, and the pool records it.
                 """
                 group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 _entry_failed(group, sequence, exc)

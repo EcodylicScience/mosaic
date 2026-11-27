@@ -50,6 +50,7 @@ from tests.helpers import (
     index_a_second_origin,
     add_tracks_variant,
     make_dataset,
+    registered_features,
     speed_recipe,
     tag_table,
     write_tags,
@@ -708,20 +709,9 @@ class TaggedFit:
 
 @pytest.fixture
 def tagged_fit_registered() -> Iterator[None]:
-    """Put the fixture feature in the registry for the length of one test.
-
-    The declaration catalog is memoized, so it is cleared on the way in and out.
-    """
-    from mosaic.behavior.feature_library import FEATURES
-    from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
-
-    FEATURES["TaggedFit"] = TaggedFit
-    builtin_declaration_catalog.cache_clear()
-    try:
+    """Put the fixture feature in the registry for the length of one test."""
+    with registered_features(TaggedFit):
         yield
-    finally:
-        del FEATURES["TaggedFit"]
-        builtin_declaration_catalog.cache_clear()
 
 
 @pytest.mark.usefixtures("tagged_fit_registered")

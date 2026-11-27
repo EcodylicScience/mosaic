@@ -17,7 +17,6 @@ import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core import dataset as dataset_module
-from mosaic.core.pipeline import identity_scheme as identity_scheme_module
 from mosaic.core.pipeline import loading
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
@@ -74,6 +73,7 @@ from tests.helpers import (
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
+    feature_scheme,
     kmeans_fit,
     make_dataset,
     old_merged_run,
@@ -1438,12 +1438,6 @@ def test_a_row_recorded_as_an_earlier_merge_is_drift_and_reads_no_input_footer(
 # --- Rows merged before summary keys joined -----------------------------------
 
 
-@pytest.fixture
-def scheme_seven(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The release that joins summary keys, with the runs of the test minted before it."""
-    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
-
-
 def test_a_multi_input_run_with_an_old_marker_is_noted_as_reconcile_pending(
     scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1452,15 +1446,16 @@ def test_a_multi_input_run_with_an_old_marker_is_noted_as_reconcile_pending(
     unnoted = _record_of(scenario_dataset, result)
     parsed_before = set(parsed)
     parsed.clear()
-    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
     loaded = record_path_calls(monkeypatch, loading, "read_footer")
 
-    record = _record_of(scenario_dataset, result)
+    with feature_scheme("7"):
+        record = _record_of(scenario_dataset, result)
+        notes = _wire_of(scenario_dataset, result).notes
     parsed_after = set(parsed)
 
     assert "reconcile_pending" not in unnoted.extra
     assert record.extra["reconcile_pending"] == frozenset({"seq_a", "seq_b"})
-    assert _wire_of(scenario_dataset, result).notes == {"reconcile_pending": 2}
+    assert notes == {"reconcile_pending": 2}
     assert record.status == "complete"
     assert loaded == [], "the note read the footer of an input"
     assert parsed_after == parsed_before, "the note parsed another footer"

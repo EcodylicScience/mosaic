@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -22,8 +22,9 @@ import pytest
 from pydantic import Field
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline import identity_scheme as identity_scheme_module
 from mosaic.core.pipeline import parquet_reader
+from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.parquet_reader import ParquetUnreadable
 from mosaic.core.pipeline import reconcile_features as reconcile_features_module
 from mosaic.core.pipeline._utils import LabelRevisionTerm, ResolvedScope
 from mosaic.core.pipeline.appearance import appearance_path, read_appearance
@@ -73,6 +74,7 @@ from tests.helpers import (
     add_tracks_variant,
     converted_source,
     copy_of,
+    no_summary_key,
     old_merged_run,
     record_path_calls,
     result_run_root,
@@ -143,13 +145,10 @@ def registered_feature() -> Iterator[type[Feature]]:
     feature must be registered to be recomputed. Registering in a fixture keeps the
     global registry clean between tests.
     """
-    from mosaic.behavior.feature_library.registry import FEATURES
-
-    FEATURES[_ReconcileFeature.__name__] = _ReconcileFeature
     try:
-        yield _ReconcileFeature
+        with registered_features(_ReconcileFeature):
+            yield _ReconcileFeature
     finally:
-        _ = FEATURES.pop(_ReconcileFeature.__name__, None)
         _ReconcileFeature.version = "0.1"  # undo any per-test version bump
 
 
@@ -858,13 +857,10 @@ def test_a_run_recording_the_withdrawn_labels_keys_reconciles_as_ok(
     Every labels source recorded those three keys at one value, and a run that
     recorded them keeps the identifier it was computed under.
     """
-    from mosaic.behavior.feature_library.registry import FEATURES
-
     ds = scenario_dataset
     for sequence in ("seq_a", "seq_b"):
         _ = add_labels(ds, "", sequence, [(0, 0, 1, 0)])
-    FEATURES[_LabelsReconcileFeature.__name__] = _LabelsReconcileFeature
-    try:
+    with registered_features(_LabelsReconcileFeature):
         run_id = run_feature(ds, _LabelsReconcileFeature()).run_id
         assert run_id is not None
         params_path = _run_root(ds, run_id) / "params.json"
@@ -879,8 +875,6 @@ def test_a_run_recording_the_withdrawn_labels_keys_reconciles_as_ok(
         params_path.write_text(json.dumps(recorded))
 
         report = ds.reconcile(only=("features",))
-    finally:
-        _ = FEATURES.pop(_LabelsReconcileFeature.__name__, None)
 
     _only_finding(report, "ok")
     assert report.findings[0].old_address == report.findings[0].new_address
@@ -1028,18 +1022,6 @@ def summary_join_steps() -> Iterator[None]:
         yield
 
 
-@pytest.fixture
-def scheme_seven(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The release that joins summary keys, with the runs of this test minted before it."""
-    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
-    monkeypatch.setattr(reconcile_features_module, "FEATURE_IDENTITY_SCHEME", "7")
-
-
-def _no_summary_key(feature: object) -> bool:
-    _ = feature
-    return False
-
-
 def _consumer_finding(report: object, run_id: str) -> object:
     """The finding of the run *run_id* in a features pass."""
     assert hasattr(report, "findings")
@@ -1125,7 +1107,7 @@ def test_a_run_whose_declarations_admit_no_shared_summary_key_is_not_read(
     del summary_join_steps, scheme_seven
     ds = scenario_dataset
     result, _ = old_merged_run(ds, unjoined="seq_b")
-    monkeypatch.setattr(graph_columns, "may_share_summary_key", _no_summary_key)
+    monkeypatch.setattr(graph_columns, "may_share_summary_key", no_summary_key)
     footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
 
     _ = ds.reconcile(apply=True, only=("features",))
@@ -1183,13 +1165,37 @@ def test_without_the_scheme_reconcile_marks_nothing(
     assert all(f.verdict == "ok" for f in report.findings)
 
 
-class _UnreadableInputs(RuntimeError):
-    """An input of the run is gone, as ``build_manifest`` reports it."""
+class _InputsRefused(ClassifiedError):
+    """A classified failure of the catalog or the manifest."""
+
+    error_kind = "not_found"
 
 
-def _manifest_of_a_missing_input(*args: object, **kwargs: object) -> object:
-    _ = args, kwargs
-    raise _UnreadableInputs("an upstream run was deleted by hand")
+def _raising_manifest(error: Exception) -> Callable[..., object]:
+    """An ``input_manifest`` that raises *error*, as it does for an input that is gone."""
+
+    def build(*args: object, **kwargs: object) -> object:
+        _ = args, kwargs
+        raise error
+
+    return build
+
+
+_UNREADABLE_INPUTS = [
+    pytest.param(
+        FileNotFoundError("an upstream run was deleted by hand"), id="missing-run"
+    ),
+    pytest.param(ValueError("an upstream run was deleted by hand"), id="value"),
+    pytest.param(
+        _InputsRefused("an upstream run was deleted by hand"), id="classified"
+    ),
+    pytest.param(
+        ParquetUnreadable(
+            Path("a.parquet"), OSError("an upstream run was deleted by hand")
+        ),
+        id="parquet",
+    ),
+]
 
 
 def _chain_over_a_shifted_variant(
@@ -1224,18 +1230,20 @@ def _feature_verdicts(report: object) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+@pytest.mark.parametrize("error", _UNREADABLE_INPUTS)
 def test_a_run_whose_inputs_cannot_be_read_is_blocked_with_the_runs_that_read_it(
     scenario_dataset: Dataset,
     summary_join_steps: None,
     scheme_seven: None,
     monkeypatch: pytest.MonkeyPatch,
     apply: bool,
+    error: Exception,
 ) -> None:
     del summary_join_steps, scheme_seven
     ds = scenario_dataset
     consumer, _, reader = _chain_over_a_shifted_variant(ds)
     monkeypatch.setattr(
-        reconcile_features_module, "input_manifest", _manifest_of_a_missing_input
+        reconcile_features_module, "input_manifest", _raising_manifest(error)
     )
 
     report = ds.reconcile(apply=apply, only=("tracks", "features"))
@@ -1244,9 +1252,28 @@ def test_a_run_whose_inputs_cannot_be_read_is_blocked_with_the_runs_that_read_it
     assert consumer.run_id is not None and reader.run_id is not None
     assert verdicts[consumer.run_id] == "unresolvable_pre_provenance"
     assert verdicts[reader.run_id] == "identity_shift_recompute"
-    assert any("deleted by hand" in error for error in report.errors)
+    assert any("deleted by hand" in message for message in report.errors)
     assert result_run_root(ds, consumer).exists()
     assert result_run_root(ds, reader).exists()
+
+
+def test_an_error_of_no_input_read_is_not_taken_for_an_unreadable_run(
+    scenario_dataset: Dataset,
+    summary_join_steps: None,
+    scheme_seven: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    _ = _chain_over_a_shifted_variant(ds)
+    monkeypatch.setattr(
+        reconcile_features_module,
+        "input_manifest",
+        _raising_manifest(RuntimeError("a defect of the reconciler")),
+    )
+
+    with pytest.raises(RuntimeError, match="a defect of the reconciler"):
+        _ = ds.reconcile(apply=True, only=("tracks", "features"))
 
 
 def _named_runs_that_are_missing(ds: Dataset, run_root: Path) -> list[str]:

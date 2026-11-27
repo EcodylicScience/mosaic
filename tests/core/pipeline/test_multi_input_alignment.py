@@ -44,6 +44,7 @@ from mosaic.core.pipeline.types import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline.loading import (
     BroadcastRowsMissing,
     EntryRowsMissing,
+    IndividualRowsMissing,
     MultiInputAlignmentError,
     PairRowsMissing,
     _merge_parquet_inputs,
@@ -401,6 +402,78 @@ def test_an_empty_pair_input_beside_individual_rows_is_refused(tmp_path: Path) -
     assert isinstance(raised.value, EntryRowsMissing)
 
     assert load_entry_data(_specs(tmp_path, tables)) is not None
+
+
+def _the_widening_message(position: int) -> str:
+    return (
+        f"input {position} holds no individual rows for this entry, so the pair "
+        "rows of the merged inputs would lack the columns it widens them with"
+    )
+
+
+@pytest.mark.parametrize("position", [1, 2], ids=lambda p: f"input-{p}")
+def test_an_empty_individual_input_beside_pair_rows_is_refused(
+    tmp_path: Path, position: int
+) -> None:
+    """Without it the entry's pair rows lack the ``__id1`` and ``__id2`` columns."""
+    cells = [(0, 0), (0, 1)]
+    tables = [_pairs([0]), _individuals(cells)]
+    tables.insert(position, _individuals(cells).iloc[0:0])
+
+    with pytest.raises(IndividualRowsMissing) as raised:
+        _ = load_entry_data(_specs(tmp_path, tables), expands_individuals=True)
+
+    assert str(raised.value) == _the_widening_message(position)
+    assert isinstance(raised.value, EntryRowsMissing)
+    assert not isinstance(raised.value, PairRowsMissing | BroadcastRowsMissing)
+
+
+def test_an_empty_individual_summary_beside_pair_summaries_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A widening by id, with no order column shared, loses its columns the same way."""
+    bins = {"bin_start": [0, 0], "bin_end": [10, 10]}
+    pairs = pd.DataFrame({"id1": [0, 1], "id2": [1, 0], **bins, "dist": [1.0, 1.0]})
+    summary = pd.DataFrame({"id": [0, 1], **bins, "speed": [1.0, 2.0]})
+
+    with pytest.raises(IndividualRowsMissing):
+        _ = load_entry_data(
+            _specs(tmp_path, [pairs, summary.iloc[0:0]]), expands_individuals=True
+        )
+
+
+def test_an_empty_individual_input_is_left_out_where_the_merge_does_not_widen(
+    tmp_path: Path,
+) -> None:
+    cells = [(0, 0), (0, 1)]
+    tables = [_individuals(cells), _individuals(cells).iloc[0:0]]
+
+    merged = load_entry_data(_specs(tmp_path, tables), expands_individuals=True)
+
+    assert merged is not None
+    assert "speed__1" not in merged.columns
+
+
+def test_an_empty_individual_input_beside_pair_rows_is_left_out_without_widening(
+    tmp_path: Path,
+) -> None:
+    """A consumer that does not widen keeps the entry as the pair rows alone."""
+    pairs = _pairs([0])
+    tables = [pairs, _individuals([(0, 0), (0, 1)]).iloc[0:0]]
+
+    merged = load_entry_data(_specs(tmp_path, tables))
+
+    assert merged is not None
+    assert list(merged.columns) == list(pairs.columns)
+
+
+def test_an_empty_pair_input_and_an_empty_individual_input_hold_no_entry(
+    tmp_path: Path,
+) -> None:
+    """With no pair rows loaded there is no entry to lose."""
+    tables = [_pairs([0]).iloc[0:0], _individuals([(0, 0)]).iloc[0:0]]
+
+    assert load_entry_data(_specs(tmp_path, tables), expands_individuals=True) is None
 
 
 # --- an input that loads no rows for the entry -----------------------------------

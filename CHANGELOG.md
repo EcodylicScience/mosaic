@@ -41,7 +41,16 @@ A step that joins an unidentified input fails an entry where that input holds no
 while another loaded rows and the input shares no frame or time with the inputs that
 loaded rows, with `BroadcastRowsMissing`, a sibling of `PairRowsMissing` under the new
 base `EntryRowsMissing`. The run is partial, a fit skips the entry, and a run whose
-input is empty at every entry raises `AllEntriesFailed`.
+input is empty at every entry raises `AllEntriesFailed`. An entry that an earlier
+partial run wrote while that input was empty is served from the cache, since its
+recorded and current cells are both blank, where the new rule would fail it with
+`BroadcastRowsMissing`. Run such a step again with `overwrite` to recompute it.
+
+A step that widens individual inputs onto pair rows fails an entry where an
+individual-level input holds no rows while the pair input does, with
+`IndividualRowsMissing`, the counterpart of `PairRowsMissing` under `EntryRowsMissing`.
+That entry was written without the input's `<column>__id1` and `<column>__id2` columns
+before, so the run's entries held mixed schemas. It is partial in the same way.
 
 `iter_manifest`'s `on_pairs_missing` is `on_rows_missing`, and the `skip_pairs_missing`
 helper is `skip_rows_missing`, with no alias. The callback receives either error.
