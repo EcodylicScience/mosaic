@@ -72,6 +72,7 @@ from mosaic.core.pipeline.column_contract import (
     PairRule,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.types.data_config import BIN_END, BIN_START
 from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.timebase import row_seconds
 
@@ -377,8 +378,6 @@ _TIME_SENTENCE = (
 
 _BIN_TIME_SENTENCE = "give the step an input with a time column, such as tracks."
 
-BIN_START = "bin_start"
-BIN_END = "bin_end"
 SUBSET = "subset"
 
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]+")

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 from pydantic import model_validator
 
 from mosaic.core.keypoint_refs import resolve_keypoint_refs
 from mosaic.core.params import Declared, DeclaredModel
+from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -258,6 +259,17 @@ ALIGN_COLS: frozenset[str] = frozenset(
     (COLUMNS.meta_set() - {COLUMNS.group_col, COLUMNS.seq_col}) | PAIR_COLS
 )
 META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)
+
+BIN_START: Final = "bin_start"
+BIN_END: Final = "bin_end"
+SUMMARY_KEYS: frozenset[str] = frozenset({BIN_START, BIN_END, ARENA_COLUMN})
+"""The columns that name a bin or an arena.
+
+A summary names the bin or the arena that its row aggregates, and not an
+individual or a frame. Two multi-input sides that both have one join on it. It
+is payload and not metadata: it is in neither ``ALIGN_COLS`` nor
+``NON_PAYLOAD_COLS``, and a global model reads it as it reads any other column.
+"""
 
 BOOKKEEPING_COLS: frozenset[str] = frozenset(
     {
