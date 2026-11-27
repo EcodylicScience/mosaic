@@ -40,6 +40,11 @@ No run id or output moves.
 - `neighbor-delta-response` gains `neighbor_columns`, other columns written for the focal
   as `<column>` and for the neighbor as `neighbor_<column>`. Its run ids stay while the
   list is empty, and the step's output is unchanged.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain `value_bins`,
+  bins on the values of numeric columns that add a `<column>_bin` key column after
+  `subset`, and `dense`, which writes every bin. Their run ids stay while `value_bins`
+  is unset and `dense` is false. `pairs: auto` reads every row when a binned column is
+  not declared symmetric.
 
 ## Unreleased: features that read only results compute in every track space
 

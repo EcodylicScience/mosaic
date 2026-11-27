@@ -1276,6 +1276,50 @@ def test_unset_subsets_keep_each_aggregate_run_id_and_a_set_mapping_moves_it(
     assert with_subsets({"fast": slow, "slow": fast}) != set_once
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_unset_value_bins_keep_each_aggregate_run_id_and_a_set_list_moves_it(
+    case_id: str,
+) -> None:
+    """``value_bins`` and ``dense`` left out, or at their defaults, are the golden run.
+
+    A list is another run, as is each change to a column, its edges, its closing
+    rule or its order, and ``dense`` joins a list as another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    params = case.params
+    assert params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+    speed = {"column": "speed", "edges": [0, 1, 2]}
+    heading = {"column": "heading", "edges": {"linspace": ["-pi", "pi", 9]}}
+
+    def with_params(**fields: object) -> str:
+        return _identifier(replace(case, params={**params, **fields}))
+
+    assert _identifier(case) == golden
+    assert with_params(value_bins=None) == golden
+    assert with_params(dense=False) == golden
+    assert with_params(value_bins=None, dense=False) == golden
+    one = with_params(value_bins=[speed])
+    assert one != golden
+    assert with_params(value_bins=[{**speed, "closed_last": True}]) == one
+    assert with_params(value_bins=[{**speed, "closed_last": False}]) != one
+    assert with_params(value_bins=[{**speed, "edges": [0, 1, 3]}]) != one
+    assert with_params(value_bins=[{**speed, "column": "vx"}]) != one
+    assert with_params(value_bins=[speed], dense=True) != one
+    two = with_params(value_bins=[speed, heading])
+    assert two not in (one, golden)
+    assert with_params(value_bins=[heading, speed]) != two
+
+
 def test_the_new_params_of_neighbor_delta_response_move_its_run_id_only_when_set() -> (
     None
 ):

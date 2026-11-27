@@ -1635,6 +1635,54 @@ def test_a_sum_with_subsets_keeps_each_perspective(tracked: Dataset) -> None:
     assert "pairs" not in planned.spec.params
 
 
+def test_a_sum_binned_by_a_directional_column_keeps_each_perspective(
+    tracked: Dataset,
+) -> None:
+    """A bin drops the rows outside it, and a directional value differs by row."""
+    bins = [{"column": "A_speed", "edges": [0.0, 1.0, 2.0]}]
+    recipe = _pair_total({"columns": ["AB_dist"], "value_bins": bins})
+
+    planned = _total(tracked, recipe)
+
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
+
+
+def test_a_sum_binned_by_the_focal_id_keeps_each_perspective(tracked: Dataset) -> None:
+    bins = [{"column": "id1", "edges": [0, 3, 6]}]
+
+    planned = _total(tracked, _pair_total({"columns": ["AB_dist"], "value_bins": bins}))
+
+    assert planned.pairs == "each_perspective"
+
+
+def test_a_sum_binned_by_a_symmetric_column_is_still_planned_once(
+    tracked: Dataset,
+) -> None:
+    """One value on both rows of a pair keeps or drops both, so one row still counts."""
+    bins = [{"column": "AB_dist", "edges": [0.0, 10.0, 100.0]}]
+    binned = _total(tracked, _pair_total({"columns": ["AB_dist"], "value_bins": bins}))
+    unbinned = _total(tracked, _pair_total({"columns": ["AB_dist"]}))
+
+    assert binned.pairs == "once"
+    assert binned.spec.params["pairs"] == "once"
+    assert unbinned.pairs == "once"
+    assert binned.run_id != unbinned.run_id
+
+
+def test_a_sum_written_once_stays_once_under_a_directional_bin(
+    tracked: Dataset,
+) -> None:
+    bins = [{"column": "A_speed", "edges": [0.0, 1.0, 2.0]}]
+
+    planned = _total(
+        tracked,
+        _pair_total({"columns": ["AB_dist"], "pairs": "once", "value_bins": bins}),
+    )
+
+    assert planned.pairs == "once"
+
+
 def test_a_sum_with_no_subsets_or_filter_is_still_planned_once(
     tracked: Dataset,
 ) -> None:

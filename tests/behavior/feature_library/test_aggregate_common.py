@@ -10,13 +10,17 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 import pytest
+from numpy.typing import NDArray
 
 from mosaic.behavior.feature_library.aggregate_common import (
     AGGREGATIONS,
+    MAX_VALUE_BIN_EDGES,
     Aggregation,
     AggregateParams,
     ThresholdOp,
+    ValueBins,
     blank_reduction,
+    blank_rows,
     combine_prepared,
     prepare_rows,
     reduce_column,
@@ -990,3 +994,684 @@ def test_subsets_leave_the_identity_dump_while_unset_and_enter_it_when_set() -> 
     assert named_none.identity_dump() == unset.identity_dump()
     assert one.identity_dump()["subsets"] == {"a": "value > 0"}
     assert one.identity_dump() != other.identity_dump()
+
+
+# --- value bins -----------------------------------------------------------------------
+
+_PI_EDGES = {"linspace": ["-pi", "pi", 9]}
+_PI_ARRAY = np.linspace(-np.pi, np.pi, 9)
+_STEP_EDGES = {"arange": [0.0, 3.5, 0.5]}
+_STEP_ARRAY = np.arange(0.0, 3.5, 0.5)
+
+
+def _values_on_the_edges(
+    edges: NDArray[np.float64], generator: np.random.Generator, size: int = 400
+) -> NDArray[np.float64]:
+    """Random values beyond both ends, every edge twice, NaN and both infinities."""
+    values = generator.uniform(edges[0] - 1.0, edges[-1] + 1.0, size)
+    special = np.concatenate([edges, edges, [np.nan, np.nan, np.inf, -np.inf]])
+    values[generator.choice(size, size=special.size, replace=False)] = special
+    return values
+
+
+def _scatter(**edges: NDArray[np.float64]) -> pd.DataFrame:
+    """One entry whose column of each name takes values on and beyond its edges."""
+    generator = np.random.default_rng(19)
+    columns = {
+        name: _values_on_the_edges(array, generator) for name, array in edges.items()
+    }
+    size = len(next(iter(columns.values())))
+    return pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": "S",
+            "id": 0,
+            "frame": np.arange(size),
+            "time": np.arange(size) / 8,
+            "v": np.arange(size, dtype=float),
+            **columns,
+        }
+    )
+
+
+def _floats(table: pd.DataFrame, column: str) -> NDArray[np.float64]:
+    """The values of one column of *table* as a float array."""
+    return np.asarray(table[column], dtype=np.float64)
+
+
+def _bins(column: str, edges: object, closed_last: bool = True) -> ValueBins:
+    return ValueBins.model_validate(
+        {"column": column, "edges": edges, "closed_last": closed_last}
+    )
+
+
+def _reduce(table: pd.DataFrame, params: AggregateParams) -> pd.DataFrame:
+    return reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+
+@pytest.mark.parametrize(
+    ("edges", "expected"),
+    [
+        pytest.param(_PI_EDGES, _PI_ARRAY, id="linspace"),
+        pytest.param(_STEP_EDGES, _STEP_ARRAY, id="arange"),
+    ],
+)
+def test_counts_equal_np_histogram_on_values_on_every_edge(
+    edges: object, expected: NDArray[np.float64]
+) -> None:
+    table = _scatter(x=expected)
+    counts, _ = np.histogram(_floats(table, "x"), bins=expected)
+    params = AggregateParams(
+        columns=["v"], aggs=["count"], value_bins=[_bins("x", edges)]
+    )
+
+    out = _reduce(table, params)
+
+    assert out["x_bin"].tolist() == np.flatnonzero(counts).tolist()
+    np.testing.assert_array_equal(out["v_count"].to_numpy(), counts[counts > 0])
+
+
+@pytest.mark.parametrize(
+    ("edges", "expected"),
+    [
+        pytest.param(_PI_EDGES, _PI_ARRAY, id="linspace"),
+        pytest.param(_STEP_EDGES, _STEP_ARRAY, id="arange"),
+    ],
+)
+def test_dense_counts_are_the_whole_np_histogram(
+    edges: object, expected: NDArray[np.float64]
+) -> None:
+    table = _scatter(x=expected)
+    x = _floats(table, "x")
+    in_the_fourth = (x >= expected[3]) & (x < expected[4])
+    table = table.iloc[np.flatnonzero(~in_the_fourth)].reset_index(drop=True)
+    counts, _ = np.histogram(_floats(table, "x"), bins=expected)
+    params = AggregateParams(
+        columns=["v"],
+        aggs=["count", "sum"],
+        value_bins=[_bins("x", edges)],
+        dense=True,
+    )
+
+    out = _reduce(table, params)
+
+    assert out["x_bin"].tolist() == list(range(len(counts)))
+    np.testing.assert_array_equal(out["v_count"].to_numpy(), counts)
+    assert (out["v_sum"][counts == 0] == 0.0).all()
+    assert counts[3] == 0
+
+
+@pytest.mark.parametrize("dense", [False, True])
+def test_two_binned_columns_count_as_np_histogram2d(dense: bool) -> None:
+    table = _scatter(x=_PI_ARRAY, y=_STEP_ARRAY)
+    counts, _, _ = np.histogram2d(
+        _floats(table, "x"),
+        _floats(table, "y"),
+        bins=[_PI_ARRAY, _STEP_ARRAY],
+    )
+    params = AggregateParams(
+        columns=["v"],
+        aggs=["count"],
+        value_bins=[_bins("x", _PI_EDGES), _bins("y", _STEP_EDGES)],
+        dense=dense,
+    )
+
+    out = _reduce(table, params)
+
+    assert list(out.columns)[:4] == ["group", "sequence", "x_bin", "y_bin"]
+    where = np.nonzero(np.ones_like(counts) if dense else counts)
+    assert out["x_bin"].tolist() == where[0].tolist()
+    assert out["y_bin"].tolist() == where[1].tolist()
+    np.testing.assert_array_equal(out["v_count"].to_numpy(), counts[where])
+
+
+@pytest.mark.parametrize(
+    ("edges", "expected"),
+    [
+        pytest.param(_PI_EDGES, _PI_ARRAY, id="linspace"),
+        pytest.param(_STEP_EDGES, _STEP_ARRAY, id="arange"),
+    ],
+)
+def test_half_open_counts_equal_np_digitize(
+    edges: object, expected: NDArray[np.float64]
+) -> None:
+    table = _scatter(x=expected)
+    digits = np.digitize(_floats(table, "x"), expected)
+    counts = np.bincount(digits, minlength=len(expected) + 1)[1 : len(expected)]
+    params = AggregateParams(
+        columns=["v"],
+        aggs=["count"],
+        value_bins=[_bins("x", edges, closed_last=False)],
+        dense=True,
+    )
+    closed = params.model_copy(update={"value_bins": [_bins("x", edges)]})
+
+    out = _reduce(table, params)
+    closing = _reduce(table, closed)
+
+    np.testing.assert_array_equal(out["v_count"].to_numpy(), counts)
+    on_last = int(np.count_nonzero(_floats(table, "x") == expected[-1]))
+    assert on_last == 2
+    assert closing["v_count"].iloc[-1] == counts[-1] + on_last
+
+
+def test_each_generator_is_the_array_that_numpy_returns() -> None:
+    linspace = _bins("x", {"linspace": ["-pi", "pi", 20]})
+    arange = _bins("x", {"arange": ["-pi", "pi", 0.3]})
+    scaled = _bins("x", {"arange": [0, "pi", 0.25]})
+    listed = _bins("x", ["-pi", 0.0, "pi"])
+
+    np.testing.assert_array_equal(linspace.edge_array(), np.linspace(-np.pi, np.pi, 20))
+    np.testing.assert_array_equal(arange.edge_array(), np.arange(-np.pi, np.pi, 0.3))
+    np.testing.assert_array_equal(scaled.edge_array(), np.arange(0, np.pi, 0.25))
+    np.testing.assert_array_equal(listed.edge_array(), np.array([-np.pi, 0.0, np.pi]))
+    assert not np.array_equal(linspace.edge_array(), np.linspace(-1, 1, 20) * np.pi)
+
+
+def test_a_binned_column_is_also_reduced_from_the_same_rows() -> None:
+    generator = np.random.default_rng(3)
+    x = generator.integers(-8, 72, size=200) / 8.0
+    table = pd.DataFrame(
+        {"group": "G", "sequence": "S", "id": 0, "frame": np.arange(200), "x": x}
+    )
+    edges = [0.0, 2.0, 4.0, 6.0]
+    params = AggregateParams(
+        columns=["x"],
+        aggs=["count", "sum", "mean", "min", "max"],
+        value_bins=[_bins("x", edges, closed_last=False)],
+    )
+
+    out = _reduce(table, params)
+
+    digits = np.digitize(x, edges)
+    for k, count, total, mean, low, high in zip(
+        out["x_bin"].tolist(),
+        out["x_count"].tolist(),
+        out["x_sum"].tolist(),
+        out["x_mean"].tolist(),
+        out["x_min"].tolist(),
+        out["x_max"].tolist(),
+        strict=True,
+    ):
+        inside = x[digits == k + 1]
+        assert count == inside.size
+        assert total == np.sum(inside)
+        assert mean == np.mean(inside)
+        assert (low, high) == (inside.min(), inside.max())
+    assert out["x_bin"].tolist() == [0, 1, 2]
+
+
+def test_a_row_outside_every_bin_belongs_to_no_group() -> None:
+    table = _scatter(x=_STEP_ARRAY, y=_PI_ARRAY)
+    params = AggregateParams(
+        columns=["v"],
+        aggs=["count"],
+        value_bins=[_bins("x", _STEP_EDGES), _bins("y", _PI_EDGES)],
+    )
+    x = _floats(table, "x")
+    y = _floats(table, "y")
+    inside_x = (x >= _STEP_ARRAY[0]) & (x <= _STEP_ARRAY[-1])
+    inside_y = (y >= _PI_ARRAY[0]) & (y <= _PI_ARRAY[-1])
+
+    out = _reduce(table, params)
+
+    assert out["v_count"].sum() == np.sum(inside_x & inside_y)
+
+
+def _dense_tables() -> pd.DataFrame:
+    first, second = _dyadic_tables()
+    return pd.concat([first, second], ignore_index=True)
+
+
+_VALUE_EDGES = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+
+@pytest.mark.parametrize("bin_s", [None, 0.625])
+def test_dense_cells_are_the_sparse_rows_on_the_full_grid_of_each_present_group(
+    bin_s: float | None,
+) -> None:
+    table = _dense_tables()
+    sparse_params = AggregateParams(
+        columns=["value"],
+        aggs=["count", "sum", "duration", "mean", "median"],
+        value_bins=[_bins("value", _VALUE_EDGES)],
+        filter_expr="group == 'A' or value < 0.5",
+        bin_s=bin_s,
+    )
+    dense_params = sparse_params.model_copy(update={"dense": True})
+
+    sparse = _reduce(table, sparse_params)
+    dense = _reduce(table, dense_params)
+
+    other = ["group", "sequence"] + (["bin_start", "bin_end"] if bin_s else [])
+    present = sparse[other].drop_duplicates()
+    grid = (
+        present.merge(pd.DataFrame({"value_bin": range(4)}), how="cross")
+        .astype({"value_bin": "Int64"})
+        .sort_values([*other[:2], "value_bin", *other[2:]], kind="stable")
+    )
+    names = ["group", "sequence", "value_bin", *other[2:]]
+    expected = grid.merge(sparse, on=[*other, "value_bin"], how="left")
+    for column in ("value_count", "value_sum", "value_duration"):
+        expected[column] = expected[column].fillna(0).astype(sparse[column].dtype)
+    expected = expected[list(dense.columns)].sort_values(names, kind="stable")
+
+    pd.testing.assert_frame_equal(
+        dense, expected.reset_index(drop=True), check_exact=True
+    )
+    assert dense["value_bin"].dtype == pd.Int64Dtype()
+    empty = dense[dense["value_count"] == 0]
+    assert not empty.empty
+    assert empty["value_mean"].isna().all()
+    assert empty["value_median"].isna().all()
+    assert (empty["value_sum"] == 0.0).all()
+    assert (empty["value_duration"] == 0.0).all()
+
+
+def test_a_dense_group_with_no_row_in_any_bin_is_not_written() -> None:
+    table = _dense_tables()
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        value_bins=[_bins("value", [0.5, 1.0])],
+        filter_expr="group == 'A' or value < 0.5",
+        dense=True,
+    )
+
+    out = _reduce(table, params)
+
+    assert set(out["group"]) == {"A"}
+
+
+def test_a_kept_column_that_differs_between_bins_is_refused_with_dense() -> None:
+    first, _ = _dyadic_tables()
+    first["label"] = np.where(first["value"] >= 0.5, "p", "q")
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        keep_columns=["label"],
+        value_bins=[_bins("value", [0.0, 0.5, 1.0])],
+    )
+
+    assert _reduce(first, params)["label"].tolist() == ["q", "p"]
+    with pytest.raises(ValueError, match="label"):
+        _ = _reduce(first, params.model_copy(update={"dense": True}))
+
+
+def test_dense_cells_of_a_kept_column_take_the_value_of_their_group() -> None:
+    first, _ = _dyadic_tables()
+    first["label"] = "same"
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        keep_columns=["label"],
+        value_bins=[_bins("value", [0.0, 0.5, 2.0, 3.0])],
+        dense=True,
+    )
+
+    out = _reduce(first, params)
+
+    assert out["value_count"].iloc[-1] == 0
+    assert out["label"].tolist() == ["same"] * 3
+
+
+def _blank_params(**overrides: object) -> AggregateParams:
+    options: dict[str, object] = {
+        "columns": ["value"],
+        "aggs": ["count", "mean", "duration"],
+        "value_bins": [_bins("value", _VALUE_EDGES)],
+    }
+    return AggregateParams.model_validate({**options, **overrides})
+
+
+def test_a_blank_row_has_a_null_bin_of_the_dtype_of_a_binned_row() -> None:
+    table = _dense_tables()
+    params = _blank_params()
+
+    blank = blank_reduction(table, params, KEYS)
+    sparse = _reduce(table, params)
+
+    assert list(blank.columns)[:3] == ["group", "sequence", "value_bin"]
+    assert blank["value_bin"].isna().all()
+    assert blank["value_bin"].dtype == sparse["value_bin"].dtype == pd.Int64Dtype()
+    assert blank["group"].tolist() == ["A", "B"]
+
+
+def test_the_dense_blank_rows_are_the_full_grid_of_each_group() -> None:
+    table = _dense_tables()
+    params = _blank_params(dense=True, bin_s=0.625)
+
+    blank = blank_reduction(table, params, KEYS)
+
+    assert blank["group"].tolist() == ["A"] * 4 + ["B"] * 4
+    assert blank["value_bin"].tolist() == [0, 1, 2, 3] * 2
+    assert blank["value_bin"].dtype == pd.Int64Dtype()
+    assert blank["bin_start"].isna().all()
+    assert (blank["value_count"] == 0).all()
+    assert (blank["value_duration"] == 0.0).all()
+    assert blank["value_mean"].isna().all()
+    assert list(blank.columns)[:6] == [
+        "group",
+        "sequence",
+        "value_bin",
+        "bin_start",
+        "bin_end",
+        "value_count",
+    ]
+
+
+def test_an_entry_whose_bins_hold_no_row_is_its_blank_rows() -> None:
+    table = _dense_tables()
+    params = _blank_params(dense=True, filter_expr="value > 100")
+
+    reduced = _reduce(table, params)
+    out = blank_rows(table, params, KEYS, reduced)
+
+    assert reduced.empty
+    assert out["value_bin"].tolist() == [0, 1, 2, 3] * 2
+
+
+def test_a_subset_that_keeps_no_row_is_the_full_grid_under_dense() -> None:
+    table = _dense_tables()
+    params = _blank_params(
+        dense=True, subsets={"some": "value > 0.5", "none": "value > 100"}
+    )
+
+    reduced = _reduce(table, params)
+    out = blank_rows(table, params, KEYS, reduced)
+
+    names = ["group", "sequence", "subset", "value_bin"]
+    pd.testing.assert_frame_equal(
+        out[names], out[names].sort_values(names, kind="stable").reset_index(drop=True)
+    )
+    none = out[out["subset"] == "none"]
+    assert none["value_bin"].tolist() == [0, 1, 2, 3] * 2
+    assert (none["value_count"] == 0).all()
+    assert out["value_bin"].dtype == pd.Int64Dtype()
+    assert out["value_count"].dtype == reduced["value_count"].dtype
+
+
+def test_the_bin_keys_follow_the_subset_and_precede_the_time_bins() -> None:
+    table = _dense_tables()
+    params = _blank_params(
+        bin_s=0.625,
+        subsets={"b": "value > 0.5", "a": "value <= 0.5"},
+        value_bins=[_bins("value", _VALUE_EDGES), _bins("frame", [0, 10, 20])],
+    )
+
+    out = _reduce(table, params)
+
+    names = ["group", "sequence", "subset", "value_bin", "frame_bin"]
+    names += ["bin_start", "bin_end"]
+    assert list(out.columns)[:7] == names
+    pd.testing.assert_frame_equal(
+        out, out.sort_values(names, kind="stable").reset_index(drop=True)
+    )
+
+
+def test_entries_prepared_with_value_bins_then_combined_equal_the_inline_reduction() -> (
+    None
+):
+    first, second = _dyadic_tables()
+    for dense in (False, True):
+        params = _blank_params(
+            columns=["state"],
+            aggs=["count", "duration", "share"],
+            bin_s=0.625,
+            dense=dense,
+            value_bins=[_bins("value", _VALUE_EDGES)],
+            subsets={"low": "value < 0.6", "high": "value > 0.4"},
+        )
+        inline = reduce_column(
+            pd.concat([first, second], ignore_index=True),
+            params,
+            ["sequence"],
+            who=WHO,
+            pairs="each_perspective",
+        )
+        parts = [
+            prepare_rows(t, params, ["sequence"], who=WHO) for t in (first, second)
+        ]
+        pooled = reduce_prepared(
+            combine_prepared(parts), params, pairs="each_perspective"
+        )
+
+        pd.testing.assert_frame_equal(pooled, inline, check_exact=True)
+        assert parts[0].group_keys == (
+            "sequence",
+            "subset",
+            "value_bin",
+            "bin_start",
+            "bin_end",
+        )
+
+
+def test_a_part_prepared_without_value_bins_cannot_join_one_prepared_with_them() -> (
+    None
+):
+    first, second = _tables()
+    plain = AggregateParams(columns=["value"])
+    binned = AggregateParams(columns=["value"], value_bins=[_bins("value", [0, 1])])
+
+    with pytest.raises(ValueError, match="keys"):
+        _ = combine_prepared(
+            [
+                prepare_rows(first, plain, KEYS, who=WHO),
+                prepare_rows(second, binned, KEYS, who=WHO),
+            ]
+        )
+
+
+def test_duration_and_share_weigh_rows_by_their_seconds_before_the_bins_drop_rows() -> (
+    None
+):
+    table = _dense_tables()
+    params = AggregateParams(
+        columns=["state"],
+        aggs=["duration", "share"],
+        value_bins=[_bins("value", [0.0, 0.5], closed_last=False)],
+    )
+    narrowed = AggregateParams(
+        columns=["state"], aggs=["duration", "share"], filter_expr="value < 0.5"
+    )
+
+    out = _reduce(table, params)
+    expected = _reduce(table, narrowed)
+
+    np.testing.assert_array_equal(
+        out["state_duration"].to_numpy(), expected["state_duration"].to_numpy()
+    )
+    np.testing.assert_array_equal(
+        out["state_share_down"].to_numpy(), expected["state_share_down"].to_numpy()
+    )
+
+
+def test_a_value_bins_column_the_input_lacks_is_refused_by_name() -> None:
+    table = _dense_tables()
+    params = AggregateParams(columns=["value"], value_bins=[_bins("nope", [0, 1])])
+
+    with pytest.raises(
+        ValueError, match="value_bins column 'nope' is not in the input"
+    ):
+        _ = _reduce(table, params)
+
+
+@pytest.mark.parametrize("column", ["state", "flag"])
+def test_a_text_or_boolean_value_bins_column_is_refused_by_name(column: str) -> None:
+    table = _dense_tables()
+    table["flag"] = table["value"] > 0.5
+    params = AggregateParams(columns=["value"], value_bins=[_bins(column, [0, 1])])
+
+    with pytest.raises(
+        ValueError, match=f"value_bins column '{column}' must be numeric"
+    ):
+        _ = _reduce(table, params)
+
+
+def test_a_nullable_integer_value_bins_column_drops_its_nulls() -> None:
+    table = _dense_tables().iloc[:6].copy()
+    table["n"] = pd.array([0, 1, None, 2, 1, 5], dtype="Int64")
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        value_bins=[_bins("n", [0, 1, 2, 3])],
+        dense=True,
+    )
+
+    out = _reduce(table, params)
+
+    assert out["value_count"].tolist() == [1, 2, 1]
+
+
+@pytest.mark.parametrize(
+    ("edges", "message"),
+    [
+        ([1.0], "at least two"),
+        ([], "at least two"),
+        ([0.0, float("nan"), 2.0], "finite"),
+        ([0.0, float("inf")], "finite"),
+        ([0.0, 2.0, 1.0], "strictly increase"),
+        ([0.0, 1.0, 1.0], "strictly increase"),
+        ({"linspace": [0, 1, 1]}, "at least 2"),
+        ({"linspace": [0, 1, 2.5]}, "whole number"),
+        ({"linspace": [0, 1]}, "three"),
+        ({"linspace": [0, "pi", "pi"]}, "whole number"),
+        ({"linspace": [1, 0, 4]}, "strictly increase"),
+        ({"linspace": [0, float("inf"), 4]}, "finite"),
+        ({"arange": [0, 1, 0]}, "step"),
+        ({"arange": [0, 1, -0.25]}, "at least two"),
+        ({"arange": [1, 0, 0.25]}, "at least two"),
+        ({"arange": [0, 0.5, 1]}, "at least two"),
+        ({"arange": [0, 1]}, "three"),
+        ({"logspace": [0, 1, 4]}, "linspace"),
+        ({"linspace": [0, 1, 4], "arange": [0, 1, 0.25]}, "one"),
+        ({}, "one"),
+        (["tau", 1.0], "pi"),
+        ([True, 2.0], "number"),
+        (["1.5", 2.0], "number"),
+    ],
+)
+def test_edges_that_are_not_finite_increasing_numbers_are_refused(
+    edges: object, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ = ValueBins.model_validate({"column": "x", "edges": edges})
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        {"linspace": [0, 1, 1e12]},
+        {"linspace": [0, 1, MAX_VALUE_BIN_EDGES + 1]},
+        {"arange": [0, 100, 1e-9]},
+        {"arange": [0, MAX_VALUE_BIN_EDGES + 1, 1]},
+        {"arange": [0, 1e308, 1e-308]},
+        {"arange": [-1e308, 1e308, 1e-300]},
+        list(range(MAX_VALUE_BIN_EDGES + 1)),
+    ],
+)
+def test_edges_beyond_the_bound_are_refused_before_numpy_builds_them(
+    edges: object,
+) -> None:
+    with pytest.raises(ValueError, match=f"at most {MAX_VALUE_BIN_EDGES}"):
+        _ = ValueBins.model_validate({"column": "x", "edges": edges})
+
+
+def test_an_arange_just_past_the_bound_names_the_edges_numpy_would_build() -> None:
+    stop = MAX_VALUE_BIN_EDGES + 0.000001
+    built = len(np.arange(0, stop, 1))
+
+    with pytest.raises(ValueError, match=f"gives {built} edges"):
+        _ = ValueBins.model_validate({"column": "x", "edges": {"arange": [0, stop, 1]}})
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        {"linspace": [0, 1, MAX_VALUE_BIN_EDGES]},
+        {"arange": [0, MAX_VALUE_BIN_EDGES, 1]},
+        list(range(MAX_VALUE_BIN_EDGES)),
+    ],
+)
+def test_the_bound_itself_is_accepted(edges: object) -> None:
+    built = _bins("x", edges).edge_array()
+
+    assert built.size == MAX_VALUE_BIN_EDGES
+
+
+def test_a_value_bins_entry_with_an_unknown_key_is_refused() -> None:
+    with pytest.raises(ValueError, match="labels"):
+        _ = ValueBins.model_validate({"column": "x", "edges": [0, 1], "labels": "a"})
+
+
+def test_a_column_binned_twice_is_refused() -> None:
+    with pytest.raises(ValueError, match="x.*more than once"):
+        _ = AggregateParams(
+            columns=["v"], value_bins=[_bins("x", [0, 1]), _bins("x", [0, 2])]
+        )
+
+
+def test_an_empty_value_bins_list_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        _ = AggregateParams(columns=["v"], value_bins=[])
+
+
+def test_dense_without_value_bins_is_refused() -> None:
+    with pytest.raises(ValueError, match="dense.*value_bins"):
+        _ = AggregateParams(columns=["v"], dense=True)
+    assert AggregateParams(columns=["v"], dense=False).dense is False
+
+
+def test_a_bin_name_is_refused_as_a_kept_or_subgroup_column_while_its_column_is_binned() -> (
+    None
+):
+    bins = [_bins("x", [0, 1])]
+    with pytest.raises(ValueError, match="keep_columns lists x_bin.*writes itself"):
+        _ = AggregateParams(columns=["v"], value_bins=bins, keep_columns=["x_bin"])
+    with pytest.raises(ValueError, match="subgroup_col is x_bin.*value_bins"):
+        _ = AggregateParams(columns=["v"], value_bins=bins, subgroup_col="x_bin")
+    with pytest.raises(ValueError, match="subgroup_col is x_bin.*value_bins"):
+        _ = AggregateParams(
+            columns=["v"], value_bins=bins, subgroup_col=["tag", "x_bin"]
+        )
+
+
+def test_a_bin_name_stays_an_ordinary_column_name_when_its_column_is_not_binned() -> (
+    None
+):
+    bins = [_bins("x", [0, 1])]
+    other = AggregateParams(
+        columns=["v"], value_bins=bins, keep_columns=["y_bin"], subgroup_col="z_bin"
+    )
+    unset = AggregateParams(columns=["v"], keep_columns=["x_bin"], subgroup_col="y_bin")
+
+    assert other.keep_columns == ["y_bin"]
+    assert unset.keep_columns == ["x_bin"]
+
+
+def test_value_bins_and_dense_leave_the_identity_dump_while_unset() -> None:
+    unset = AggregateParams(columns=["v"])
+    named_none = AggregateParams(columns=["v"], value_bins=None, dense=False)
+    one = AggregateParams(columns=["v"], value_bins=[_bins("x", [0, 1])])
+    dense = AggregateParams(columns=["v"], value_bins=[_bins("x", [0, 1])], dense=True)
+    reopened = AggregateParams(columns=["v"], value_bins=[_bins("x", [0, 2])])
+    closed = AggregateParams(
+        columns=["v"], value_bins=[_bins("x", [0, 1], closed_last=False)]
+    )
+    ordered = AggregateParams(
+        columns=["v"], value_bins=[_bins("x", [0, 1]), _bins("y", [0, 1])]
+    )
+    swapped = AggregateParams(
+        columns=["v"], value_bins=[_bins("y", [0, 1]), _bins("x", [0, 1])]
+    )
+
+    for name in ("value_bins", "dense"):
+        assert name not in unset.identity_dump()
+    assert named_none.identity_dump() == unset.identity_dump()
+    assert one.identity_dump()["value_bins"] == [
+        {"column": "x", "edges": [0, 1], "closed_last": True}
+    ]
+    assert "dense" not in one.identity_dump()
+    assert dense.identity_dump()["dense"] is True
+    assert len({str(p.identity_dump()) for p in (one, dense, reopened, closed)}) == 4
+    assert ordered.identity_dump() != swapped.identity_dump()

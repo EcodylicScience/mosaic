@@ -133,6 +133,29 @@ blank row in `sequence-aggregate`, so every entry has a row for each subset, and
 row in `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or
 subgroup column, and an input that has a `subset` column is refused.
 
+`value_bins` splits the rows by the values of numeric columns. Each entry names a `column`
+and its `edges`: a list of at least two finite numbers that strictly increase, or
+`{"linspace": [start, stop, num]}` or `{"arange": [start, stop, step]}`, read as numpy's
+`linspace` and `arange`, with at most 10000 edges listed or generated, where a number
+may be the text `pi` or `-pi`. So
+`{"linspace": ["-pi", "pi", 20]}` is `np.linspace(-np.pi, np.pi, 20)`. A row goes to the
+bin `searchsorted(edges, x, side="right") - 1`. With `closed_last`, true by default, a
+value on the last edge is in the last bin, as in `numpy.histogram`, and with
+`closed_last: false` the last bin is half open, as in `numpy.digitize`. A row whose value
+is missing, or below the first edge or above the last, is in no bin and is dropped, and
+with several columns a row needs a bin in each. The output has a nullable integer column
+`<column>_bin`, the 0-based bin, for each entry, after `subset` and before `bin_start`.
+The binned column may also be in `columns`, and `duration` and `share` weigh a row by the
+seconds from before the bins drop rows. A bin that no row falls in has no row, unless
+`dense` is true: then every bin is written for each combination of the other keys that
+has a row, with `0` for `sum`, `count` and `duration` and NaN for the other
+aggregations, and `sequence-aggregate` writes the full grid of bins for an entry that
+has no row in any. `<column>_bin` may not be a kept or subgroup column, a kept column
+may not differ between the bins of a group under `dense`, and `dense` needs
+`value_bins`. A bin on `id1` or on a column with another value on each row of a pair
+makes `pairs: auto` read every row, as a filter does, and a bin on a symmetric pair
+column leaves it `once`.
+
 **Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
 the same value on every row of the sequence, whatever the row's id. It reads tracks with
 or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's

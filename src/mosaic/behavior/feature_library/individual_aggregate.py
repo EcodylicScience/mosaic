@@ -55,6 +55,7 @@ from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from .aggregate_common import (
     BIN_END,
     BIN_START,
+    BIN_SUFFIX,
     SUBSET,
     AggregateParams,
     reduce_column,
@@ -71,13 +72,15 @@ class IndividualAggregate:
     """
     Per-sequence feature reducing the rows of each individual to one row.
 
-    Output columns (one row per individual, subgroup, subset and bin):
+    Output columns (one row per individual, subgroup, subset, value bin and bin):
       - group, sequence: the entry, copied from the frame
       - id: the individual, or the focal ``id1`` of pair input
       - arena: when the input has it
       - <subgroup_col>: when set
       - subset: the subset's name, when ``subsets`` is set; a subset that keeps
         no row of an individual has no row for it
+      - <column>_bin: the 0-based bin of each ``value_bins`` column, a nullable
+        integer; ``dense`` writes every bin of each individual
       - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -117,6 +120,7 @@ class IndividualAggregate:
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
         ParamColumn("keep_columns"),
+        ParamColumn("value_bins", key="column"),
         AnyOf((Column(C.id_col), Column(_FOCAL_ID))),
         Column(C.group_col),
         Column(C.seq_col),
@@ -132,6 +136,7 @@ class IndividualAggregate:
             Column(C.id_col),
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
+            ParamColumn("value_bins", key="column", suffix=BIN_SUFFIX),
             ParamColumn(
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),

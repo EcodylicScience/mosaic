@@ -50,6 +50,7 @@ from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from .aggregate_common import (
     BIN_END,
     BIN_START,
+    BIN_SUFFIX,
     SUBSET,
     PairAggregateParams,
     blank_rows,
@@ -65,11 +66,13 @@ class SequenceAggregate:
     """
     Per-sequence feature reducing the rows of an entry to one row per group.
 
-    Output columns (one row per entry, arena, subgroup, subset and bin):
+    Output columns (one row per entry, arena, subgroup, subset, value bin and bin):
       - group, sequence: the entry, copied from the frame
       - arena: when the input has it
       - <subgroup_col>: when set
       - subset: the subset's name, when ``subsets`` is set
+      - <column>_bin: the 0-based bin of each ``value_bins`` column, a nullable
+        integer
       - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -86,8 +89,9 @@ class SequenceAggregate:
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
     plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr`` and no ``subsets``,
-    and every other ``auto`` reads every row. A run outside a plan
+    symmetric over mirrored rows, with no ``filter_expr``, no ``subsets`` and
+    no ``value_bins`` column that is not symmetric too, and every other ``auto``
+    reads every row. A run outside a plan
     (``mosaic run --feature``) reads every row under ``auto``; set
     ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
     once there. For
@@ -102,7 +106,8 @@ class SequenceAggregate:
 
     With ``subsets``, each subset that keeps no row of the entry writes that
     blank row too, for every group of the entry, so that every entry has a row
-    for each subset.
+    for each subset. With ``value_bins``, a blank row has a null ``<column>_bin``,
+    and with ``dense`` it is the full grid of bins for each group of the entry.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
@@ -127,6 +132,7 @@ class SequenceAggregate:
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
         ParamColumn("keep_columns"),
+        ParamColumn("value_bins", key="column"),
         Column(C.group_col),
         Column(C.seq_col),
         When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
@@ -140,6 +146,7 @@ class SequenceAggregate:
             Column(C.seq_col),
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
+            ParamColumn("value_bins", key="column", suffix=BIN_SUFFIX),
             ParamColumn(
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),

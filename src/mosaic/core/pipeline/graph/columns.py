@@ -605,20 +605,24 @@ def pair_rule_read(
     filter_expr: str | None,
     *,
     has_subsets: bool = False,
+    bin_columns: Sequence[str] = (),
 ) -> PairRead | None:
     """The rows that an aggregate's sums, counts and durations read of pair rows.
 
     ``None`` when none of *aggs* is a sum, a count or a duration. A rule written
     as ``once`` or ``each_perspective`` stands. ``auto`` reads ``once`` when no
     *filter_expr* is set and no subsets, *merged* may hold ``perspective``, its
-    rows are mirrored, and every one of *columns* is symmetric, and every row
-    (``each_perspective``) otherwise. One rule serves every column, so a single
-    column that is not symmetric makes every sum, count and duration read every
-    row. A filter, or a subset's filter, can keep one row of a pair (on ``id1``
-    or ``perspective``, say), and ``once`` would then miss pairs. An undeclared
-    or unbounded input has no symmetric column, and its ``auto`` reads every
-    row. The other aggregations read every row whatever the rule, and the rule
-    says nothing.
+    rows are mirrored, and every one of *columns* and *bin_columns* is symmetric,
+    and every row (``each_perspective``) otherwise. One rule serves every column,
+    so a single column that is not symmetric makes every sum, count and duration
+    read every row. A filter, or a subset's filter, can keep one row of a pair
+    (on ``id1`` or ``perspective``, say), and ``once`` would then miss pairs. A
+    value bin drops the rows outside its bins, so it filters too, but only by a
+    value it can tell apart: a symmetric column has one value on both rows of a
+    pair, which a bin keeps or drops together, while any other column, ``id1``
+    among them, can keep one row. An undeclared or unbounded input has no
+    symmetric column, and its ``auto`` reads every row. The other aggregations
+    read every row whatever the rule, and the rule says nothing.
 
     Args:
         merged: The columns of the aggregate's merged input.
@@ -627,6 +631,7 @@ def pair_rule_read(
         pairs: Its pair rule as written.
         filter_expr: Its row filter, ``None`` or empty when unset.
         has_subsets: Whether it names subsets, each a row filter.
+        bin_columns: The columns it bins by value.
     """
     if not PAIR_COUNTING_AGGS.intersection(aggs):
         return None
@@ -637,7 +642,7 @@ def pair_rule_read(
         and not has_subsets
         and merged.admits(_PERSPECTIVE)
         and merged.mirrored
-        and all(merged.is_symmetric(column) for column in columns)
+        and all(merged.is_symmetric(column) for column in (*columns, *bin_columns))
     ):
         return "once"
     return "each_perspective"

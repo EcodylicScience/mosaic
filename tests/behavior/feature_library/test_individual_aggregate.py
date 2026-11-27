@@ -1234,3 +1234,48 @@ def test_the_subset_column_is_provided_only_when_subsets_is_set() -> None:
     ).params
     assert "subsets" not in plain.identity_dump()
     assert split.identity_dump()["subsets"] == {"all": "value > 0"}
+
+
+def test_a_bin_on_the_focal_id_splits_the_rows_of_a_pair_table() -> None:
+    out = _apply(
+        {
+            "columns": ["A_speed"],
+            "aggs": ["sum", "count"],
+            "value_bins": [{"column": "id2", "edges": [0, 1, 3]}],
+        },
+        _pair_table(),
+    )
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "id",
+        "id2_bin",
+        "A_speed_sum",
+        "A_speed_count",
+    ]
+    assert out[["id", "id2_bin"]].values.tolist() == [
+        [0, 1],
+        [1, 0],
+        [1, 1],
+        [2, 0],
+        [2, 1],
+    ]
+    assert out["A_speed_sum"].tolist() == [3.0, 10.0, 3.0, 20.0, 30.0]
+
+
+def test_dense_value_bins_write_each_bin_for_each_individual() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum", "mean"],
+            "value_bins": [{"column": "value", "edges": [0.0, 3.0, 9.0]}],
+            "dense": True,
+        },
+        _individual_table(),
+    )
+
+    assert out["id"].tolist() == [0, 0, 1, 1, 2, 2]
+    assert out["value_bin"].tolist() == [0, 1] * 3
+    assert out["value_sum"].tolist() == [1.0, 4.0, 2.0, 6.0, 0.0, 11.0]
+    assert out["value_mean"].isna().tolist() == [False] * 4 + [True, False]

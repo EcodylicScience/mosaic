@@ -36,6 +36,12 @@ under any ``pairs`` rule and skips a row whose ``order_col`` is null.
 keys (:data:`SUBSET`). A subset that keeps no row has no row in
 :func:`reduce_column`, and :func:`blank_rows` writes the blank row that
 ``sequence-aggregate`` gives it.
+
+``value_bins`` assigns each row to a bin of each binned column's
+:class:`ValueBins` edges, drops the rows outside any bin, and adds the key
+``<column>_bin`` for each (:func:`bin_key`), after ``subset`` and before the time
+bins. ``dense`` writes every bin of the grid, filling a cell that has no row
+with what a blank row holds.
 """
 
 from __future__ import annotations
@@ -46,14 +52,14 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Annotated, Literal, Self, override
+from typing import Annotated, Final, Literal, Self, override
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from pydantic import Field, field_validator, model_validator
 
-from mosaic.core.params import Declared, Params, has_fields
+from mosaic.core.params import Declared, DeclaredModel, Params, has_fields
 from mosaic.core.pipeline.column_contract import (
     PAIR_COUNTING_AGGS,
     PairRead,
@@ -164,7 +170,8 @@ _SUBGROUP_COL_DESCRIPTION = (
     "The output carries each column in the order listed, after arena. Rows "
     "whose value is null in any of them belong to no subgroup and are "
     "dropped. A list names a column once, and a list of one column is that "
-    "column. Unset, the rows are not split."
+    "column. With value_bins set, a column may not be named <column>_bin. "
+    "Unset, the rows are not split."
 )
 _KEEP_COLUMNS_DESCRIPTION = (
     "Columns of the input to write to the output, after the reduction keys, "
@@ -174,7 +181,8 @@ _KEEP_COLUMNS_DESCRIPTION = (
     "the column, fails the entry. The names the reduction writes itself "
     "(group, sequence, frame, time, id, id1, id2, perspective and arena), a "
     "name in columns and any subgroup_col are refused, and with bin_s set, so "
-    "are bin_start and bin_end, and with subsets set, so is subset."
+    "are bin_start and bin_end, with subsets set, so is subset, and with "
+    "value_bins set, so is each <column>_bin."
 )
 
 _BIN_S_DESCRIPTION = (
@@ -236,8 +244,10 @@ _PAIRS_DESCRIPTION = (
     "perspective column; the other aggregations read every row. once reads "
     "perspective 0, each pair once, and each_perspective reads every "
     "ordered pair row. auto is resolved by a recipe's plan: once when every "
-    "column is declared symmetric over mirrored rows and neither filter_expr "
-    "nor subsets is set, every row otherwise. A run outside a plan "
+    "column, and every column of value_bins, is declared symmetric over "
+    "mirrored rows and neither filter_expr nor subsets is set, every row "
+    "otherwise. A bin on a column with another value on each row of a pair "
+    "can keep one row of it. A run outside a plan "
     "(mosaic run --feature) has no input chain to resolve and reads every row "
     "under auto, which never halves a value without a declaration. Set once "
     "there to count each pair once."
@@ -258,6 +268,45 @@ _SUBSETS_DESCRIPTION = (
     "rows are not split."
 )
 
+_VALUE_BINS_DESCRIPTION = (
+    "Bins of the values of numeric columns of the input, as a list in the "
+    "order of the output's bin keys. Each entry names a column, its edges and "
+    "closed_last. edges is a list of at least two finite numbers that "
+    "strictly increase, or a mapping with one key: linspace, with "
+    "[start, stop, num], read as numpy.linspace, or arange, with "
+    "[start, stop, step], read as numpy.arange, with at most 10000 edges. Each "
+    "number may be the text pi or -pi, read as the constant, so "
+    "{linspace: [-pi, pi, 20]} is numpy.linspace(-pi, pi, 20). A bin holds "
+    "its lower edge and not its "
+    "upper, and with closed_last, true by default, the last bin holds its "
+    "upper edge too, as numpy.histogram does. Without it the last bin is half "
+    "open, as in numpy.digitize. A row whose value is null, below the first "
+    "edge, above the last or at the last edge without closed_last is in no "
+    "bin and is dropped, as a row with a null key is, and with several "
+    "columns a row needs a bin in each. The output gains a nullable integer "
+    "column <column>_bin, the 0-based index of the bin, for each entry, after "
+    "subset and before bin_start. A binned column may also be in columns. "
+    "duration and share weigh a row by the seconds computed before the bins "
+    "drop rows. keep_columns and subgroup_col may not be <column>_bin. "
+    "Unset, the rows are not binned."
+)
+
+_DENSE_DESCRIPTION = (
+    "Write every bin of value_bins, not only the bins that hold a row: a row "
+    "for every combination of bins crossed with each combination of the other "
+    "keys that has a row. A cell without rows has 0 for sum, count and "
+    "duration and NaN for every other aggregation, as a blank row does. For "
+    "sequence-aggregate, an entry that its filters empty is the full grid of "
+    "bins for each group of its keys. A kept column that takes more than one "
+    "value across the bins of a group is refused, since an empty cell would "
+    "have none to write. Refused without value_bins."
+)
+
+MAX_VALUE_BIN_EDGES: Final = 10_000
+"""The most edges one entry of ``value_bins`` may have, listed or generated."""
+
+_EDGE_TEXTS: Mapping[str, float] = MappingProxyType({"pi": np.pi, "-pi": -np.pi})
+
 _ORDER_COLUMN = "_order"
 
 _TIME_SENTENCE = (
@@ -272,9 +321,154 @@ BIN_END = "bin_end"
 SUBSET = "subset"
 
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]+")
+BIN_SUFFIX = "_bin"
 _PERSPECTIVE_COLUMN = "perspective"
 _FOCAL_COLUMNS = ("id1", "id2")
 _MAX_LISTED_VALUES = 5
+
+
+type _EdgeNumber = Annotated[float, Field(strict=True)] | Literal["pi", "-pi"]
+
+_COLUMN_DESCRIPTION = "The numeric column of the input whose values are binned."
+
+_EDGES_DESCRIPTION = (
+    "The edges of the bins: a list of at least two finite numbers that "
+    "strictly increase, or a mapping with the one key linspace, with "
+    "[start, stop, num], read as numpy.linspace, or arange, with "
+    "[start, stop, step], read as numpy.arange. A number may be the text pi "
+    "or -pi. At most 10000 edges, listed or generated."
+)
+
+_CLOSED_LAST_DESCRIPTION = (
+    "Whether the last bin holds its upper edge, as numpy.histogram does. "
+    "False leaves the last bin half open, as numpy.digitize does."
+)
+
+
+class ValueBins(DeclaredModel):
+    """The bins of one column's values: its name and the edges that bound them.
+
+    The bin of a value ``x`` is ``searchsorted(edges, x, side="right") - 1``, and
+    with ``closed_last`` a value equal to the last edge is in the last bin. Any
+    other value outside the edges is in no bin.
+    """
+
+    column: Annotated[str, Declared(_COLUMN_DESCRIPTION)]
+    edges: Annotated[
+        list[_EdgeNumber] | dict[Literal["linspace", "arange"], list[_EdgeNumber]],
+        Declared(_EDGES_DESCRIPTION),
+    ]
+    closed_last: Annotated[
+        bool, Field(strict=True), Declared(_CLOSED_LAST_DESCRIPTION)
+    ] = True
+
+    @model_validator(mode="after")
+    def _edges_are_finite_and_strictly_increase(self) -> Self:
+        """Refuse edges that numpy cannot build, or that are not finite and rising."""
+        _ = self.edge_array()
+        return self
+
+    def edge_array(self) -> NDArray[np.float64]:
+        """The edges as numpy returns them.
+
+        A list is its numbers, ``linspace`` is ``numpy.linspace(start, stop,
+        num)`` and ``arange`` is ``numpy.arange(start, stop, step)``, with ``pi``
+        and ``-pi`` read as ``numpy.pi`` and ``-numpy.pi``.
+
+        Raises:
+            ValueError: The edges are fewer than two, not finite, do not
+                strictly increase, or a mapping is malformed: not exactly one
+                key, not three numbers, a ``num`` that is not a whole number of
+                at least 2, or an ``arange`` step that is zero.
+        """
+        edges = self.edges
+        if isinstance(edges, list):
+            _refuse_too_many_edges(len(edges), "edges list")
+            array = np.array([_edge_value(item) for item in edges], dtype=np.float64)
+        else:
+            array = _generated_edges(edges)
+        if array.size < 2:
+            raise ValueError(
+                f"edges of {self.column!r} hold {array.size} numbers: give at least two"
+            )
+        if not np.isfinite(array).all():
+            raise ValueError(f"edges of {self.column!r} must be finite")
+        if not (np.diff(array) > 0).all():
+            raise ValueError(f"edges of {self.column!r} must strictly increase")
+        return array
+
+
+def _refuse_too_many_edges(count: float, what: str) -> None:
+    """Refuse a *what* of more than :data:`MAX_VALUE_BIN_EDGES` edges.
+
+    A count that is not finite is too many. Called with the count before numpy
+    builds any array, so a huge ``num`` or a tiny ``step`` is refused at once.
+    For ``arange`` the count is ``(stop - start) / step`` before numpy rounds
+    it up, which exceeds a whole bound exactly when its rounded-up value does.
+
+    Raises:
+        ValueError: The count exceeds the bound.
+    """
+    if not math.isfinite(count) or count > MAX_VALUE_BIN_EDGES:
+        shown = (
+            str(math.ceil(count))
+            if math.isfinite(count)
+            else "more than can be counted"
+        )
+        raise ValueError(
+            f"{what} gives {shown} edges: use at most {MAX_VALUE_BIN_EDGES}"
+        )
+
+
+def _edge_value(item: float | str) -> float:
+    """One number of an edge list: itself, or the constant that ``pi`` names."""
+    if isinstance(item, str):
+        return _EDGE_TEXTS[item]
+    return item
+
+
+def _generated_edges(
+    edges: Mapping[Literal["linspace", "arange"], Sequence[float | str]],
+) -> NDArray[np.float64]:
+    """The array of a ``linspace`` or ``arange`` mapping, as numpy returns it.
+
+    Raises:
+        ValueError: The mapping lacks exactly one key or three numbers, a bound
+            or step is not finite, ``num`` is not a whole number of at least 2,
+            or ``step`` is zero.
+    """
+    if len(edges) != 1:
+        raise ValueError(
+            f"edges name {len(edges)} generators: give exactly one of linspace "
+            "or arange"
+        )
+    ((name, numbers),) = edges.items()
+    if len(numbers) != 3:
+        last = "num" if name == "linspace" else "step"
+        raise ValueError(
+            f"{name} takes three numbers, [start, stop, {last}], and edges list "
+            f"{len(numbers)}"
+        )
+    start, stop, third = (_edge_value(item) for item in numbers)
+    if not (math.isfinite(start) and math.isfinite(stop)):
+        raise ValueError(f"{name} start and stop must be finite")
+    if name == "linspace":
+        whole = (
+            not isinstance(numbers[2], str)
+            and math.isfinite(third)
+            and third == int(third)
+        )
+        if not whole or third < 2:
+            raise ValueError(
+                f"linspace num must be a whole number of at least 2, and it is "
+                f"{numbers[2]!r}"
+            )
+        _refuse_too_many_edges(third, "linspace")
+        return np.linspace(start, stop, int(third))
+    if not math.isfinite(third) or third == 0:
+        raise ValueError(f"arange step must be finite and not zero, and it is {third}")
+    _refuse_too_many_edges((stop - start) / third, "arange")
+    return np.arange(start, stop, third)
 
 
 class AggregateParams(Params):
@@ -285,7 +479,9 @@ class AggregateParams(Params):
     ``threshold`` turns each column into whether it passes the comparison
     ``threshold_op`` against a value, with a null staying null.
     ``subgroup_col``, one column or a list of them, splits the rows reduced
-    together, and ``bin_s`` splits them again by time bin. ``keep_columns`` are
+    together, ``value_bins`` splits them by the bins of numeric columns (with
+    ``dense``, every bin of each group), and ``bin_s`` splits them again by time
+    bin. ``keep_columns`` are
     written to the output beside the keys. ``categories`` fixes the columns
     that ``share`` writes. ``first_pass`` gives the smallest ``order_col`` value
     among the rows that pass ``threshold``.
@@ -319,6 +515,10 @@ class AggregateParams(Params):
     subsets: Annotated[dict[str, str] | None, Declared(_SUBSETS_DESCRIPTION)] = Field(
         default=None, min_length=1
     )
+    value_bins: Annotated[list[ValueBins] | None, Declared(_VALUE_BINS_DESCRIPTION)] = (
+        Field(default=None, min_length=1)
+    )
+    dense: Annotated[bool, Declared(_DENSE_DESCRIPTION)] = False
 
     @field_validator(
         "columns", "aggs", "keep_columns", "categories", check_fields=False
@@ -345,6 +545,16 @@ class AggregateParams(Params):
             raise ValueError("subgroup_col lists no column")
         value = _refuse_repeats(value)
         return value[0] if len(value) == 1 else value
+
+    @field_validator("value_bins", check_fields=False)
+    @classmethod
+    def _each_column_binned_once(
+        cls, value: list[ValueBins] | None
+    ) -> list[ValueBins] | None:
+        """Refuse a column that two entries of ``value_bins`` bin."""
+        if value is not None:
+            _ = _refuse_repeats([entry.column for entry in value])
+        return value
 
     @field_validator("subsets", check_fields=False)
     @classmethod
@@ -438,16 +648,32 @@ class AggregateParams(Params):
         return self
 
     @model_validator(mode="after")
+    def _refuse_dense_without_value_bins(self) -> Self:
+        """Refuse ``dense``, which fills the bins of ``value_bins``, without them."""
+        if not has_fields(self, "dense", "value_bins"):
+            return self
+        if self.dense and self.value_bins is None:
+            raise ValueError("dense is set but value_bins is not")
+        return self
+
+    @model_validator(mode="after")
     def _refuse_a_kept_name_the_output_has_already(self) -> Self:
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
         With ``bin_s`` set, ``bin_start`` and ``bin_end`` are reduction keys and
         neither a kept column nor a subgroup column may take them, and with
-        ``subsets`` set ``subset`` is one as well. A subclass without the five
-        fields leaves the verdict to the full model.
+        ``subsets`` set ``subset`` is one as well, and with ``value_bins`` set
+        each ``<column>_bin``. A subclass without the six fields leaves the
+        verdict to the full model.
         """
         if not has_fields(
-            self, "keep_columns", "columns", "subgroup_col", "bin_s", "subsets"
+            self,
+            "keep_columns",
+            "columns",
+            "subgroup_col",
+            "bin_s",
+            "subsets",
+            "value_bins",
         ):
             return self
         owned = _reduction_columns()
@@ -457,6 +683,8 @@ class AggregateParams(Params):
             written_by.update({BIN_START: "bin_s", BIN_END: "bin_s"})
         if self.subsets is not None:
             written_by[SUBSET] = "subsets"
+        for entry in self.value_bins or ():
+            written_by[bin_key(entry.column)] = "value_bins"
         owned = owned | set(written_by)
         for name in subgroups:
             if name in written_by:
@@ -479,7 +707,8 @@ class AggregateParams(Params):
         """The hashed params, less each field that leaves the output as it was.
 
         ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset,
-        ``subsets`` unset, ``threshold_op`` ``>`` and ``order_col`` ``time``
+        ``subsets`` unset, ``value_bins`` unset, ``dense`` false, ``threshold_op``
+        ``>`` and ``order_col`` ``time``
         write the output a run wrote before the fields existed, so leaving them
         out keeps every such run's identifier. A kept column or a category adds
         output columns and enters the hash as any field does.
@@ -503,6 +732,10 @@ class AggregateParams(Params):
             del dumped["order_col"]
         if self.subsets is None:
             del dumped["subsets"]
+        if self.value_bins is None:
+            del dumped["value_bins"]
+        if not self.dense:
+            del dumped["dense"]
         if self.threshold is not None:
             dumped["threshold_missing"] = "skip"
         return dumped
@@ -526,6 +759,11 @@ class PairAggregateParams(AggregateParams):
         ``once``.
         """
         return "once" if self.pairs == "once" else "each_perspective"
+
+
+def bin_key(column: str) -> str:
+    """The name of the key that bins *column*: ``<column>_bin``."""
+    return f"{column}{BIN_SUFFIX}"
 
 
 def _refuse_repeats(value: list[str]) -> list[str]:
@@ -964,25 +1202,82 @@ def _spread_over_bins(
     return _BinnedSeconds(rows=rows, seconds=credited, index=index)
 
 
-def _order_values(df: pd.DataFrame, order_col: str) -> NDArray[np.float64]:
-    """The values of the ``order_col`` column as floats, NaN for a null.
+def _numeric_values(df: pd.DataFrame, column: str, role: str) -> NDArray[np.float64]:
+    """The values of a numeric column as floats, NaN for a null.
+
+    Args:
+        df: The table.
+        column: The column to read.
+        role: What the params call the column, which opens the message of a
+            column that cannot be read.
 
     Raises:
         ValueError: The column is missing, is boolean or is not numeric.
     """
-    if order_col not in df.columns:
+    if column not in df.columns:
         raise ValueError(
-            f"order_col {order_col!r} is not in the input, which has "
+            f"{role} {column!r} is not in the input, which has "
             f"{sorted(map(str, df.columns))}"
         )
-    values = df[order_col]
+    values = df[column]
     if pd.api.types.is_bool_dtype(values.dtype) or not pd.api.types.is_numeric_dtype(
         values.dtype
     ):
         raise ValueError(
-            f"order_col {order_col!r} must be numeric, and it has dtype {values.dtype}"
+            f"{role} {column!r} must be numeric, and it has dtype {values.dtype}"
         )
     return _plain_values(values).astype(np.float64)
+
+
+def value_bin_indexes(
+    values: NDArray[np.float64], edges: NDArray[np.float64], closed_last: bool
+) -> tuple[NDArray[np.intp], NDArray[np.bool_]]:
+    """The bin of each value of *values*, and whether it is in one.
+
+    The bin is ``searchsorted(edges, value, side="right") - 1``. With
+    *closed_last* a value equal to the last edge is in the last bin, the rule of
+    ``numpy.histogram``, and without it the last bin is half open, the rule of
+    ``numpy.digitize``. A NaN, infinity or value beyond the edges is in no bin.
+
+    Args:
+        values: The values to bin.
+        edges: The strictly increasing edges, at least two.
+        closed_last: Whether the last bin holds its upper edge.
+
+    Returns:
+        The 0-based bin of each value, meaningful where the second array is
+        true, and whether each value is in a bin.
+    """
+    count = edges.size - 1
+    index = np.searchsorted(edges, values, side="right") - 1
+    if closed_last:
+        index = np.where(values == edges[-1], count - 1, index)
+    return index, (index >= 0) & (index < count) & ~np.isnan(values)
+
+
+def _bin_rows(
+    df: pd.DataFrame, value_bins: Sequence[ValueBins]
+) -> tuple[pd.DataFrame, dict[str, pd.arrays.IntegerArray]]:
+    """The rows of *df* that have a bin of every entry, and the bin of each.
+
+    Returns:
+        The rows kept, in order and with their index, and the nullable integer
+        bin of each kept row by the name of its key, ``<column>_bin``.
+
+    Raises:
+        ValueError: A binned column is missing or not numeric.
+    """
+    inside = np.ones(len(df), dtype=np.bool_)
+    indexes: dict[str, NDArray[np.intp]] = {}
+    for entry in value_bins:
+        values = _numeric_values(df, entry.column, "value_bins column")
+        index, within = value_bin_indexes(values, entry.edge_array(), entry.closed_last)
+        indexes[bin_key(entry.column)] = index
+        inside &= within
+    bins = {
+        name: pd.array(index[inside], dtype="Int64") for name, index in indexes.items()
+    }
+    return df[inside], bins
 
 
 def _split_into_subsets(df: pd.DataFrame, subsets: Mapping[str, str]) -> pd.DataFrame:
@@ -1006,15 +1301,17 @@ def _split_into_subsets(df: pd.DataFrame, subsets: Mapping[str, str]) -> pd.Data
 class PreparedRows:
     """The rows of one table after the filters, ``transform`` and ``threshold``.
 
-    The filters are ``filter_expr`` and then each of ``subsets``.
+    The filters are ``filter_expr``, each of ``subsets`` and the bins of
+    ``value_bins``, which drop the rows outside them.
 
     :func:`prepare_rows` builds it and :func:`reduce_prepared` groups it, so a
     pool can prepare each entry and reduce the union (:func:`combine_prepared`).
 
     Attributes:
         group_keys: The columns that group the rows: the caller's keys, then
-            ``subset`` when ``subsets`` is set, then ``bin_start`` and
-            ``bin_end`` when ``bin_s`` is set.
+            ``subset`` when ``subsets`` is set, then ``<column>_bin`` for each
+            of ``value_bins``, then ``bin_start`` and ``bin_end`` when ``bin_s``
+            is set.
         carried: The columns that take a value within each group: the ``first``
             columns, then ``keep_columns``.
         rows: The kept rows, by position, with the group keys, the carried
@@ -1051,8 +1348,9 @@ def prepare_rows(
     """Apply the pre-aggregation steps of ``params`` to ``df``.
 
     Applies ``filter_expr``, then each of ``subsets`` to the rows it left (a row
-    that two subsets keep is a row of each), ``transform`` and ``threshold``,
-    finds each row's bin and divides its seconds among the bins it spans.
+    that two subsets keep is a row of each), then drops the rows that have no
+    bin of some entry of ``value_bins``, applies ``transform`` and ``threshold``,
+    finds each row's time bin and divides its seconds among the bins it spans.
     :func:`reduce_prepared` reduces the result. The rules are those of
     :func:`reduce_column`.
 
@@ -1070,8 +1368,9 @@ def prepare_rows(
     Raises:
         ValueError: As :func:`reduce_column`, for what it reads from ``df``:
             a ``subset`` column present when ``subsets`` is set, a kept or
-            subgroup column missing, a kept column varying within a
-            group, ``bin_s`` without ``time``, ``duration`` or ``share``
+            subgroup column missing, a binned column missing or not numeric,
+            a kept column varying within a group (or, with ``dense``, within
+            the group's bins), ``bin_s`` without ``time``, ``duration`` or ``share``
             without a ``time`` that advances, ``share`` of a column of an
             unaccepted kind, or ``first_pass`` with an ``order_col`` that is
             missing or not numeric.
@@ -1101,9 +1400,15 @@ def prepare_rows(
         df = df.query(params.filter_expr)
     if params.subsets is not None and not df.empty:
         df = _split_into_subsets(df, params.subsets)
+    bins = params.value_bins or []
+    bin_names = tuple(bin_key(entry.column) for entry in bins)
+    bin_values: dict[str, pd.arrays.IntegerArray] = {}
+    if bins and not df.empty:
+        df, bin_values = _bin_rows(df, bins)
     carried = (*first, *kept)
     edge_names = (BIN_START, BIN_END) if bin_s is not None else ()
-    row_keys = (*keys, SUBSET) if params.subsets is not None else tuple(keys)
+    plain_keys = (*keys, SUBSET) if params.subsets is not None else tuple(keys)
+    row_keys = (*plain_keys, *bin_names)
     group_keys = (*row_keys, *edge_names)
     if df.empty:
         return PreparedRows(
@@ -1122,9 +1427,18 @@ def prepare_rows(
         times = df[C.time_col].to_numpy(dtype=np.float64)
         first_bin = _bin_index(times, bin_s)
         edges = _bin_edges(first_bin, bin_s)
-    _refuse_a_varying_column(df.assign(**edges) if edges else df, group_keys, kept)
+    checked = df.assign(**edges, **bin_values) if edges or bin_values else df
+    _refuse_a_varying_column(checked, group_keys, kept)
+    if params.dense:
+        # An empty cell takes the kept values of its group, so they may not
+        # differ between its bins.
+        _refuse_a_varying_column(
+            checked, [key for key in group_keys if key not in bin_names], kept
+        )
 
-    work = pd.DataFrame({key: df[key].to_numpy() for key in (*row_keys, *carried)})
+    work = pd.DataFrame({key: df[key].to_numpy() for key in (*plain_keys, *carried)})
+    for name, index in bin_values.items():
+        work[name] = index
     for name, edge in edges.items():
         work[name] = edge
     if _PERSPECTIVE_COLUMN in df.columns and _PERSPECTIVE_COLUMN not in work.columns:
@@ -1150,7 +1464,7 @@ def prepare_rows(
             for column in params.columns
         }
     if "first_pass" in params.aggs:
-        work[_ORDER_COLUMN] = _order_values(df, params.order_col)
+        work[_ORDER_COLUMN] = _numeric_values(df, params.order_col, "order_col")
     for index, column in enumerate(params.columns):
         values = df[column]
         if params.transform == "abs":
@@ -1288,6 +1602,8 @@ def reduce_prepared(
     piece_seconds = prepared.piece_seconds
     piece_keys = prepared.piece_keys
     reduced = _carried_by_group(work, group_keys, carried)
+    if params.dense and params.value_bins:
+        reduced = _on_the_dense_grid(reduced, params.value_bins, carried)
     fractions: dict[str, pd.DataFrame] = {}
     if piece_seconds is not None and "share" in params.aggs:
         names = {
@@ -1372,6 +1688,15 @@ def reduce_column(
     by ``keys``. A row whose key is null belongs to no group. The result is
     empty when no row survives the filter.
 
+    ``value_bins`` assigns each row that the filters keep to a bin of each binned
+    column, and drops the rows that have none (:func:`value_bin_indexes`). The
+    result holds ``<column>_bin``, a nullable integer, for each entry after
+    ``subset`` and before the time bins, and the groups split by them. A bin that
+    holds no row has no group, unless ``dense`` writes the full grid of bins for
+    each combination of the other keys that has a row: a cell without rows is 0
+    for ``sum``, ``count`` and ``duration`` and NaN for the other aggregations,
+    and takes the carried values of its group.
+
     ``subset`` is the name of the subset whose filter keeps the rows of the
     group, after the subgroup columns among ``keys`` and before the bins. Each
     subset filters the rows left by ``filter_expr``, and a row that several
@@ -1441,7 +1766,8 @@ def reduce_column(
 
     Raises:
         ValueError: A kept column is not in ``df``, or takes more than one value
-            in a group of the rows left after ``filter_expr``, or ``bin_s`` is
+            in a group of the rows left after ``filter_expr``, or a binned column
+            is missing or not numeric, or ``bin_s`` is
             set and ``time`` is missing, or ``duration``
             or ``share`` is asked of an input whose ``time`` is missing or does
             not advance, or ``share`` is asked of a column of an unaccepted
@@ -1465,7 +1791,8 @@ def blank_reduction(
     """One row per distinct ``keys`` of ``df`` that reduces no values.
 
     For an entry whose ``filter_expr`` keeps no row, or whose ``subsets`` leave
-    some subset no row. It has the columns that
+    some subset no row, or whose ``value_bins`` leave it none. It has the columns
+    that
     :func:`reduce_column` gives an entry that keeps rows: each of
     ``params.keep_columns`` holds its one value in the group's rows before the
     filter, each of the ``sum``, ``count`` and ``duration`` aggregations is 0
@@ -1478,7 +1805,10 @@ def blank_reduction(
     ``bin_start`` and ``bin_end`` after the keys: no row of the entry starts in
     a bin, and the row keeps the entry, its kept labels and the columns that an
     entry with rows writes. With *subsets*, each group has one such row for each
-    name, in the ``subset`` column that follows the keys.
+    name, in the ``subset`` column that follows the keys. With ``value_bins`` the
+    row has a null ``<column>_bin`` of the nullable integer type for each entry,
+    after the subset, and under ``dense`` the group has a row for every bin of
+    the grid instead.
 
     Args:
         df: The rows before the filter, which hold the keys and the kept columns.
@@ -1498,6 +1828,9 @@ def blank_reduction(
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *kept)})
     blank = _carried_by_group(work, keys, kept).reset_index()
     edges_at = len(keys)
+    if params.value_bins:
+        blank = _with_blank_bins(blank, params.value_bins, edges_at, params.dense)
+        edges_at += len(params.value_bins)
     if subsets is not None:
         named: list[pd.DataFrame] = []
         for name in sorted(subsets):
@@ -1518,6 +1851,31 @@ def blank_reduction(
                     blank[f"{column}_share_{category}"] = np.nan
             else:
                 blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
+    return blank
+
+
+def _with_blank_bins(
+    blank: pd.DataFrame, value_bins: Sequence[ValueBins], at: int, dense: bool
+) -> pd.DataFrame:
+    """*blank* with a bin column for each entry of *value_bins*, from position *at*.
+
+    A row's bin is null, since no row of the entry has one. Under *dense* each
+    row stands for every bin of the grid instead, in the order of the grid.
+    """
+    counts = _bin_counts(value_bins)
+    if dense:
+        grid = _bin_grid(counts)
+        groups = len(blank)
+        blank = blank.iloc[np.repeat(np.arange(groups), len(grid))].reset_index(
+            drop=True
+        )
+        bins = grid.iloc[np.tile(np.arange(len(grid)), groups)].reset_index(drop=True)
+    else:
+        bins = pd.DataFrame(
+            {name: pd.array([pd.NA] * len(blank), dtype="Int64") for name in counts}
+        )
+    for offset, name in enumerate(counts):
+        blank.insert(at + offset, name, bins[name])
     return blank
 
 
@@ -1566,6 +1924,51 @@ def blank_rows(
     return pd.concat([reduced, blank], ignore_index=True).sort_values(
         [*keys, SUBSET], kind="stable", ignore_index=True
     )
+
+
+def _bin_counts(value_bins: Sequence[ValueBins]) -> dict[str, int]:
+    """The number of bins of each entry, by the name of its key."""
+    return {bin_key(entry.column): entry.edge_array().size - 1 for entry in value_bins}
+
+
+def _bin_grid(counts: Mapping[str, int]) -> pd.DataFrame:
+    """Every combination of bins, one nullable integer column per key, in key order."""
+    levels = [pd.array(range(count), dtype="Int64") for count in counts.values()]
+    return pd.MultiIndex.from_product(levels, names=list(counts)).to_frame(index=False)
+
+
+def _on_the_dense_grid(
+    reduced: pd.DataFrame, value_bins: Sequence[ValueBins], carried: Sequence[str]
+) -> pd.DataFrame:
+    """*reduced* with a row for every bin of each group that has a row.
+
+    The grid is every combination of bins crossed with each combination of the
+    other keys that *reduced* holds. A new row has the carried values of its
+    group, and the reductions fill it with what a blank row holds.
+
+    Args:
+        reduced: The carried columns, indexed by the group keys.
+        value_bins: The binned columns, whose keys are among the index levels.
+        carried: The carried columns of *reduced*.
+
+    Returns:
+        The carried columns on the full grid, sorted by the group keys.
+    """
+    names = [str(name) for name in reduced.index.names]
+    counts = _bin_counts(value_bins)
+    other = [name for name in names if name not in counts]
+    present = reduced.index.to_frame(index=False)[other].drop_duplicates()
+    grid = present.merge(_bin_grid(counts), how="cross")[names]
+    index = pd.MultiIndex.from_frame(
+        grid.sort_values(names, kind="stable", ignore_index=True)
+    )
+    dtypes = {column: reduced[column].dtype for column in carried}
+    filled = reduced.reindex(index)
+    if carried:
+        within = filled.groupby(level=other)[list(carried)]
+        filled[list(carried)] = within.transform("first")
+        filled = filled.astype(dtypes)
+    return filled
 
 
 def _carried_by_group(

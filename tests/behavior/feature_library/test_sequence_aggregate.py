@@ -1996,3 +1996,85 @@ def test_a_run_with_subsets_writes_a_row_per_entry_and_subset(tmp_path: Path) ->
     for row in outputs.values():
         assert row["subset"].tolist() == ["all", "none"]
         assert row["speed_count"].iloc[1] == 0
+
+
+_VALUE_BINS: dict[str, object] = {"column": "value", "edges": [0.0, 2.0, 5.0, 6.5]}
+
+
+def test_an_entry_gets_a_row_per_value_bin_with_the_bin_key_after_the_others() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "mean"],
+            "value_bins": [_VALUE_BINS],
+        },
+        _two_arenas(),
+    )
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "arena",
+        "value_bin",
+        "value_count",
+        "value_mean",
+    ]
+    assert out["value_bin"].dtype == pd.Int64Dtype()
+    assert out[["arena", "value_bin"]].values.tolist() == [
+        ["a", 0],
+        ["a", 1],
+        ["b", 1],
+        ["b", 2],
+    ]
+    assert out["value_count"].tolist() == [1, 2, 1, 2]
+
+
+def test_dense_writes_every_bin_for_each_arena_and_zero_for_the_empty_ones() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "mean"],
+            "value_bins": [_VALUE_BINS],
+            "dense": True,
+        },
+        _two_arenas(),
+    )
+
+    assert out["arena"].tolist() == ["a"] * 3 + ["b"] * 3
+    assert out["value_bin"].tolist() == [0, 1, 2] * 2
+    assert out["value_count"].tolist() == [1, 2, 0, 0, 1, 2]
+    assert out["value_mean"].isna().tolist() == [False, False, True, True, False, False]
+
+
+def test_an_entry_with_no_row_in_a_bin_writes_a_blank_row_with_a_null_bin() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "mean"],
+            "value_bins": [{"column": "value", "edges": [100.0, 200.0]}],
+        },
+        _two_arenas(),
+    )
+
+    assert out["arena"].tolist() == ["a", "b"]
+    assert out["value_bin"].isna().all()
+    assert out["value_bin"].dtype == pd.Int64Dtype()
+    assert out["value_count"].tolist() == [0.0, 0.0]
+    assert out["value_mean"].isna().all()
+
+
+def test_an_entry_with_no_row_in_a_bin_writes_the_full_grid_under_dense() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "sum"],
+            "value_bins": [{"column": "value", "edges": [100.0, 200.0, 300.0]}],
+            "dense": True,
+        },
+        _two_arenas(),
+    )
+
+    assert out["arena"].tolist() == ["a", "a", "b", "b"]
+    assert out["value_bin"].tolist() == [0, 1, 0, 1]
+    assert out["value_count"].tolist() == [0.0] * 4
+    assert out["value_sum"].tolist() == [0.0] * 4

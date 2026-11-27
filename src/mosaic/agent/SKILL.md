@@ -582,7 +582,25 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `sequence-aggregate`, so each entry has a row per subset, and none in
   `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or subgroup
   column, and an input with one is refused. A filter or `subsets` makes `pairs: auto`
-  read every row.
+  read every row. `value_bins` splits the rows by the values of numeric columns: a
+  list of `{column, edges, closed_last}`, where `edges` is a list of at least two
+  finite, strictly increasing numbers, or `{linspace: [start, stop, num]}` or
+  `{arange: [start, stop, step]}` as numpy reads them (at most 10000 edges), and a
+  number may be the text `pi` or `-pi`. A row goes to bin
+  `searchsorted(edges, x, side="right") - 1`; with `closed_last` (default) a value on
+  the last edge is in the last bin, as in `numpy.histogram`, and without it the last
+  bin is half open, as in `numpy.digitize`. A row outside every bin, or with a null
+  value, is dropped, and
+  with several columns a row needs a bin in each. The output has a nullable integer
+  `<column>_bin` per entry, after `subset` and before `bin_start`, and the binned
+  column may also be in `columns`. With `dense: true` every bin is written for each
+  combination of the other keys that has a row, `0` for `sum`, `count` and `duration`
+  and NaN otherwise, and `sequence-aggregate` writes the full grid for an entry with
+  no row in any bin. `<column>_bin` may not be a kept or subgroup column, a kept
+  column may not differ between the bins of a group under `dense`, and `dense` needs
+  `value_bins`. A bin on a column with another value on each row of a pair (`id1`, a
+  directional column) makes `pairs: auto` read every row, and a bin on a symmetric
+  column leaves it `once`.
 - `neighbor-delta-response` writes one row per focal, neighbor and frame, with the
   neighbor's offset in the focal's frame (`neighbor_x` along the heading, `neighbor_y`
   to its left) and the focal's windowed response (`dx`, `dy`, `dt`, `dangle`,

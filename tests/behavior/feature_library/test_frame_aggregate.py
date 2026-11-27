@@ -590,3 +590,41 @@ def test_the_subset_column_is_provided_only_when_subsets_is_set() -> None:
     ).params
     assert "subsets" not in plain.identity_dump()
     assert split.identity_dump()["subsets"] == {"all": "value > 0"}
+
+
+def test_dense_value_bins_write_every_bin_for_each_frame() -> None:
+    df = _make_df({0: [1.0, 5.0], 1: [1.5, 1.6], 2: [5.0, 5.5]})
+    params = {
+        "columns": ["value"],
+        "aggs": ["count", "mean"],
+        "value_bins": [{"column": "value", "edges": [0.0, 3.0, 6.0]}],
+    }
+
+    sparse = _apply(params, df)
+    dense = _apply({**params, "dense": True}, df)
+
+    assert list(dense.columns)[:3] == ["frame", "value_bin", "time"]
+    assert sparse[["frame", "value_bin"]].values.tolist() == [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [2, 1],
+    ]
+    assert dense[["frame", "value_bin"]].values.tolist() == [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [1, 1],
+        [2, 0],
+        [2, 1],
+    ]
+    assert dense["value_count"].tolist() == [1, 1, 2, 0, 0, 2]
+    assert dense["time"].tolist() == [0.0, 0.0, 0.02, 0.02, 0.04, 0.04]
+    assert dense["value_mean"].isna().tolist() == [
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+    ]

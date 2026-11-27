@@ -17,7 +17,8 @@ perspective (A->B and B->A), and ``pairs`` says which rows sum and count read.
 ``once`` keeps the ``perspective == 0`` rows, so each pair counts once, and
 ``each_perspective`` reads every row. ``auto``, the default, is resolved by a
 recipe's plan: ``once`` when the column is declared symmetric over mirrored
-rows and neither ``filter_expr`` nor ``subsets`` is set, every row otherwise. A
+rows, neither ``filter_expr`` nor ``subsets`` is set and every ``value_bins``
+column is symmetric too, every row otherwise. A
 run outside a plan (``mosaic run --feature``) reads every row under ``auto``; set
 ``pairs="once"`` there, or ``filter_expr="perspective == 0"``, to count each pair
 once.
@@ -59,7 +60,13 @@ from mosaic.core.params import has_fields
 from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
-from .aggregate_common import SUBSET, PairAggregateParams, reduce_column, split_keys
+from .aggregate_common import (
+    BIN_SUFFIX,
+    SUBSET,
+    PairAggregateParams,
+    reduce_column,
+    split_keys,
+)
 from .registry import register_feature
 
 
@@ -69,12 +76,14 @@ class FrameAggregate:
     """
     Per-sequence feature reducing multi-id data to one row per frame.
 
-    Output columns (one row per frame, arena, subgroup and subset):
+    Output columns (one row per frame, arena, subgroup, subset and value bin):
       - frame
       - arena (if present in input)
       - <subgroup_col> (when set)
       - subset: the subset's name, when ``subsets`` is set; a subset that keeps
         no row of a frame has no row for it
+      - <column>_bin: the 0-based bin of each ``value_bins`` column, a nullable
+        integer; ``dense`` writes every bin of each frame
       - time (if present in input)
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -90,8 +99,9 @@ class FrameAggregate:
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
     plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr`` and no ``subsets``,
-    and every other ``auto`` reads every row. A run outside a plan
+    symmetric over mirrored rows, with no ``filter_expr``, no ``subsets`` and
+    no ``value_bins`` column that is not symmetric too, and every other ``auto``
+    reads every row. A run outside a plan
     (``mosaic run --feature``) reads every row under ``auto``; set
     ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
     once there. For
@@ -117,6 +127,7 @@ class FrameAggregate:
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
         ParamColumn("keep_columns"),
+        ParamColumn("value_bins", key="column"),
         ORDER_COLUMN,
         When(ParamColumn("order_col"), (ParamIs("aggs", equals="first_pass"),)),
     )
@@ -124,6 +135,7 @@ class FrameAggregate:
         adds=(
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
+            ParamColumn("value_bins", key="column", suffix=BIN_SUFFIX),
             ParamColumn(
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),

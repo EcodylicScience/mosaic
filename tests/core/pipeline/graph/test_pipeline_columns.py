@@ -2152,3 +2152,96 @@ def test_neighbor_delta_response_writes_each_neighbor_column_for_both_roles() ->
         "speed",
         "neighbor_speed",
     }
+
+
+_BINNED: dict[str, JsonValue] = {
+    "columns": ["a"],
+    "value_bins": [
+        {"column": "b", "edges": [0, 1]},
+        {"column": "c", "edges": {"linspace": ["-pi", "pi", 5]}},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "declaration", [FrameAggregate, SequenceAggregate, IndividualAggregate]
+)
+def test_an_aggregate_requires_each_binned_column_and_provides_its_bin_key(
+    declaration: type[FrameAggregate | SequenceAggregate | IndividualAggregate],
+) -> None:
+    plain: dict[str, JsonValue] = {"columns": ["a"]}
+
+    def needs(params: dict[str, JsonValue]) -> list[tuple[str, ...]]:
+        return [
+            need.columns
+            for need in requires_wire(declaration.requires, params)
+            if need.params == ("value_bins",) and need.columns
+        ]
+
+    def added(params: dict[str, JsonValue]) -> list[tuple[str, ...]]:
+        return [
+            names.columns
+            for names in provided_wire(declaration.provides, params).adds
+            if names.params == ("value_bins",) and names.columns
+        ]
+
+    assert needs(plain) == [] == added(plain)
+    assert needs({**plain, "value_bins": None}) == []
+    assert added({**plain, "value_bins": None}) == []
+    assert needs(_BINNED) == [("b",), ("c",)]
+    assert added(_BINNED) == [("b_bin", "c_bin")]
+
+
+def test_an_aggregate_writes_the_bin_key_of_each_binned_column_only_when_set() -> None:
+    def output(params: dict[str, JsonValue]) -> ColumnSet:
+        return output_columns(SequenceAggregate.provides, ColumnSet(), params)
+
+    unset = output({"columns": ["a"], "aggs": ["mean"]})
+    binned = output({**_BINNED, "aggs": ["mean"]})
+
+    assert not unset.possible & {"b_bin", "c_bin"}
+    assert binned.guaranteed - unset.guaranteed == {"b_bin", "c_bin"}
+
+
+def test_a_step_binning_a_column_its_input_lacks_is_refused() -> None:
+    step: dict[str, JsonValue] = {
+        "id": "agg",
+        "type": "feature",
+        "feature": "sequence-aggregate",
+        "inputs": [{"step": "speed"}],
+        "params": {
+            "columns": ["speed"],
+            "value_bins": [{"column": "nope", "edges": [0, 1]}],
+        },
+    }
+    expected = (
+        "needs 'nope', and its merged input from speed lacks it. "
+        "The tracks input may contain it"
+    )
+
+    assert validation_report({"steps": [_SPEED, step]}).problems == (
+        Problem("agg", "inputs", expected),
+    )
+
+
+def test_a_bin_on_a_symmetric_column_keeps_auto_at_once_and_other_bins_read_every_row() -> (
+    None
+):
+    merged = _pairs(symmetric=frozenset({"dist", "gap"}), mirrored=True)
+
+    def read(*bins: str) -> object:
+        return pair_rule_read(
+            merged, ["dist"], ["count"], "auto", None, bin_columns=bins
+        )
+
+    assert read() == "once"
+    assert read("gap") == "once"
+    assert read("gap", "dist") == "once"
+    assert read("id1") == "each_perspective"
+    assert read("gap", "heading") == "each_perspective"
+    assert read("absent") == "each_perspective"
+    written = pair_rule_read(
+        merged, ["dist"], ["count"], "once", None, bin_columns=("id1",)
+    )
+    assert written == "once"
+    assert pair_rule_read(merged, ["dist"], ["mean"], "auto", None) is None

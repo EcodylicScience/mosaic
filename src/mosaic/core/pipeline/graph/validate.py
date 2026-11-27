@@ -800,6 +800,7 @@ _PAIR_RULE: Final[TypeAdapter[PairRule]] = TypeAdapter(PairRule)
 _AGGS_FIELD: Final = "aggs"
 _FILTER_FIELD: Final = "filter_expr"
 _SUBSETS_FIELD: Final = "subsets"
+_VALUE_BINS_FIELD: Final = "value_bins"
 
 
 def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead | None:
@@ -810,7 +811,14 @@ def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead 
     """
     values = param_values(
         built,
-        (column_field, _AGGS_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD, _SUBSETS_FIELD),
+        (
+            column_field,
+            _AGGS_FIELD,
+            PAIR_RULE_FIELD,
+            _FILTER_FIELD,
+            _SUBSETS_FIELD,
+            _VALUE_BINS_FIELD,
+        ),
     )
     columns = _names(values.get(column_field))
     aggs = _names(values.get(_AGGS_FIELD))
@@ -829,7 +837,19 @@ def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead 
         rule,
         filter_expr if isinstance(filter_expr, str) else None,
         has_subsets=bool(values.get(_SUBSETS_FIELD)),
+        bin_columns=_binned_columns(values.get(_VALUE_BINS_FIELD)),
     )
+
+
+def _binned_columns(value: JsonValue) -> tuple[str, ...]:
+    """The columns that a ``value_bins`` list bins: each entry's ``column``."""
+    columns: list[str] = []
+    if isinstance(value, list):
+        for entry in value:
+            column = entry.get("column") if isinstance(entry, dict) else None
+            if isinstance(column, str):
+                columns.append(column)
+    return tuple(columns)
 
 
 def _names(value: JsonValue) -> tuple[str, ...]:
@@ -846,9 +866,10 @@ def pair_rules(
 ) -> dict[str, PairRead]:
     """The rows that each ``sum`` or ``count`` step with a pair rule reads, by step id.
 
-    A step's ``auto`` reads ``once`` when each of its columns is declared
-    symmetric over mirrored rows and it sets no ``filter_expr`` and no
-    ``subsets`` (:func:`~.columns.pair_rule_read`), and every row otherwise. A
+    A step's ``auto`` reads ``once`` when each of its columns, and each column
+    it bins by value, is declared symmetric over mirrored rows and it sets no
+    ``filter_expr`` and no ``subsets`` (:func:`~.columns.pair_rule_read`), and
+    every row otherwise. A
     step that writes ``once`` or ``each_perspective`` reads it. Read from the
     declarations alone: the tracks hold no ``perspective``, and the columns a
     plan measures of them do not change the answer. A step with another
