@@ -163,6 +163,34 @@ def test_a_file_holding_several_sequences_is_pending_until_it_is_converted(
     assert plan_pipeline(ds, recipe).step("convert").is_complete
 
 
+def test_an_enumerable_format_converts_through_a_step_without_a_stall(
+    tmp_path: Path,
+) -> None:
+    """Two CalMS21 files of three sequences convert in one run and plan complete.
+
+    Guards the stall rule of ``graph/run.py`` (``outcome.state == "stalled"``),
+    which raises ``CoverageShortfall`` when an attempt exits clean and its
+    coverage does not move. The step's target counts the files before the run and
+    the entries after it, and neither may read as a step that wrote nothing.
+    """
+    ds = calms21_dataset(
+        tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 3}}, "test": {"a": {"s3": 5}}}
+    )
+    recipe = _convert_recipe("calms21_npy")
+
+    first = run_pipeline(ds, recipe)
+
+    assert [outcome.state for outcome in first.outcomes] == ["ran"]
+    written = _table_stamps(ds)
+    assert len(written) == 3
+
+    second = run_pipeline(ds, recipe)
+
+    assert [outcome.state for outcome in second.outcomes] == ["cached"]
+    assert _table_stamps(ds) == written
+    assert plan_pipeline(ds, recipe).step("convert").is_complete
+
+
 def test_a_stand_in_for_a_file_names_it_relative_to_the_dataset(
     tmp_path: Path,
 ) -> None:
