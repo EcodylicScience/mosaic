@@ -537,6 +537,21 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   name (`group`, `sequence`, `frame`, `time`, `id`, `id1`, `id2`, `perspective`,
   `arena`), `pi`, `nan` or `inf`, a repeated name and an expression that reads a later
   entry's column are refused. The feature runs in any track space.
+- `track-coverage` summarizes how much of a recording holds animals, one row per entry
+  (per arena with an `arena` column). `rules` is a list of `{name, columns, mode}`
+  entries, default one named `xy` over `X` and `Y` with `all`: a row passes when every
+  column (`all`) or at least one (`any`) is finite. The span is every frame from the
+  table's first to its last, and a frame without a row finds no id present. It writes
+  `n_ids`, `n_frames` and `n_frames_with_rows`, and per rule `<name>_frames_all` (every
+  id passes), `<name>_frames_none` (no id passes), `<name>_n_gaps`, `<name>_gap_mean`
+  and `<name>_gap_max` over the gaps, the runs of consecutive frames where no id passes.
+  `gap_quantiles` (each 0 to 1, with `quantile_method`, `linear` by default, which needs
+  them) adds `<name>_gap_quantile_<text>`, named as the aggregates' quantiles are, and
+  `gap_thresholds` adds `<name>_gaps_over_<t>`, the gaps longer than `t` frames. With a
+  `time` column it writes `time_step_median` and `time_step_max`, between consecutive
+  frames that have rows. Follow it with `derive-columns` for a percentage, such as
+  `xy_frames_none / n_frames * 100`. It reads ids that name one animal over time, and
+  runs in any track space.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.

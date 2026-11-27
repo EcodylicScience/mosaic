@@ -101,6 +101,7 @@ from . import (
     social_motion_summary,
     speed_angvel,
     temporal_stacking,
+    track_coverage,
     track_subsample,
     trajectory_smooth,
     tune_threshold,
@@ -165,6 +166,7 @@ from .smooth_probabilities import SmoothProbabilitiesFeature
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
+from .track_coverage import TrackCoverage
 from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
 from .tune_threshold import TuneThresholdFeature
@@ -269,6 +271,7 @@ __all__ = [
     "SocialMotionSummary",
     "SpeedAngvel",
     "TemporalStackingFeature",
+    "TrackCoverage",
     "TrackSubsample",
     "TrajectorySmooth",
     "TuneThresholdFeature",
@@ -343,6 +346,7 @@ __all__ = [
     "social_motion_summary",
     "speed_angvel",
     "temporal_stacking",
+    "track_coverage",
     "track_subsample",
     "trajectory_smooth",
     "tune_threshold",

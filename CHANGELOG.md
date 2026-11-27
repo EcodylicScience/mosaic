@@ -56,6 +56,9 @@ No run id or output moves.
   `quantile_method` other than `linear` without `quantile` in `aggs`, and a
   `keep_columns` or `subgroup_col` entry named like a column an aggregation writes
   (`x_mean`, `x_quantile_50`), which the aggregation used to overwrite without a word.
+- `track-coverage` is a new feature that counts, per entry and arena, the frames where
+  animals are present under rules over columns, and the gaps between them. No existing
+  run id changes.
 
 ## Unreleased: features that read only results compute in every track space
 

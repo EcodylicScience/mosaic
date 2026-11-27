@@ -296,6 +296,49 @@ frame, time, id, id1, id2, perspective, arena), `pi`, `nan`, `inf` and a name li
 twice are refused. An expression that reads a column the input lacks fails the entry,
 naming the expression and the column.
 
+## Recording coverage
+
+`track-coverage` summarizes, for each recording, how much of its length holds animals.
+A rule names columns and a mode: a row passes when every column (`all`) or at least one
+column (`any`) is finite. The default rule is `xy`, over `X` and `Y` with mode `all`:
+
+```python
+from mosaic.behavior.feature_library import TrackCoverage
+
+ds.run_feature(
+    TrackCoverage(
+        params={
+            "rules": [
+                {"name": "xy", "columns": ["X", "Y"], "mode": "all"},
+                {"name": "pose", "columns": ["poseX0", "poseY0"], "mode": "any"},
+            ],
+            "gap_quantiles": [0.95, 0.99],
+            "gap_thresholds": [20],
+        }
+    )
+)
+```
+
+The output has one row per recording, and per arena when the input has an `arena`
+column. The span is every frame from the first to the last of the table, so a frame
+without a row finds no animal present. `n_ids` is the number of distinct ids,
+`n_frames` the length of the span and `n_frames_with_rows` the frames that have a row.
+Each rule writes, prefixed with its name, `frames_all` (frames where every id passes),
+`frames_none` (frames where no id passes), and the gaps, the runs of consecutive frames
+where no id passes: `n_gaps`, `gap_mean` (NaN without gaps), `gap_max` (0 without
+gaps), `gap_quantile_<text>` for each of `gap_quantiles` (named as the aggregates'
+quantiles are, and NaN without gaps) and `gaps_over_<t>` for each of `gap_thresholds`,
+the gaps strictly longer than `t` frames. With a `time` column it also writes
+`time_step_median` and `time_step_max`, the differences of each frame's first time
+between consecutive frames that have rows, NaN with fewer than two such frames.
+`quantile_method` is numpy's, `linear` by default, and needs `gap_quantiles`.
+
+A row without an id belongs to no id, and two rows of one id in a frame count once.
+Because it counts frames where every id passes, the rule reads ids that name one animal
+over time. For a percentage, follow it with `derive-columns`, for example
+`xy_frames_none / n_frames * 100`. The feature reads finiteness alone, so it runs over a
+table in any track space.
+
 ## Features and track spaces
 
 A feature declares the spaces it computes in. Tracks are in pixels, centimeters or, for
@@ -307,9 +350,9 @@ features that read `X` and `Y` are planar and refuse a world-frame table;
 when it is planned or, for tracks the recipe itself writes, when the step starts.
 Features whose computation does not depend on the space (`keypoint-kinematics` measures
 in the table's own units, meters on a world table) and features that read no spatial
-column (the aggregates) accept every space, as does `derive-columns`, which computes in the
-units of its table. `pair-posedistance-pca` accepts every space
-too, and its `dimensions` param decides: at `dimensions: 2` a world-frame table fails
+column (the aggregates) accept every space, as do `derive-columns`, which computes in the
+units of its table, and `track-coverage`, which reads finiteness alone.
+`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at `dimensions: 2` a world-frame table fails
 when the step runs, not when it is planned, and the message names `dimensions: 3`. The
 steps that read only the results of earlier steps (`global-kmeans`, `global-tsne`,
 `arhmm` and `xgboost`, for example) and the two wavelets accept every space as well.

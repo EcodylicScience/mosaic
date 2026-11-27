@@ -124,6 +124,7 @@
   "speed-angvel/tracks-two-variants-reversed": "0.3-fbeba033bb",
   "temporal-stack/from-speed-angvel": "0.6-629a8b2f53",
   "temporal-stack/from-speed-angvel-pinned": "0.6-88110c27a1",
+  "track-coverage/default": "0.1-1d19ce6929",
   "track-subsample/default": "0.4-ee8b9de750",
   "trajectory-smooth/default": "0.3-0489426aab",
   "trajectory-smooth/long-run-frames-60": "0.3-e3a7222934",

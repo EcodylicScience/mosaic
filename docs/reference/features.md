@@ -3,7 +3,7 @@
 
 # Features
 
-71 features are registered. Each one runs as
+72 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -1124,6 +1124,27 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 | `compute_burst_coast` | `boolean` | `false` |  | Also emit a burst-and-coast gait summary: kick_rate and burst_coast_ratio. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Names of boolean columns whose truthy rows are left out of every metric, for example unbridgeable from trajectory-smooth. An acceleration or jerk that touches an excluded row is left out too. |
 | `exclude_scope` | `"row"` \| `"frame"` | `"row"` |  | What one flag excludes. With row, the flagged row. With frame, every row of the flagged row's frame and arena. |
+
+### `track-coverage`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.track_coverage.TrackCoverage` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
+
+Summarize, per entry, the frames where animals are present and the gaps.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `rules` | list of `PresenceRule` | _constructed_ | min items `1` | The presence rules, each written as its own set of columns. The default is one rule named xy over X and Y with mode all. Each rule is counted separately over every id of the entry, and an id is present in a frame when one of its rows there passes. A frame without a row finds every id absent. |
+| `gap_quantiles` | list of `number` | _constructed_ |  | Quantiles of the gap lengths of each rule, each a number from 0 to 1 with no two giving the same column name. Each writes `<rule>_gap_quantile_<text>`, the numpy.quantile of the lengths in frames under quantile_method, or NaN without gaps. The text is q as a percent without trailing zeros and with the point written _: 0.95 gives 95 and 0.995 gives 99_5. |
+| `quantile_method` | `"inverted_cdf"` \| `"averaged_inverted_cdf"` \| `"closest_observation"` \| `"interpolated_inverted_cdf"` \| `"hazen"` \| `"weibull"` \| `"linear"` \| `"median_unbiased"` \| `"normal_unbiased"` \| `"lower"` \| `"higher"` \| `"midpoint"` \| `"nearest"` | `"linear"` |  | The method of numpy.quantile for gap_quantiles: inverted_cdf, averaged_inverted_cdf, closest_observation, interpolated_inverted_cdf, hazen, weibull, linear, median_unbiased, normal_unbiased, lower, higher, midpoint or nearest. Needs gap_quantiles. |
+| `gap_thresholds` | list of `integer` | _constructed_ |  | Thresholds in frames, each at least 0 and none listed twice. Each writes `<rule>_gaps_over_<t>`, the number of gaps strictly longer than t frames. |
+
+??? note "`PresenceRule`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `name` | `string` | _required_ | matches `^[A-Za-z0-9_]+$` | The rule's name, letters, digits and underscores. It prefixes the rule's columns, as `<name>_frames_all`, and no two rules share one. |
+    | `columns` | list of `string` | _required_ | min items `1` | The columns the rule reads, at least one. Each is read as float64, a missing value as NaN, and a row passes when its value is finite. |
+    | `mode` | `"all"` \| `"any"` | _required_ |  | all: a row passes when every column is finite. any: a row passes when at least one column is finite. |
 
 ## Global (fit once, apply everywhere)
 

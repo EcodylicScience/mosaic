@@ -29,6 +29,7 @@ from mosaic.behavior.feature_library.neighbor_delta_response import (
     NeighborDeltaResponse,
 )
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
+from mosaic.behavior.feature_library.track_coverage import TrackCoverage
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.column_contract import (
@@ -1143,6 +1144,90 @@ def test_derive_columns_without_columns_provides_no_derived_name() -> None:
 
     assert wire.passthrough
     assert [names.unknown for names in wire.adds] == [True]
+
+
+# --- track-coverage ---------------------------------------------------------------------
+
+_COVERAGE: dict[str, JsonValue] = {
+    "rules": [
+        {"name": "a", "columns": ["X", "Y"], "mode": "all"},
+        {"name": "b", "columns": ["poseX0"], "mode": "any"},
+    ],
+    "gap_quantiles": [0.95],
+    "gap_thresholds": [20],
+}
+"""Two rules, one over two columns, with quantiles and thresholds set."""
+
+_COVERAGE_FIXED = {"n_ids", "n_frames", "n_frames_with_rows"}
+_COVERAGE_RULE = {
+    f"{rule}_{suffix}"
+    for rule in ("a", "b")
+    for suffix in ("frames_all", "frames_none", "n_gaps", "gap_mean", "gap_max")
+}
+
+
+def test_track_coverage_requires_the_frame_the_id_and_every_column_of_every_rule() -> (
+    None
+):
+    wire = requires_wire(TrackCoverage.requires, _COVERAGE)
+
+    assert [need.columns for need in wire] == [
+        ("frame",),
+        ("id",),
+        ("X",),
+        ("Y",),
+        ("poseX0",),
+    ]
+
+
+def test_track_coverage_names_each_rule_column_and_leaves_the_texts_open() -> None:
+    output = output_columns(TrackCoverage.provides, ColumnSet(), _COVERAGE)
+
+    assert output.guaranteed == _COVERAGE_FIXED | _COVERAGE_RULE
+    assert output.possible_prefixes == {
+        "a_gap_quantile_",
+        "b_gap_quantile_",
+        "a_gaps_over_",
+        "b_gaps_over_",
+    }
+
+
+def test_track_coverage_names_no_open_prefix_without_quantiles_or_thresholds() -> None:
+    params = {**_COVERAGE, "gap_quantiles": [], "gap_thresholds": []}
+
+    output = output_columns(TrackCoverage.provides, ColumnSet(), params)
+
+    assert output.guaranteed == _COVERAGE_FIXED | _COVERAGE_RULE
+    assert not output.possible_prefixes
+    only_quantiles = output_columns(
+        TrackCoverage.provides, ColumnSet(), {**params, "gap_quantiles": [0.5]}
+    )
+    assert only_quantiles.possible_prefixes == {"a_gap_quantile_", "b_gap_quantile_"}
+
+
+def test_track_coverage_keys_and_time_steps_follow_the_input() -> None:
+    bare = output_columns(TrackCoverage.provides, ColumnSet(), _COVERAGE)
+    merged = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "time", "group", "sequence", "arena"}),
+        possible=frozenset({"frame", "id", "time", "group", "sequence", "arena"}),
+    )
+
+    full = output_columns(TrackCoverage.provides, merged, _COVERAGE)
+
+    assert not bare.possible & {"time_step_median", "time_step_max", "group", "arena"}
+    assert full.possible - bare.possible == {
+        "time_step_median",
+        "time_step_max",
+        "group",
+        "sequence",
+        "arena",
+    }
+
+
+def test_track_coverage_without_rules_names_no_rule_column() -> None:
+    wire = provided_wire(TrackCoverage.provides, {})
+
+    assert [names.unknown for names in wire.adds[3:]] == [True] * 5
 
 
 # --- payload families -------------------------------------------------------------------

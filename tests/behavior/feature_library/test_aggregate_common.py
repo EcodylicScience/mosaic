@@ -24,8 +24,10 @@ from mosaic.behavior.feature_library.aggregate_common import (
     blank_reduction,
     blank_rows,
     combine_prepared,
+    distinct_quantiles,
     prepare_rows,
     quantile_text,
+    quantiles_or_nan,
     reduce_column,
     reduce_prepared,
     split_keys,
@@ -1967,6 +1969,26 @@ def test_the_text_of_a_quantile_is_its_percent_without_trailing_zeros(
     q: float, text: str
 ) -> None:
     assert quantile_text(q) == text
+
+
+def test_distinct_quantiles_reads_negative_zero_as_zero_and_names_the_field() -> None:
+    assert distinct_quantiles([-0.0, 0.5], "f") == [0.0, 0.5]
+    with pytest.raises(ValueError, match="^f lists 0.5 and 0.5"):
+        distinct_quantiles([0.5, 0.5], "f")
+    with pytest.raises(ValueError, match="^f lists 0.0 and 0.0"):
+        distinct_quantiles([-0.0, 0.0], "f")
+
+
+def test_quantiles_or_nan_gives_nan_for_no_values_and_numpys_otherwise() -> None:
+    none = quantiles_or_nan(np.array([], dtype=np.float64), [0.1, 0.9], "linear")
+    values = np.array([4.0, 1.0, 3.0])
+    found = quantiles_or_nan(values, [0.1, 0.9], "higher")
+
+    assert np.isnan(none).all()
+    assert none.shape == (2,)
+    np.testing.assert_array_equal(
+        found, np.quantile(values, [0.1, 0.9], method="higher")
+    )
 
 
 @pytest.mark.parametrize("method", METHODS)

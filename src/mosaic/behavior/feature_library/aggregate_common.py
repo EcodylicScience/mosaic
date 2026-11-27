@@ -206,12 +206,17 @@ _QUANTILES_DESCRIPTION = (
     "quantile in aggs, and quantile needs it."
 )
 
-_QUANTILE_METHOD_DESCRIPTION = (
-    "The method of numpy.quantile that the quantile aggregation uses: "
+QUANTILE_METHOD_NAMES = (
     "inverted_cdf, averaged_inverted_cdf, closest_observation, "
     "interpolated_inverted_cdf, hazen, weibull, linear, median_unbiased, "
-    "normal_unbiased, lower, higher, midpoint or nearest. hazen is the method "
-    "of Octave's prctile. Needs quantile in aggs."
+    "normal_unbiased, lower, higher, midpoint or nearest"
+)
+"""The values of :data:`QuantileMethod`, as the prose of a description lists them."""
+
+_QUANTILE_METHOD_DESCRIPTION = (
+    f"The method of numpy.quantile that the quantile aggregation uses: "
+    f"{QUANTILE_METHOD_NAMES}. hazen is the method of Octave's prctile. Needs "
+    "quantile in aggs."
 )
 
 _CATEGORIES_DESCRIPTION = (
@@ -651,17 +656,7 @@ class AggregateParams(Params):
         """
         if value is None:
             return None
-        value = [q + 0.0 for q in value]
-        named: dict[str, float] = {}
-        for q in value:
-            text = quantile_text(q)
-            if text in named:
-                raise ValueError(
-                    f"quantiles lists {named[text]} and {q}, which give the same "
-                    f"column name suffix {text!r}"
-                )
-            named[text] = q
-        return value
+        return distinct_quantiles(value, "quantiles")
 
     def subgroup_columns(self) -> list[str]:
         """The subgroup columns in output order: none, one or several."""
@@ -948,6 +943,34 @@ def quantile_text(q: float) -> str:
     return format(percent, "f").replace(".", "_")
 
 
+def distinct_quantiles(value: Sequence[float], field: str) -> list[float]:
+    """Refuse two quantiles whose texts are the same, which name one column.
+
+    A negative zero reads as zero, so ``[-0.0]`` and ``[0.0]`` are one quantile.
+
+    Args:
+        value: The quantiles.
+        field: The params field that lists them, named in the refusal.
+
+    Returns:
+        The quantiles with each negative zero read as zero.
+
+    Raises:
+        ValueError: Two quantiles give the same :func:`quantile_text`.
+    """
+    quantiles = [q + 0.0 for q in value]
+    named: dict[str, float] = {}
+    for q in quantiles:
+        text = quantile_text(q)
+        if text in named:
+            raise ValueError(
+                f"{field} lists {named[text]} and {q}, which give the same "
+                f"column name suffix {text!r}"
+            )
+        named[text] = q
+    return quantiles
+
+
 def _static_output_names(params: AggregateParams) -> list[tuple[str, str]]:
     """The result columns the params fix without reading data, each with its source.
 
@@ -1064,19 +1087,24 @@ def _non_null_floats(values: pd.Series) -> NDArray[np.float64]:
     return floats[~np.isnan(floats)]
 
 
-def _quantiles_of(
-    values: pd.Series, quantiles: Sequence[float], method: QuantileMethod
+def quantiles_or_nan(
+    floats: NDArray[np.float64], quantiles: Sequence[float], method: QuantileMethod
 ) -> NDArray[np.float64]:
-    """The quantiles *quantiles* of one group's values under *method*.
+    """The quantiles *quantiles* of *floats* under *method*.
 
-    Passes the group's non-null values as float64 to ``np.quantile`` once, for
-    every quantile, and gives NaN for each when the group has none, without
-    calling numpy.
+    Passes the values to ``np.quantile`` once, for every quantile, and gives NaN
+    for each when there are none, without calling numpy.
     """
-    floats = _non_null_floats(values)
     if floats.size == 0:
         return np.full(len(quantiles), np.nan)
     return np.asarray(np.quantile(floats, list(quantiles), method=method))
+
+
+def _quantiles_of(
+    values: pd.Series, quantiles: Sequence[float], method: QuantileMethod
+) -> NDArray[np.float64]:
+    """The quantiles *quantiles* of one group's non-null values as float64."""
+    return quantiles_or_nan(_non_null_floats(values), quantiles, method)
 
 
 def _circular_statistic(agg: Aggregation) -> Callable[[pd.Series], float]:

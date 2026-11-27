@@ -129,6 +129,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "scale-to-cm",
     "social-motion-summary",
     "speed-angvel",
+    "track-coverage",
     "track-subsample",
     "trajectory-smooth",
     "visual-network",
