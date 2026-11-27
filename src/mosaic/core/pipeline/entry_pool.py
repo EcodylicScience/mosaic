@@ -646,8 +646,8 @@ class EntryFailure:
             entry_failed(self.key, exc)
 
 
-_OPENED: dict[str, Dataset] = {}
-"""The datasets a worker process opened, by manifest path."""
+_OPENED: dict[tuple[str, bool], Dataset] = {}
+"""The datasets a worker process opened, by manifest path and whether it ensured roots."""
 
 
 def dataset_ref(ds: Dataset, mode: ParallelMode) -> Dataset | str:
@@ -659,14 +659,26 @@ def dataset_ref(ds: Dataset, mode: ParallelMode) -> Dataset | str:
     return str(ds.manifest_path) if mode == "process" else ds
 
 
-def worker_dataset(ref: Dataset | str) -> Dataset:
-    """Return the dataset that :func:`dataset_ref` named, opened once per process."""
+def worker_dataset(ref: Dataset | str, *, ensure_roots: bool = True) -> Dataset:
+    """Return the dataset that :func:`dataset_ref` named, opened once per process.
+
+    Args:
+        ref: What :func:`dataset_ref` handed the worker.
+        ensure_roots: Whether opening a manifest path creates the declared roots
+            that are missing. ``False`` opens without writing, for a worker that
+            only reads. A process keeps one dataset for each setting. A dataset
+            object is returned as it is.
+
+    Returns:
+        The dataset.
+    """
     if not isinstance(ref, str):
         return ref
-    opened = _OPENED.get(ref)
+    key = (ref, ensure_roots)
+    opened = _OPENED.get(key)
     if opened is None:
         from mosaic.core.dataset import open_dataset
 
-        opened = open_dataset(ref)
-        _OPENED[ref] = opened
+        opened = open_dataset(ref, ensure_roots=ensure_roots)
+        _OPENED[key] = opened
     return opened

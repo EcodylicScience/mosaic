@@ -13,6 +13,7 @@ feature library.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
@@ -23,22 +24,33 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import Params
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.tracks_index import backfill_frame_extents
 from mosaic.core.pipeline.types import (
     Feature,
     Inputs,
     InputStream,
+    NNResult,
     Result,
     TrackInput,
 )
+from mosaic.core.scope import Scope
+from tests.helpers.datasets import make_dataset
 from tests.helpers.modes import RunMode
 from tests.helpers.results import result_outputs, result_run_root
 from tests.helpers.runlog import latest_events, latest_snapshot
+from tests.helpers.tracks import add_track_sequences
 
 Pair = tuple[int, int, int]
 """A pair row's ``(frame, id1, id2)``."""
 
 EMPTY_SEQUENCE: Final = "empty"
 """The sequence for which ``PairRowsFeature`` writes no pair rows."""
+
+ROWS: Final = 6
+"""The frames of each sequence that ``pair_run_results`` writes."""
+
+IDENTITIES: Final = 3
+"""The individuals of each frame that ``pair_run_results`` writes."""
 
 NO_PAIR_ROWS_MESSAGE: Final = (
     "input 0 holds no pair rows for this entry, so the individual rows of "
@@ -249,4 +261,67 @@ def neighbor_pairs(
             neighbor_of.get((frame, first)) == second
             or neighbor_of.get((frame, second)) == first
         )
+    )
+
+
+def add_pair_tracks(
+    ds: Dataset, sequences: Sequence[str], *, continuous: bool = False
+) -> None:
+    """Write ``IDENTITIES`` individuals over ``ROWS`` frames for each of *sequences*.
+
+    The sequences are in group ``g``. The tracks offset individual ``k`` by ``k``
+    on both axes, so the neighbor of individuals 0 and 2 is 1, the neighbor of 1
+    is 0, and the pairs ``(0, 2)`` and ``(2, 0)`` are nobody's neighbor pairs.
+    Under *continuous* the sequences follow one another on one frame axis and the
+    group is continuous.
+    """
+    for position, sequence in enumerate(sequences):
+        add_track_sequences(
+            ds,
+            ("g", sequence),
+            n_rows=ROWS,
+            n_ids=IDENTITIES,
+            start_frame=position * ROWS if continuous else 0,
+        )
+    if continuous:
+        _ = backfill_frame_extents(ds)
+        ds.set_continuous_groups(["g"])
+
+
+def pair_run_results(
+    base: Path,
+    *sequences: str,
+    neighbors_of: Sequence[str] | None = None,
+    continuous: bool = False,
+) -> tuple[Dataset, Result, Result, NNResult]:
+    """A dataset over *sequences* with the pair rows, the individual rows and the neighbors.
+
+    Args:
+        base: Where the dataset goes, as ``base / "ds"``.
+        sequences: The sequences of group ``g``.
+        neighbors_of: The sequences the neighbor run covers, or ``None`` for
+            every one.
+        continuous: Whether the sequences follow one another on one frame axis.
+
+    Returns:
+        The dataset and the runs of the pair rows, of the individual rows and
+        of the nearest neighbors.
+    """
+    from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+
+    ds = make_dataset(base / "ds")
+    add_pair_tracks(ds, sequences, continuous=continuous)
+    pairs = run_feature(ds, PairRowsFeature())
+    individuals = run_feature(ds, IndividualRowsFeature())
+    scope = (
+        None
+        if neighbors_of is None
+        else Scope(entries=[("g", sequence) for sequence in neighbors_of])
+    )
+    neighbors = run_feature(ds, NearestNeighbor(), scope=scope)
+    return (
+        ds,
+        Result(feature=pairs.feature, run_id=pairs.run_id),
+        Result(feature=individuals.feature, run_id=individuals.run_id),
+        NNResult(feature=neighbors.feature, run_id=neighbors.run_id),
     )

@@ -119,9 +119,8 @@ from .loading import (
     expands_individuals,
     input_projection,
     stacks_inputs,
-    build_nn_lookup,
     labels_for_rows,
-    nn_pair_mask,
+    nn_pair_filter,
     resolve_sequence_identity,
 )
 from .manifest import (
@@ -183,11 +182,12 @@ from .types import (
 from .types.inputs import InputsLike
 from .label_series import LabelRevisionRef
 from .job import CancelToken, JobContext, job_context
-from .entry_pool import EntryFailure, EntryPool
+from .entry_pool import EntryFailure, EntryPool, dataset_ref
 from .entry_task import (
     EntryLoad,
     EntryReport,
     EntryTask,
+    PairFilter,
     run_entry,
     run_entry_in_process,
 )
@@ -559,21 +559,6 @@ def _resolve_pair_filter(params: Params) -> NNResult | None:
     return None
 
 
-def _build_nn_filter(
-    ds: Dataset, group: str, sequence: str, pair_filter_spec: NNResult
-) -> Callable[[pd.DataFrame], pd.DataFrame] | None:
-    """Build a DataFrame filter that keeps only nearest-neighbor pairs."""
-    nn_lookup = build_nn_lookup(ds, group, sequence, pair_filter_spec)
-    if not nn_lookup:
-        return None
-
-    def _filter(df: pd.DataFrame) -> pd.DataFrame:
-        mask = nn_pair_mask(df, nn_lookup)
-        return df.loc[mask].reset_index(drop=True)
-
-    return _filter
-
-
 # --- Resource release ---
 
 
@@ -873,7 +858,7 @@ def _make_filter_factory(
         filters: list[Callable[[pd.DataFrame], pd.DataFrame]] = []
         if pair_filter_spec is not None:
             group, sequence = resolve_sequence_identity(entry_key, entry_map)
-            nn_filter = _build_nn_filter(ds, group, sequence, pair_filter_spec)
+            nn_filter = nn_pair_filter(ds, group, sequence, pair_filter_spec)
             if nn_filter is not None:
                 filters.append(nn_filter)
         filters.extend(
@@ -3583,15 +3568,15 @@ def _run_feature_impl(
             Entries with a valid output on disk are recorded without loading
             their input. The rest are computed through a pool built from the
             settings of *state*, and their measures go to *state*. Each
-            computed entry's task loads its input, unless overlap, a pair
-            filter or the cross join has the run load it, and writes its
-            output, and the run records the row from the task's report. A load
-            of no rows leaves the entry without a row. Each process worker
-            builds the feature from ``worker_build()``. Rows are flushed
-            periodically. When the apply stops early they are flushed, the
-            entries in flight are waited for and their outputs recorded, and
-            they are flushed again. The pool is closed on every exit after it
-            is built, which writes the phase's final report.
+            computed entry's task loads its input, unless overlap or the cross
+            join has the run load it, and writes its output, and the run
+            records the row from the task's report. A load of no rows leaves
+            the entry without a row. Each process worker builds the feature
+            from ``worker_build()``. Rows are flushed periodically. When the
+            apply stops early they are flushed, the entries in flight are
+            waited for and their outputs recorded, and they are flushed again.
+            The pool is closed on every exit after it is built, which writes
+            the phase's final report.
             """
             settings = state.settings
             # The growth each process worker measured of the entry it applied, held
@@ -4043,12 +4028,13 @@ def _run_feature_impl(
             # pool's ``on_computed`` and the recording of a result.
             in_processes = settings.entry_mode == "process"
             # The shapes whose input the run loads in its own process and hands to
-            # the task as a table: overlap, the pair filter and the cross join.
-            # Every other entry's task loads its own input, a widening one
-            # included.
-            parent_loads = (
-                apply_overlap is not None or pair_filter_spec is not None or cross_join
-            )
+            # the task as a table: overlap, which reads each entry's neighbors, and
+            # the cross join. Every other entry's task loads its own input, a
+            # widening or pair-filtered one included.
+            parent_loads = apply_overlap is not None or cross_join
+            # What a task of this phase is handed to open the dataset with, for its
+            # neighbor lookup.
+            pair_filter_dataset = dataset_ref(ds, settings.entry_mode)
             # The garbage collection of the run's own process, which computes the
             # entries in serial and thread mode. A process worker keeps its own.
             collector = PacedCollector()
@@ -4338,9 +4324,9 @@ def _run_feature_impl(
             def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
                 """Record an entry whose input 0 holds no pair rows as lost.
 
-                Only an entry that the run loads itself, under overlap or a pair
-                filter, reaches here. The task raises the error for every other
-                widening entry, and the pool records it.
+                Only an entry that the run loads itself, under overlap, reaches
+                here. The task raises the error for every other widening entry, a
+                pair-filtered one included, and the pool records it.
                 """
                 group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 _entry_failed(group, sequence, exc)
@@ -4413,6 +4399,16 @@ def _run_feature_impl(
                     file_specs=tuple(entry.file_specs),
                     projection=entry.projection,
                     expands_individuals=widens_individuals,
+                    pair_filter=(
+                        None
+                        if pair_filter_spec is None
+                        else PairFilter(
+                            dataset=pair_filter_dataset,
+                            spec=pair_filter_spec,
+                            group=group,
+                            sequence=sequence,
+                        )
+                    ),
                     frame_start=frame_start,
                     frame_end=frame_end,
                     time_window=time_window,

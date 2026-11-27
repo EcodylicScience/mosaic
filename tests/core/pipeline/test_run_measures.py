@@ -868,6 +868,7 @@ def test_a_process_worker_that_loads_its_input_reads_its_base_before_the_load(
         file_specs=((tracks, ParquetLoadSpec()),),
         projection=None,
         expands_individuals=False,
+        pair_filter=None,
         frame_start=None,
         frame_end=None,
         time_window=TimeWindow(),

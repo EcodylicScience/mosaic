@@ -849,6 +849,41 @@ def nn_pair_mask(df: pd.DataFrame, nn_lookup: NeighborLookup) -> npt.NDArray[np.
     )
 
 
+def nn_pair_filter(
+    ds: Dataset, group: str, sequence: str, spec: NNResult
+) -> Callable[[pd.DataFrame], pd.DataFrame] | None:
+    """Build the filter that keeps the nearest-neighbor pairs of one entry.
+
+    The run's filter factory and an entry's task both build the filter here, so
+    each keeps the same rows of an entry.
+
+    Args:
+        ds: The dataset that holds the neighbor run, directly or through a link.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        spec: The nearest-neighbor run whose table gives each individual's
+            neighbor.
+
+    Returns:
+        ``None`` for an empty lookup, which an entry the neighbor run lacks gives
+        and which filters nothing. Otherwise a function that keeps the rows of
+        :func:`nn_pair_mask` and resets the index.
+
+    Raises:
+        Exception: Whatever :func:`build_nn_lookup` raises, such as the error of
+            a neighbor table that cannot be read.
+    """
+    nn_lookup = build_nn_lookup(ds, group, sequence, spec)
+    if not nn_lookup:
+        return None
+
+    def keep_neighbor_pairs(df: pd.DataFrame) -> pd.DataFrame:
+        mask = nn_pair_mask(df, nn_lookup)
+        return df.loc[mask].reset_index(drop=True)
+
+    return keep_neighbor_pairs
+
+
 def row_individual_pairs(df: pd.DataFrame) -> np.ndarray | None:
     """Each row's ``(id1, id2)``, for aligning labels to rows rather than to frames.
 

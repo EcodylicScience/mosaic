@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import pickle
+import shutil
 import time
 from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
@@ -22,7 +23,8 @@ import pytest
 
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.helpers import filter_time_range, make_entry_key
-from mosaic.core.pipeline import entry_task, parquet_reader
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import entry_pool, entry_task, parquet_reader
 from mosaic.core.pipeline._loaders import LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline._utils import FeatureMeta
 from mosaic.core.pipeline.admission import WorkerMeasure
@@ -37,6 +39,7 @@ from mosaic.core.pipeline.entry_task import (
     EntryLoad,
     EntryReport,
     EntryTask,
+    PairFilter,
     run_entry,
     run_entry_in_process,
 )
@@ -45,20 +48,28 @@ from mosaic.core.pipeline.loading import (
     MultiInputAlignmentError,
     PairRowsMissing,
     load_entry_data,
+    nn_pair_filter,
 )
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.memory_watch import NonreclaimablePeak
 from mosaic.core.pipeline.parquet_reader import FooterRecord, ParquetFooterMemo
+from mosaic.core.pipeline.types import NNResult, Result
 from mosaic.core.pipeline.writers import FeatureOutput, write_output
 from mosaic.core.timebase import IrregularNotice, uniform_grid_rate
 from tests.helpers import (
     ParallelFeature,
+    TracksFeature,
+    corrupt_output,
     dropped_frame_tracks,
     make_pair_df,
     make_sequence_df,
+    neighbor_pairs,
     observed,
+    ordered_pairs,
+    pair_run_results,
     record_path_calls,
     report_of,
+    result_run_root,
     wrapped_write,
 )
 
@@ -141,6 +152,7 @@ def _load_task(
     projection: ColumnProjection | None = None,
     expands_individuals: bool = False,
     footers: tuple[FooterRecord, ...] = (),
+    pair_filter: PairFilter | None = None,
 ) -> EntryTask:
     meta = FeatureMeta(group="g", sequence="s", out_path=run_root / "g__s.parquet")
     load = EntryLoad(
@@ -148,6 +160,7 @@ def _load_task(
         file_specs=_specs(paths),
         projection=projection,
         expands_individuals=expands_individuals,
+        pair_filter=pair_filter,
         frame_start=frame_start,
         frame_end=frame_end,
         time_window=time_window,
@@ -621,6 +634,122 @@ def test_a_one_input_load_reads_alike_with_and_without_the_flag(
         assert outputs[0].read_bytes() == outputs[1].read_bytes()
     else:
         assert not outputs[0].exists() and not outputs[1].exists()
+
+
+# --- a task that filters its pair rows to the nearest neighbors ------------------------
+
+
+def _pair_filtered_task(
+    run_root: Path,
+    ds: Dataset,
+    pairs: Result,
+    neighbors: NNResult,
+    *,
+    dataset: Dataset | str | None = None,
+) -> EntryTask:
+    """A load of the pair rows of entry ``g__s``, filtered by the neighbor run."""
+    path = result_run_root(ds, pairs) / "g__s.parquet"
+    pair_filter = PairFilter(
+        dataset=ds if dataset is None else dataset,
+        spec=neighbors,
+        group="g",
+        sequence="s",
+    )
+    return _load_task(run_root, (path,), pair_filter=pair_filter)
+
+
+def _loaded_by_the_run(
+    ds: Dataset, pairs: Result, neighbors: NNResult | None
+) -> pd.DataFrame:
+    """The pair rows of ``g__s`` as the run loads them, filtered when *neighbors* is given."""
+    filter_ = None if neighbors is None else nn_pair_filter(ds, "g", "s", neighbors)
+    table = load_entry_data(
+        [(result_run_root(ds, pairs) / "g__s.parquet", ParquetLoadSpec())],
+        filters=[] if filter_ is None else [filter_],
+        expands_individuals=False,
+        projection=None,
+    )
+    assert table is not None
+    return table
+
+
+def _bytes_written_for(tmp_path: Path, table: pd.DataFrame) -> bytes:
+    """The bytes ``TracksFeature`` writes for *table*."""
+    meta = FeatureMeta(group="g", sequence="s", out_path=tmp_path / "expected.parquet")
+    _ = write_output(meta, TracksFeature().apply(table))
+    return meta.out_path.read_bytes()
+
+
+def test_a_pair_filtered_load_gives_the_table_the_run_filters(
+    run_root: Path, tmp_path: Path
+) -> None:
+    ds, pairs, _, neighbors = pair_run_results(tmp_path / "data", "s")
+    task = _pair_filtered_task(run_root, ds, pairs, neighbors)
+    unfiltered = _loaded_by_the_run(ds, pairs, None)
+    filtered = _loaded_by_the_run(ds, pairs, neighbors)
+    assert len(filtered) < len(unfiltered)
+
+    _ = report_of(run_entry(TracksFeature(), task, None))
+
+    assert task.meta.out_path.read_bytes() == _bytes_written_for(tmp_path, filtered)
+    written = pd.read_parquet(task.meta.out_path)
+    assert len(written) == len(filtered)
+    assert ordered_pairs(written) == neighbor_pairs(ds, neighbors, "g", "s")
+
+
+def test_a_pickled_pair_filter_opens_the_dataset_by_its_manifest(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, pairs, _, neighbors = pair_run_results(tmp_path / "data", "s")
+    reference = _pair_filtered_task(run_root, ds, pairs, neighbors)
+    _ = report_of(run_entry(TracksFeature(), reference, None))
+    untouched = ds.get_root("media_raw")
+    assert untouched.exists()
+    shutil.rmtree(untouched)
+    opened: dict[tuple[str, bool], Dataset] = {}
+    monkeypatch.setattr(entry_pool, "_OPENED", opened)
+    manifest = str(ds.manifest_path)
+    crossed = _crossed(
+        _pair_filtered_task(
+            tmp_path / "crossed", ds, pairs, neighbors, dataset=manifest
+        )
+    )
+    (tmp_path / "crossed").mkdir()
+
+    _ = report_of(run_entry(TracksFeature(), crossed, None))
+
+    assert crossed.meta.out_path.read_bytes() == reference.meta.out_path.read_bytes()
+    assert list(opened) == [(manifest, False)]
+    assert not untouched.exists()
+
+
+def test_a_neighbor_table_that_cannot_be_read_is_the_loads_failure(
+    run_root: Path, tmp_path: Path
+) -> None:
+    ds, pairs, _, neighbors = pair_run_results(tmp_path / "data", "s")
+    corrupt_output(ds, neighbors, "s")
+    task = _pair_filtered_task(run_root, ds, pairs, neighbors)
+
+    failure = _failure(run_entry(TracksFeature(), task, None))
+
+    assert failure.key == make_entry_key("g", "s")
+    assert type(failure.error).__name__ == "ArrowInvalid"
+    assert list(run_root.iterdir()) == []
+
+
+def test_a_load_with_an_empty_lookup_filters_nothing(
+    run_root: Path, tmp_path: Path
+) -> None:
+    ds, pairs, _, neighbors = pair_run_results(
+        tmp_path / "data", "s", "t", neighbors_of=["t"]
+    )
+    task = _pair_filtered_task(run_root, ds, pairs, neighbors)
+
+    _ = report_of(run_entry(TracksFeature(), task, None))
+
+    assert task.meta.out_path.read_bytes() == _bytes_written_for(
+        tmp_path, _loaded_by_the_run(ds, pairs, None)
+    )
 
 
 # --- footers handed to the task --------------------------------------------------------

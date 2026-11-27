@@ -35,12 +35,13 @@ from ._utils import FeatureMeta
 from .admission import WorkerMeasure
 from .arena_guard import refuse_arena_blind
 from .column_contract import check_input_columns
-from .entry_pool import EntryFailure
+from .entry_pool import EntryFailure, worker_dataset
 from .loading import (
     ColumnProjection,
     PairRowsMissing,
     entry_bounds_filters,
     load_entry_data,
+    nn_pair_filter,
 )
 from .memory_watch import (
     NonreclaimablePeak,
@@ -59,14 +60,17 @@ from .parquet_reader import (
 from .writers import FeatureOutput, trim_feature_output, write_output
 
 if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+
     from .manifest import CoreSelector
-    from .types import Feature
+    from .types import Feature, NNResult
 
 __all__ = [
     "EntryLoad",
     "EntryReport",
     "EntryTask",
     "NotedOutput",
+    "PairFilter",
     "apply_noting_irregular_time",
     "run_entry",
     "run_entry_in_process",
@@ -93,6 +97,26 @@ def apply_noting_irregular_time(
 
 
 @dataclass(frozen=True)
+class PairFilter:
+    """The nearest-neighbor filter of one entry's load, as its worker builds it.
+
+    Attributes:
+        dataset: What :func:`~mosaic.core.pipeline.entry_pool.dataset_ref` gave
+            for the run's mode: the dataset itself for a thread, the manifest
+            path for a process, which opens it.
+        spec: The nearest-neighbor run whose table gives each individual's
+            neighbor.
+        group: The entry's group.
+        sequence: The entry's sequence.
+    """
+
+    dataset: Dataset | str
+    spec: NNResult
+    group: str
+    sequence: str
+
+
+@dataclass(frozen=True)
 class EntryLoad:
     """The load of one entry's input, as the run hands it to the worker that loads it.
 
@@ -105,6 +129,8 @@ class EntryLoad:
             the pair rows of input 0 and raises
             :class:`~mosaic.core.pipeline.loading.PairRowsMissing` when input 0
             holds none.
+        pair_filter: The nearest-neighbor filter that the load applies first,
+            ``None`` for none.
         frame_start: The first frame kept, ``None`` for no lower bound.
         frame_end: The frame after the last kept, ``None`` for no upper bound.
         time_window: The window of ``time`` kept.
@@ -117,6 +143,7 @@ class EntryLoad:
     file_specs: tuple[tuple[Path, LoadSpec], ...]
     projection: ColumnProjection | None
     expands_individuals: bool
+    pair_filter: PairFilter | None
     frame_start: int | None
     frame_end: int | None
     time_window: TimeWindow
@@ -186,15 +213,33 @@ class EntryReport:
 def _loaded(load: EntryLoad) -> pd.DataFrame | None:
     """The entry's merged and filtered input, ``None`` for one of no rows.
 
+    The filters are the run's, in its order: the nearest-neighbor filter, when
+    the entry's lookup is not empty, then the bounds of the frames and the time
+    window. The lookup is built before the load, from the dataset that
+    ``pair_filter`` names, opened without creating its roots.
+
     The footers that *load* carries are known to the load's reads, so a footer
     whose file did not move is not parsed again. That includes the footer of an
     empty input 0, which the check of its level reads under
-    ``expands_individuals``: it comes from the records too.
+    ``expands_individuals``: it comes from the records too. The neighbor table is
+    no input of the entry, and its footer is read once per entry.
     """
-    filters = entry_bounds_filters(
-        load.entry_key, load.frame_start, load.frame_end, load.time_window
-    )
     with memoized_footers(ParquetFooterMemo.from_records(load.footers)):
+        filters: list[Callable[[pd.DataFrame], pd.DataFrame]] = []
+        if load.pair_filter is not None:
+            nearest = nn_pair_filter(
+                worker_dataset(load.pair_filter.dataset, ensure_roots=False),
+                load.pair_filter.group,
+                load.pair_filter.sequence,
+                load.pair_filter.spec,
+            )
+            if nearest is not None:
+                filters.append(nearest)
+        filters.extend(
+            entry_bounds_filters(
+                load.entry_key, load.frame_start, load.frame_end, load.time_window
+            )
+        )
         return load_entry_data(
             list(load.file_specs),
             filters=filters,
@@ -233,8 +278,8 @@ def run_entry(
         The report of the output written or of a load of no rows, or the
         failure of the load, the trim or the write, with its error as raised.
         A load's failure is any error of the load other than missing pair rows:
-        an unreadable or corrupt input, or a time window over rows without
-        ``time``.
+        an unreadable or corrupt input or neighbor table, or a time window over
+        rows without ``time``.
 
     Raises:
         PairRowsMissing: A widening load found no pair rows in input 0 to widen

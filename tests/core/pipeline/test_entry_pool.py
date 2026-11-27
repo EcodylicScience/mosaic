@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import shutil
 import signal
 import sys
 import threading
@@ -22,6 +23,7 @@ from typing import Final, override
 
 import pytest
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline.entry_pool import (
     EntryFailure,
@@ -671,6 +673,32 @@ def test_a_worker_process_opens_each_dataset_once(tmp_path: Path) -> None:
     assert worker_dataset(ds) is ds
     assert worker_dataset(ref) is worker_dataset(ref)
     assert worker_dataset(ref).manifest_path == ds.manifest_path
+
+
+def test_a_dataset_opened_without_its_roots_creates_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.helpers import make_dataset
+
+    ds = make_dataset(tmp_path / "ds")
+    ref = str(ds.manifest_path)
+    root = ds.get_root("media_raw")
+    assert root.exists()
+    shutil.rmtree(root)
+    opened: dict[tuple[str, bool], Dataset] = {}
+    monkeypatch.setattr(entry_pool, "_OPENED", opened)
+
+    read_only = worker_dataset(ref, ensure_roots=False)
+
+    assert not root.exists()
+    assert worker_dataset(ref, ensure_roots=False) is read_only
+
+    ensuring = worker_dataset(ref)
+
+    assert root.exists()
+    assert ensuring is not read_only
+    assert worker_dataset(ref) is ensuring
+    assert set(opened) == {(ref, False), (ref, True)}
 
 
 @pytest.fixture
