@@ -80,8 +80,10 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   `core.strict_model` importing mosaic, `core.params` beyond `strict_model`, or
   `core.regions` beyond pydantic, the standard library, `params` and
   `strict_model`, `core.region_geometry` beyond numpy, the standard library and
-  `regions`, `mosaic.entry_points` importing anything but the standard library, or
-  `agent/mcp/spec.py` importing `core.region_geometry`.
+  `regions`, `mosaic.entry_points` importing anything but the standard library,
+  `agent/mcp/spec.py` importing `core.region_geometry`, `core/expressions.py`
+  importing anything outside the standard library at module scope, or
+  `import mosaic.core.expressions` loading numpy.
 - `test_params_declaration.py`: a parameter field without a description
   declaration, a declared fact missing from the schema, or a ratchet that grew.
 - `test_unwired_fields.py`: a field declared `unwired=` that is now wired.

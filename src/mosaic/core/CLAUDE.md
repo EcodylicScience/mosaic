@@ -12,6 +12,10 @@ covers that package. Layering and the `Params` hashing rule are in the root guid
 - `entry`, `params`, `strict_model` and `individuals` are leaves
   (`tests/meta/test_core_params_is_a_leaf.py`). `manifest.py` and `track_converter.py`
   import nothing from `dataset.py`.
+- `expressions` parses at module scope with the standard library alone and imports
+  numpy inside `evaluate`, so the column contract reads an expression's names without
+  numpy. It is not in `LEAF_MODULES`, whose walk reads function bodies. The test
+  reads its module-level statements and checks that importing it loads no numpy.
 - `ensure_track_converters_registered` imports `track_library` on every call, and
   `ensure_label_converters_registered` returns when `LABEL_CONVERTERS` is non-empty. Do
   not guard the first on emptiness. A caller who registers a converter first would lose

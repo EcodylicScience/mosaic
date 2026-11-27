@@ -30,13 +30,20 @@ import pytest
 
 import mosaic.core.arenas as arenas_module
 import mosaic.core.entry as entry_module
+import mosaic.core.expressions as expressions_module
 import mosaic.core.individuals as individuals_module
 import mosaic.core.params as params_module
 import mosaic.core.region_geometry as region_geometry_module
 import mosaic.core.regions as regions_module
 import mosaic.core.strict_model as strict_model_module
 import mosaic.entry_points as entry_points_module
-from tests.helpers import imports_of, imports_reaching, package_of, source_tree
+from tests.helpers import (
+    imports_of,
+    imports_reaching,
+    modules_loaded_by,
+    package_of,
+    source_tree,
+)
 
 LEAF_MODULES = (
     entry_module,
@@ -254,3 +261,46 @@ def test_no_leaf_defers_an_import_through_importlib(module: ModuleType) -> None:
         f"only."
     )
     assert not named, deferred
+
+
+def test_expressions_imports_only_the_standard_library_at_module_scope() -> None:
+    """``core.expressions`` parses names with the standard library alone.
+
+    The column contract reads an expression's names without numpy, and numpy
+    arrives inside ``evaluate``. A function body is therefore outside this
+    check, and ``LEAF_MODULES`` leaves the module out because its walk reads
+    function bodies too. The statements read here are the module body, any
+    ``try`` or ``if`` block in it and a class body, and an ``if TYPE_CHECKING``
+    block is passed over.
+    """
+    outside: set[str] = set()
+    pending: list[ast.AST] = list(source_tree(Path(expressions_module.__file__)).body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.If) and ast.unparse(node.test) in {
+            "TYPE_CHECKING",
+            "typing.TYPE_CHECKING",
+        }:
+            pending.extend(node.orelse)
+            continue
+        if isinstance(node, ast.Import):
+            outside.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            outside.add("." * node.level + (node.module or ""))
+        pending.extend(ast.iter_child_nodes(node))
+    outside = {
+        name
+        for name in outside
+        if name.startswith(".") or name.split(".", 1)[0] not in sys.stdlib_module_names
+    }
+    assert not outside, (
+        f"core/expressions.py imports {sorted(outside)} at module scope. It may "
+        f"import the standard library only, and numpy inside evaluate."
+    )
+
+
+def test_importing_expressions_leaves_numpy_unloaded() -> None:
+    """Importing ``mosaic.core.expressions`` in a fresh interpreter loads no numpy."""
+    assert modules_loaded_by("import mosaic.core.expressions", ("numpy",)) == []
