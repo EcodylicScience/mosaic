@@ -441,15 +441,15 @@ class TestPatternMisses:
         ds = _dataset(root)
         for number in range(RAW_REPORT_SAMPLE // 2 + 1):
             folder = root / f"raw{number:02d}"
-            _ = _write(folder / "a" / "x.npy", b"a")
-            _ = _write(folder / "b" / "y.npy", b"b")
+            _ = _write(folder / f"a{number:02d}" / "x.npy", b"a")
+            _ = _write(folder / f"b{number:02d}" / "y.npy", b"b")
             _ = _write(folder / "stray.npy", b"s")
             _tracks_source(
                 ds,
                 f"s{number:02d}",
                 folder,
                 sequence_path_pattern=r"^([^/]+)/",
-                group_pattern=r"^(a)$",
+                group_pattern=r"^(a)\d+$",
             )
         _ = ds.scan_tracks()
 

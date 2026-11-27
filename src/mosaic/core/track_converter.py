@@ -78,6 +78,7 @@ __all__ = [
     "builtin_track_converters",
     "conversion_rate",
     "ensure_track_converters_registered",
+    "format_merges_per_sequence",
     "get_track_converter",
     "merge_on_column_union",
     "refused_track_converters",
@@ -407,10 +408,10 @@ class TrackConverter(Generic[P]):
 
         Only files that exist now are listed. The base returns ``()``: the
         converter reads nothing beside its source. An override reads no file's
-        content, and takes no params because a scan runs before any conversion
-        has params, so it lists a companion whatever the params would decide. A
-        converter reads beside its source only the files this lists, so that a
-        change to one marks the conversion stale.
+        content and takes no params, because a scan runs before any conversion
+        has params. It lists a companion whatever the params would decide. A
+        converter reads beside its source only the files this lists. A change to
+        one then marks the conversion stale.
 
         Args:
             path: The raw tracks file.
@@ -812,6 +813,27 @@ def builtin_track_converters() -> dict[str, type[TrackConverter[Any]]]:
         for src_format, cls in TRACK_CONVERTERS.items()
         if cls.__module__.startswith("mosaic.")
     }
+
+
+def format_merges_per_sequence(src_format: str) -> bool:
+    """Whether this format's converter declares that several files are one sequence.
+
+    A merging format names one entry from several files. A file of any other
+    format that names its sequence converts into an entry of its own, and two
+    such files naming one entry lose one. A format that holds several sequences
+    per file is such a format too. Its file names no sequence only when the
+    source is scanned with ``multi_sequences_per_file``.
+
+    Tolerant where :func:`get_track_converter` is strict. ``index_tracks_raw``
+    resolves a format the caller has just *chosen*, where a typo is worth
+    refusing. This function reads a format back out of an index it did not
+    necessarily write, for a bulk gesture that warns per row and keeps going. An
+    unregistered format is one warning per file and not an aborted run over the
+    rest of the dataset, and it counts as a format that does not merge.
+    """
+    ensure_track_converters_registered()
+    converter_cls = TRACK_CONVERTERS.get(src_format)
+    return converter_cls is not None and converter_cls.merges_per_sequence
 
 
 def merge_on_column_union(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:

@@ -134,11 +134,11 @@ same source searches the sequence that the path named, and
   the sequences, and for a format that merges several files into one sequence,
   where the converter names the sequence from each file's stem.
 - **Two files may not name one entry.** The scan refuses two files of a format
-  that reads one file per sequence when they give the same group and sequence,
-  and writes nothing. A trial name alone, in the study above, repeats across
-  batches and days and is refused. Take the sequence from more of the path.
-  [The scan](../../dataset.md#add-sources-and-scan) lists the other remedies
-  and the formats the check skips.
+  that does not merge several files into one sequence when they give the same
+  group and sequence, and writes nothing. A trial name alone, in the study
+  above, repeats across batches and days and is refused. Take the sequence from
+  more of the path. [The scan](../../dataset.md#add-sources-and-scan) lists the
+  other remedies and the formats the check skips.
 
 ## The frame rate of an imported table
 
@@ -645,11 +645,14 @@ That call only reports. Pass `apply=True` to copy and index the file, then run
 `ds.convert_all_tracks()`. A promotion is blocked while anything built from the entry's
 raw tracks exists, its converted table included. `force=True` proceeds and deletes
 nothing, leaving those results stale until you re-run them. Pass a list of paths for a
-correction spread over several files. `derived_from` names the tracker run you
-corrected, which lets `mosaic sweep-tracking` reclaim that run's working directory
-without waiting out its retention window. `promote_correction` raises `ValueError`
-when `derived_from` names a run that tracked a [media variant](../media/preprocess.md),
-whatever `force` says, because that run's output is in the variant's pixels and frames.
+correction spread over several files when the format merges several files per sequence,
+such as `trex_npz`. Any other format takes one file, CalMS21 and the window formats
+included, and several raise `ValueError`, in a dry run too. `derived_from` names the
+tracker run you corrected, which lets `mosaic sweep-tracking` reclaim that run's working
+directory without waiting out its retention window. `promote_correction` raises
+`ValueError` when `derived_from` names a run that tracked a
+[media variant](../media/preprocess.md), whatever `force` says, because that run's
+output is in the variant's pixels and frames.
 
 Only the newest revision converts, and it converts into a variant of its own beside
 the uncorrected one. Name it as above, or drop the uncorrected variant's rows. In the

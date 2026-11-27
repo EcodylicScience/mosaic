@@ -64,10 +64,10 @@ some of its files miss, and a missed file is skipped, not indexed.
 missed every file, so no file is indexed, and the source reports no
 ``group_pattern_missed``. ``sequence_path_pattern_missed``: the source declares a
 sequence path pattern that some of its files miss, and a missed file is skipped,
-not indexed. ``sequence_path_pattern_unmatched``: the pattern missed every file,
-so no file is indexed, and the source reports no
-``sequence_path_pattern_missed``; a group pattern is then asked of no file. A
-group pattern is judged over the files the sequence pattern named.
+not indexed. ``sequence_path_pattern_unmatched``: the pattern missed every file
+and no file is indexed. The source reports no ``sequence_path_pattern_missed``,
+and a group pattern is asked of no file. A group pattern is judged over the files
+the sequence pattern named.
 ``row_unmatched``: a row of a CSV the dataset imports
 names no entry.
 """

@@ -97,8 +97,7 @@ class PatternMiss(StrictModel):
 
     A source reports one miss per pattern that misses: its
     ``sequence_path_pattern``, its ``group_path_pattern``, or its
-    ``group_pattern``. A scan skips such a file, so no index row records
-    it.
+    ``group_pattern``. A scan skips such a file and indexes no row for it.
 
     Attributes:
         kind: The kind of the source.

@@ -398,14 +398,15 @@ is judged over the files the sequence pattern named. A rescan drops the raw inde
 that an earlier scan wrote for such files with an empty group. It leaves their converted
 tables in place. Fix the pattern, or move the file, and scan again.
 
-**Two tracks files may not name one entry.** A scan of a format that reads one file per
-sequence refuses two files that give the same group and sequence, whatever names them,
-the file stem included. The refusal names both files and their sources and comes before
-the scan writes anything, since a conversion keeps one table per entry and would drop
-the other recording. Rename a file, narrow a source's patterns so one is not scanned, or
-name the sequences from their folders. Formats that merge files into a sequence,
-formats that hold several sequences in a file, and a promoted correction beside its
-upload are not checked.
+**Two tracks files may not name one entry.** A scan of a format that does not merge
+several files into one sequence refuses two files that give the same group and sequence,
+whatever names them, the file stem included. The refusal names both files and their
+sources and comes before the scan writes anything, because a conversion keeps one table
+per entry and drops the other recording. Rename a file, narrow a source's patterns so
+one is not scanned, or name the sequences from their folders. Formats that merge files
+into a sequence, rows that name no sequence (a source with
+`--multi-sequences-per-file`), and a promoted correction beside its upload are not
+checked.
 
 **Hashing a large corpus is faster with threads.** `mosaic scan --checksum-workers N`
 reads the tracks and labels files, and the files beside them, in `N` threads. A corpus

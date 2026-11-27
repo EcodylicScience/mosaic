@@ -210,9 +210,10 @@ def _companion_problems[P: TrackConvertParams](
 
     The hook is called directly, for the reason that ``frames_read`` is: any
     exception is a defect of the converter, and the check reports it. It gets the
-    resolved sample, as a scan gives it, so a hook that returns resolved paths
-    lists files in the sample's directory whatever the spelling of *sample*. A
-    companion is not resolved, so a symlink inside the directory is one.
+    resolved sample, as a scan gives it. A hook that returns resolved paths
+    therefore lists files in the sample's directory whatever the spelling of
+    *sample*. A companion is not resolved, and a symlink inside the directory
+    counts as a file in it.
     """
     name = cls.__name__
     sample = sample.resolve()
@@ -240,8 +241,5 @@ def _companion_problems[P: TrackConvertParams](
                 f"directory {sample.parent}."
             )
         elif companion.samefile(sample):
-            problems.append(
-                f"{prefix} lists {companion.name}, which is the sample, not a "
-                "companion of it."
-            )
+            problems.append(f"{prefix} lists {companion.name}, which is the sample.")
     return problems

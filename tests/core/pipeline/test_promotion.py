@@ -331,6 +331,135 @@ def test_a_multi_file_promotion_keeps_every_file(tmp_path: Path) -> None:
     assert all(".rev1" in landed.name for landed in report.promoted)
 
 
+def _corrected_table(tmp_path: Path, name: str) -> Path:
+    """A corrected table of a format that reads one file per sequence."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / name
+    _ = path.write_text("frame\tx\ty\n0\t1.0\t1.0\n", encoding="utf-8")
+    return path
+
+
+def _files_under(root: Path) -> list[Path]:
+    """Every file below *root*, which is none when *root* does not exist."""
+    return sorted(path for path in root.rglob("*") if path.is_file())
+
+
+def test_several_files_of_a_one_file_per_sequence_format_are_refused_in_a_dry_run(
+    tmp_path: Path,
+) -> None:
+    """A conversion keeps one file per sequence, so the others would be lost."""
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    first = _corrected_table(tmp_path, "a.tsv")
+    second = _corrected_table(tmp_path, "b.tsv")
+
+    with pytest.raises(ValueError) as refusal:
+        _ = promote_correction(
+            ds,
+            "day1",
+            "trial01",
+            [first, second],
+            src_format="tracktor_corrected_tsv",
+        )
+
+    message = str(refusal.value)
+    assert "tracktor_corrected_tsv" in message
+    assert "day1__trial01" in message
+    assert str(first) in message
+    assert str(second) in message
+    assert _files_under(ds.get_root("tracks_raw")) == []
+
+
+def test_several_files_of_a_one_file_per_sequence_format_are_refused_on_apply(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    first = _corrected_table(tmp_path, "vid1_a.tsv")
+    second = _corrected_table(tmp_path, "vid1_b.tsv")
+
+    with pytest.raises(ValueError, match="tracktor_corrected_tsv"):
+        _ = promote_correction(
+            ds,
+            "",
+            "vid1",
+            [first, second],
+            src_format="tracktor_corrected_tsv",
+            apply=True,
+        )
+
+    assert _files_under(ds.get_root("tracks_raw")) == []
+
+
+def test_several_files_of_an_enumerable_format_are_refused(tmp_path: Path) -> None:
+    """A promoted file names its entry, so an enumerable format reads it as one file."""
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    files = [tmp_path / "vid1_a.npy", tmp_path / "vid1_b.npy"]
+    for each in files:
+        _ = each.write_bytes(b"")
+
+    with pytest.raises(ValueError, match="calms21_npy"):
+        _ = promote_correction(
+            ds, "", "vid1", files, src_format="calms21_npy", apply=True
+        )
+
+    assert _files_under(ds.get_root("tracks_raw")) == []
+
+
+def test_the_refusal_is_not_lifted_by_force(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    files = [
+        _corrected_table(tmp_path, "vid1_a.tsv"),
+        _corrected_table(tmp_path, "vid1_b.tsv"),
+    ]
+
+    with pytest.raises(ValueError, match="tracktor_corrected_tsv"):
+        _ = promote_correction(
+            ds,
+            "",
+            "vid1",
+            files,
+            src_format="tracktor_corrected_tsv",
+            apply=True,
+            force=True,
+        )
+
+    assert _files_under(ds.get_root("tracks_raw")) == []
+
+
+def test_one_file_of_a_one_file_per_sequence_format_still_promotes(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="promote")
+
+    report = promote_correction(
+        ds,
+        "",
+        "vid1",
+        [_corrected_table(tmp_path, "vid1.tsv")],
+        src_format="tracktor_corrected_tsv",
+        apply=True,
+    )
+
+    assert report.applied
+    assert len(report.promoted) == 1
+    assert report.promoted[0].exists()
+
+
+def test_several_files_of_a_merging_format_promote_in_a_dry_run(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    files = [
+        _corrected(tmp_path, name="vid1_fish0.npz"),
+        _corrected(tmp_path, name="vid1_fish1.npz"),
+    ]
+
+    report = promote_correction(ds, "", "vid1", files, src_format="trex_npz")
+
+    assert report.would_proceed
+    assert not report.applied
+
+
 # --- a correction converts as its own variant ---------------------------------
 
 

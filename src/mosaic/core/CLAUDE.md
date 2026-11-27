@@ -228,24 +228,23 @@ importing `mosaic.tracking` registers neither.
   `group_from`, or an indexer given `group_from_path`, misses nothing. A rescan drops
   the raw row of a file an earlier scan indexed with an empty group, and leaves its
   converted table.
-- A tracks scan refuses two distinct files of one format that name one entry
-  (`RawEntryNamedTwice`, `entries_named_twice`), because a conversion would keep one.
-  `_scan_raw_sources` plans every selected source (`_plan_raw_rows`), checks the
-  planned rows with the committed rows no plan replaces, and only then commits each
-  pass; `_commit_raw_rows` checks again under the lock. A blank sequence, a promoted
-  correction, a format whose converter merges per sequence or is enumerable, and a
-  labels source are exempt (`tests/core/test_scan_sources.py`). A
-  `sequence_path_pattern` is refused beside a merging format or
-  `multi_sequences_per_file`, and a capture that names nothing is refused, before any
-  write.
+- A tracks scan refuses two distinct files that name one entry, unless their format
+  merges several files into one sequence (`RawEntryNamedTwice`, `entries_named_twice`,
+  `format_merges_per_sequence`), because a conversion keeps one. `_scan_raw_sources`
+  plans every selected source (`_plan_raw_rows`), checks the planned rows with the
+  committed rows no plan replaces, and only then commits each pass. `_commit_raw_rows`
+  checks again under the lock. A blank sequence, a promoted correction and a labels
+  source are exempt (`tests/core/test_scan_sources.py`). A `sequence_path_pattern` is
+  refused beside a merging format or `multi_sequences_per_file`, and a capture that
+  names nothing is refused, before any write.
 - `TrackConverter.companion_files(path)` lists the files beside a raw file that
   `convert` may read: existing, sorted, in its directory, never the file itself. It
   reads no file's content and takes no params, because a scan has none. `convert` reads
   beside its source only what it lists (`conformance.py` checks the list). A scan
   records each as a `{name, size_bytes, mtime_iso, md5}` record in the row's
   `companions` cell, compact JSON sorted by name, and `source_members_from_rows` adds
-  each digest to the sequence's `tracks_raw` composition, so a changed companion makes
-  a conversion stale under its unchanged run id. A converter that lists none keeps its
+  each digest to the sequence's `tracks_raw` composition. A changed companion makes a
+  conversion stale under its unchanged run id. A converter that lists none keeps its
   composition, and a cell that does not parse is refused under the lock before the
   write. `_prior_digests` reuses a companion's digest by its size and mtime, as a
   source's.

@@ -104,6 +104,7 @@ from .track_converter import (
     TrackConverter,
     TrackConvertParams,
     ensure_track_converters_registered,
+    format_merges_per_sequence,
     get_track_converter,
     merge_on_column_union,
     track_converter_origin,
@@ -506,8 +507,8 @@ class _RawScanPlan:
 
     Attributes:
         kind: Which raw index the pass feeds.
-        rows: One row per file the scan indexes, in file order. Neither a row nor
-            its companions carry a digest yet.
+        rows: One row per file the scan indexes, in file order. The scan has not
+            checksummed a row or its companions yet.
         claim: What the pass replaces: the claim given, widened by the files the
             walk found and the ones it skipped.
         source: The id of the declared source scanned, or ``""`` for a scan of
@@ -602,11 +603,11 @@ def _digests(
     """The checksum of each distinct file of *paths*, by resolved path.
 
     A file with a carried digest keeps it. Every other file is read once, however
-    many of *paths* name it, so a file that is one row's source and another row's
+    many of *paths* name it. A file that is one row's source and another row's
     companion is hashed once. The files are taken in path order, through a
     thread pool of *workers* threads when *workers* is above one and inline
-    otherwise. ``hashlib`` releases the GIL while it hashes a chunk, so the reads
-    overlap, and a read of a slow share is waiting rather than computing.
+    otherwise. ``hashlib`` releases the GIL while it hashes a chunk. The reads
+    overlap, and a read of a slow share waits instead of computing.
 
     The result is the same for any *workers*: each digest is a function of its
     file, and the dict is built in path order whatever order the reads end in.
@@ -632,43 +633,13 @@ def _digests(
 def _companion_rule_of(src_format: str) -> CompanionRule:
     """The rule that lists the companions of files of *src_format*.
 
-    Tolerant like :func:`_format_merges_per_sequence`: a format with no
+    Tolerant like :func:`format_merges_per_sequence`: a format with no
     registered converter, which a scope of a test or an import may name, lists
     none.
     """
     ensure_track_converters_registered()
     converter_cls = TRACK_CONVERTERS.get(src_format)
     return no_companions if converter_cls is None else converter_cls().companion_files
-
-
-def _format_merges_per_sequence(src_format: str) -> bool:
-    """Does this format's converter declare that several files are one sequence?
-
-    Tolerant where :func:`get_track_converter` is strict, and deliberately so.
-    ``index_tracks_raw`` resolves a format the caller has just *chosen*, where a
-    typo is worth refusing; this reads one back out of an index it did not
-    necessarily write, for a bulk gesture that warns per row and keeps going. An
-    unregistered format is one warning per file, not an aborted run over the
-    rest of the dataset.
-    """
-    ensure_track_converters_registered()
-    converter_cls = TRACK_CONVERTERS.get(src_format)
-    return converter_cls is not None and converter_cls.merges_per_sequence
-
-
-def _format_names_one_file_per_sequence(src_format: str) -> bool:
-    """Does each file of this format name a sequence of its own?
-
-    ``False`` for a converter that merges several files into one sequence or
-    holds several sequences in one file, which names an entry twice by design.
-    Tolerant like :func:`_format_merges_per_sequence`: an unregistered format of a
-    row read back from an index is checked as a one-file-per-sequence format.
-    """
-    ensure_track_converters_registered()
-    converter_cls = TRACK_CONVERTERS.get(src_format)
-    return converter_cls is None or not (
-        converter_cls.merges_per_sequence or converter_cls.enumerable
-    )
 
 
 def _track_variant_id(
@@ -693,8 +664,8 @@ def _converting_rows(df: pd.DataFrame) -> pd.DataFrame:
     same entry. Converted together they would write one table holding both
     readings of every frame, or one table that replaced the other, under one
     identifier. The revision (:func:`correction_revision` of the row's path)
-    therefore separates them: a correction reaches the variant identity, so each
-    side converts into a variant of its own. Only the newest correction converts,
+    therefore separates them: it enters the variant identity, and each side
+    converts into a variant of its own. Only the newest correction converts,
     because the series is append-only history, and converting every revision would
     mint a variant per revision forever, the older ones being already on disk under
     their own.
@@ -4574,6 +4545,8 @@ class Dataset:
 
         Raises:
             ValueError: *checksum_workers* is below 1.
+            RawEntryNamedTwice: Two files of a format that does not merge several
+                files into one sequence name one entry. Nothing is written.
         """
         return self._scan_raw_sources(
             "tracks",
@@ -4616,16 +4589,15 @@ class Dataset:
     ) -> RawScanResult:
         """Drive the raw scan for *kind*: plan every source, check, then commit each.
 
-        Each source is a separate pass carrying that source's own recipe. That is
-        safe here where it was not before, because each pass replaces only what
-        its own claim covers -- so the second source's write preserves the first
-        source's rows instead of erasing them.
+        Each source is a separate pass with its own recipe. A pass replaces only
+        what its claim covers, so a later source's write preserves an earlier
+        source's rows.
 
         Every selected source is planned (:meth:`_plan_raw_rows`) before the first
-        pass writes, and for tracks the rows of all the plans and the committed
-        rows no plan replaces are checked together, so a refusal that concerns a
-        later source leaves the earlier sources' indexes as they were. A versioned
-        label series is written when its turn comes, after that check.
+        pass writes. For tracks, the rows of all the plans and the committed rows
+        no plan replaces are checked together. A refusal that concerns a later
+        source therefore leaves the earlier sources' indexes as they were. A
+        versioned label series is written when its turn comes, after that check.
 
         Raises:
             ValueError: If *checksum_workers* is below 1.
@@ -10153,7 +10125,7 @@ class Dataset:
         companions
 
         ``companions`` records the files beside each source that its converter may
-        read, with each one's size, modification time and checksum, so a change to
+        read, with each one's size, modification time and checksum. A change to
         one marks the conversion stale. It is empty for a converter that lists none.
 
         Parameters
@@ -10296,12 +10268,11 @@ class Dataset:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
         The body shared by :meth:`index_tracks_raw` and :meth:`index_labels_raw`.
-        A raw source file carries the same columns whichever root it lands in, and
-        the scan, row build and md5 carry-forward are identity-free, so only
-        *kind* distinguishes a tracks source from a label source: which root the
-        rows land in, which registry checks *src_format*, and what names a
-        file's sequence and lists the files beside it
-        (:meth:`_plan_raw_rows`).
+        A raw source file has the same columns whichever root it lands in, and
+        the scan, row build and md5 carry-forward are identity-free. Only *kind*
+        distinguishes a tracks source from a label source: the root the rows are
+        written to, the registry that checks *src_format*, and the rule that names
+        a file's sequence and lists the files beside it (:meth:`_plan_raw_rows`).
 
         *other_sources* returns what the dataset's other sources of this kind
         claim. A skipped file whose target one of them claims leaves that source's
@@ -10382,8 +10353,7 @@ class Dataset:
         the files the walk found and the ones it skipped, as the media scan
         widens its own.
 
-        This is the one entry both a single-source index and a declared-source
-        scan plan through, so every refusal that precedes a write lives here.
+        A single-source index and a declared-source scan both plan through here.
         *src_format* is resolved first, and strictly: a tracks format must name a
         registered track converter and a labels format a registered label
         converter (the registries differ, and the label one is not keyed the same
@@ -10393,6 +10363,10 @@ class Dataset:
         stem and which files lie beside a source that it reads; a label file is
         one sequence, named by its stem, and no label converter reads a file
         beside its source.
+
+        This method raises each refusal of one source's arguments or files, before
+        any write. The refusal of two files that name one entry compares plans, and
+        :meth:`_scan_raw_sources` and :meth:`_index_raw` raise it.
 
         Raises:
             ValueError: *src_format* names no registered converter,
@@ -10447,7 +10421,7 @@ class Dataset:
         if (
             sequence_path_pattern
             and kind == "tracks"
-            and _format_merges_per_sequence(src_format)
+            and format_merges_per_sequence(src_format)
         ):
             msg = (
                 f"sequence_path_pattern {sequence_path_pattern!r} of "
@@ -10534,14 +10508,14 @@ class Dataset:
                 path_root=path_root,
             )
 
-        # iter_track_files already deduped by resolved path and sorted. The scan
-        # above is the expensive, read-only phase; the lock covers the write
-        # alone, which is what makes the rewrite safe against a concurrent one.
+        # iter_track_files already deduped by resolved path and sorted. The walk
+        # above is the read-only phase. _commit_raw_rows takes the lock for the
+        # write alone, which makes the rewrite safe against a concurrent one.
         #
-        # **A replace over what the scan claims, not over the file** -- the same
-        # rule the media scan follows, and for the same reasons. It is also what
-        # lets one dataset hold two source formats: scanning a trex directory and
-        # then a CalMS21 one used to leave only the second.
+        # **A replace over what the scan claims, not over the file**, the same
+        # rule the media scan follows and for the same reasons. It lets one dataset
+        # hold two source formats: scanning a trex directory and then a CalMS21 one
+        # keeps the rows of both.
         if claim is None:
             claim = ScanClaim.over_directories(search)
         # The same widening the media scan applies, for the same reason: a
@@ -10587,17 +10561,18 @@ class Dataset:
         call of :func:`_digests`, before the lock is taken. The merge replaces
         what the plan's claim covers, parses every merged ``companions`` cell and,
         for tracks, refuses two files of one format that name one entry, then
-        writes the index and the compositions. The check runs under the lock, so
-        a writer that landed after the plan's check is covered too.
+        writes the index and the compositions. The check runs under the lock and
+        covers a writer that landed after the plan's check.
 
         *scan_claim* is what the whole scan replaces, which is more than this
         pass's claim when the scan has later passes. A row of a later pass's
-        claim is not kept: that pass drops it, so it cannot make this write
-        refuse. It defaults to the plan's claim.
+        claim is not kept, because that pass drops it. Such a row cannot make this
+        write refuse. It defaults to the plan's claim.
 
         Raises:
-            RawEntryNamedTwice: Two files of one tracks format that names one
-                sequence per file name one entry. Nothing is written.
+            RawEntryNamedTwice: Two files of a tracks format that does not merge
+                several files into one sequence name one entry. Nothing is
+                written.
         """
         target_root = _RAW_ROOT_FOR_KIND[plan.kind]
         out_csv = self.get_root(target_root) / index_filename
@@ -10684,10 +10659,11 @@ class Dataset:
         """Refuse two files of one tracks format that name one entry.
 
         Checks the rows of *plans* and the *kept* rows beside them, each format on
-        its own, so a conversion that would take one file of an entry and lose the
-        other is refused before anything is written. A format whose converter
-        merges several files per sequence or holds several sequences per file is
-        not checked (:func:`_format_names_one_file_per_sequence`).
+        its own. A conversion takes one file of an entry and loses the other. The
+        refusal comes before anything is written. A format whose converter
+        merges several files per sequence is not checked
+        (:func:`format_merges_per_sequence`), and neither is a row with no
+        sequence.
 
         Raises:
             RawEntryNamedTwice: Naming the entry, both files, and for each file
@@ -10702,7 +10678,7 @@ class Dataset:
         for src_format in sorted(by_format):
             found = entries_named_twice(
                 by_format[src_format],
-                one_file_per_sequence=_format_names_one_file_per_sequence(src_format),
+                one_file_per_sequence=not format_merges_per_sequence(src_format),
                 resolve=self._resolved_stored_path,
             )
             if found:
@@ -10718,8 +10694,8 @@ class Dataset:
         """The refusal for *found*, naming the source of each of its first two files.
 
         A file a plan scanned names that plan's source. Any other file is a kept
-        row, which names the declared tracks sources that claim it, built only
-        now that a refusal fires.
+        row, which names the declared tracks sources that claim it. Those are
+        built only when a refusal fires.
         """
         scanned: dict[Path, _RawScanPlan] = {}
         for plan in plans:
@@ -10761,14 +10737,14 @@ class Dataset:
     ) -> list[TracksRawIndexRow]:
         """*rows* with the checksum of each source and each companion filled in.
 
-        One :func:`_digests` call covers every source and companion, so a file
-        listed twice is read once. A digest comes from the index at *out_csv*
+        One :func:`_digests` call covers every source and companion and reads a
+        file listed twice once. A digest comes from the index at *out_csv*
         while its file's size and mtime hold. That read is advisory and made
         before the lock, like the media probe phase's caches: a stale entry costs
         a re-hash, never a wrong digest, because every hit is re-validated
         against the file's current size and mtime. A companion is looked up by the
-        resolved path of the file beside its source, as a carried digest is keyed,
-        so a companion that is a symlink takes its target's digest. Rows come back
+        resolved path of the file beside its source, as a carried digest is keyed.
+        A companion that is a symlink takes its target's digest. Rows come back
         in the order given, unchanged when *compute_md5* is off.
         """
         if not compute_md5:
@@ -10809,7 +10785,7 @@ class Dataset:
         """Report the files a scan skipped because a declared pattern missed them.
 
         The sequence path pattern is reported first, over all *total* files. The
-        group pattern is judged over the files the sequence rule named, so a file
+        group pattern is judged over the files the sequence rule named. A file
         the sequence pattern missed is counted once, against that pattern. A
         pattern that missed every file it was asked about is reported as that, and
         only that: the source indexes no file, and each file listed would say the
@@ -11056,7 +11032,7 @@ class Dataset:
         none of these semantics itself.
 
         A row records the companions that its scope's format lists, as a scan of
-        that format does, so a sequence's composition does not depend on which
+        that format does. A sequence's composition then does not depend on which
         writer wrote it. A format with no registered converter lists none. A kept
         row whose ``companions`` cell does not parse refuses the write.
         """
@@ -11752,7 +11728,7 @@ class Dataset:
         }
         merging: set[str]
         if merge_per_sequence is None:
-            merging = {fmt for fmt in present if _format_merges_per_sequence(fmt)}
+            merging = {fmt for fmt in present if format_merges_per_sequence(fmt)}
         elif merge_per_sequence:
             merging = present
         else:
@@ -12046,8 +12022,8 @@ class Dataset:
         # label one converter's tables with another's schema. It is read from
         # each group's own converter, beside the variant it mints.
 
-        # Merge per (group, sequence, src_format, revision), so that a correction
-        # and its upload are two groups.
+        # Merge per (group, sequence, src_format, revision): a correction and its
+        # upload are two groups.
         groupby_cols = [*_RAW_ENTRY_COLUMNS, _CORRECTION_COL]
         # Read once for every entry a merge may write, under either group cell.
         divisions = self.division_facts(

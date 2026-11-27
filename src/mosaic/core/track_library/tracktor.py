@@ -31,7 +31,7 @@ state a rate that is wrong for every frame.
 ``_tracked_fixed_final.tsv`` in place of ``_tracked.csv``, in the same directory.
 Without the sibling the entry fails with an error that names it. There is no
 fallback to a rate. The sibling is a companion file of the raw table: its digest
-is part of the sequence's ``tracks_raw`` composition, so a changed corrected table
+is part of the sequence's ``tracks_raw`` composition. A changed corrected table
 makes the raw conversion stale. The corrected table lists the raw table in the same
 way, whatever its params.
 

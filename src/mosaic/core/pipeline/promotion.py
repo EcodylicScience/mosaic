@@ -46,6 +46,7 @@ from mosaic.core.pipeline.sequence_index import (
     amend_sequence_labels,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from mosaic.core.track_converter import format_merges_per_sequence
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -165,10 +166,19 @@ def promote_correction(
             different entry of ``tracks_raw`` or the media index. A dry run
             reports the collision in ``blocked`` instead.
         FileNotFoundError: If a file to promote does not exist.
-        ValueError: If *derived_from* names a tracker run that read a media
-            variant. That run's output is in the variant's pixels and frames,
-            and a promoted file is converted as it is, without a mapping back
-            into the entry media. *force* does not override this.
+        ValueError: In a dry run and under *apply* alike, and *force* overrides
+            neither:
+
+            - Several files are given and the converter of *src_format* does
+              not merge several files into one sequence. A promoted correction
+              names its sequence, so a conversion reads one file of such a
+              format per sequence and would keep one of the files and drop the
+              rest. A format with no registered converter counts as one that
+              does not merge.
+            - *derived_from* names a tracker run that read a media variant.
+              That run's output is in the variant's pixels and frames, and a
+              promoted file is converted as it is, without a mapping back into
+              the entry media.
     """
     from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
 
@@ -188,6 +198,15 @@ def promote_correction(
     if missing:
         named = ", ".join(str(p) for p in missing)
         raise FileNotFoundError(f"nothing to promote at: {named}")
+    if len(sources) > 1 and not format_merges_per_sequence(src_format):
+        named = ", ".join(str(p) for p in sources)
+        raise ValueError(
+            f"{make_entry_key(group, sequence)}: {src_format} does not merge "
+            f"several files into one sequence, so a correction of one entry "
+            f"cannot hold several files: a conversion would keep one and drop "
+            f"the rest. Promote one file, or name a format that merges several "
+            f"files per sequence. Files: {named}."
+        )
     variant = _media_variant_read(ds, derived_from) if derived_from else ""
     if variant:
         message = (

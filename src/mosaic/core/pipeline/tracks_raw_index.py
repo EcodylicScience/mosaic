@@ -191,7 +191,7 @@ def _is_blank(value: object) -> bool:
 def companions_cell(records: Iterable[CompanionRecord]) -> str:
     """The ``companions`` cell for *records*: compact JSON sorted by name, or ``""``.
 
-    One spelling per value, so the same companions give the same bytes whatever
+    Each value has one spelling. The same companions give the same bytes whatever
     order they were listed in.
     """
     ordered = sorted(records, key=lambda record: record.name)
@@ -375,9 +375,9 @@ def frame_from_rows(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     :func:`read_tracks_raw_index`, so the projection can merge the two without
     per-row normalization.
 
-    A text cell a row lacks is ``""``, not a float NaN, so a row read from an
-    index written before a column carries a blank cell to whatever reads the
-    frame next. ``size_bytes`` stays numeric.
+    A text cell a row lacks is ``""`` and not a float NaN. A row read from an
+    index that predates a column has a blank cell for it. ``size_bytes`` stays
+    numeric.
     """
     frame = pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
     for column in TRACKS_RAW_INDEX_COLUMNS:
@@ -704,7 +704,8 @@ class SequenceCaptureError(ValueError):
 
     A group that did not take part in the match, or that matched the empty
     string, would name a blank sequence. The report of the raw files catches this
-    class and no other, so a file the scan would refuse is listed as a miss.
+    class and no other. A file the scan would refuse is therefore listed as a
+    miss.
     """
 
 
@@ -726,8 +727,8 @@ def sequence_rule(
     *path_root*, with ``/`` separators, and joins the pattern's capture groups
     with ``__`` in order. A path the pattern does not match has no sequence
     (``None``). Without it, the rule is *sequence_from_stem* of the file's stem,
-    and never misses. The scan and the raw report build their rule here, so they
-    name one sequence.
+    and never misses. The scan and the raw report build their rule here and name
+    one sequence.
 
     Args:
         sequence_from_stem: The converter's rule for a stem, used without a
@@ -841,7 +842,7 @@ class RawEntryNamedTwice(ValueError):
     """Two raw files of one format name one entry, and a conversion would keep one.
 
     A conversion writes one table per entry and takes the first file that names
-    it, so the recording of the other would be lost without a message.
+    it. The recording of the other is lost without a message.
 
     Attributes:
         entry: The ``(group, sequence)`` both files name.
@@ -894,15 +895,14 @@ def entries_named_twice(
     sequences), and neither does a promoted correction, which promotion indexes
     under its upload's entry and a conversion keeps apart
     (:func:`~mosaic.core.pipeline.promotion.correction_revision`). Files are
-    counted by their resolved path, so a symlink and its target, or a row
-    listed twice, are one file. The result is the same for any order of *rows*.
+    counted by their resolved path. A symlink and its target, or a row listed
+    twice, are one file. The result is the same for any order of *rows*.
 
     Args:
         rows: Rows with ``group``, ``sequence`` and ``abs_path`` cells.
-        one_file_per_sequence: Whether the format's converter reads one file
-            per sequence. ``False`` for a format that merges several files into
-            one sequence or holds several sequences in one file, which names an
-            entry twice by design: nothing is reported.
+        one_file_per_sequence: Whether the format does not merge several files
+            into one sequence. ``False`` for a format that merges, which names an
+            entry from several files, and nothing is reported.
         resolve: Resolves a row's stored ``abs_path`` to the file it names.
     """
     if not one_file_per_sequence:
@@ -987,7 +987,7 @@ def source_members_from_rows(
     within a sequence: the files of a merged sequence sit beside each other, and
     one companion listed by several of them is one file. A companion without a
     digest leaves the composition incomplete, as a source without one does. A row
-    without companions adds none, so the composition of a sequence whose converter
+    without companions adds none. The composition of a sequence whose converter
     lists none is what its files alone give.
     """
     members: dict[tuple[str, str], list[SourceMember]] = {}

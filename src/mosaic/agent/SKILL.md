@@ -251,12 +251,13 @@ A dataset is a directory with `dataset.yaml` and named roots
   reported as `sequence_path_pattern_missed` (or `..._unmatched`). It is refused beside
   `--multi-sequences-per-file` and for a format that merges files into a sequence.
   (https://ecodylicscience.github.io/mosaic/guides/tracking/import/#naming-a-sequence-from-its-folders)
-- A scan refuses two tracks files of a one-file-per-sequence format that name one entry,
-  the stem-named ones too, and writes nothing, because a conversion keeps one table per
-  entry. The error names both files and their sources. Rename one, narrow a source's
-  patterns so one is not scanned, or add a `--sequence-path-pattern` that takes the
-  sequence from more of the path. A scan of a large corpus on a slow share is faster
-  with `mosaic scan --checksum-workers N`, which changes no row.
+- A scan refuses two tracks files that name one entry when their format does not merge
+  several files into one sequence, the stem-named ones too, and writes nothing, because
+  a conversion keeps one table per entry. The error names both files and their sources.
+  Rename one, narrow a source's patterns so one is not scanned, or add a
+  `--sequence-path-pattern` that takes the sequence from more of the path. A scan of a
+  large corpus on a slow share is faster with `mosaic scan --checksum-workers N`, which
+  changes no row.
 - `mosaic describe --raw` (`describe_dataset` with `raw: true`) adds a `raw_report`
   built from the indexes: duplicate raw files, files with no checksum, files a group or
   sequence pattern misses, tracks tables with an odd frame count or span, uneven time

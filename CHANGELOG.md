@@ -14,41 +14,44 @@ No run id moves. `tracks_raw/index.csv` gains a trailing `companions` column,
 which lists the files beside a raw file that its converter may read, each with
 its size, modification time and checksum, and is blank for a converter that
 lists none. An older index reads as if every cell were blank. The two Tracktor
-converters list the other Tracktor table of the pair, so a changed, new or
-removed sibling now marks a conversion stale. The first scan after upgrading
-adds those siblings to their sequences' `tracks_raw` compositions. Their
-conversions then run once more under unchanged run ids, with identical tables,
-and the features above them recompute once. A sequence whose converter lists no
-companion keeps its composition.
+converters list the other Tracktor table of the pair. A changed, new or removed
+sibling now marks a conversion stale. The first scan after upgrading adds those
+siblings to their sequences' `tracks_raw` compositions. Their conversions then
+run once more under unchanged run ids, with identical tables, and the features
+above them recompute once. A sequence whose converter lists no companion keeps
+its composition.
 
 `sequence_path_pattern` names a tracks or labels source's sequences from the
 folders of each file (`mosaic sources add --sequence-path-pattern`). A manifest
 that declares it is written at version 7, which older code refuses to open. A
 manifest that declares none is written at the version it was before.
 
-A scan now refuses two files of a one-file-per-sequence format that name one
-entry, before it writes anything. A conversion keeps the first file of an entry
-and drops the other without a message, and the refusal covers sequences named
-from the file stem too, so a scan that used to succeed may now stop. Name the
-files differently, narrow the source's patterns, or name the sequences from
-their path. Formats that merge several files into a sequence, formats that hold
-several sequences per file, a promoted correction and a row with no sequence
-are exempt.
+A scan now refuses two files of a format that does not merge several files into
+one sequence when they name one entry, before it writes anything. A conversion
+keeps the first file of an entry and drops the other without a message. The
+refusal covers sequences named from the file stem too. A scan that used to
+succeed may now stop. Name the files differently, narrow the source's patterns,
+or name the sequences from their path. Formats that merge several files into a
+sequence, a promoted correction and rows that name no sequence, such as those of
+a source with `multi_sequences_per_file`, are exempt. A promotion now refuses
+several files for one entry of a format that does not merge several files into
+one sequence, CalMS21 and the window formats included, in a dry run too, because
+they convert into one variant that keeps one of them.
 
-A promoted correction of a format that converts one file at a time, such as
-Tracktor or SLEAP, now converts into a variant of its own. Before, it and its
-upload wrote one variant and one of them was lost. After a promotion and a
-conversion, an entry then has two variants, and a run that names no tracks
-variant refuses it (`AmbiguousTracksVariant`) until the run names one. A
-dataset whose corrections of such a format were converted with `--overwrite`
+A promoted correction of a format that does not merge several files into one
+sequence, such as Tracktor or SLEAP, now converts into a variant of its own.
+Before, it and its upload wrote one variant and one of them was lost. After a
+promotion and a conversion, an entry then has two variants, and a run that names
+no tracks variant refuses it (`AmbiguousTracksVariant`) until the run names one.
+A dataset whose corrections of such a format were converted with `--overwrite`
 may hold a corrected table in the upload's variant. Run
 `mosaic convert-tracks --overwrite` once, with the `--params` that conversion
 used, to restore the upload's tables. Then recompute each feature above those
 entries, chained features included, with
 `mosaic run --feature <slug> --tracks-run-id <variant> --overwrite`
 (`mosaic pipeline run` reuses cached runs). The restored tables keep their
-compositions, so the features computed from the corrected tables would
-otherwise stay current.
+compositions. The features computed from the corrected tables stay current until
+recomputed.
 
 `mosaic scan --checksum-workers N` reads the checksums of tracks and labels
 files, and of the files beside them, in N threads. It defaults to 1 and changes

@@ -1708,7 +1708,7 @@ class TestTwoFilesNamingOneEntry:
 
         assert len(raw_rows(dataset, "tracks")) == 4
 
-    def test_an_enumerable_format_with_one_stem_in_two_folders_is_not_checked(
+    def test_an_enumerable_format_with_one_stem_in_two_folders_is_refused(
         self, tmp_path: Path
     ) -> None:
         dataset = make_dataset(tmp_path)
@@ -1723,9 +1723,37 @@ class TestTwoFilesNamingOneEntry:
             )
         )
 
+        with pytest.raises(RawEntryNamedTwice) as refused:
+            _ = dataset.scan_tracks()
+
+        message = str(refused.value)
+        assert str(base / "a" / "x.npy") in message
+        assert str(base / "b" / "x.npy") in message
+        assert "'calms'" in message
+        assert raw_rows(dataset, "tracks") == []
+
+    def test_an_enumerable_format_scanned_for_several_sequences_per_file_is_not_checked(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "calms"
+        touch_files(base / "a" / "x.npy", base / "b" / "x.npy")
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="calms",
+                path=str(base),
+                patterns=("*.npy",),
+                src_format="calms21_npy",
+                multi_sequences_per_file=True,
+                group_from="filename",
+            )
+        )
+
         _ = dataset.scan_tracks()
 
-        assert len(raw_rows(dataset, "tracks")) == 2
+        rows = raw_rows(dataset, "tracks")
+        assert len(rows) == 2
+        assert {str(row["sequence"] or "") for row in rows} == {""}
 
     def test_a_labels_source_with_two_files_naming_one_entry_is_not_refused(
         self, tmp_path: Path

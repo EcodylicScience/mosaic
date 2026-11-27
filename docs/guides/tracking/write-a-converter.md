@@ -96,7 +96,7 @@ whose frame numbers have gaps.
 
 A converter that reads another file beside its source overrides `companion_files(path)`
 to list it. The Tracktor converters do: the raw table is timed by the corrected table of
-the same run, and the corrected converter lists the raw table whatever its params, so a
+the same run, and the corrected converter lists the raw table whatever its params. A
 change to either file makes both conversions stale.
 
 ```python
@@ -108,10 +108,10 @@ def companion_files(self, path: Path) -> tuple[Path, ...]:
 
 The hook returns the files in the source's directory that `convert` may read, only those
 that exist now, sorted, and never the source itself. It reads no file's content. A scan
-records each listed file's checksum in the tracks index, beside the source's own, so a
-companion that changes, appears or disappears makes the conversion stale and the next
-`convert-tracks` runs it again. Without the hook, an edit to such a file leaves the table
-looking current.
+records each listed file's checksum in the tracks index, beside the source's own. A
+companion that changes, appears or disappears then makes the conversion stale, and the
+next `convert-tracks` runs it again. Without the hook, an edit to such a file leaves the
+table looking current.
 
 The hook takes no params, because a scan runs before any conversion has params. List a
 companion whatever the params would decide: a converter that reads the file only under
