@@ -66,6 +66,19 @@ class MyFormatParams(TimedTrackConvertParams):
     # not mint a second variant.
     debug: Annotated[bool, HASH_EXCLUDE, Declared(_DEBUG_DESCRIPTION)] = False
 
+    # Optional. A format that can write a row for every frame and individual its
+    # file records declares this with the default that suits it, and drops it from
+    # the variant while it holds that default, so existing conversions keep their
+    # variant. ``KeepEmptyFrames`` comes from ``mosaic.core.track_converter``:
+    #
+    #     keep_empty_frames: KeepEmptyFrames = False
+    #
+    #     @override
+    #     def identity_dump(self) -> dict[str, object]:
+    #         return self.drop_at_default(
+    #             super().identity_dump(), ("keep_empty_frames",)
+    #         )
+
 
 # Decorate with ``@register_track_converter`` (imported from
 # ``mosaic.core.track_converter``) once implemented. It is left off here so this
@@ -106,6 +119,14 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
         self, path: Path, params: MyFormatParams, hints: EntryHints
     ) -> pd.DataFrame:
         raise NotImplementedError("Implement for your format")
+
+    # Optional. Override when the file records its frame count: return it from the
+    # file's shape, and raise OSError or ValueError on a file that cannot be read.
+    # Every conversion records the count in the tracks index. The base returns
+    # None, which records none.
+    #
+    # def frames_read(self, path: Path) -> int | None:
+    #     raise NotImplementedError
 
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
         """The ``(group, sequence)`` pairs *path* holds. Only if ``enumerable``."""

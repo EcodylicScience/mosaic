@@ -113,6 +113,28 @@ An earlier mosaic never read the media's rate. It timed a table at `fps`, else
 `fps_default`, else 30 fps, whether or not the media was indexed. Convert again any
 table that was converted without `fps` or `fps_default`.
 
+## Keeping every frame
+
+A SLEAP table holds a row for each track only on the frames where it was detected, so
+a track's per-frame counts and presence fractions leave out the frames it was absent.
+Set `keep_empty_frames` to write every track on every frame of the file, with NaN
+keypoints, `X`, `Y` and scores where the track is absent, including a track that is
+absent from every frame:
+
+```bash
+mosaic convert-tracks -m dataset.yaml --source-format sleap_analysis_h5 \
+  --params '{"keep_empty_frames": true}'
+```
+
+Without it the table holds detections only. The option makes a variant of its own, so
+both tables can sit side by side.
+
+Either way, the tracks index records the file's frame count in its `frames_read` column.
+The count is the file's, which the table's last frame understates when the final frames
+hold no track. A conversion made before the count was recorded has a blank cell.
+`mosaic measure-tracks --apply` fills it from the source file, and keeps a filled cell
+while the file still holds that count.
+
 ## s-DANNCE keypoints
 
 A track table names a keypoint by its index (`poseX0`, `poseX1`, and so on), and a

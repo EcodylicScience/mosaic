@@ -8,6 +8,15 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: SLEAP every frame and the recorded frame count
+
+No run id moves. `sleap_analysis_h5` takes `keep_empty_frames`, whose default keeps
+today's table and its variant. Set to true, every track has a row on every frame of the
+file, with NaN where it is absent, and the variant gains a term. Every conversion of a
+converter that counts its file's frames records `frames_read` in the tracks index,
+SLEAP's among them. `mosaic measure-tracks --apply` fills a SLEAP conversion's cell from
+its source and keeps it while the source holds that count. It used to clear it.
+
 ## Unreleased: MotionMapper wavelet method
 
 No run id or output moves. `pair-wavelet` and `individual-wavelet` gain `method:

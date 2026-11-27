@@ -66,6 +66,32 @@ cannot say. The tracks index records the answer, and a step that needs ids follo
 an animal refuses tracks recorded `False`. `None` records no answer and refuses
 nothing.
 
+## Declare the optional hooks
+
+Two declarations are optional.
+
+**Keep empty frames.** A converter that can write a row for every frame and individual
+the file records, with NaN where it has none, declares
+`keep_empty_frames: KeepEmptyFrames = False` on its params, with the default that suits
+the format. Import `KeepEmptyFrames` from `mosaic.core.track_converter`. Drop the field
+from the variant while it holds its default, so a conversion that never sets it keeps
+its variant:
+
+```python
+@override
+def identity_dump(self) -> dict[str, object]:
+    return self.drop_at_default(super().identity_dump(), ("keep_empty_frames",))
+```
+
+**Record the frame count.** A converter whose file records its frame count overrides
+`frames_read(path)` to return it, read from the file's shape rather than its data. It
+raises `OSError` or `ValueError` on a file it cannot read, and mosaic then leaves the
+count blank and prints a warning naming the file. Every conversion records the count in
+the tracks index, and `mosaic measure-tracks --apply` asks the converter again to fill
+a conversion that lacks it. The base returns `None`, which records no count. Keep the
+base where one file's count is not a sequence's: an enumerable converter, and a format
+whose frame numbers have gaps.
+
 ## Load the raw file safely
 
 A converter may read a file someone else made, so loading it must not run anything the

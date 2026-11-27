@@ -330,6 +330,12 @@ importing `mosaic.tracking` registers neither.
   built-in's, and its distribution is recorded in the tracks index's
   `converter_distribution` and never hashed
   (`tests/core/track_library/test_installed_track_converters.py`).
+- A converter that keeps empty frames declares `keep_empty_frames: KeepEmptyFrames`
+  (`track_converter.py`) and drops it at its default with
+  `self.drop_at_default(super().identity_dump(), ("keep_empty_frames",))`, so an
+  existing variant stays. A converter whose file records its frame count overrides
+  `frames_read`, never the final `try_frames_read` that guards it. Every conversion
+  records the count, and `backfill_frames_read` rereads it from the source.
 - A converter does not compute a `DERIVED_COLUMNS` quantity. `mosaic_v1` forbids them,
   and `ensure_track_schema` raises `ForbiddenTrackColumnError` whatever `strict` says. A
   tracker that measures one declares a schema with `allows`, as `trex_v2` does.

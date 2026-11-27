@@ -172,9 +172,9 @@ are in `graph/CLAUDE.md`.
   covers none.
 - The writer measures `n_keypoints`, `frame_min`/`frame_max`, `pair_frames` and
   `ids_per_frame` from the parquet (`frame_measures`, one read of the `frame` and `id`
-  columns). The producer passes `media_frames`, `frames_read` and `known_tail_loss`. A
-  blank cell on every count column means unknown. The `TracksIndexRow` docstring defines
-  each column.
+  columns). The producer passes `media_frames`, `frames_read` and `known_tail_loss`, and
+  a conversion passes its converter's `frames_read`. A blank cell on every count column
+  means unknown. The `TracksIndexRow` docstring defines each column.
 - `pair_frames` and `ids_per_frame` are two cells of one measure: the ordered pairs summed
   over the extent's frames and the distinct `(frame, id)` over its length. A table with no
   `id` column writes `none` (`NO_IDS`) in both, which means measured, no ids, and is never

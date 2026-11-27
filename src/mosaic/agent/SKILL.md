@@ -474,6 +474,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   per session, or its animals appear twice. An older mosaic never read the media's rate
   for SLEAP, DeepLabCut or Ultralytics. It timed a table at `fps`, else `fps_default`,
   else 30 fps. Convert again any table converted without `fps` or `fps_default`.
+- A `sleap_analysis_h5` conversion writes detections only. Pass
+  `--params '{"keep_empty_frames": true}'` for a row per track on every frame of the
+  file, with NaN where the track is absent, which per-frame counts and presence
+  fractions need. Every conversion records the file's frame count in the tracks index's
+  `frames_read`, and `measure-tracks --apply` fills it for an older conversion.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.
