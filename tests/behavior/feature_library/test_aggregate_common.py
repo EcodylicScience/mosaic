@@ -648,3 +648,345 @@ def test_the_subgroup_column_leaves_the_identity_dump_as_it_was() -> None:
     assert unset.identity_dump()["subgroup_col"] is None
     assert two.identity_dump()["subgroup_col"] == ["tag", "phase"]
     assert swapped.identity_dump() != two.identity_dump()
+
+
+# --- subsets --------------------------------------------------------------------------
+
+
+def _dyadic_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Two entries of two individuals whose values and times are exact in binary.
+
+    Every value is a multiple of 1 / 64 and every time a multiple of 1 / 8, so a
+    sum or a duration is the same in any order of the rows. A group-by sum of
+    other floats can differ in the last place with the groups around it.
+    """
+    generator = np.random.default_rng(5)
+    tables: list[pd.DataFrame] = []
+    for name, first_id in (("A", 0), ("B", 2)):
+        frames = np.tile(np.arange(20), 2)
+        values = generator.integers(0, 64, size=40) / 64.0
+        tables.append(
+            pd.DataFrame(
+                {
+                    "group": name,
+                    "sequence": "S",
+                    "id": np.repeat([first_id, first_id + 1], 20),
+                    "frame": frames,
+                    "time": frames / 8,
+                    "value": values,
+                    "state": np.where(values > 0.5, "up", "down"),
+                }
+            )
+        )
+    return tables[0], tables[1]
+
+
+def _by_separate_runs(
+    table: pd.DataFrame,
+    params: AggregateParams,
+    keys: list[str],
+    subsets: dict[str, str],
+) -> pd.DataFrame:
+    """One filtered run per subset, joined with the subset's name after the keys."""
+    parts: list[pd.DataFrame] = []
+    for name, expression in subsets.items():
+        narrowed = params.model_copy(
+            update={
+                "subsets": None,
+                "filter_expr": (
+                    expression
+                    if params.filter_expr is None
+                    else f"({params.filter_expr}) and ({expression})"
+                ),
+            }
+        )
+        part = reduce_column(table, narrowed, keys, who=WHO, pairs="each_perspective")
+        if not part.empty:
+            part.insert(len(keys), "subset", name)
+            parts.append(part)
+    joined = pd.concat(parts, ignore_index=True)
+    return joined.sort_values([*keys, "subset"], kind="stable").reset_index(drop=True)
+
+
+@pytest.mark.parametrize("bin_s", [None, 0.625])
+@pytest.mark.parametrize("filter_expr", [None, "frame % 3 != 1"])
+def test_overlapping_subsets_equal_separate_filtered_runs(
+    bin_s: float | None, filter_expr: str | None
+) -> None:
+    first, second = _dyadic_tables()
+    table = pd.concat([first, second], ignore_index=True)
+    subsets = {
+        "low": "value < 0.6",
+        "high": "value > 0.4",
+        "all": "value >= 0",
+        "flat": "state == 'down'",
+    }
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["sum", "count", "mean", "median", "duration"],
+        filter_expr=filter_expr,
+        bin_s=bin_s,
+        subsets=subsets,
+    )
+
+    together = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(
+        together, _by_separate_runs(table, params, KEYS, subsets), check_exact=True
+    )
+    assert together["subset"].nunique() == len(subsets)
+
+
+@pytest.mark.parametrize("bin_s", [None, 0.625])
+def test_the_std_of_overlapping_subsets_matches_separate_runs_closely(
+    bin_s: float | None,
+) -> None:
+    # Pandas computes std with a running method, so the rows of other groups
+    # may move the last places.
+    first, second = _tables()
+    table = pd.concat([first, second], ignore_index=True)
+    subsets = {"low": "value < 0.6", "high": "value > 0.4", "all": "value >= 0"}
+    params = AggregateParams(
+        columns=["value"], aggs=["std", "count"], bin_s=bin_s, subsets=subsets
+    )
+
+    together = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+    separate = _by_separate_runs(table, params, KEYS, subsets)
+
+    np.testing.assert_allclose(
+        together["value_std"].to_numpy(), separate["value_std"].to_numpy(), rtol=1e-12
+    )
+    pd.testing.assert_frame_equal(
+        together.drop(columns="value_std"),
+        separate.drop(columns="value_std"),
+        check_exact=True,
+    )
+    assert together["value_std"].notna().any()
+
+
+def test_six_overlapping_speed_windows_equal_six_filtered_runs() -> None:
+    generator = np.random.default_rng(11)
+    first, second = _dyadic_tables()
+    table = pd.concat([first, second], ignore_index=True)
+    table["speed"] = generator.integers(0, 128, size=len(table)) / 64.0
+    subsets = {
+        f"window-{index}": f"speed >= {low} and speed < {low + 0.75}"
+        for index, low in enumerate((0.0, 0.25, 0.5, 0.75, 1.0, 1.25))
+    }
+    params = AggregateParams(
+        columns=["speed"],
+        aggs=["mean", "min", "max", "count", "duration"],
+        subsets=subsets,
+    )
+    keys = [*KEYS, "id"]
+
+    together = reduce_column(table, params, keys, who=WHO, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(
+        together, _by_separate_runs(table, params, keys, subsets), check_exact=True
+    )
+    assert together["subset"].nunique() == 6
+
+
+def test_duration_and_share_weigh_rows_by_their_seconds_before_both_filters() -> None:
+    first, _ = _tables()
+    params = AggregateParams(
+        columns=["state"],
+        aggs=["duration", "share"],
+        filter_expr="frame % 2 == 0",
+        subsets={"even-up": "state == 'up'", "even": "frame >= 0"},
+    )
+
+    out = reduce_column(first, params, KEYS, who=WHO, pairs="each_perspective")
+
+    even = out[out["subset"] == "even"]
+    # Ten kept frames of each of two individuals, each lasting the 0.1 s to its
+    # next frame, not the 0.2 s to its next kept one.
+    assert even["state_duration"].tolist() == [pytest.approx(2.0)]
+    assert even["state_share_up"].iloc[0] + even["state_share_down"].iloc[
+        0
+    ] == pytest.approx(1.0)
+
+
+def test_the_rows_do_not_depend_on_the_order_of_the_mapping() -> None:
+    first, _ = _tables()
+    forward = {"low": "value < 0.6", "high": "value > 0.4", "mid": "value > 0.3"}
+    reverse = dict(reversed(forward.items()))
+
+    def run(subsets: dict[str, str]) -> pd.DataFrame:
+        params = AggregateParams(columns=["value"], aggs=["sum"], subsets=subsets)
+        return reduce_column(first, params, KEYS, who=WHO, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(run(forward), run(reverse), check_exact=True)
+    assert run(forward)["subset"].tolist() == ["high", "low", "mid"]
+
+
+def test_the_subset_key_follows_the_other_keys_and_precedes_the_bins() -> None:
+    first, second = _tables()
+    table = pd.concat([first, second], ignore_index=True)
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        bin_s=0.55,
+        subsets={"b": "value > 0.5", "a": "value <= 0.5"},
+    )
+    keys = [*KEYS, "state"]
+
+    out = reduce_column(table, params, keys, who=WHO, pairs="each_perspective")
+
+    names = ["group", "sequence", "state", "subset", "bin_start", "bin_end"]
+    assert list(out.columns)[:6] == names
+    pd.testing.assert_frame_equal(
+        out, out.sort_values(names, kind="stable").reset_index(drop=True)
+    )
+
+
+def test_a_subset_that_keeps_no_row_has_no_row_in_the_reduction() -> None:
+    first, _ = _tables()
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["sum"],
+        subsets={"some": "value > 0.5", "none": "value > 100"},
+    )
+
+    out = reduce_column(first, params, KEYS, who=WHO, pairs="each_perspective")
+
+    assert out["subset"].tolist() == ["some"]
+    emptied = params.model_copy(update={"subsets": {"none": "value > 100"}})
+    assert reduce_column(first, emptied, KEYS, who=WHO, pairs="each_perspective").empty
+
+
+def test_a_kept_column_is_checked_within_each_subset() -> None:
+    first, _ = _tables()
+    first["label"] = np.where(first["value"] > 0.5, "p", "q")
+    params = AggregateParams(
+        columns=["value"],
+        aggs=["count"],
+        keep_columns=["label"],
+        subsets={"p-only": "label == 'p'", "both": "value >= 0"},
+    )
+
+    with pytest.raises(ValueError, match="label"):
+        _ = reduce_column(first, params, KEYS, who=WHO, pairs="each_perspective")
+    only = params.model_copy(update={"subsets": {"p-only": "label == 'p'"}})
+    out = reduce_column(first, only, KEYS, who=WHO, pairs="each_perspective")
+    assert out["label"].tolist() == ["p"]
+
+
+def test_entries_prepared_with_subsets_then_combined_equal_the_inline_reduction() -> (
+    None
+):
+    first, second = _dyadic_tables()
+    params = AggregateParams(
+        columns=["state"],
+        aggs=["count", "duration", "share"],
+        bin_s=0.625,
+        subsets={"low": "value < 0.6", "high": "value > 0.4"},
+    )
+    inline = reduce_column(
+        pd.concat([first, second], ignore_index=True),
+        params,
+        ["sequence"],
+        who=WHO,
+        pairs="each_perspective",
+    )
+    parts = [prepare_rows(t, params, ["sequence"], who=WHO) for t in (first, second)]
+    pooled = reduce_prepared(combine_prepared(parts), params, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(pooled, inline, check_exact=True)
+    assert parts[0].group_keys == ("sequence", "subset", "bin_start", "bin_end")
+    assert set(pooled["subset"]) == {"low", "high"}
+
+
+def test_a_part_prepared_without_subsets_cannot_join_one_prepared_with_them() -> None:
+    first, second = _tables()
+    plain = AggregateParams(columns=["value"])
+    split = AggregateParams(columns=["value"], subsets={"all": "value >= 0"})
+
+    with pytest.raises(ValueError, match="keys"):
+        _ = combine_prepared(
+            [
+                prepare_rows(first, plain, KEYS, who=WHO),
+                prepare_rows(second, split, KEYS, who=WHO),
+            ]
+        )
+
+
+def test_an_input_with_a_subset_column_is_refused_when_subsets_is_set() -> None:
+    first, _ = _tables()
+    first["subset"] = "x"
+    params = AggregateParams(columns=["value"], subsets={"all": "value >= 0"})
+
+    with pytest.raises(ValueError, match="'subset'.*input"):
+        _ = prepare_rows(first, params, KEYS, who=WHO)
+
+
+def test_an_input_with_a_subset_column_is_read_as_any_column_without_subsets() -> None:
+    first, _ = _tables()
+    first["subset"] = np.where(first["value"] > 0.5, "x", "y")
+    params = AggregateParams(columns=["value"], aggs=["count"])
+
+    out = reduce_column(
+        first, params, [*KEYS, "subset"], who=WHO, pairs="each_perspective"
+    )
+
+    assert out["subset"].tolist() == ["x", "y"]
+
+
+@pytest.mark.parametrize("name", ["", "a b", "a.b", "a/b", "é"])
+def test_a_subset_name_of_other_characters_than_letters_digits_underscores_hyphens_is_refused(
+    name: str,
+) -> None:
+    with pytest.raises(ValueError, match="letters, digits, underscores and hyphens"):
+        _ = AggregateParams(columns=["value"], subsets={name: "value > 0"})
+
+
+def test_a_subset_name_of_letters_digits_underscores_and_hyphens_is_accepted() -> None:
+    params = AggregateParams(
+        columns=["value"], subsets={"Fast_1-a": "value > 0", "9": "value < 0"}
+    )
+
+    assert params.subsets == {"Fast_1-a": "value > 0", "9": "value < 0"}
+
+
+def test_no_subsets_listed_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        _ = AggregateParams(columns=["value"], subsets={})
+
+
+@pytest.mark.parametrize("expression", ["", "   "])
+def test_a_subset_without_a_filter_is_refused(expression: str) -> None:
+    with pytest.raises(ValueError, match="no filter"):
+        _ = AggregateParams(columns=["value"], subsets={"all": expression})
+
+
+def test_subset_is_refused_as_a_kept_or_subgroup_column_when_subsets_is_set() -> None:
+    subsets = {"all": "value >= 0"}
+    with pytest.raises(ValueError, match="keep_columns lists subset.*writes itself"):
+        _ = AggregateParams(columns=["value"], subsets=subsets, keep_columns=["subset"])
+    with pytest.raises(ValueError, match="subgroup_col.*subset"):
+        _ = AggregateParams(columns=["value"], subsets=subsets, subgroup_col="subset")
+    with pytest.raises(ValueError, match="subgroup_col.*subset"):
+        _ = AggregateParams(
+            columns=["value"], subsets=subsets, subgroup_col=["tag", "subset"]
+        )
+
+
+def test_subset_stays_an_ordinary_column_name_without_subsets() -> None:
+    params = AggregateParams(
+        columns=["value"], subgroup_col="subset", keep_columns=["phase"]
+    )
+
+    assert params.subgroup_col == "subset"
+
+
+def test_subsets_leave_the_identity_dump_while_unset_and_enter_it_when_set() -> None:
+    unset = AggregateParams(columns=["value"])
+    named_none = AggregateParams(columns=["value"], subsets=None)
+    one = AggregateParams(columns=["value"], subsets={"a": "value > 0"})
+    other = AggregateParams(columns=["value"], subsets={"a": "value > 1"})
+
+    assert "subsets" not in unset.identity_dump()
+    assert named_none.identity_dump() == unset.identity_dump()
+    assert one.identity_dump()["subsets"] == {"a": "value > 0"}
+    assert one.identity_dump() != other.identity_dump()

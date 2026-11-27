@@ -30,6 +30,12 @@ row's seconds, for ``duration`` and ``share``, divide among the bins it spans.
 ``first_pass`` is the smallest value of ``order_col`` among the rows whose value
 passes the ``threshold`` comparison, NaN when none does. It reads every row
 under any ``pairs`` rule and skips a row whose ``order_col`` is null.
+
+``subsets`` names filters that each reduce the rows they keep, after
+``filter_expr``, and ``subset`` joins the reduction keys after the caller's
+keys (:data:`SUBSET`). A subset that keeps no row has no row in
+:func:`reduce_column`, and :func:`blank_rows` writes the blank row that
+``sequence-aggregate`` gives it.
 """
 
 from __future__ import annotations
@@ -168,7 +174,7 @@ _KEEP_COLUMNS_DESCRIPTION = (
     "the column, fails the entry. The names the reduction writes itself "
     "(group, sequence, frame, time, id, id1, id2, perspective and arena), a "
     "name in columns and any subgroup_col are refused, and with bin_s set, so "
-    "are bin_start and bin_end."
+    "are bin_start and bin_end, and with subsets set, so is subset."
 )
 
 _BIN_S_DESCRIPTION = (
@@ -230,11 +236,26 @@ _PAIRS_DESCRIPTION = (
     "perspective column; the other aggregations read every row. once reads "
     "perspective 0, each pair once, and each_perspective reads every "
     "ordered pair row. auto is resolved by a recipe's plan: once when every "
-    "column is declared symmetric over mirrored rows and filter_expr is "
-    "unset, every row otherwise. A run outside a plan (mosaic run --feature) has "
-    "no input chain to resolve and reads every row under auto, which never "
-    "halves a value without a declaration. Set once there to count each "
-    "pair once."
+    "column is declared symmetric over mirrored rows and neither filter_expr "
+    "nor subsets is set, every row otherwise. A run outside a plan "
+    "(mosaic run --feature) has no input chain to resolve and reads every row "
+    "under auto, which never halves a value without a declaration. Set once "
+    "there to count each pair once."
+)
+
+_SUBSETS_DESCRIPTION = (
+    "Named filters, each in the syntax of filter_expr and applied after it, "
+    "that each reduce the rows they keep. The output has a row for each group "
+    "and subset, and a text column subset, after the subgroup columns, holds "
+    "the subset's name. Subsets may overlap, so a row that two keep counts in "
+    "both. A name is made of letters, digits, underscores and hyphens, and the "
+    "order of the mapping does not matter. duration and share weigh a row by "
+    "the seconds computed before filter_expr and the subsets. A subset that "
+    "keeps no row of an entry is written as a blank row by sequence-aggregate, "
+    "so that every entry has a row for each subset, and has no row in "
+    "frame-aggregate and individual-aggregate. subset may not be a kept or "
+    "subgroup column, and an input with a subset column is refused. Unset, the "
+    "rows are not split."
 )
 
 _ORDER_COLUMN = "_order"
@@ -248,6 +269,7 @@ _BIN_TIME_SENTENCE = "give the step an input with a time column, such as tracks.
 
 BIN_START = "bin_start"
 BIN_END = "bin_end"
+SUBSET = "subset"
 
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]+")
 _PERSPECTIVE_COLUMN = "perspective"
@@ -294,6 +316,9 @@ class AggregateParams(Params):
         default=None, min_length=1
     )
     order_col: Annotated[str, Declared(_ORDER_COL_DESCRIPTION)] = C.time_col
+    subsets: Annotated[dict[str, str] | None, Declared(_SUBSETS_DESCRIPTION)] = Field(
+        default=None, min_length=1
+    )
 
     @field_validator(
         "columns", "aggs", "keep_columns", "categories", check_fields=False
@@ -320,6 +345,22 @@ class AggregateParams(Params):
             raise ValueError("subgroup_col lists no column")
         value = _refuse_repeats(value)
         return value[0] if len(value) == 1 else value
+
+    @field_validator("subsets", check_fields=False)
+    @classmethod
+    def _safe_names_and_filters(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        """Refuse a subset name of unsafe characters, or a blank filter."""
+        for name, expression in (value or {}).items():
+            if not _SAFE_VALUE.fullmatch(name):
+                raise ValueError(
+                    f"subsets lists {name!r}, which is not made of letters, "
+                    "digits, underscores and hyphens"
+                )
+            if not expression.strip():
+                raise ValueError(f"subsets lists no filter for {name!r}")
+        return value
 
     def subgroup_columns(self) -> list[str]:
         """The subgroup columns in output order: none, one or several."""
@@ -401,20 +442,27 @@ class AggregateParams(Params):
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
         With ``bin_s`` set, ``bin_start`` and ``bin_end`` are reduction keys and
-        neither a kept column nor a subgroup column may take them. A subclass
-        without the four fields leaves the verdict to the full model.
+        neither a kept column nor a subgroup column may take them, and with
+        ``subsets`` set ``subset`` is one as well. A subclass without the five
+        fields leaves the verdict to the full model.
         """
-        if not has_fields(self, "keep_columns", "columns", "subgroup_col", "bin_s"):
+        if not has_fields(
+            self, "keep_columns", "columns", "subgroup_col", "bin_s", "subsets"
+        ):
             return self
         owned = _reduction_columns()
         subgroups = self.subgroup_columns()
+        written_by: dict[str, str] = {}
         if self.bin_s is not None:
-            owned = owned | {BIN_START, BIN_END}
-            for name in subgroups:
-                if name in (BIN_START, BIN_END):
-                    raise ValueError(
-                        f"subgroup_col is {name}, which bin_s writes itself"
-                    )
+            written_by.update({BIN_START: "bin_s", BIN_END: "bin_s"})
+        if self.subsets is not None:
+            written_by[SUBSET] = "subsets"
+        owned = owned | set(written_by)
+        for name in subgroups:
+            if name in written_by:
+                raise ValueError(
+                    f"subgroup_col is {name}, which {written_by[name]} writes itself"
+                )
         for name in self.keep_columns:
             if name in self.columns:
                 raise ValueError(f"keep_columns lists {name}, which is also in columns")
@@ -431,10 +479,10 @@ class AggregateParams(Params):
         """The hashed params, less each field that leaves the output as it was.
 
         ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset,
-        ``threshold_op`` ``>`` and ``order_col`` ``time`` write the output a run
-        wrote before the fields existed, so leaving them out keeps every such
-        run's identifier. A kept column or a category adds output columns and
-        enters the hash as any field does.
+        ``subsets`` unset, ``threshold_op`` ``>`` and ``order_col`` ``time``
+        write the output a run wrote before the fields existed, so leaving them
+        out keeps every such run's identifier. A kept column or a category adds
+        output columns and enters the hash as any field does.
 
         A set ``threshold`` adds ``threshold_missing``: a null value stays null
         under the comparison, where a NaN of a float column once counted as
@@ -453,6 +501,8 @@ class AggregateParams(Params):
             del dumped["threshold_op"]
         if self.order_col == C.time_col:
             del dumped["order_col"]
+        if self.subsets is None:
+            del dumped["subsets"]
         if self.threshold is not None:
             dumped["threshold_missing"] = "skip"
         return dumped
@@ -935,16 +985,36 @@ def _order_values(df: pd.DataFrame, order_col: str) -> NDArray[np.float64]:
     return _plain_values(values).astype(np.float64)
 
 
+def _split_into_subsets(df: pd.DataFrame, subsets: Mapping[str, str]) -> pd.DataFrame:
+    """The rows each subset's filter keeps, stacked, with its name in ``subset``.
+
+    The subsets stand in the order of their names, which the sorted reduction
+    does not depend on. A subset that keeps no row adds none, and a row that
+    several keep appears once for each, with its index.
+    """
+    parts: list[pd.DataFrame] = []
+    for name, expression in sorted(subsets.items()):
+        rows = df.query(expression)
+        if not rows.empty:
+            parts.append(rows.assign(**{SUBSET: name}))
+    if not parts:
+        return df.iloc[0:0]
+    return pd.concat(parts)
+
+
 @dataclass(frozen=True, eq=False)
 class PreparedRows:
-    """The rows of one table after ``filter_expr``, ``transform`` and ``threshold``.
+    """The rows of one table after the filters, ``transform`` and ``threshold``.
+
+    The filters are ``filter_expr`` and then each of ``subsets``.
 
     :func:`prepare_rows` builds it and :func:`reduce_prepared` groups it, so a
     pool can prepare each entry and reduce the union (:func:`combine_prepared`).
 
     Attributes:
         group_keys: The columns that group the rows: the caller's keys, then
-            ``bin_start`` and ``bin_end`` when ``bin_s`` is set.
+            ``subset`` when ``subsets`` is set, then ``bin_start`` and
+            ``bin_end`` when ``bin_s`` is set.
         carried: The columns that take a value within each group: the ``first``
             columns, then ``keep_columns``.
         rows: The kept rows, by position, with the group keys, the carried
@@ -980,9 +1050,11 @@ def prepare_rows(
 ) -> PreparedRows:
     """Apply the pre-aggregation steps of ``params`` to ``df``.
 
-    Applies ``filter_expr``, ``transform`` and ``threshold``, finds each row's
-    bin and divides its seconds among the bins it spans. :func:`reduce_prepared`
-    reduces the result. The rules are those of :func:`reduce_column`.
+    Applies ``filter_expr``, then each of ``subsets`` to the rows it left (a row
+    that two subsets keep is a row of each), ``transform`` and ``threshold``,
+    finds each row's bin and divides its seconds among the bins it spans.
+    :func:`reduce_prepared` reduces the result. The rules are those of
+    :func:`reduce_column`.
 
     Args:
         df: The rows to reduce.
@@ -997,7 +1069,8 @@ def prepare_rows(
 
     Raises:
         ValueError: As :func:`reduce_column`, for what it reads from ``df``:
-            a kept or subgroup column missing, a kept column varying within a
+            a ``subset`` column present when ``subsets`` is set, a kept or
+            subgroup column missing, a kept column varying within a
             group, ``bin_s`` without ``time``, ``duration`` or ``share``
             without a ``time`` that advances, ``share`` of a column of an
             unaccepted kind, or ``first_pass`` with an ``order_col`` that is
@@ -1010,6 +1083,10 @@ def prepare_rows(
     for column in params.subgroup_columns():
         if column not in df.columns:
             raise ValueError(f"subgroup_col column {column!r} is not in the input")
+    if params.subsets is not None and SUBSET in df.columns:
+        raise ValueError(
+            f"subsets writes the column {SUBSET!r}, which the input already has"
+        )
     bin_s = params.bin_s
     if bin_s is not None and C.time_col not in df.columns:
         raise ValueError(
@@ -1022,9 +1099,12 @@ def prepare_rows(
         seconds = _seconds_by_row(df, who)
     if params.filter_expr:
         df = df.query(params.filter_expr)
+    if params.subsets is not None and not df.empty:
+        df = _split_into_subsets(df, params.subsets)
     carried = (*first, *kept)
     edge_names = (BIN_START, BIN_END) if bin_s is not None else ()
-    group_keys = (*keys, *edge_names)
+    row_keys = (*keys, SUBSET) if params.subsets is not None else tuple(keys)
+    group_keys = (*row_keys, *edge_names)
     if df.empty:
         return PreparedRows(
             group_keys=group_keys,
@@ -1044,7 +1124,7 @@ def prepare_rows(
         edges = _bin_edges(first_bin, bin_s)
     _refuse_a_varying_column(df.assign(**edges) if edges else df, group_keys, kept)
 
-    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
+    work = pd.DataFrame({key: df[key].to_numpy() for key in (*row_keys, *carried)})
     for name, edge in edges.items():
         work[name] = edge
     if _PERSPECTIVE_COLUMN in df.columns and _PERSPECTIVE_COLUMN not in work.columns:
@@ -1059,7 +1139,7 @@ def prepare_rows(
         spread = _spread_over_bins(times, kept_seconds, first_bin, bin_s)
         pieces = spread.rows
         piece_seconds = spread.seconds
-        piece_keys = work[list(keys)].iloc[pieces].reset_index(drop=True)
+        piece_keys = work[list(row_keys)].iloc[pieces].reset_index(drop=True)
         for name, edge in _bin_edges(spread.index, bin_s).items():
             piece_keys[name] = edge
     shares: dict[str, _ShareTexts] = {}
@@ -1281,14 +1361,23 @@ def reduce_column(
 ) -> pd.DataFrame:
     """Reduce each of ``params.columns`` of ``df`` to one row per distinct ``keys``.
 
-    Applies ``filter_expr``, ``transform`` and ``threshold``, then groups by
-    ``keys`` and aggregates each column with each of ``aggs``. The result holds
-    ``keys``, then ``bin_start`` and ``bin_end`` when ``params.bin_s`` is set,
-    then each column of ``first`` (its first value in the group), then
-    each of ``params.keep_columns`` (its one value in the group), then
+    Applies ``filter_expr``, each of ``subsets``, ``transform`` and
+    ``threshold``, then groups by ``keys`` and aggregates each column with each
+    of ``aggs``. The result holds ``keys``, then ``subset`` when
+    ``params.subsets`` is set, then ``bin_start`` and ``bin_end`` when
+    ``params.bin_s`` is set, then each column of ``first`` (its first value in
+    the group), then each of ``params.keep_columns`` (its one value in the
+    group), then
     ``<column>_<agg>`` for each column and, within it, each aggregation, sorted
     by ``keys``. A row whose key is null belongs to no group. The result is
     empty when no row survives the filter.
+
+    ``subset`` is the name of the subset whose filter keeps the rows of the
+    group, after the subgroup columns among ``keys`` and before the bins. Each
+    subset filters the rows left by ``filter_expr``, and a row that several
+    subsets keep is a row of each, so the rows of two subsets overlap and the
+    group of one does not read the group of another. A subset that keeps no row
+    has no group, and the result is empty when none does.
 
     A pair table holds each pair once per perspective. Under ``pairs="once"``
     and with a ``perspective`` column present, ``sum``, ``count`` and
@@ -1302,8 +1391,9 @@ def reduce_column(
     after ``transform``. A row lasts until the next frame of its series, per
     :func:`~mosaic.core.timebase.row_seconds`, where a series is an arena's
     individual, or a pair row's ``id1``, ``id2`` and ``perspective``. The
-    seconds are those of the rows before ``filter_expr`` and before ``keys``
-    split them, so a row that the filter keeps lasts as it did without it.
+    seconds are those of the rows before ``filter_expr``, ``subsets`` and
+    ``keys`` split them, so a row that the filters keep lasts as it did without
+    them.
     ``duration`` is read from the rows ``pairs`` selects, as ``sum`` and
     ``count`` are, is 0 for a group none of whose rows it reads, and is
     ``float64``.
@@ -1366,11 +1456,16 @@ def reduce_column(
 
 
 def blank_reduction(
-    df: pd.DataFrame, params: AggregateParams, keys: Sequence[str]
+    df: pd.DataFrame,
+    params: AggregateParams,
+    keys: Sequence[str],
+    *,
+    subsets: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """One row per distinct ``keys`` of ``df`` that reduces no values.
 
-    For an entry whose ``filter_expr`` keeps no row. It has the columns that
+    For an entry whose ``filter_expr`` keeps no row, or whose ``subsets`` leave
+    some subset no row. It has the columns that
     :func:`reduce_column` gives an entry that keeps rows: each of
     ``params.keep_columns`` holds its one value in the group's rows before the
     filter, each of the ``sum``, ``count`` and ``duration`` aggregations is 0
@@ -1382,15 +1477,18 @@ def blank_reduction(
     belongs to no group. With ``params.bin_s`` the row of each group has NaN
     ``bin_start`` and ``bin_end`` after the keys: no row of the entry starts in
     a bin, and the row keeps the entry, its kept labels and the columns that an
-    entry with rows writes.
+    entry with rows writes. With *subsets*, each group has one such row for each
+    name, in the ``subset`` column that follows the keys.
 
     Args:
         df: The rows before the filter, which hold the keys and the kept columns.
         params: The columns, aggregations and kept columns of the result.
         keys: The columns to group by.
+        subsets: The names of the subsets that keep no row, or ``None`` for a
+            result without a ``subset`` column.
 
     Returns:
-        The blank rows, sorted by ``keys``.
+        The blank rows, sorted by ``keys`` and then ``subset``.
 
     Raises:
         ValueError: A kept column takes more than one value in a group of ``df``.
@@ -1399,9 +1497,20 @@ def blank_reduction(
     _refuse_a_varying_column(df, keys, kept)
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *kept)})
     blank = _carried_by_group(work, keys, kept).reset_index()
+    edges_at = len(keys)
+    if subsets is not None:
+        named: list[pd.DataFrame] = []
+        for name in sorted(subsets):
+            part = blank.copy()
+            part.insert(len(keys), SUBSET, name)
+            named.append(part)
+        blank = pd.concat(named, ignore_index=True).sort_values(
+            [*keys, SUBSET], kind="stable", ignore_index=True
+        )
+        edges_at += 1
     if params.bin_s is not None:
-        blank.insert(len(keys), BIN_START, np.nan)
-        blank.insert(len(keys) + 1, BIN_END, np.nan)
+        blank.insert(edges_at, BIN_START, np.nan)
+        blank.insert(edges_at + 1, BIN_END, np.nan)
     for column in params.columns:
         for agg in params.aggs:
             if agg == "share":
@@ -1410,6 +1519,53 @@ def blank_reduction(
             else:
                 blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
     return blank
+
+
+def blank_rows(
+    df: pd.DataFrame,
+    params: AggregateParams,
+    keys: Sequence[str],
+    reduced: pd.DataFrame,
+) -> pd.DataFrame:
+    """*reduced*, with a blank row for what it lacks, so every entry has the same rows.
+
+    Without ``subsets``, an entry that reduced to nothing is its blank rows, one
+    for each group of ``keys`` in *df*. With them, each subset that *reduced*
+    has no row of gets those blank rows under its name, and the rows stay sorted
+    by ``keys`` and ``subset``. A blank value that is a whole number (the 0 of
+    a ``count`` or ``sum``) takes the integer type of the rows that hold values,
+    so an entry's counts do not turn to floats.
+
+    Args:
+        df: The rows before the filter, which hold the keys and the kept columns.
+        params: The params the rows were reduced with.
+        keys: The columns the rows were grouped by.
+        reduced: The reduction of *df*, empty when no row survived the filters.
+
+    Returns:
+        The table that the entry writes.
+
+    Raises:
+        ValueError: A kept column takes more than one value in a group of ``df``.
+    """
+    if params.subsets is None:
+        return reduced if not reduced.empty else blank_reduction(df, params, keys)
+    written: set[str] = set()
+    if not reduced.empty:
+        written = {str(name) for name in reduced[SUBSET].unique()}
+    empty = [name for name in params.subsets if name not in written]
+    if not empty:
+        return reduced
+    blank = blank_reduction(df, params, keys, subsets=empty)
+    if reduced.empty:
+        return blank
+    for column in blank.columns.intersection(reduced.columns):
+        dtype = reduced[column].dtype
+        if pd.api.types.is_integer_dtype(dtype) and blank[column].notna().all():
+            blank[column] = blank[column].astype(dtype)
+    return pd.concat([reduced, blank], ignore_index=True).sort_values(
+        [*keys, SUBSET], kind="stable", ignore_index=True
+    )
 
 
 def _carried_by_group(

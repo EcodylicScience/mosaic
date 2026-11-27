@@ -1625,6 +1625,26 @@ def test_a_filtered_sum_keeps_each_perspective(tracked: Dataset) -> None:
     assert "pairs" not in planned.spec.params
 
 
+def test_a_sum_with_subsets_keeps_each_perspective(tracked: Dataset) -> None:
+    """A subset's filter can keep one row of a pair, as ``filter_expr`` can."""
+    recipe = _pair_total({"columns": ["AB_dist"], "subsets": {"focal": "id1 == 3"}})
+
+    planned = _total(tracked, recipe)
+
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
+
+
+def test_a_sum_with_no_subsets_or_filter_is_still_planned_once(
+    tracked: Dataset,
+) -> None:
+    unset = _total(tracked, _pair_total({"columns": ["AB_dist"], "subsets": None}))
+    plain = _total(tracked, _pair_total({"columns": ["AB_dist"]}))
+
+    assert unset.pairs == "once"
+    assert unset.run_id == plain.run_id
+
+
 def test_a_mean_keeps_auto(tracked: Dataset) -> None:
     planned = _total(tracked, _pair_total({"columns": ["AB_dist"], "aggs": ["mean"]}))
 

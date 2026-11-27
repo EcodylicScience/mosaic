@@ -106,6 +106,15 @@ the threshold. Set it to another numeric column, such as a stimulus time or a la
 order the rows by that column, and only with `first_pass` in `aggs`. A row where
 `order_col` is missing is skipped, and every row is read under any `pairs` rule.
 
+`subsets` maps names to filters in the syntax of `filter_expr`, each applied after it, and
+reduces the rows each filter keeps, so several windows or conditions come from one step.
+Subsets may overlap, so a row that two keep counts in both. The output has a text column
+`subset`, after the subgroup columns, holding the name, and `duration` and `share` weigh a
+row by the seconds from before the filters. A subset that keeps no row of an entry has a
+blank row in `sequence-aggregate`, so every entry has a row for each subset, and has no
+row in `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or
+subgroup column, and an input that has a `subset` column is refused.
+
 **Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
 the same value on every row of the sequence, whatever the row's id. It reads tracks with
 or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's

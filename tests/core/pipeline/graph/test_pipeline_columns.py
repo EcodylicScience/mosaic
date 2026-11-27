@@ -1839,6 +1839,28 @@ def test_a_duration_only_step_reads_pair_rows_once_when_the_column_is_symmetric(
     assert pair_rule_read(merged, ["dist"], ["mean"], "auto", None) is None
 
 
+def test_subsets_and_a_filter_each_make_auto_read_every_row() -> None:
+    merged = _pairs(symmetric=frozenset({"dist"}), mirrored=True)
+
+    def read(*, filter_expr: str | None, has_subsets: bool) -> object:
+        return pair_rule_read(
+            merged,
+            ["dist"],
+            ["count"],
+            "auto",
+            filter_expr,
+            has_subsets=has_subsets,
+        )
+
+    assert read(filter_expr=None, has_subsets=False) == "once"
+    assert read(filter_expr="id1 < 3", has_subsets=False) == "each_perspective"
+    assert read(filter_expr=None, has_subsets=True) == "each_perspective"
+    written = pair_rule_read(
+        merged, ["dist"], ["count"], "once", None, has_subsets=True
+    )
+    assert written == "once"
+
+
 def test_a_duration_step_over_a_symmetric_pair_column_resolves_auto_to_once() -> None:
     recipe = _pair_recipe(
         {

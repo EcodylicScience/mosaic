@@ -13,6 +13,7 @@ from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.column_contract import (
+    Column,
     MissingInputColumns,
     check_input_columns,
     needs_of,
@@ -1773,3 +1774,225 @@ def test_frames_on_the_bin_edges_at_100_fps_fill_each_bin_with_ten_rows() -> Non
     out = _apply({"columns": ["value"], "aggs": ["count"], "bin_s": 0.1}, table)
 
     assert out["value_count"].tolist() == [10] * 10
+
+
+def _two_arenas() -> pd.DataFrame:
+    """Two arenas of one individual each, three frames at 0.5 s."""
+    table = pd.concat(
+        [
+            _binned([0.0, 0.5, 1.0], identity=0, value=[1.0, 2.0, 3.0], arena="a"),
+            _binned([0.0, 0.5, 1.0], identity=1, value=[4.0, 5.0, 6.0], arena="b"),
+        ],
+        ignore_index=True,
+    )
+    return table
+
+
+def test_each_subset_is_one_row_after_the_other_keys_and_before_the_bins() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum", "count"],
+            "bin_s": 1.0,
+            "subsets": {"top": "value >= 3", "all": "value > 0"},
+        },
+        _two_arenas(),
+    )
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "arena",
+        "subset",
+        "bin_start",
+        "bin_end",
+        "value_sum",
+        "value_count",
+    ]
+    assert out[["arena", "subset", "bin_start"]].values.tolist() == [
+        ["a", "all", 0.0],
+        ["a", "all", 1.0],
+        ["a", "top", 1.0],
+        ["b", "all", 0.0],
+        ["b", "all", 1.0],
+        ["b", "top", 0.0],
+        ["b", "top", 1.0],
+    ]
+    assert out["value_sum"].tolist() == [3.0, 3.0, 3.0, 9.0, 6.0, 9.0, 6.0]
+    assert out["value_count"].tolist() == [2, 1, 1, 2, 1, 2, 1]
+
+
+def test_an_empty_subset_writes_a_blank_row_for_each_group_of_the_entry() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum", "count", "mean", "duration"],
+            "subsets": {"some": "value > 0", "none": "value > 100"},
+        },
+        _two_arenas(),
+    )
+
+    assert out[["arena", "subset"]].values.tolist() == [
+        ["a", "none"],
+        ["a", "some"],
+        ["b", "none"],
+        ["b", "some"],
+    ]
+    blank = out[out["subset"] == "none"]
+    assert blank["value_sum"].tolist() == [0.0, 0.0]
+    assert blank["value_count"].tolist() == [0.0, 0.0]
+    assert blank["value_duration"].tolist() == [0.0, 0.0]
+    assert blank["value_mean"].isna().all()
+    kept = out[out["subset"] == "some"]
+    assert kept["value_sum"].tolist() == [6.0, 15.0]
+
+
+def test_a_blank_subset_row_has_empty_bins_and_the_columns_of_a_row_with_values() -> (
+    None
+):
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean", "count"],
+            "bin_s": 1.0,
+            "subsets": {"some": "value > 0", "none": "value > 100"},
+        },
+        _binned([0.0, 0.5, 1.0], value=[1.0, 2.0, 3.0]),
+    )
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "subset",
+        "bin_start",
+        "bin_end",
+        "value_mean",
+        "value_count",
+    ]
+    assert out["subset"].tolist() == ["none", "some", "some"]
+    assert np.isnan(out["bin_start"].iloc[0])
+    assert np.isnan(out["bin_end"].iloc[0])
+    assert out["bin_start"].iloc[1:].tolist() == [0.0, 1.0]
+
+
+def test_a_filter_that_keeps_nothing_writes_a_blank_row_for_each_subset() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count"],
+            "filter_expr": "id > 100",
+            "subsets": {"b": "value > 0", "a": "value > 1"},
+        },
+        _binned([0.0, 0.5], value=[1.0, 2.0]),
+    )
+
+    assert out["subset"].tolist() == ["a", "b"]
+    assert out["value_count"].tolist() == [0.0, 0.0]
+
+
+def test_blank_subset_rows_keep_the_integer_type_of_the_rows_with_values() -> None:
+    table = _binned([0.0, 0.5, 1.0], count=[1, 2, 3])
+    params: dict[str, object] = {
+        "columns": ["count"],
+        "aggs": ["sum", "count", "mean"],
+        "subsets": {"some": "count > 0", "none": "count > 100"},
+    }
+
+    out = _apply(params, table)
+
+    assert out["subset"].tolist() == ["none", "some"]
+    assert out["count_sum"].dtype == np.int64
+    assert out["count_count"].dtype == np.int64
+    assert out["count_sum"].tolist() == [0, 6]
+    assert out["count_count"].tolist() == [0, 3]
+    assert out["count_mean"].dtype == np.float64
+    assert np.isnan(out["count_mean"].iloc[0])
+
+
+def test_every_entry_has_a_row_for_each_subset() -> None:
+    subsets = {"low": "value < 2", "high": "value > 2"}
+    params: dict[str, object] = {
+        "columns": ["value"],
+        "aggs": ["count"],
+        "subsets": subsets,
+    }
+
+    low_only = _apply(params, _binned([0.0, 0.5], value=[1.0, 1.5]))
+    high_only = _apply(params, _binned([0.0, 0.5], value=[3.0, 4.0]))
+
+    assert low_only["subset"].tolist() == ["high", "low"]
+    assert high_only["subset"].tolist() == ["high", "low"]
+    assert list(low_only.columns) == list(high_only.columns)
+
+
+def test_the_rows_do_not_depend_on_the_order_of_the_subsets() -> None:
+    forward = {"low": "value < 2", "high": "value > 1", "none": "value > 9"}
+    table = _two_arenas()
+
+    def run(subsets: dict[str, str]) -> pd.DataFrame:
+        return _apply(
+            {"columns": ["value"], "aggs": ["sum", "mean"], "subsets": subsets}, table
+        )
+
+    pd.testing.assert_frame_equal(
+        run(forward), run(dict(reversed(forward.items()))), check_exact=True
+    )
+
+
+def test_subset_is_refused_as_a_kept_or_split_name_with_subsets() -> None:
+    name = "subset"
+    subsets = {"all": "value > 0"}
+    with pytest.raises(ValueError, match=f"{name}.*writes itself"):
+        _ = SequenceAggregate(
+            params={"columns": ["value"], "subsets": subsets, "keep_columns": [name]}
+        )
+    with pytest.raises(ValueError, match=f"subgroup_col.*{name}"):
+        _ = SequenceAggregate(
+            params={"columns": ["value"], "subsets": subsets, "subgroup_col": name}
+        )
+
+
+def test_the_subset_column_is_provided_only_when_subsets_is_set() -> None:
+    table = _binned([0.0, 0.5], value=[1.0, 2.0])
+    plain = SequenceAggregate(params={"columns": ["value"]})
+    split = SequenceAggregate(
+        params={"columns": ["value"], "subsets": {"all": "value > 0"}}
+    )
+
+    assert "subset" not in plain.apply(table).columns
+    assert "subset" in split.apply(table).columns
+    assert any(
+        entry.when_param == "subsets" and entry.column == Column("subset")
+        for entry in SequenceAggregate.provides.conditional
+    )
+
+
+def test_an_input_with_a_subset_column_fails_the_entry_when_subsets_is_set() -> None:
+    table = _binned([0.0, 0.5], value=[1.0, 2.0], subset="x")
+
+    with pytest.raises(ValueError, match="'subset'"):
+        _ = _apply({"columns": ["value"], "subsets": {"all": "value > 0"}}, table)
+
+
+def test_a_run_with_subsets_writes_a_row_per_entry_and_subset(tmp_path: Path) -> None:
+    dataset = _tracktor_dataset(tmp_path)
+    speed = run_feature(dataset, SpeedAngvel())
+    feature = SequenceAggregate(
+        inputs=SequenceAggregate.Inputs(
+            (Result(feature=speed.feature, run_id=str(speed.run_id)), "tracks")
+        ),
+        params={
+            "columns": ["speed"],
+            "aggs": ["count"],
+            "subsets": {"none": "speed > 1e9", "all": "speed >= 0"},
+        },
+    )
+
+    result = run_feature(dataset, feature)
+
+    assert result.failed_entries == ()
+    outputs = result_outputs(dataset, result)
+    assert len(outputs) == len(_TRACKTOR_RECORDINGS)
+    for row in outputs.values():
+        assert row["subset"].tolist() == ["all", "none"]
+        assert row["speed_count"].iloc[1] == 0

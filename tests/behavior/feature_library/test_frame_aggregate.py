@@ -10,6 +10,7 @@ import pytest
 
 from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.column_contract import Column
 from tests.helpers import MIXED, STEADY, run_over_labeled_tracks
 
 
@@ -496,3 +497,96 @@ def test_two_subgroup_columns_give_one_row_per_frame_and_pair_of_values() -> Non
         [1, "y", 1.0],
     ]
     np.testing.assert_array_equal(out["value_sum"], [3.0, 4.0, 16.0, 32.0 + 128.0])
+
+
+def test_each_subset_is_one_row_per_frame_after_the_subgroup_columns() -> None:
+    df = _make_df(
+        {0: [1.0, 2.0, 4.0, 8.0], 1: [16.0, 32.0, 64.0, 128.0]},
+        extra_cols={"tag": ["x", "x", "y", "y", "x", "x", "y", "y"]},
+    )
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum", "count"],
+            "subgroup_col": "tag",
+            "subsets": {"big": "value >= 4", "all": "value > 0"},
+        },
+        df,
+    )
+
+    assert list(out.columns)[:4] == ["frame", "tag", "subset", "time"]
+    assert out[["frame", "tag", "subset"]].values.tolist() == [
+        [0, "x", "all"],
+        [0, "y", "all"],
+        [0, "y", "big"],
+        [1, "x", "all"],
+        [1, "x", "big"],
+        [1, "y", "all"],
+        [1, "y", "big"],
+    ]
+    np.testing.assert_array_equal(
+        out["value_sum"], [3.0, 12.0, 12.0, 48.0, 48.0, 192.0, 192.0]
+    )
+    np.testing.assert_array_equal(out["value_count"], [2, 2, 2, 2, 2, 2, 2])
+
+
+def test_a_subset_that_keeps_no_row_of_a_frame_has_no_row_for_it() -> None:
+    df = _make_df({0: [1.0, 2.0], 1: [10.0, 20.0], 2: [3.0, 4.0]})
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum"],
+            "subsets": {"high": "value > 5", "none": "value > 100"},
+        },
+        df,
+    )
+
+    assert out[["frame", "subset"]].values.tolist() == [[1, "high"]]
+    np.testing.assert_array_equal(out["value_sum"], [30.0])
+
+
+def test_subsets_that_keep_no_row_at_all_leave_an_empty_table() -> None:
+    out = _apply(
+        {"columns": ["value"], "subsets": {"none": "value > 100"}},
+        _make_df({0: [1.0, 2.0]}),
+    )
+
+    assert out.empty
+
+
+def test_subset_is_refused_as_a_kept_or_split_name_with_subsets() -> None:
+    subsets = {"all": "value > 0"}
+    with pytest.raises(ValueError, match="subset.*writes itself"):
+        _ = FrameAggregate(
+            params={
+                "columns": ["value"],
+                "subsets": subsets,
+                "keep_columns": ["subset"],
+            }
+        )
+    with pytest.raises(ValueError, match="subgroup_col.*subset"):
+        _ = FrameAggregate(
+            params={"columns": ["value"], "subsets": subsets, "subgroup_col": "subset"}
+        )
+
+
+def test_an_input_with_a_subset_column_fails_the_entry_when_subsets_is_set() -> None:
+    df = _make_df({0: [1.0, 2.0]}, extra_cols={"subset": ["x", "y"]})
+
+    with pytest.raises(ValueError, match="'subset'"):
+        _ = _apply({"columns": ["value"], "subsets": {"all": "value > 0"}}, df)
+
+
+def test_the_subset_column_is_provided_only_when_subsets_is_set() -> None:
+    assert any(
+        entry.when_param == "subsets" and entry.column == Column("subset")
+        for entry in FrameAggregate.provides.conditional
+    )
+    plain = FrameAggregate(params={"columns": ["value"]}).params
+    split = FrameAggregate(
+        params={"columns": ["value"], "subsets": {"all": "value > 0"}}
+    ).params
+    assert "subsets" not in plain.identity_dump()
+    assert split.identity_dump()["subsets"] == {"all": "value > 0"}

@@ -50,8 +50,9 @@ from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from .aggregate_common import (
     BIN_END,
     BIN_START,
+    SUBSET,
     PairAggregateParams,
-    blank_reduction,
+    blank_rows,
     reduce_column,
     split_keys,
 )
@@ -64,10 +65,11 @@ class SequenceAggregate:
     """
     Per-sequence feature reducing the rows of an entry to one row per group.
 
-    Output columns (one row per entry, arena, subgroup and bin):
+    Output columns (one row per entry, arena, subgroup, subset and bin):
       - group, sequence: the entry, copied from the frame
       - arena: when the input has it
       - <subgroup_col>: when set
+      - subset: the subset's name, when ``subsets`` is set
       - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -84,10 +86,11 @@ class SequenceAggregate:
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
     plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr``, and every other
-    ``auto`` reads every row. A run outside a plan (``mosaic run --feature``)
-    reads every row under ``auto``; set ``pairs="once"``, or
-    ``filter_expr="perspective == 0"``, to count each pair once there. For
+    symmetric over mirrored rows, with no ``filter_expr`` and no ``subsets``,
+    and every other ``auto`` reads every row. A run outside a plan
+    (``mosaic run --feature``) reads every row under ``auto``; set
+    ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
+    once there. For
     mean/median/min/max/std/share every row is read under any rule.
 
     An entry whose ``filter_expr`` keeps no row still writes its row, with 0 for
@@ -96,6 +99,10 @@ class SequenceAggregate:
     column of ``categories``, and writes none when that is unset. With ``bin_s``
     that row has NaN ``bin_start`` and ``bin_end``, since no row of the entry
     starts in a bin.
+
+    With ``subsets``, each subset that keeps no row of the entry writes that
+    blank row too, for every group of the entry, so that every entry has a row
+    for each subset.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
@@ -141,6 +148,7 @@ class SequenceAggregate:
             *kept(ARENA_COLUMN),
             Conditional(Column(BIN_START), when_param="bin_s"),
             Conditional(Column(BIN_END), when_param="bin_s"),
+            Conditional(Column(SUBSET), when_param="subsets"),
         ),
     )
 
@@ -185,6 +193,4 @@ class SequenceAggregate:
         reduced = reduce_column(
             df, self.params, keys=keys, who=self.name, pairs=self.params.pair_read()
         )
-        if reduced.empty:
-            return blank_reduction(df, self.params, keys)
-        return reduced
+        return blank_rows(df, self.params, keys, reduced)

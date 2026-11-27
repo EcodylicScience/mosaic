@@ -55,6 +55,7 @@ from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from .aggregate_common import (
     BIN_END,
     BIN_START,
+    SUBSET,
     AggregateParams,
     reduce_column,
     split_keys,
@@ -70,11 +71,13 @@ class IndividualAggregate:
     """
     Per-sequence feature reducing the rows of each individual to one row.
 
-    Output columns (one row per individual, subgroup and bin):
+    Output columns (one row per individual, subgroup, subset and bin):
       - group, sequence: the entry, copied from the frame
       - id: the individual, or the focal ``id1`` of pair input
       - arena: when the input has it
       - <subgroup_col>: when set
+      - subset: the subset's name, when ``subsets`` is set; a subset that keeps
+        no row of an individual has no row for it
       - bin_start, bin_end: the bin in seconds, when ``bin_s`` is set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -137,6 +140,7 @@ class IndividualAggregate:
             *kept(ARENA_COLUMN),
             Conditional(Column(BIN_START), when_param="bin_s"),
             Conditional(Column(BIN_END), when_param="bin_s"),
+            Conditional(Column(SUBSET), when_param="subsets"),
         ),
     )
 

@@ -17,9 +17,10 @@ perspective (A->B and B->A), and ``pairs`` says which rows sum and count read.
 ``once`` keeps the ``perspective == 0`` rows, so each pair counts once, and
 ``each_perspective`` reads every row. ``auto``, the default, is resolved by a
 recipe's plan: ``once`` when the column is declared symmetric over mirrored
-rows and ``filter_expr`` is unset, every row otherwise. A run outside a plan
-(``mosaic run --feature``) reads every row under ``auto``; set ``pairs="once"``
-there, or ``filter_expr="perspective == 0"``, to count each pair once.
+rows and neither ``filter_expr`` nor ``subsets`` is set, every row otherwise. A
+run outside a plan (``mosaic run --feature``) reads every row under ``auto``; set
+``pairs="once"`` there, or ``filter_expr="perspective == 0"``, to count each pair
+once.
 mean/median/min/max/std read every row under any rule.
 """
 
@@ -34,6 +35,8 @@ from pydantic import model_validator
 from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
+    Column,
+    Conditional,
     ParamColumn,
     ParamIs,
     Provides,
@@ -56,7 +59,7 @@ from mosaic.core.params import has_fields
 from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
-from .aggregate_common import PairAggregateParams, reduce_column, split_keys
+from .aggregate_common import SUBSET, PairAggregateParams, reduce_column, split_keys
 from .registry import register_feature
 
 
@@ -66,10 +69,12 @@ class FrameAggregate:
     """
     Per-sequence feature reducing multi-id data to one row per frame.
 
-    Output columns (one row per frame, arena and subgroup):
+    Output columns (one row per frame, arena, subgroup and subset):
       - frame
       - arena (if present in input)
       - <subgroup_col> (when set)
+      - subset: the subset's name, when ``subsets`` is set; a subset that keeps
+        no row of a frame has no row for it
       - time (if present in input)
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
@@ -85,10 +90,11 @@ class FrameAggregate:
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
     plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr``, and every other
-    ``auto`` reads every row. A run outside a plan (``mosaic run --feature``)
-    reads every row under ``auto``; set ``pairs="once"``, or
-    ``filter_expr="perspective == 0"``, to count each pair once there. For
+    symmetric over mirrored rows, with no ``filter_expr`` and no ``subsets``,
+    and every other ``auto`` reads every row. A run outside a plan
+    (``mosaic run --feature``) reads every row under ``auto``; set
+    ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
+    once there. For
     mean/median/min/max/std every row is read under any rule.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
@@ -122,7 +128,10 @@ class FrameAggregate:
                 "columns", suffixes="aggs", families=("share",), members="categories"
             ),
         ),
-        conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col, ARENA_COLUMN),
+        conditional=(
+            *kept(C.frame_col, C.time_col, C.seq_col, C.group_col, ARENA_COLUMN),
+            Conditional(Column(SUBSET), when_param="subsets"),
+        ),
     )
 
     class Inputs(Inputs[TrackInput | Result]):

@@ -603,19 +603,22 @@ def pair_rule_read(
     aggs: Sequence[str],
     pairs: PairRule,
     filter_expr: str | None,
+    *,
+    has_subsets: bool = False,
 ) -> PairRead | None:
     """The rows that an aggregate's sums, counts and durations read of pair rows.
 
     ``None`` when none of *aggs* is a sum, a count or a duration. A rule written
     as ``once`` or ``each_perspective`` stands. ``auto`` reads ``once`` when no
-    *filter_expr* is set, *merged* may hold ``perspective``, its rows are
-    mirrored, and every one of *columns* is symmetric, and every row
+    *filter_expr* is set and no subsets, *merged* may hold ``perspective``, its
+    rows are mirrored, and every one of *columns* is symmetric, and every row
     (``each_perspective``) otherwise. One rule serves every column, so a single
     column that is not symmetric makes every sum, count and duration read every
-    row. A filter can keep one row of a pair (on ``id1`` or ``perspective``,
-    say), and ``once`` would then miss pairs. An undeclared or unbounded input
-    has no symmetric column, and its ``auto`` reads every row. The other
-    aggregations read every row whatever the rule, and the rule says nothing.
+    row. A filter, or a subset's filter, can keep one row of a pair (on ``id1``
+    or ``perspective``, say), and ``once`` would then miss pairs. An undeclared
+    or unbounded input has no symmetric column, and its ``auto`` reads every
+    row. The other aggregations read every row whatever the rule, and the rule
+    says nothing.
 
     Args:
         merged: The columns of the aggregate's merged input.
@@ -623,6 +626,7 @@ def pair_rule_read(
         aggs: Its aggregations.
         pairs: Its pair rule as written.
         filter_expr: Its row filter, ``None`` or empty when unset.
+        has_subsets: Whether it names subsets, each a row filter.
     """
     if not PAIR_COUNTING_AGGS.intersection(aggs):
         return None
@@ -630,6 +634,7 @@ def pair_rule_read(
         return pairs
     if (
         not filter_expr
+        and not has_subsets
         and merged.admits(_PERSPECTIVE)
         and merged.mirrored
         and all(merged.is_symmetric(column) for column in columns)

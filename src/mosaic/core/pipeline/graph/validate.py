@@ -799,6 +799,7 @@ _PAIR_RULE: Final[TypeAdapter[PairRule]] = TypeAdapter(PairRule)
 
 _AGGS_FIELD: Final = "aggs"
 _FILTER_FIELD: Final = "filter_expr"
+_SUBSETS_FIELD: Final = "subsets"
 
 
 def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead | None:
@@ -808,7 +809,8 @@ def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead 
     its params do not hold the fields of a pair rule.
     """
     values = param_values(
-        built, (column_field, _AGGS_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD)
+        built,
+        (column_field, _AGGS_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD, _SUBSETS_FIELD),
     )
     columns = _names(values.get(column_field))
     aggs = _names(values.get(_AGGS_FIELD))
@@ -826,6 +828,7 @@ def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead 
         aggs,
         rule,
         filter_expr if isinstance(filter_expr, str) else None,
+        has_subsets=bool(values.get(_SUBSETS_FIELD)),
     )
 
 
@@ -844,12 +847,12 @@ def pair_rules(
     """The rows that each ``sum`` or ``count`` step with a pair rule reads, by step id.
 
     A step's ``auto`` reads ``once`` when each of its columns is declared
-    symmetric over mirrored rows and it sets no ``filter_expr``
-    (:func:`~.columns.pair_rule_read`), and every row otherwise. A step that
-    writes ``once`` or ``each_perspective`` reads it. Read from the declarations
-    alone: the tracks hold no ``perspective``, and the columns a plan measures
-    of them do not change the answer. A step with another aggregation, or one
-    that did not check out, is left out.
+    symmetric over mirrored rows and it sets no ``filter_expr`` and no
+    ``subsets`` (:func:`~.columns.pair_rule_read`), and every row otherwise. A
+    step that writes ``once`` or ``each_perspective`` reads it. Read from the
+    declarations alone: the tracks hold no ``perspective``, and the columns a
+    plan measures of them do not change the answer. A step with another
+    aggregation, or one that did not check out, is left out.
 
     Raises:
         RecipeInvalid: The recipe has a cycle.

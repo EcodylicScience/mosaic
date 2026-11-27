@@ -1239,6 +1239,43 @@ def test_only_a_subgroup_list_beyond_one_column_moves_each_aggregate_run_id(
     assert with_subgroups(["tag", "event"]) != two
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_unset_subsets_keep_each_aggregate_run_id_and_a_set_mapping_moves_it(
+    case_id: str,
+) -> None:
+    """Leaving ``subsets`` out and setting it to ``None`` are the golden run.
+
+    A mapping adds the ``subset`` key, so it is another run, one per filter, and
+    the order of its names does not change the run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    params = case.params
+    assert params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+    fast = "speed > 1"
+    slow = "speed <= 1"
+
+    def with_subsets(value: dict[str, str] | None) -> str:
+        return _identifier(replace(case, params={**params, "subsets": value}))
+
+    assert _identifier(case) == golden
+    assert with_subsets(None) == golden
+    set_once = with_subsets({"fast": fast, "slow": slow})
+    assert set_once != golden
+    assert with_subsets({"slow": slow, "fast": fast}) == set_once
+    assert with_subsets({"fast": fast}) != set_once
+    assert with_subsets({"fast": slow, "slow": fast}) != set_once
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

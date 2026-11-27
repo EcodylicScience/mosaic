@@ -574,7 +574,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   for a group where no row passes. Set `order_col` to another numeric column, such as a
   stimulus time or a lag, to order the rows by it, and only with `first_pass` in `aggs`.
   A row whose `order_col` is missing is skipped, and every row is read under any `pairs`
-  rule.
+  rule. `subsets` maps names to filters in the syntax of `filter_expr`, applied after
+  it, and reduces the rows each keeps, so several windows or conditions come from one
+  step. Subsets may overlap, and the output has a text column `subset`, after the
+  subgroup columns, with the name. `duration` and `share` weigh a row by the seconds
+  from before the filters. A subset that keeps no row has a blank row in
+  `sequence-aggregate`, so each entry has a row per subset, and none in
+  `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or subgroup
+  column, and an input with one is refused. A filter or `subsets` makes `pairs: auto`
+  read every row.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

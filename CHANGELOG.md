@@ -28,6 +28,9 @@ No run id or output moves.
   `extract-templates`, `extract-labeled-templates` and `temporal-stack` now check
   theirs at plan time instead of failing each entry. `scale-to-cm` and `scale-to-bl`
   refuse an empty `columns` list, which failed every entry.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `subsets`
+  option, a mapping of names to filters that adds a `subset` key column after the
+  subgroup columns. Their run ids stay while `subsets` is unset.
 
 ## Unreleased: features that read only results compute in every track space
 

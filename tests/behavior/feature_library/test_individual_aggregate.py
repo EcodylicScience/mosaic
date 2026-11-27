@@ -12,6 +12,7 @@ import pytest
 
 from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.column_contract import Column
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline
 from mosaic.core.pipeline.run import OverlapUnsupported, run_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -1133,3 +1134,103 @@ def test_a_row_ending_on_a_bin_edge_credits_no_bin_after_it() -> None:
 
     assert out["bin_start"].tolist() == pytest.approx([0.0, 0.1, 0.2, 0.3])
     assert out["value_duration"].tolist() == pytest.approx([0.1] * 4)
+
+
+def test_each_subset_is_one_row_per_individual_after_the_subgroup_columns() -> None:
+    table = _timed_individuals()
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "duration"],
+            "subgroup_col": "tag",
+            "bin_s": 1.0,
+            "subsets": {"late": "frame >= 2", "all": "frame >= 0"},
+        },
+        table,
+    )
+
+    assert list(out.columns)[:8] == [
+        "group",
+        "sequence",
+        "id",
+        "tag",
+        "subset",
+        "bin_start",
+        "bin_end",
+        "value_count",
+    ]
+    assert out[["id", "tag", "subset", "bin_start"]].values.tolist()[:6] == [
+        [0, "a", "all", 0.0],
+        [0, "a", "all", 2.0],
+        [0, "a", "late", 2.0],
+        [0, "b", "all", 0.0],
+        [0, "b", "all", 2.0],
+        [0, "b", "late", 2.0],
+    ]
+
+
+def test_a_subset_that_keeps_no_row_of_an_individual_has_no_row_for_it() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["sum"],
+            "subsets": {"one": "value > 4", "none": "value > 100"},
+        },
+        _individual_table(),
+    )
+
+    assert out[["id", "subset"]].values.tolist() == [[1, "one"], [2, "one"]]
+    np.testing.assert_array_equal(out["value_sum"], [6.0, 8.0])
+
+
+def test_duration_reads_the_seconds_before_the_filter_and_the_subsets() -> None:
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["duration"],
+            "filter_expr": "frame != 1",
+            "subsets": {"late": "frame >= 2", "all": "frame >= 0"},
+        },
+        _binned([0.0, 0.5, 1.0, 1.5], value=1.0),
+    )
+
+    # Frame 0 lasts the 0.5 s to frame 1 though frame 1 is filtered out.
+    assert out["subset"].tolist() == ["all", "late"]
+    np.testing.assert_array_equal(out["value_duration"], [1.5, 1.0])
+
+
+def test_subset_is_refused_as_a_kept_or_split_name_with_subsets() -> None:
+    subsets = {"all": "value > 0"}
+    with pytest.raises(ValueError, match="subset.*writes itself"):
+        _ = IndividualAggregate(
+            params={
+                "columns": ["value"],
+                "subsets": subsets,
+                "keep_columns": ["subset"],
+            }
+        )
+    with pytest.raises(ValueError, match="subgroup_col.*subset"):
+        _ = IndividualAggregate(
+            params={"columns": ["value"], "subsets": subsets, "subgroup_col": "subset"}
+        )
+
+
+def test_an_input_with_a_subset_column_fails_the_entry_when_subsets_is_set() -> None:
+    table = _individual_table().assign(subset="x")
+
+    with pytest.raises(ValueError, match="'subset'"):
+        _ = _apply({"columns": ["value"], "subsets": {"all": "value > 0"}}, table)
+
+
+def test_the_subset_column_is_provided_only_when_subsets_is_set() -> None:
+    assert any(
+        entry.when_param == "subsets" and entry.column == Column("subset")
+        for entry in IndividualAggregate.provides.conditional
+    )
+    plain = IndividualAggregate(params={"columns": ["value"]}).params
+    split = IndividualAggregate(
+        params={"columns": ["value"], "subsets": {"all": "value > 0"}}
+    ).params
+    assert "subsets" not in plain.identity_dump()
+    assert split.identity_dump()["subsets"] == {"all": "value > 0"}
