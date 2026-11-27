@@ -8,6 +8,37 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: scan provenance and sequence names
+
+No run id moves. `tracks_raw/index.csv` gains a trailing `companions` column,
+which lists the files beside a raw file that its converter may read, each with
+its size, modification time and checksum, and is blank for a converter that
+lists none. An older index reads as if every cell were blank. The two Tracktor
+converters list the other Tracktor table of the pair, so a changed, new or
+removed sibling now marks a conversion stale. The first scan after upgrading
+adds those siblings to their sequences' `tracks_raw` compositions. Their
+conversions then run once more under unchanged run ids, with identical tables,
+and the features above them recompute once. A sequence whose converter lists no
+companion keeps its composition.
+
+`sequence_path_pattern` names a tracks or labels source's sequences from the
+folders of each file (`mosaic sources add --sequence-path-pattern`). A manifest
+that declares it is written at version 7, which older code refuses to open. A
+manifest that declares none is written at the version it was before.
+
+A scan now refuses two files of a one-file-per-sequence format that name one
+entry, before it writes anything. A conversion keeps the first file of an entry
+and drops the other without a message, and the refusal covers sequences named
+from the file stem too, so a scan that used to succeed may now stop. Name the
+files differently, narrow the source's patterns, or name the sequences from
+their path. Formats that merge several files into a sequence, formats that hold
+several sequences per file, a promoted correction and a row with no sequence
+are exempt.
+
+`mosaic scan --checksum-workers N` reads the checksums of tracks and labels
+files, and of the files beside them, in N threads. It defaults to 1 and changes
+no row, digest or output.
+
 ## Unreleased: a feature run's workers read a pair-filtered step's input
 
 No run id or output moves. A feature run's workers read the input of a step with a

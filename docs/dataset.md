@@ -360,9 +360,9 @@ A scan warns on stderr, and lists under `findings` with `--json`, what it drops:
 source whose path does not exist or is a link to one that does not (`sources add`
 warns of this too, and still declares the source), a listed file that a rule skips,
 such as a resource fork, a group pattern that matches no file, and the files a group
-pattern misses (below). A scan of a source whose path is missing leaves the rows that
-source indexed, so an unmounted share loses none; scan again once it is back. A files
-source indexes every file it lists that exists, whatever its suffix.
+or sequence pattern misses (below). A scan of a source whose path is missing leaves the
+rows that source indexed, so an unmounted share loses none; scan again once it is back.
+A files source indexes every file it lists that exists, whatever its suffix.
 
 A tracks or labels source can name each entry's group from its path. `--group-pattern`
 is a regex searched in the file stem, as the converter names the sequence, and its
@@ -375,8 +375,16 @@ mosaic sources add -m ~/dataset/dataset.yaml --kind tracks \
     --group-path-pattern 'Behavior_data/([^/]+)/'
 ```
 
-A source takes one of the two patterns. A manifest with a `--group-path-pattern` source
-is written at version 5, which an older mosaic refuses to open.
+A source takes one of the two group patterns. A manifest with a `--group-path-pattern`
+source is written at version 5, which an older mosaic refuses to open.
+
+`--sequence-path-pattern` names the sequence in the same way, from the path below the
+source. Its capture groups, joined by `__` in order, are the sequence, in place of the
+file stem. Use it when every recording has the same file name and its folders tell them
+apart. It is refused beside `--multi-sequences-per-file` and for a format whose files
+merge into one sequence. A manifest with a `--sequence-path-pattern` source is written
+at version 7, which an older mosaic refuses to open. [Naming a sequence from its
+folders](guides/tracking/import.md#naming-a-sequence-from-its-folders) gives an example.
 
 **A file the pattern misses is not indexed.** An empty group is one you did not declare,
 and every unscoped plan and read would take the file in with it. The scan reports one
@@ -384,9 +392,25 @@ and every unscoped plan and read would take the file in with it. The scan report
 and the first few paths (`sample`), and indexes the rest. `mosaic describe --raw` gives
 the count and the first ten paths for each source. A pattern that matches no file at all
 indexes none and reports `group_pattern_unmatched` or `group_path_pattern_unmatched`
-alone. A rescan drops the raw index rows that an earlier scan wrote for such files with
-an empty group. It leaves their converted tables in place. Fix the pattern, or move the
-file, and scan again.
+alone. A sequence path pattern is reported the same way, as
+`sequence_path_pattern_missed` or `sequence_path_pattern_unmatched`, and a group pattern
+is judged over the files the sequence pattern named. A rescan drops the raw index rows
+that an earlier scan wrote for such files with an empty group. It leaves their converted
+tables in place. Fix the pattern, or move the file, and scan again.
+
+**Two tracks files may not name one entry.** A scan of a format that reads one file per
+sequence refuses two files that give the same group and sequence, whatever names them,
+the file stem included. The refusal names both files and their sources and comes before
+the scan writes anything, since a conversion keeps one table per entry and would drop
+the other recording. Rename a file, narrow a source's patterns so one is not scanned, or
+name the sequences from their folders. Formats that merge files into a sequence,
+formats that hold several sequences in a file, and a promoted correction beside its
+upload are not checked.
+
+**Hashing a large corpus is faster with threads.** `mosaic scan --checksum-workers N`
+reads the tracks and labels files, and the files beside them, in `N` threads. A corpus
+on a slow share gains most. It defaults to 1, refuses a value below 1, ignores media,
+and changes no row: the index is the same for any count.
 
 **Several tracks or labels sources may share a folder.** A source claims the files its
 own patterns, exclusions and folder rules accept. Two sources over one folder, equal or
@@ -1029,9 +1053,9 @@ because it reads every run-log and lists each source's folder. It reports:
   folders is one set.
 - **Unhashed files**: raw files with no checksum, from a source declared with `--no-md5`
   (`md5: false`), which no duplicate check can cover.
-- **Pattern misses**: for each source with a group pattern, the count of files the
-  pattern misses and the first ten paths. A source whose `src_format` has no converter
-  is not checked.
+- **Pattern misses**: for each source with a group or sequence pattern, the count of
+  files the pattern misses and the first ten paths. A source whose `src_format` has no
+  converter is not checked.
 - **Frame counts**: tracks tables whose frame count disagrees with their media, or that
   stop short of it, with the variant, the frames read and the media's frames.
 - **Span outliers**: tracks tables whose span of frames is under half or over twice the

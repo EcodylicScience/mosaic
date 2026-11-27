@@ -197,7 +197,7 @@ by that first `create`.
 
 | Tool | Result |
 | --- | --- |
-| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, saved selections, counts and recordings. With `raw: true`, a `raw_report` of duplicate raw files, files with no checksum, files a group pattern misses, tracks tables with an odd frame count or span, uneven time steps and missing source paths, as [`mosaic describe --raw`](dataset.md#check-the-raw-data) prints it |
+| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, saved selections, counts and recordings. With `raw: true`, a `raw_report` of duplicate raw files, files with no checksum, files a group or sequence pattern misses, tracks tables with an odd frame count or span, uneven time steps and missing source paths, as [`mosaic describe --raw`](dataset.md#check-the-raw-data) prints it |
 | `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, listed by category or found by words in their name, summary or keywords and kept to one track space, and the ones named with their params as a table. A search that matches nothing returns a hint to write a [feature definition](#feature-definitions). With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |

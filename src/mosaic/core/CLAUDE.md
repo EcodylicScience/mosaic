@@ -215,7 +215,6 @@ importing `mosaic.tracking` registers neither.
   scan drops a file reports through a `FindingLog`, never a bare `print`. The CSV import
   of sequence tags reports each row that names no entry as `row_unmatched` with its
   `line`.
-  scan drops a file reports through a `FindingLog`, never a bare `print`.
 - A file that a declared `group_pattern` or `group_path_pattern` misses is not indexed.
   `group_for_path` (`core/pipeline/tracks_raw_index.py`) decides each file's group and
   returns `None` for a miss, and `_index_raw` skips it and reports one
@@ -235,7 +234,25 @@ importing `mosaic.tracking` registers neither.
   planned rows with the committed rows no plan replaces, and only then commits each
   pass; `_commit_raw_rows` checks again under the lock. A blank sequence, a promoted
   correction, a format whose converter merges per sequence or is enumerable, and a
-  labels source are exempt (`tests/core/test_scan_sources.py`).
+  labels source are exempt (`tests/core/test_scan_sources.py`). A
+  `sequence_path_pattern` is refused beside a merging format or
+  `multi_sequences_per_file`, and a capture that names nothing is refused, before any
+  write.
+- `TrackConverter.companion_files(path)` lists the files beside a raw file that
+  `convert` may read: existing, sorted, in its directory, never the file itself. It
+  reads no file's content and takes no params, because a scan has none. `convert` reads
+  beside its source only what it lists (`conformance.py` checks the list). A scan
+  records each as a `{name, size_bytes, mtime_iso, md5}` record in the row's
+  `companions` cell, compact JSON sorted by name, and `source_members_from_rows` adds
+  each digest to the sequence's `tracks_raw` composition, so a changed companion makes
+  a conversion stale under its unchanged run id. A converter that lists none keeps its
+  composition, and a cell that does not parse is refused under the lock before the
+  write. `_prior_digests` reuses a companion's digest by its size and mtime, as a
+  source's.
+- `mosaic scan --checksum-workers` (`checksum_workers` of `scan_tracks`, `scan_labels`
+  and the indexers) sets the threads that hash tracks and labels files and their
+  companions, never media. It is a throughput setting: it enters no manifest field and
+  no identifier, and the rows are the same for any count.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

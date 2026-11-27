@@ -245,12 +245,23 @@ A dataset is a directory with `dataset.yaml` and named roots
   group pattern misses is not indexed: the finding gives the `count` and a `sample` of
   paths, so fix the pattern and scan again. `--group-pattern` searches the file stem;
   `--group-path-pattern` searches the path below the source, for a group that is a
-  folder.
+  folder. `--sequence-path-pattern` does the same for the sequence, when every recording
+  has one file name and its folders tell them apart: its capture groups, joined by `__`,
+  are the sequence. Anchor it with `^` and `$`. A file it misses is not indexed and is
+  reported as `sequence_path_pattern_missed` (or `..._unmatched`). It is refused beside
+  `--multi-sequences-per-file` and for a format that merges files into a sequence.
+  (https://ecodylicscience.github.io/mosaic/guides/tracking/import/#naming-a-sequence-from-its-folders)
+- A scan refuses two tracks files of a one-file-per-sequence format that name one entry,
+  the stem-named ones too, and writes nothing, because a conversion keeps one table per
+  entry. The error names both files and their sources. Rename one, narrow a source's
+  patterns so one is not scanned, or add a `--sequence-path-pattern` that takes the
+  sequence from more of the path. A scan of a large corpus on a slow share is faster
+  with `mosaic scan --checksum-workers N`, which changes no row.
 - `mosaic describe --raw` (`describe_dataset` with `raw: true`) adds a `raw_report`
-  built from the indexes: duplicate raw files, files with no checksum, files a group
-  pattern misses, tracks tables with an odd frame count or span, uneven time steps and
-  missing source paths. Read it after a scan, before converting, instead of writing a
-  script that walks the raw files.
+  built from the indexes: duplicate raw files, files with no checksum, files a group or
+  sequence pattern misses, tracks tables with an odd frame count or span, uneven time
+  steps and missing source paths. Read it after a scan, before converting, instead of
+  writing a script that walks the raw files.
 - Two tracks or labels sources may share a folder when they take no file in common. A
   scan refuses a file that both take, and names it. Narrow one source's patterns or add
   `exclude_patterns`. A restricted `mosaic scan --only SOURCE --prune-unsourced` is

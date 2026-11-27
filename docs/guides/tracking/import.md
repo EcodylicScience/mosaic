@@ -95,6 +95,51 @@ the process has not installed fails planning with a message that names it.
 [Write a converter](write-a-converter.md#shipping-it) shows how a package
 declares one.
 
+## Naming a sequence from its folders
+
+A converter names a file's sequence from its file name. When a recording's name
+lives in its folders and every file has the same name, give the source a
+`--sequence-path-pattern`: a regular expression searched in the file's path
+below the source, with `/` separators. Its capture groups, joined by `__` in
+order, name the sequence. Anchor it with `^` and `$`, because the search finds
+a match anywhere in the path.
+
+A study that stores `<N>/<batch>/day<d>/<trial>/segm/trajectories.mat` has one
+file name for every recording, and a trial name alone repeats across batches
+and days. Naming the sequence from the batch, the day and the trial, and the
+group from the top folder, gives each recording an entry of its own:
+
+```bash
+mosaic sources add -m dataset.yaml --kind tracks --path /data/study \
+    --patterns 'trajectories.mat' --src-format <format> \
+    --sequence-path-pattern '^[^/]+/([^/]+)/(day[^/]+)/([^/]+)/segm/trajectories\.mat$' \
+    --group-path-pattern '^([^/]+)/'
+```
+
+The file `2/batchA/day3/trial07/segm/trajectories.mat` is then the entry with
+group `2` and sequence `batchA__day3__trial07`, converted to
+`tracks/<variant>/2__batchA__day3__trial07.parquet`. A `--group-pattern` on the
+same source searches the sequence that the path named, and
+`--group-path-pattern` applies as it does without a sequence pattern.
+
+- **A file the pattern misses is not indexed.** The scan reports one
+  `sequence_path_pattern_missed` finding for the source, with the number of
+  files missed and the first few paths. A pattern that misses every file
+  indexes none and reports `sequence_path_pattern_unmatched` alone.
+  `mosaic describe --raw` lists the same files. A file whose match leaves a
+  capture group empty, or out of the match, is refused by the scan, and the
+  report counts it as a miss.
+- **The pattern is refused** when it is not a regular expression, when it has
+  no capture group, beside `--multi-sequences-per-file`, where the file holds
+  the sequences, and for a format that merges several files into one sequence,
+  where the converter names the sequence from each file's stem.
+- **Two files may not name one entry.** The scan refuses two files of a format
+  that reads one file per sequence when they give the same group and sequence,
+  and writes nothing. A trial name alone, in the study above, repeats across
+  batches and days and is refused. Take the sequence from more of the path.
+  [The scan](../../dataset.md#add-sources-and-scan) lists the other remedies
+  and the formats the check skips.
+
 ## The frame rate of an imported table
 
 A SLEAP, DeepLabCut, Ultralytics, zebrafish 3D workflow or s-DANNCE file records frame
@@ -174,6 +219,12 @@ first. It interpolates on `time`. Positions are pixels. For millimeters, run `sc
 mosaic sources add -m dataset.yaml --kind tracks --path /data/tracktor \
     --patterns '*_tracked_fixed_final.tsv' --src-format tracktor_corrected_tsv
 ```
+
+Each Tracktor format lists the other table of the pair as a file beside its
+source, and the scan records its checksum with the source's. A changed, added
+or removed sibling then marks the conversion stale, so `convert-tracks` runs it
+again. The pair is `<stem>_tracked.csv` and `<stem>_tracked_fixed_final.tsv`,
+and a sibling that is absent is not recorded.
 
 ## Live Mouse Tracker databases
 

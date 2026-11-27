@@ -92,6 +92,34 @@ a conversion that lacks it. The base returns `None`, which records no count. Kee
 base where one file's count is not a sequence's: an enumerable converter, and a format
 whose frame numbers have gaps.
 
+## Files beside the source
+
+A converter that reads another file beside its source overrides `companion_files(path)`
+to list it. The Tracktor converters do: the raw table is timed by the corrected table of
+the same run, and the corrected converter lists the raw table whatever its params, so a
+change to either file makes both conversions stale.
+
+```python
+@override
+def companion_files(self, path: Path) -> tuple[Path, ...]:
+    sibling = path.with_name(path.stem + ".meta.json")
+    return (sibling,) if sibling.is_file() else ()
+```
+
+The hook returns the files in the source's directory that `convert` may read, only those
+that exist now, sorted, and never the source itself. It reads no file's content. A scan
+records each listed file's checksum in the tracks index, beside the source's own, so a
+companion that changes, appears or disappears makes the conversion stale and the next
+`convert-tracks` runs it again. Without the hook, an edit to such a file leaves the table
+looking current.
+
+The hook takes no params, because a scan runs before any conversion has params. List a
+companion whatever the params would decide: a converter that reads the file only under
+one setting still lists it, and pays one conversion when the file changes. `convert`
+reads beside its source only the files the hook lists. A file it reads that the hook
+does not list changes the table without marking it stale. The base lists nothing, and a
+converter that reads nothing beside its source keeps it.
+
 ## Load the raw file safely
 
 A converter may read a file someone else made, so loading it must not run anything the
@@ -191,8 +219,11 @@ that a merging format overrides `sequence_from_stem`, that no format is both
 `group`, a `sequence` or a `group_from`. Given a sample file it also converts
 it, validates the table against `output_schema`, and checks the frame count:
 `frames_read` of the sample must be `None` or no smaller than the number of
-distinct `frame` values in the table, and must not raise. A package tests its
-own converter with one call:
+distinct `frame` values in the table, and must not raise. It calls
+`companion_files` on the sample too, and requires that it does not raise and
+that it lists paths that are sorted, without repeats, existing files in the
+sample's directory, and not the sample itself. A package tests its own
+converter with one call:
 
 ```python
 from pathlib import Path

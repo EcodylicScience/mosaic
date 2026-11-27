@@ -128,6 +128,16 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     # def frames_read(self, path: Path) -> int | None:
     #     raise NotImplementedError
 
+    # Optional. Override when `_build_frame` reads another file beside the source:
+    # return the ones that exist now, sorted, in the source's directory, and never
+    # the source. Read no file's content, and take no params, because a scan runs
+    # before any conversion has params. A scan records each file's checksum, so a
+    # change to one marks the conversion stale. The base returns (), which lists none.
+    #
+    # def companion_files(self, path: Path) -> tuple[Path, ...]:
+    #     sibling = path.with_name(path.stem + ".meta.json")
+    #     return (sibling,) if sibling.is_file() else ()
+
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
         """The ``(group, sequence)`` pairs *path* holds. Only if ``enumerable``."""
         raise NotImplementedError
