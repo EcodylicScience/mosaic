@@ -492,6 +492,17 @@ def _sdannce_convert_variant() -> str:
     return _default_convert_variant(SdannceMatConverter)
 
 
+def _sleap_convert_variant() -> str:
+    """SLEAP's default conversion variant.
+
+    It pins SLEAP's default recipe: a param added later with a default value
+    must leave this identifier where it is.
+    """
+    from mosaic.core.track_library.sleap import SleapAnalysisH5Converter
+
+    return _default_convert_variant(SleapAnalysisH5Converter)
+
+
 def _trex_variant() -> str:
     # The tracker's own settings, passed through unwrapped -- so this value is
     # byte-identical to trex_run_id(settings) for the same settings.
@@ -1315,6 +1326,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,
     "tracks/convert-variant-sdannce": _sdannce_convert_variant,
+    "tracks/convert-variant-sleap_analysis_h5": _sleap_convert_variant,
     "tracks/convert-variant-zebrafish-3d": _zebrafish_3d_convert_variant,
     "tracks/trex-variant": _trex_variant,
     "tracks/sleap-variant": _sleap_variant,
