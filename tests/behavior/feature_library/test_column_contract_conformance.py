@@ -101,6 +101,7 @@ from tests.helpers import (
 PARAMS: dict[str, dict[str, JsonValue]] = {
     "approach-avoidance": {"orientation_gate_cos": None},
     "arhmm": {"n_states": 2, "n_iter": 5},
+    "derive-columns": {"columns": [{"name": "x_double", "expr": "X * 2"}]},
     "egocentric-crop": {"transform_keypoints": True},
     "evaluate-labels": {"mode": "clusters", "prediction_column": "cluster"},
     "event-response": {"onset_times": [1.0]},

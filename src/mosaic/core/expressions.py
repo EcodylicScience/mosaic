@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     """What an operation of an expression computes: an array, or a numpy scalar."""
 
 __all__ = [
+    "CONSTANTS",
     "ExpressionError",
     "ParsedExpression",
     "evaluate",
@@ -93,8 +94,9 @@ class ParsedExpression:
     tree: ast.Expression = field(compare=False, repr=False)
 
 
-_CONSTANTS: Final = {"pi": "pi", "nan": "nan", "inf": "inf"}
-"""The constant names, each with the attribute of ``numpy`` that holds it."""
+CONSTANTS: Final = frozenset({"pi", "nan", "inf"})
+"""The constant names. Each is also the name of the attribute of ``numpy`` that
+holds it, and no column can take one of them."""
 
 _ARITHMETIC: Final[dict[type[ast.operator], str]] = {
     ast.Add: "add",
@@ -305,7 +307,7 @@ def names_read(parsed: ParsedExpression) -> tuple[str, ...]:
         for node in ast.walk(parsed.tree)
         if isinstance(node, ast.Name)
         and id(node) not in called
-        and node.id not in _CONSTANTS
+        and node.id not in CONSTANTS
     )
     return tuple(dict.fromkeys(name for _, _, name in reads))
 
@@ -353,8 +355,8 @@ def evaluate(
             case ast.Constant(value=int() | float() as number):
                 return np.float64(number)
             case ast.Name(id=name):
-                if name in _CONSTANTS:
-                    constant: float = getattr(np, _CONSTANTS[name])
+                if name in CONSTANTS:
+                    constant: float = getattr(np, name)
                     return np.float64(constant)
                 return read[name]
             case ast.BinOp(left=left, op=op, right=right):

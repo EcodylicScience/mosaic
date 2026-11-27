@@ -521,6 +521,22 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   that produces them, or use a step that reads each row alone, such as `heading`. A
   blank answer is not refused. When converting SLEAP tracks that follow an animal, set
   `tracks_named`.
+- `derive-columns` appends columns computed from the arithmetic of other columns, so a
+  unit change or a threshold needs no code. `columns` is a list of `{name, expr}`
+  entries run in order, and an entry may read an earlier one: `[{"name": "speed_m",
+  "expr": "speed * 30 / 100"}, {"name": "fast", "expr": "speed_m > 0.5"}]`. An
+  expression is numpy arithmetic over whole columns: `+ - * / // % **`, the comparisons,
+  `&`, `|` and `~` on booleans, `x if c else y`, `abs`, `sqrt`, `exp`, `log`, `floor`,
+  `ceil`, `sin`, `cos`, `deg2rad`, `rad2deg`, `arccos`, `arctan2`, `minimum`, `maximum`,
+  `isnull`, `notnull` and `fillna`, and the constants `pi`, `nan` and `inf`. A number is
+  a float, and operators of equal precedence run left to right, so `speed * 30 / 100`
+  is `(speed * 30) / 100`. A missing value propagates. An ordering or equality
+  comparison with one is false and `!=` is true, so test `isnull(x)` first when a
+  missing position should stay missing. The output is the input with each new column
+  after every input column. A name that the input already has, a metadata column's
+  name (`group`, `sequence`, `frame`, `time`, `id`, `id1`, `id2`, `perspective`,
+  `arena`), `pi`, `nan` or `inf`, a repeated name and an expression that reads a later
+  entry's column are refused. The feature runs in any track space.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.

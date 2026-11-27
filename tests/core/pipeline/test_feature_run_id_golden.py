@@ -237,6 +237,11 @@ CASES: tuple[Case, ...] = (
         params={"columns": ["SPEED"]},
     ),
     Case(
+        case_id="derive-columns/speed-scaled",
+        feature="derive-columns",
+        params={"columns": [{"name": "speed_scaled", "expr": "speed * 30 / 100"}]},
+    ),
+    Case(
         case_id="sequence-aggregate/column-speed",
         feature="sequence-aggregate",
         params={"columns": ["SPEED"]},

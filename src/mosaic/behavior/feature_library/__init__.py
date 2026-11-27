@@ -51,6 +51,7 @@ from . import (
     body_scale,
     collective_math,
     collective_motion_metrics,
+    derive_columns,
     dinov2_temporal_identity_model,
     event_response,
     extract_labeled_templates,
@@ -115,6 +116,7 @@ from .body_scale import BodyScaleFeature
 from .heading import HeadingFeature
 from .collective_math import STATE_HIGH, STATE_LOW, classify_state
 from .collective_motion_metrics import CollectiveMotionMetrics
+from .derive_columns import DeriveColumns
 from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
 from .evaluate_labels import EvaluateLabels
 from .event_response import EventResponse
@@ -217,6 +219,7 @@ __all__ = [
     "BodyScaleFeature",
     "HeadingFeature",
     "CollectiveMotionMetrics",
+    "DeriveColumns",
     "EvaluateLabels",
     "EventResponse",
     "ExtractLabeledTemplates",
@@ -291,6 +294,7 @@ __all__ = [
     "body_length",
     "body_scale",
     "collective_motion_metrics",
+    "derive_columns",
     "dinov2_temporal_identity_model",
     "event_response",
     "extract_labeled_templates",

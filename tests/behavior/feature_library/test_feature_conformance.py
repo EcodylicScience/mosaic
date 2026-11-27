@@ -475,6 +475,7 @@ def test_declared_keywords_are_distinct_lowercase_stripped_phrases(cls: type) ->
         ("extract-labeled-templates", True),
         ("id-tag-columns", True),
         ("sequence-tag-columns", False),
+        ("derive-columns", False),
     ],
 )
 def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
@@ -507,6 +508,7 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "temporal-stack": _EVERY_SPACE,
     "individual-wavelet": _EVERY_SPACE,
     "pair-wavelet": _EVERY_SPACE,
+    "derive-columns": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
     "pair-world": frozenset({"world_m"}),
     "pair-posedistance-pca": _EVERY_SPACE,

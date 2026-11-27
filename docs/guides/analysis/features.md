@@ -178,6 +178,44 @@ listed with its parameters under *Global* in the
 animal-centered clips; `overlay` renders an annotated video. See
 [Render an annotated video](../media/render-a-video.md).
 
+## Row arithmetic
+
+`derive-columns` appends columns computed from the arithmetic of other columns, so a
+unit change or a threshold does not need code. Its `columns` param is a list of
+entries, each a `name` and an `expr`, computed in order:
+
+```python
+from mosaic.behavior.feature_library import DeriveColumns
+
+ds.run_feature(
+    DeriveColumns(
+        params={
+            "columns": [
+                {"name": "speed_m", "expr": "speed * 30 / 100"},
+                {"name": "fast", "expr": "speed_m > 0.5"},
+            ]
+        }
+    )
+)
+```
+
+An expression reads whole columns with numpy arithmetic: `+ - * / // % **`, the
+comparisons, `&`, `|` and `~` on booleans, `x if c else y`, and the functions `abs`,
+`sqrt`, `exp`, `log`, `floor`, `ceil`, `sin`, `cos`, `deg2rad`, `rad2deg`, `arccos`,
+`arctan2`, `minimum`, `maximum`, `isnull`, `notnull` and `fillna`, with the constants
+`pi`, `nan` and `inf`. A number in an expression is a float, and operators of equal
+precedence run left to right. A missing value propagates through arithmetic. An
+ordering or equality comparison with one is false and `!=` is true, so write
+`nan if isnull(x) else ...` when a missing position should stay missing.
+
+The output holds the input's rows in their order and every input column, then each new
+column in list order, as `float64`, `int64` or `bool`. A later entry may read an earlier
+one, and an expression that reads a later entry's column is refused when the step is
+declared. A name that the input already has, a metadata column's name (group, sequence,
+frame, time, id, id1, id2, perspective, arena), `pi`, `nan`, `inf` and a name listed
+twice are refused. An expression that reads a column the input lacks fails the entry,
+naming the expression and the column.
+
 ## Features and track spaces
 
 A feature declares the spaces it computes in. Tracks are in pixels, centimeters or, for
@@ -189,7 +227,8 @@ features that read `X` and `Y` are planar and refuse a world-frame table;
 when it is planned or, for tracks the recipe itself writes, when the step starts.
 Features whose computation does not depend on the space (`keypoint-kinematics` measures
 in the table's own units, meters on a world table) and features that read no spatial
-column (the aggregates) accept every space. `pair-posedistance-pca` accepts every space
+column (the aggregates) accept every space, as does `derive-columns`, which computes in the
+units of its table. `pair-posedistance-pca` accepts every space
 too, and its `dimensions` param decides: at `dimensions: 2` a world-frame table fails
 when the step runs, not when it is planned, and the message names `dimensions: 3`. The
 steps that read only the results of earlier steps (`global-kmeans`, `global-tsne`,

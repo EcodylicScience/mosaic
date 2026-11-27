@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
+from mosaic.behavior.feature_library.derive_columns import DeriveColumns
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
@@ -967,6 +968,62 @@ def test_a_frame_aggregate_provides_the_columns_it_keeps() -> None:
 
     assert report.valid, report.problems
     assert [caution.step for caution in report.cautions] == ["frame"]
+
+
+# --- derive-columns ---------------------------------------------------------------------
+
+_DERIVED: dict[str, JsonValue] = {
+    "columns": [
+        {"name": "speed_m", "expr": "speed * 30 / 100"},
+        {"name": "speed_half", "expr": "speed_m / 2 + offset"},
+    ]
+}
+"""Two derived columns, the second reading the first and an input column."""
+
+
+def test_derive_columns_requires_what_its_expressions_read_from_the_input() -> None:
+    wire = requires_wire(DeriveColumns.requires, _DERIVED)
+
+    assert [need.columns for need in wire] == [("speed",), ("offset",)]
+    assert all(need.params == ("columns",) for need in wire)
+
+
+def test_derive_columns_provides_every_input_column_and_each_derived_name() -> None:
+    wire = provided_wire(DeriveColumns.provides, _DERIVED)
+
+    assert wire.passthrough
+    assert not wire.payload_families
+    assert [names.columns for names in wire.adds] == [("speed_m", "speed_half")]
+    assert wire.adds[0].params == ("columns",)
+    assert wire.conditional == ()
+
+
+def test_derive_columns_output_keeps_the_input_and_guarantees_the_derived_names() -> (
+    None
+):
+    merged = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "speed", "offset"}),
+        possible=frozenset({"frame", "id", "speed", "offset", "angvel"}),
+    )
+
+    output = output_columns(DeriveColumns.provides, merged, _DERIVED)
+
+    assert output.guaranteed == {
+        "frame",
+        "id",
+        "speed",
+        "offset",
+        "speed_m",
+        "speed_half",
+    }
+    assert output.possible >= output.guaranteed | {"angvel"}
+
+
+def test_derive_columns_without_columns_provides_no_derived_name() -> None:
+    wire = provided_wire(DeriveColumns.provides, {})
+
+    assert wire.passthrough
+    assert [names.unknown for names in wire.adds] == [True]
 
 
 # --- payload families -------------------------------------------------------------------

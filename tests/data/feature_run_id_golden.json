@@ -11,6 +11,7 @@
   "body-scale/default": "0.2-3b632409e1",
   "collective-motion-metrics/default": "0.3-241c885c34",
   "collective-motion-metrics/subgroups-alpha": "0.3-311f7326e0",
+  "derive-columns/speed-scaled": "0.1-e52e008c12",
   "egocentric-crop/center-mode-xy": "0.3-08ada24d03",
   "egocentric-crop/default": "0.3-b9ad2c4c3e",
   "evaluate-labels/bootstrap": "0.2-7ca9b557bd",

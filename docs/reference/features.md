@@ -3,7 +3,7 @@
 
 # Features
 
-70 features are registered. Each one runs as
+71 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -78,6 +78,23 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.body_scale.BodyScaleFeat
 Per-frame body scale: median intra-animal pose distance.
 
 No parameters.
+
+### `derive-columns`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.derive_columns.DeriveColumns` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
+
+Add columns computed from row arithmetic over the table's columns.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `columns` | list of `DerivedColumn` | _required_ | min items `1` | The columns to add, in the order they are computed. A later entry may read an earlier one, and no entry may read a column that a later entry writes. |
+
+??? note "`DerivedColumn`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `name` | `string` | _required_ | min length `1`, matches `^[A-Za-z_][A-Za-z0-9_]*$` | The name of the new column: letters, digits and underscores, not starting with a digit. It cannot repeat, be pi, nan or inf, be a metadata column (group, sequence, frame, time, id, id1, id2, perspective, arena), or name a column the input has. |
+    | `expr` | `string` | _required_ |  | The expression that computes the column from the input's columns and from the columns of earlier entries, as in 'speed * 30 / 100'. Checked when the step is declared. |
 
 ### `ffgroups`
 

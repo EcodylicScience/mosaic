@@ -8,6 +8,13 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: registered features for recurring definitions
+
+No run id or output moves.
+
+- `derive-columns` is a new feature that appends columns computed from row arithmetic
+  over its input's columns, such as `speed * 30 / 100`. No existing run id changes.
+
 ## Unreleased: features that read only results compute in every track space
 
 No run id or output moves. The catalog's `track_spaces` (`describe_step_types`,
