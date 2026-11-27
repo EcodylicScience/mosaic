@@ -99,7 +99,7 @@ CONTRACT_SOURCE: Final = (
         1,
     )
 )
-"""``MINIMAL_SOURCE`` declaring a ``ParamColumn`` in its ``requires`` and ``provides``."""
+"""``MINIMAL_SOURCE`` declaring a ``ParamColumn`` in ``requires`` and ``provides``."""
 
 NEW_PARAM_COLUMN_KEYS: Final = ("key", "suffix", "open_families")
 

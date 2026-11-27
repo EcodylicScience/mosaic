@@ -30,6 +30,7 @@ from mosaic.behavior.feature_library.aggregate_common import (
     quantiles_or_nan,
     reduce_column,
     reduce_prepared,
+    repeated_items,
     split_keys,
 )
 
@@ -945,7 +946,7 @@ def test_an_input_with_a_subset_column_is_read_as_any_column_without_subsets() -
 
 
 @pytest.mark.parametrize("name", ["", "a b", "a.b", "a/b", "é"])
-def test_a_subset_name_of_other_characters_than_letters_digits_underscores_hyphens_is_refused(
+def test_a_subset_name_outside_letters_digits_underscores_hyphens_is_refused(
     name: str,
 ) -> None:
     with pytest.raises(ValueError, match="letters, digits, underscores and hyphens"):
@@ -1416,9 +1417,7 @@ def test_the_bin_keys_follow_the_subset_and_precede_the_time_bins() -> None:
     )
 
 
-def test_entries_prepared_with_value_bins_then_combined_equal_the_inline_reduction() -> (
-    None
-):
+def test_prepared_value_bins_entries_combine_to_the_inline_reduction() -> None:
     first, second = _dyadic_tables()
     for dense in (False, True):
         params = _blank_params(
@@ -1629,9 +1628,7 @@ def test_dense_without_value_bins_is_refused() -> None:
     assert AggregateParams(columns=["v"], dense=False).dense is False
 
 
-def test_a_bin_name_is_refused_as_a_kept_or_subgroup_column_while_its_column_is_binned() -> (
-    None
-):
+def test_a_bin_name_is_refused_as_a_kept_or_subgroup_column_while_binned() -> None:
     bins = [_bins("x", [0, 1])]
     with pytest.raises(ValueError, match="keep_columns lists x_bin.*writes itself"):
         _ = AggregateParams(columns=["v"], value_bins=bins, keep_columns=["x_bin"])
@@ -2386,3 +2383,11 @@ def test_the_quantile_options_leave_the_identity_dump_while_unset_or_linear() ->
     assert "quantile_method" not in plain.identity_dump()
     assert linear.identity_dump() == plain.identity_dump()
     assert hazen.identity_dump()["quantile_method"] == "hazen"
+
+
+def test_repeated_items_lists_each_repeat_once_in_the_order_it_is_reached() -> None:
+    assert repeated_items(["b", "a", "b", "a", "a", "c"]) == ["b", "a"]
+
+
+def test_repeated_items_of_distinct_items_is_empty() -> None:
+    assert repeated_items(iter([3, 1, 2])) == []

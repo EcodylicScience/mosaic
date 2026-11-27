@@ -1,36 +1,35 @@
 """The columns a feature reads from its merged input, and the columns of its output.
 
 All of a step's inputs are inner-joined into one frame before ``apply`` sees it.
-A feature reads columns from the frame by name, often a name stated by one of
-its params. Two class attributes declare those names:
+A feature reads columns from the frame by name, often a name stated by one of its
+params. Two class attributes declare those names:
 
 - ``requires``: a tuple of requirements, each naming a column that ``apply`` reads.
 - ``provides``: one :class:`Provides`, the columns of a non-empty output.
 
 Each is optional, and an absent one means *not declared*. That default is safe.
-Every reader of a declaration treats an undeclared feature's output as unknown,
-and a requirement on unknown columns is a caution. It is not a refusal.
+Every reader of a declaration treats an undeclared feature's output as unknown, and a
+requirement on unknown columns is a caution. It is not a refusal.
 
 Pipeline validation reads both from the declaration catalog.
 :func:`check_input_columns` checks ``requires`` against the merged frame before
-``apply``. One declaration decides in both places, and validation and execution
-agree on the columns a feature reads.
+``apply``. One declaration decides in both places, and validation and execution agree on
+the columns a feature reads.
 
-A reference names columns by name (:class:`Column`), by the value of a params
-field (:class:`ParamColumn`), by a template over the params (:class:`Template`),
-or as a family sharing a prefix (:class:`Prefix`). A params field resolves from
-the step's params, which contain the field's default when the step does not set
-it. A :class:`ParamColumn` requirement needs every column its field names. A
-requirement is a reference, a group that any one member meets (:class:`AnyOf`),
-the keypoint columns that a ``PoseConfig`` selects (:class:`Keypoints`), the
-columns that ``apply`` derives from other columns (:class:`Derived`), the columns
-that ``apply`` computes from expressions over other columns
-(:class:`Expressions`), or any numeric payload column (:class:`Payload`). A
-global model reads every payload column of its merged input, whatever its name.
-A requirement that ``apply`` reads under some params only applies under
-conditions on them (:class:`When`). An output names its columns by reference, or
-names a family of columns after each payload column of its merged input
-(``Provides.payload_families``).
+A reference names columns by name (:class:`Column`), by the value of a params field
+(:class:`ParamColumn`), by a template over the params (:class:`Template`), or as a
+family sharing a prefix (:class:`Prefix`). A params field resolves from the step's
+params, which contain the field's default when the step does not set it. A
+:class:`ParamColumn` requirement needs every column its field names. A requirement is a
+reference, a group that any one member meets (:class:`AnyOf`), the keypoint columns that
+a ``PoseConfig`` selects (:class:`Keypoints`), the columns that ``apply`` derives from
+other columns (:class:`Derived`), the columns that ``apply`` computes from expressions
+over other columns (:class:`Expressions`), or any numeric payload column
+(:class:`Payload`). A global model reads every payload column of its merged input,
+whatever its name.
+A requirement that ``apply`` reads under some params only applies under conditions on
+them (:class:`When`). An output names its columns by reference, or names a family of
+columns after each payload column of its merged input (``Provides.payload_families``).
 """
 
 from __future__ import annotations
@@ -250,7 +249,7 @@ class Derived:
 
 @dataclass(frozen=True, slots=True)
 class Expressions:
-    """Columns that ``apply`` writes from expressions, one per mapping in a params field.
+    """Columns that ``apply`` writes from expressions, one per params mapping.
 
     The field contains a list of mappings, as ``columns`` of ``derive-columns``
     does. Each mapping names the column it writes under *name_key* and the
@@ -1062,16 +1061,14 @@ def needs_of(
     """Each requirement in *requires*, resolved against one step's params.
 
     A requirement is left out when its params field is unset, as an unset
-    ``subgroup_col`` is, or when a condition on it does not hold. A requirement
-    is also left out when a derivation listed before it writes a column that
-    meets it, and that check applies to each column on its own. A
-    :class:`ParamColumn` needs every column it names and contributes one
-    requirement per column, as a derivation does for each column that it reads
-    from the input and a keypoint selection for each column that it selects. An
-    :class:`AnyOf` group is one requirement that any of its columns meets. A
-    payload requirement resolves to one that any payload column meets. A need
-    that an earlier one repeats exactly, as two conditions naming one column
-    do, is listed once.
+    ``subgroup_col`` is, or when a condition on it does not hold. A requirement is also
+    left out when a derivation listed before it writes a column that meets it, and that
+    check applies to each column on its own. A :class:`ParamColumn` needs every column
+    it names and contributes one requirement per column, as a derivation does for each
+    column that it reads from the input and a keypoint selection for each column that it
+    selects. An :class:`AnyOf` group is one requirement that any of its columns meets. A
+    payload requirement resolves to one that any payload column meets. A need that an
+    earlier one repeats exactly, as two conditions naming one column do, is listed once.
     """
     found: list[NamedColumns] = []
     written: set[str] = set()

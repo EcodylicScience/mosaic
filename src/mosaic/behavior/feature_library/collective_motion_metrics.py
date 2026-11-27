@@ -417,10 +417,7 @@ class CollectiveMotionMetrics:
             A run that leaves it unset writes the output of the version before
             the option existed, so it keeps its identifier.
             """
-            dumped = super().identity_dump()
-            if not dumped.get("hull_perimeter", False):
-                dumped.pop("hull_perimeter", None)
-            return dumped
+            return self.drop_at_default(super().identity_dump(), ("hull_perimeter",))
 
     def __init__(
         self,

@@ -386,18 +386,18 @@ A feature declares the spaces it computes in. Tracks are in pixels, centimeters 
 reports](../../concepts/tracks.md#spatial-columns-are-in-one-of-three-spaces)). Most
 features that read `X` and `Y` are planar and refuse a world-frame table, except
 `body-length` with `dimensions: 3`; `pose-egocentric` and `pair-world` refuse a planar
-one. The refusal is
-`schema_family_mismatch`. It comes before anything runs, from a run and from a recipe
-when it is planned or, for tracks the recipe itself writes, when the step starts.
-Features whose computation does not depend on the space (`keypoint-kinematics` measures
-in the table's own units, meters on a world table) and features that read no spatial
-column (the aggregates) accept every space, as do `derive-columns`, which computes in the
-units of its table, and `track-coverage`, which reads finiteness alone.
-`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at
-`dimensions: 2` a world-frame table fails when the step runs, not when it is planned, and
-the message names `dimensions: 3`. The steps that read only the results of earlier steps (`global-kmeans`, `global-tsne`,
-`arhmm` and `xgboost`, for example) and the two wavelets accept every space as well.
-`feral`, `hidra`, `vame`, `kpms` and the identity models stay planar.
+one. The refusal is `schema_family_mismatch`. It comes before anything runs, from a run
+and from a recipe when it is planned or, for tracks the recipe itself writes, when the
+step starts. Features whose computation does not depend on the space
+(`keypoint-kinematics` measures in the table's own units, meters on a world table) and
+features that read no spatial column (the aggregates) accept every space, as do
+`derive-columns`, which computes in the units of its table, and `track-coverage`, which
+reads finiteness alone. `pair-posedistance-pca` accepts every space too, and its
+`dimensions` param decides: at `dimensions: 2` a world-frame table fails when the step
+runs, not when it is planned, and the message names `dimensions: 3`. The steps that read
+only the results of earlier steps (`global-kmeans`, `global-tsne`, `arhmm` and
+`xgboost`, for example) and the two wavelets accept every space as well. `feral`,
+`hidra`, `vame`, `kpms` and the identity models stay planar.
 
 ## Chaining
 

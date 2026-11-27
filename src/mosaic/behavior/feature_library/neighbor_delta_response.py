@@ -407,14 +407,9 @@ class NeighborDeltaResponse:
             A run that sets none of them writes the output of the version
             before they existed, so it keeps its identifier.
             """
-            dumped = super().identity_dump()
-            fields = type(self).model_fields
-            for name in _IDENTITY_OPTIONAL_FIELDS:
-                if getattr(self, name) == fields[name].get_default(
-                    call_default_factory=True
-                ):
-                    del dumped[name]
-            return dumped
+            return self.drop_at_default(
+                super().identity_dump(), _IDENTITY_OPTIONAL_FIELDS
+            )
 
     def __init__(
         self,

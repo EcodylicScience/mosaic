@@ -115,13 +115,14 @@ _SEGMENT_STATISTIC_DESCRIPTION = (
 
 _NAME = "body-length"
 
-_OPTION_DEFAULTS: dict[str, object] = {
-    "statistic": "median",
-    "percentile": None,
-    "per": "id",
-    "dimensions": 2,
-    "segment_statistic": False,
-}
+_IDENTITY_OPTIONAL_FIELDS = (
+    "statistic",
+    "percentile",
+    "per",
+    "dimensions",
+    "segment_statistic",
+)
+"""The fields that leave a run's identity while they hold their defaults."""
 
 
 @final
@@ -249,11 +250,9 @@ class BodyLength:
             A run that leaves them unset writes the output of the version before
             they existed, so it keeps its identifier.
             """
-            dumped = super().identity_dump()
-            for name, default in _OPTION_DEFAULTS.items():
-                if name in dumped and dumped[name] == default:
-                    del dumped[name]
-            return dumped
+            return self.drop_at_default(
+                super().identity_dump(), _IDENTITY_OPTIONAL_FIELDS
+            )
 
         @model_validator(mode="after")
         def _check(self) -> Self:

@@ -743,7 +743,7 @@ def test_the_expression_kind_joins_the_requirement_union() -> None:
 
 
 def test_a_stored_contract_without_the_new_fields_validates() -> None:
-    """A sidecar written before ``key``, ``suffix`` and ``open_families`` still loads."""
+    """A sidecar written before ``key``, ``suffix``, ``open_families`` still loads."""
     adapter: TypeAdapter[tuple[Requirement, ...]] = TypeAdapter(tuple[Requirement, ...])
     stored: list[JsonValue] = [
         {

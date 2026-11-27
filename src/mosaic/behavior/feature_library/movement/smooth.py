@@ -176,10 +176,7 @@ class MovementSmooth:
             A run that leaves it at its default writes the output of the version
             before it existed, so it keeps its identifier.
             """
-            dumped = super().identity_dump()
-            if self.rolling_edges == "min_periods":
-                _ = dumped.pop("rolling_edges", None)
-            return dumped
+            return self.drop_at_default(super().identity_dump(), ("rolling_edges",))
 
         @model_validator(mode="after")
         def _zero_padded_is_a_rolling_mean(self) -> Self:

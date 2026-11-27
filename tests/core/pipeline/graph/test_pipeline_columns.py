@@ -1093,7 +1093,7 @@ def test_a_frame_aggregate_provides_the_columns_it_keeps() -> None:
     assert [caution.step for caution in report.cautions] == ["frame"]
 
 
-# --- derive-columns ---------------------------------------------------------------------
+# --- derive-columns ---------------------------------------------------------
 
 _DERIVED: dict[str, JsonValue] = {
     "columns": [
@@ -1149,7 +1149,7 @@ def test_derive_columns_without_columns_provides_no_derived_name() -> None:
     assert [names.unknown for names in wire.adds] == [True]
 
 
-# --- track-coverage ---------------------------------------------------------------------
+# --- track-coverage ---------------------------------------------------------
 
 _COVERAGE: dict[str, JsonValue] = {
     "rules": [
@@ -2266,18 +2266,14 @@ def _neighbor_output(**params: object) -> ColumnSet:
     return output_columns(NeighborDeltaResponse.provides, _PAIR_INPUT, values)
 
 
-def test_neighbor_delta_response_with_default_params_writes_the_columns_it_always_did() -> (
-    None
-):
+def test_neighbor_delta_response_default_params_write_the_original_columns() -> None:
     output = _neighbor_output()
 
     assert output.guaranteed == _BASE_OUTPUT | _DELTA_OUTPUT | {"time"}
     assert output.possible == output.guaranteed
 
 
-def test_neighbor_delta_response_without_the_windowed_delta_writes_no_delta_column() -> (
-    None
-):
+def test_neighbor_delta_response_without_the_delta_writes_no_delta_column() -> None:
     output = _neighbor_output(delta_response=False)
 
     assert output.guaranteed == _BASE_OUTPUT | {"time"}
@@ -2439,9 +2435,7 @@ def test_a_step_binning_a_column_its_input_lacks_is_refused() -> None:
     )
 
 
-def test_a_bin_on_a_symmetric_column_keeps_auto_at_once_and_other_bins_read_every_row() -> (
-    None
-):
+def test_a_symmetric_column_bin_keeps_auto_at_once_other_bins_read_all_rows() -> None:
     merged = _pairs(symmetric=frozenset({"dist", "gap"}), mirrored=True)
 
     def read(*bins: str) -> object:

@@ -88,29 +88,26 @@ class SequenceAggregate:
     ``pairs="once"`` keeps the ``perspective == 0`` rows when the input has a
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
-    plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr``, no ``subsets`` and
-    no ``value_bins`` column that is not symmetric too, and every other ``auto``
-    reads every row. A run outside a plan
-    (``mosaic run --feature``) reads every row under ``auto``; set
+    plan writes ``once`` for a column that the features behind it declare symmetric over
+    mirrored rows, with no ``filter_expr``, no ``subsets`` and no ``value_bins`` column
+    that is not symmetric too, and every other ``auto`` reads every row. A run outside a
+    plan (``mosaic run --feature``) reads every row under ``auto``; set
     ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
-    once there. For
-    mean/median/min/max/std/share every row is read under any rule.
+    once there. For mean/median/min/max/std/share every row is read under any rule.
 
     An entry whose ``filter_expr`` keeps no row still writes its row, with 0 for
-    ``sum``, ``count`` and ``duration`` and NaN for every other aggregation, so
-    that every entry of a run has the same columns. ``share`` is NaN in each
-    column of ``categories``, and writes none when that is unset. With ``bin_s``
-    that row has NaN ``bin_start`` and ``bin_end``, since no row of the entry
-    starts in a bin.
+    ``sum``, ``count`` and ``duration`` and NaN for every other aggregation, so that
+    every entry of a run has the same columns. ``share`` is NaN in each column of
+    ``categories``, and writes none when that is unset. With ``bin_s`` that row has NaN
+    ``bin_start`` and ``bin_end``, since no row of the entry starts in a bin.
 
-    With ``subsets``, each subset that keeps no row of the entry writes that
-    blank row too, for every group of the entry, so that every entry has a row
-    for each subset. With ``value_bins``, a blank row has a null ``<column>_bin``,
-    and with ``dense`` it is the full grid of bins for each group of the entry.
+    With ``subsets``, each subset that keeps no row of the entry writes that blank row
+    too, for every group of the entry, so that every entry has a row for each subset.
+    With ``value_bins``, a blank row has a null ``<column>_bin``, and with ``dense`` it
+    is the full grid of bins for each group of the entry.
 
-    This feature does not filter ``bad_frame`` automatically. Either consume
-    upstream output that has already filtered them, or pass
+    This feature does not filter ``bad_frame`` automatically. Either consume upstream
+    output that has already filtered them, or pass
     ``filter_expr="~bad_frame"`` (when the column is present).
     """
 

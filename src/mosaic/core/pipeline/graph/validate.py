@@ -866,14 +866,13 @@ def pair_rules(
 ) -> dict[str, PairRead]:
     """The rows that each ``sum`` or ``count`` step with a pair rule reads, by step id.
 
-    A step's ``auto`` reads ``once`` when each of its columns, and each column
-    it bins by value, is declared symmetric over mirrored rows and it sets no
-    ``filter_expr`` and no ``subsets`` (:func:`~.columns.pair_rule_read`), and
-    every row otherwise. A
+    A step's ``auto`` reads ``once`` when each of its columns, and each column it bins
+    by value, is declared symmetric over mirrored rows and it sets no ``filter_expr``
+    and no ``subsets`` (:func:`~.columns.pair_rule_read`), and every row otherwise. A
     step that writes ``once`` or ``each_perspective`` reads it. Read from the
-    declarations alone: the tracks hold no ``perspective``, and the columns a
-    plan measures of them do not change the answer. A step with another
-    aggregation, or one that did not check out, is left out.
+    declarations alone: the tracks hold no ``perspective``, and the columns a plan
+    measures of them do not change the answer. A step with another aggregation, or one
+    that did not check out, is left out.
 
     Raises:
         RecipeInvalid: The recipe has a cycle.

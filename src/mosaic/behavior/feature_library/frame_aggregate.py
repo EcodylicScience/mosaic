@@ -1,25 +1,25 @@
 """
 FrameAggregate -- generic per-frame across-ids summary feature.
 
-Consumes any feature output (or raw tracks) and reduces multi-id data to one
-row per frame by applying each chosen aggregation (mean/median/min/max/std/
-sum/count) to each chosen column. Optional pre-aggregation transforms cover the
+Consumes any feature output (or raw tracks) and reduces multi-id data to one row per
+frame by applying each chosen aggregation (mean/median/min/max/std/sum/count) to each
+chosen column. Optional pre-aggregation transforms cover the
 common cases: ``transform="abs"`` for magnitudes, ``threshold=X`` with
-``"mean"`` in ``aggs`` for a fraction-of-ids-in-the-frame-exceeding-threshold
-summary. An input with an ``arena`` column gives one row per frame and arena,
-and ``subgroup_col`` one row per frame and value of that column, or of each
-column when it lists several.
+``"mean"`` in ``aggs`` for a fraction-of-ids-in-the-frame-exceeding-threshold summary.
+An input with an ``arena`` column gives one row per frame and arena, and
+``subgroup_col`` one row per frame and value of that column, or of each column when it
+lists several.
 
 Composes naturally with pair-aware features: pointing FrameAggregate at
 ``PairPositionFeatures`` with ``columns=["AB_dist"], aggs=["mean"]`` yields
 mean pairwise distance per frame. A pair table holds each pair once per
 perspective (A->B and B->A), and ``pairs`` says which rows sum and count read.
 ``once`` keeps the ``perspective == 0`` rows, so each pair counts once, and
-``each_perspective`` reads every row. ``auto``, the default, is resolved by a
-recipe's plan: ``once`` when the column is declared symmetric over mirrored
-rows, neither ``filter_expr`` nor ``subsets`` is set and every ``value_bins``
-column is symmetric too, every row otherwise. A
-run outside a plan (``mosaic run --feature``) reads every row under ``auto``; set
+``each_perspective`` reads every row. ``auto``, the default, is resolved by a recipe's
+plan: ``once`` when the column is declared symmetric over mirrored rows, neither
+``filter_expr`` nor ``subsets`` is set and every ``value_bins`` column is symmetric too,
+every row otherwise. A run outside a plan (``mosaic run --feature``) reads every row
+under ``auto``; set
 ``pairs="once"`` there, or ``filter_expr="perspective == 0"``, to count each pair
 once.
 mean/median/min/max/std read every row under any rule.
@@ -98,17 +98,15 @@ class FrameAggregate:
     ``pairs="once"`` keeps the ``perspective == 0`` rows when the input has a
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
-    plan writes ``once`` for a column that the features behind it declare
-    symmetric over mirrored rows, with no ``filter_expr``, no ``subsets`` and
-    no ``value_bins`` column that is not symmetric too, and every other ``auto``
-    reads every row. A run outside a plan
-    (``mosaic run --feature``) reads every row under ``auto``; set
+    plan writes ``once`` for a column that the features behind it declare symmetric over
+    mirrored rows, with no ``filter_expr``, no ``subsets`` and no ``value_bins`` column
+    that is not symmetric too, and every other ``auto`` reads every row. A run outside a
+    plan (``mosaic run --feature``) reads every row under ``auto``; set
     ``pairs="once"``, or ``filter_expr="perspective == 0"``, to count each pair
-    once there. For
-    mean/median/min/max/std every row is read under any rule.
+    once there. For mean/median/min/max/std every row is read under any rule.
 
-    This feature does not filter ``bad_frame`` automatically. Either consume
-    upstream output that has already filtered them, or pass
+    This feature does not filter ``bad_frame`` automatically. Either consume upstream
+    output that has already filtered them, or pass
     ``filter_expr="~bad_frame"`` (when the column is present).
     """
 

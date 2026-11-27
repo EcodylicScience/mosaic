@@ -417,9 +417,7 @@ def test_other_position_columns_place_the_offsets_and_the_windowed_delta() -> No
     )
 
 
-def test_without_the_windowed_delta_every_focal_row_counts_and_no_delta_is_written() -> (
-    None
-):
+def test_without_the_windowed_delta_every_focal_row_counts_with_no_delta() -> None:
     df = _two_fish()
     out = _respond(df, delta_response=False)
 
@@ -647,7 +645,7 @@ def test_neighbor_columns_add_nothing_while_empty() -> None:
 
 
 def test_the_shuffle_rolls_the_neighbor_columns_with_the_positions() -> None:
-    """The ``PX`` column is the position ``X``, so the rolled ``PX`` is the rolled position."""
+    """The ``PX`` column is the position ``X``, so rolled ``PX`` is rolled ``X``."""
     n_frames = 200
     frames = np.arange(n_frames, dtype=float)
     df = pd.concat(

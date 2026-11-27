@@ -222,6 +222,50 @@ def test_real_field_still_changes_run_id() -> None:
     )
 
 
+# --- drop_at_default ---
+
+
+class _DefaultedParams(Params):
+    """Params with a plain default, a factory default and a default of None."""
+
+    mode: str = "a"
+    items: list[str] = Field(default_factory=list)
+    limit: int | None = None
+    other: int = 3
+
+
+def test_drop_at_default_drops_each_named_field_that_holds_its_default() -> None:
+    params = _DefaultedParams()
+    dumped = params.drop_at_default(params.identity_dump(), ("mode", "items", "limit"))
+    assert dumped == {"other": 3}
+
+
+def test_drop_at_default_keeps_a_named_field_that_was_set() -> None:
+    params = _DefaultedParams(mode="b", items=["x"], limit=2)
+    dumped = params.drop_at_default(params.identity_dump(), ("mode", "items", "limit"))
+    assert dumped == {"mode": "b", "items": ["x"], "limit": 2, "other": 3}
+
+
+def test_drop_at_default_leaves_a_field_it_is_not_asked_about() -> None:
+    params = _DefaultedParams()
+    assert params.drop_at_default(params.identity_dump(), ("mode",))["other"] == 3
+
+
+def test_drop_at_default_returns_a_copy_and_leaves_the_dump_alone() -> None:
+    params = _DefaultedParams()
+    dumped = params.identity_dump()
+    _ = params.drop_at_default(dumped, ("mode",))
+    assert "mode" in dumped
+
+
+def test_drop_at_default_tolerates_a_field_already_out_of_the_dump() -> None:
+    class _Excluding(Params):
+        knob: Annotated[int, HASH_EXCLUDE] = 1
+
+    params = _Excluding()
+    assert params.drop_at_default(params.identity_dump(), ("knob",)) == {}
+
+
 # --- NestedParams: a nested model that names its own identity ---
 
 

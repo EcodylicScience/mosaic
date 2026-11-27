@@ -1,57 +1,52 @@
 """
 Shared reduction of the aggregate features.
 
-``frame-aggregate``, ``sequence-aggregate`` and ``individual-aggregate`` reduce
-columns of a feature output or of raw tracks with the same steps: filter,
-transform, threshold, then a group-by. :func:`reduce_column` holds those steps
-and :class:`AggregateParams` the parameters they read, so the three features
-differ only in the keys they group by and in whether they take a ``pairs``
-rule (:class:`PairAggregateParams`). Each feature also groups by the input's
-``arena`` column when it has one, and by each column of ``subgroup_col`` when it
-is set (:func:`split_keys`).
+``frame-aggregate``, ``sequence-aggregate`` and ``individual-aggregate`` reduce columns
+of a feature output or of raw tracks with the same steps: filter, transform, threshold,
+then a group-by. :func:`reduce_column` holds those steps and :class:`AggregateParams`
+the parameters they read, so the three features differ only in the keys they group by
+and in whether they take a ``pairs`` rule (:class:`PairAggregateParams`). Each feature
+also groups by the input's ``arena`` column when it has one, and by each column of
+``subgroup_col`` when it is set (:func:`split_keys`).
 
-``keep_columns`` names columns of the input that the output carries beside the
-reduction keys: a label such as a strain, which every row of a reduced group
-shares. :func:`reduce_column` refuses a group whose rows disagree on one, and
+``keep_columns`` names columns of the input that the output carries beside the reduction
+keys: a label such as a strain, which every row of a reduced group shares.
+:func:`reduce_column` refuses a group whose rows disagree on one, and
 :func:`blank_reduction` reads it from an emptied entry's rows before the filter.
 
 ``duration`` weighs each row by the seconds it stands for, read from the input's
-``frame`` and ``time`` columns (:func:`~mosaic.core.timebase.row_seconds`), so
-the sum is a time and not a count of rows at a frame rate that varies. ``share``
-weighs the rows the same way: it writes, for each value of a text, categorical,
-boolean or integer column, the fraction of the group's seconds that the column
-holds it.
+``frame`` and ``time`` columns (:func:`~mosaic.core.timebase.row_seconds`), so the sum
+is a time and not a count of rows at a frame rate that varies. ``share`` weighs the rows
+the same way: it writes, for each value of a text, categorical, boolean or integer
+column, the fraction of the group's seconds that the column holds it.
 
 ``bin_s`` splits the reduction by time: each row goes to the bin
 ``floor(time / bin_s)``, anchored at time 0 of the recording's axis, and
-``bin_start`` and ``bin_end`` join the reduction keys (:func:`bin_columns`). A
-row's seconds, for ``duration`` and ``share``, divide among the bins it spans.
+``bin_start`` and ``bin_end`` join the reduction keys (:func:`bin_columns`). A row's
+seconds, for ``duration`` and ``share``, divide among the bins it spans.
 
-``first_pass`` is the smallest value of ``order_col`` among the rows whose value
-passes the ``threshold`` comparison, NaN when none does. It reads every row
-under any ``pairs`` rule and skips a row whose ``order_col`` is null.
+``first_pass`` is the smallest value of ``order_col`` among the rows whose value passes
+the ``threshold`` comparison, NaN when none does. It reads every row under any ``pairs``
+rule and skips a row whose ``order_col`` is null.
 
-``circmean`` and ``circstd`` reduce each group's angles in radians with
-``scipy.stats``, from the non-null values in input row order, NaN for a group
-with none. They read every row under any ``pairs`` rule and are refused with
-``threshold`` and with ``transform: "abs"``.
+``circmean`` and ``circstd`` reduce each group's angles in radians with ``scipy.stats``,
+from the non-null values in input row order, NaN for a group with none. They read every
+row under any ``pairs`` rule and are refused with ``threshold`` and with ``transform:
+"abs"``.
 
-``quantile`` writes one column for each of ``quantiles``, the
-``np.quantile`` of the group's non-null values under ``quantile_method``
-(:func:`quantile_text` names it), NaN for a group with none. Like ``median`` it
-reads every row under any ``pairs`` rule.
+``quantile`` writes one column for each of ``quantiles``, the ``np.quantile`` of the
+group's non-null values under ``quantile_method`` (:func:`quantile_text` names it), NaN
+for a group with none. Like ``median`` it reads every row under any ``pairs`` rule.
 
-``subsets`` names filters that each reduce the rows they keep, after
-``filter_expr``, and ``subset`` joins the reduction keys after the caller's
-keys (:data:`SUBSET`). A subset that keeps no row has no row in
-:func:`reduce_column`, and :func:`blank_rows` writes the blank row that
-``sequence-aggregate`` gives it.
+``subsets`` names filters that each reduce the rows they keep, after ``filter_expr``,
+and ``subset`` joins the reduction keys after the caller's keys (:data:`SUBSET`). A
+subset that keeps no row has no row in :func:`reduce_column`, and :func:`blank_rows`
+writes the blank row that ``sequence-aggregate`` gives it.
 
-``value_bins`` assigns each row to a bin of each binned column's
-:class:`ValueBins` edges, drops the rows outside any bin, and adds the key
-``<column>_bin`` for each (:func:`bin_key`), after ``subset`` and before the time
-bins. ``dense`` writes every bin of the grid, filling a cell that has no row
-with what a blank row holds.
+``value_bins`` assigns each row to a bin of each binned column's :class:`ValueBins`
+edges, drops the rows outside any bin, and adds the key ``<column>_bin`` for each
+(:func:`_bin_key`), after ``subset`` and before the time bins. ``dense`` writes every
+bin of the grid, filling a cell that has no row with what a blank row holds.
 """
 
 from __future__ import annotations
@@ -59,7 +54,7 @@ from __future__ import annotations
 import math
 import operator
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from types import MappingProxyType
@@ -128,7 +123,7 @@ class AggregationRule:
     combines: Literal["partials", "values"]
 
 
-CIRCULAR_AGGS: Final[frozenset[Aggregation]] = frozenset({"circmean", "circstd"})
+_CIRCULAR_AGGS: Final[frozenset[Aggregation]] = frozenset({"circmean", "circstd"})
 """The aggregations that reduce angles in radians with ``scipy.stats``."""
 
 AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
@@ -537,22 +532,36 @@ def _generated_edges(
     return np.arange(start, stop, third)
 
 
+_IDENTITY_OPTIONAL_FIELDS = (
+    "keep_columns",
+    "categories",
+    "bin_s",
+    "threshold_op",
+    "order_col",
+    "subsets",
+    "value_bins",
+    "dense",
+    "quantiles",
+    "quantile_method",
+)
+"""The fields that leave a run's identity while they hold their defaults."""
+
+
 class AggregateParams(Params):
     """The parameters of the reduction that every aggregate shares.
 
-    Each of ``columns`` is reduced by each of ``aggs``. Before it,
-    ``filter_expr`` drops rows, ``transform`` takes the absolute value and
-    ``threshold`` turns each column into whether it passes the comparison
-    ``threshold_op`` against a value, with a null staying null.
-    ``subgroup_col``, one column or a list of them, splits the rows reduced
-    together, ``value_bins`` splits them by the bins of numeric columns (with
-    ``dense``, every bin of each group), and ``bin_s`` splits them again by time
-    bin. ``keep_columns`` are
-    written to the output beside the keys. ``categories`` fixes the columns
-    that ``share`` writes. ``first_pass`` gives the smallest ``order_col`` value
-    among the rows that pass ``threshold``.
-    :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
-    whose groups hold both rows of a pair.
+    Each of ``columns`` is reduced by each of ``aggs``. Before it, ``filter_expr`` drops
+    rows, ``transform`` takes the absolute value and ``threshold`` turns each column
+    into whether it passes the comparison ``threshold_op`` against a value, with a null
+    staying null.
+    ``subgroup_col``, one column or a list of them, splits the rows reduced together,
+    ``value_bins`` splits them by the bins of numeric columns (with ``dense``, every bin
+    of each group), and ``bin_s`` splits them again by time bin. ``keep_columns`` are
+    written to the output beside the keys. ``categories`` fixes the columns that
+    ``share`` writes. ``first_pass`` gives the smallest ``order_col`` value among the
+    rows that pass ``threshold``.
+    :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates whose groups
+    hold both rows of a pair.
     """
 
     columns: Annotated[list[str], Declared(_COLUMNS_DESCRIPTION)] = Field(min_length=1)
@@ -711,7 +720,7 @@ class AggregateParams(Params):
         """
         if not has_fields(self, "aggs", "threshold", "transform"):
             return self
-        for agg in (name for name in self.aggs if name in CIRCULAR_AGGS):
+        for agg in (name for name in self.aggs if name in _CIRCULAR_AGGS):
             if self.threshold is not None:
                 raise ValueError(
                     f"{agg} reduces angles as they are and cannot be combined "
@@ -812,7 +821,7 @@ class AggregateParams(Params):
         if self.subsets is not None:
             written_by[SUBSET] = "subsets"
         for entry in self.value_bins or ():
-            written_by[bin_key(entry.column)] = "value_bins"
+            written_by[_bin_key(entry.column)] = "value_bins"
         owned = owned | set(written_by)
         for name in subgroups:
             if name in written_by:
@@ -878,27 +887,9 @@ class AggregateParams(Params):
         values, so its identifier moves, and a run without a threshold keeps
         its own.
         """
-        dumped = super().identity_dump()
-        if not self.keep_columns:
-            del dumped["keep_columns"]
-        if self.categories is None:
-            del dumped["categories"]
-        if self.bin_s is None:
-            del dumped["bin_s"]
-        if self.threshold_op == ">":
-            del dumped["threshold_op"]
-        if self.order_col == C.time_col:
-            del dumped["order_col"]
-        if self.subsets is None:
-            del dumped["subsets"]
-        if self.value_bins is None:
-            del dumped["value_bins"]
-        if not self.dense:
-            del dumped["dense"]
-        if self.quantiles is None:
-            del dumped["quantiles"]
-        if self.quantile_method == "linear":
-            del dumped["quantile_method"]
+        dumped = self.drop_at_default(
+            super().identity_dump(), _IDENTITY_OPTIONAL_FIELDS
+        )
         if self.threshold is not None:
             dumped["threshold_missing"] = "skip"
         return dumped
@@ -974,11 +965,10 @@ def distinct_quantiles(value: Sequence[float], field: str) -> list[float]:
 def _static_output_names(params: AggregateParams) -> list[tuple[str, str]]:
     """The result columns the params fix without reading data, each with its source.
 
-    Each of ``columns`` gives ``<column>_<agg>`` for each aggregation but
-    ``share`` and ``quantile``, ``<column>_quantile_<text>`` for each of
-    ``quantiles``, and, with ``categories`` set,
-    ``<column>_share_<category>`` for each. A ``share`` without ``categories``
-    names its columns from the data and lists none.
+    Each of ``columns`` gives ``<column>_<agg>`` for each aggregation but ``share`` and
+    ``quantile``, ``<column>_quantile_<text>`` for each of ``quantiles``, and, with
+    ``categories`` set, ``<column>_share_<category>`` for each. A ``share`` without
+    ``categories`` names its columns from the data and lists none.
 
     Args:
         params: The columns, aggregations, quantiles and categories.
@@ -1013,14 +1003,32 @@ def _quantile_column(column: str, q: float) -> str:
     return f"{column}_quantile_{quantile_text(q)}"
 
 
-def bin_key(column: str) -> str:
+def _bin_key(column: str) -> str:
     """The name of the key that bins *column*: ``<column>_bin``."""
     return f"{column}{BIN_SUFFIX}"
 
 
+def repeated_items[T: Hashable](items: Iterable[T]) -> list[T]:
+    """The items listed more than once, each once, in the order a repeat is reached.
+
+    Args:
+        items: The listed items.
+
+    Returns:
+        Each item whose second occurrence the scan reaches, in that order.
+    """
+    seen: set[T] = set()
+    repeated: dict[T, None] = {}
+    for item in items:
+        if item in seen:
+            repeated[item] = None
+        seen.add(item)
+    return list(repeated)
+
+
 def _refuse_repeats(value: list[str]) -> list[str]:
     """Refuse a name listed twice, which would name one result column twice."""
-    repeated = sorted({item for item in value if value.count(item) > 1})
+    repeated = sorted(repeated_items(value))
     if repeated:
         raise ValueError(f"lists {', '.join(repeated)} more than once")
     return value
@@ -1530,7 +1538,7 @@ def _numeric_values(df: pd.DataFrame, column: str, role: str) -> NDArray[np.floa
     return _plain_values(values).astype(np.float64)
 
 
-def value_bin_indexes(
+def _value_bin_indexes(
     values: NDArray[np.float64], edges: NDArray[np.float64], closed_last: bool
 ) -> tuple[NDArray[np.intp], NDArray[np.bool_]]:
     """The bin of each value of *values*, and whether it is in one.
@@ -1572,8 +1580,10 @@ def _bin_rows(
     indexes: dict[str, NDArray[np.intp]] = {}
     for entry in value_bins:
         values = _numeric_values(df, entry.column, "value_bins column")
-        index, within = value_bin_indexes(values, entry.edge_array(), entry.closed_last)
-        indexes[bin_key(entry.column)] = index
+        index, within = _value_bin_indexes(
+            values, entry.edge_array(), entry.closed_last
+        )
+        indexes[_bin_key(entry.column)] = index
         inside &= within
     bins = {
         name: pd.array(index[inside], dtype="Int64") for name, index in indexes.items()
@@ -1702,7 +1712,7 @@ def prepare_rows(
     if params.subsets is not None and not df.empty:
         df = _split_into_subsets(df, params.subsets)
     bins = params.value_bins or []
-    bin_names = tuple(bin_key(entry.column) for entry in bins)
+    bin_names = tuple(_bin_key(entry.column) for entry in bins)
     bin_values: dict[str, pd.arrays.IntegerArray] = {}
     if bins and not df.empty:
         df, bin_values = _bin_rows(df, bins)
@@ -1969,7 +1979,7 @@ def reduce_prepared(
                     .groupby(group_keys, sort=True)["_first"]
                     .min()
                 )
-            elif agg in CIRCULAR_AGGS:
+            elif agg in _CIRCULAR_AGGS:
                 result = work.groupby(group_keys, sort=True)[f"_v{index}"].agg(
                     _circular_statistic(agg)
                 )
@@ -1998,79 +2008,74 @@ def reduce_column(
 ) -> pd.DataFrame:
     """Reduce each of ``params.columns`` of ``df`` to one row per distinct ``keys``.
 
-    Applies ``filter_expr``, each of ``subsets``, ``transform`` and
-    ``threshold``, then groups by ``keys`` and aggregates each column with each
-    of ``aggs``. The result holds ``keys``, then ``subset`` when
-    ``params.subsets`` is set, then ``bin_start`` and ``bin_end`` when
-    ``params.bin_s`` is set, then each column of ``first`` (its first value in
-    the group), then each of ``params.keep_columns`` (its one value in the
-    group), then
-    ``<column>_<agg>`` for each column and, within it, each aggregation, sorted
-    by ``keys``. A row whose key is null belongs to no group. The result is
-    empty when no row survives the filter.
+    Applies ``filter_expr``, each of ``subsets``, ``transform`` and ``threshold``, then
+    groups by ``keys`` and aggregates each column with each of ``aggs``. The result
+    holds ``keys``, then ``subset`` when ``params.subsets`` is set, then ``bin_start``
+    and ``bin_end`` when ``params.bin_s`` is set, then each column of ``first`` (its
+    first value in the group), then each of ``params.keep_columns`` (its one value in
+    the group), then ``<column>_<agg>`` for each column and, within it, each
+    aggregation, sorted by ``keys``. A row whose key is null belongs to no group. The
+    result is empty when no row survives the filter.
 
     ``value_bins`` assigns each row that the filters keep to a bin of each binned
-    column, and drops the rows that have none (:func:`value_bin_indexes`). The
-    result holds ``<column>_bin``, a nullable integer, for each entry after
-    ``subset`` and before the time bins, and the groups split by them. A bin that
-    holds no row has no group, unless ``dense`` writes the full grid of bins for
-    each combination of the other keys that has a row: a cell without rows is 0
-    for ``sum``, ``count`` and ``duration`` and NaN for the other aggregations,
-    and takes the carried values of its group.
+    column, and drops the rows that have none (:func:`_value_bin_indexes`). The result
+    holds ``<column>_bin``, a nullable integer, for each entry after ``subset`` and
+    before the time bins, and the groups split by them. A bin that holds no row has no
+    group, unless ``dense`` writes the full grid of bins for each combination of the
+    other keys that has a row: a cell without rows is 0 for ``sum``, ``count`` and
+    ``duration`` and NaN for the other aggregations, and takes the carried values of its
+    group.
 
-    ``subset`` is the name of the subset whose filter keeps the rows of the
-    group, after the subgroup columns among ``keys`` and before the bins. Each
-    subset filters the rows left by ``filter_expr``, and a row that several
-    subsets keep is a row of each, so the rows of two subsets overlap and the
-    group of one does not read the group of another. A subset that keeps no row
-    has no group, and the result is empty when none does.
+    ``subset`` is the name of the subset whose filter keeps the rows of the group, after
+    the subgroup columns among ``keys`` and before the bins. Each subset filters the
+    rows left by ``filter_expr``, and a row that several subsets keep is a row of each,
+    so the rows of two subsets overlap and the group of one does not read the group of
+    another. A subset that keeps no row has no group, and the result is empty when none
+    does.
 
     A pair table holds each pair once per perspective. Under ``pairs="once"``
-    and with a ``perspective`` column present, ``sum``, ``count`` and
-    ``duration`` read the ``perspective == 0`` rows, so each pair counts once,
-    while the other aggregations of the same call read every row. Under
-    ``each_perspective`` every aggregation reads every ordered pair row, as a
-    caller that groups pair rows by a focal id needs.
+    and with a ``perspective`` column present, ``sum``, ``count`` and ``duration`` read
+    the ``perspective == 0`` rows, so each pair counts once, while the other
+    aggregations of the same call read every row. Under ``each_perspective`` every
+    aggregation reads every ordered pair row, as a caller that groups pair rows by a
+    focal id needs.
 
-    ``duration`` is the seconds of the rows that count: a value that is not
-    null, or with ``threshold`` one that passes the ``threshold_op`` comparison
-    after ``transform``. A row lasts until the next frame of its series, per
-    :func:`~mosaic.core.timebase.row_seconds`, where a series is an arena's
-    individual, or a pair row's ``id1``, ``id2`` and ``perspective``. The
-    seconds are those of the rows before ``filter_expr``, ``subsets`` and
-    ``keys`` split them, so a row that the filters keep lasts as it did without
-    them.
-    ``duration`` is read from the rows ``pairs`` selects, as ``sum`` and
-    ``count`` are, is 0 for a group none of whose rows it reads, and is
+    ``duration`` is the seconds of the rows that count: a value that is not null, or
+    with ``threshold`` one that passes the ``threshold_op`` comparison after
+    ``transform``. A row lasts until the next frame of its series, per
+    :func:`~mosaic.core.timebase.row_seconds`, where a series is an arena's individual,
+    or a pair row's ``id1``, ``id2`` and ``perspective``. The seconds are those of the
+    rows before ``filter_expr``, ``subsets`` and ``keys`` split them, so a row that the
+    filters keep lasts as it did without them.
+    ``duration`` is read from the rows ``pairs`` selects, as ``sum`` and ``count`` are,
+    is 0 for a group none of whose rows it reads, and is
     ``float64``.
 
-    ``first_pass`` is the smallest ``params.order_col`` value among the group's
-    rows whose value passes the ``threshold`` comparison after ``transform``
-    (a null passes nothing, infinity passes a comparison it satisfies), skipping
-    a row whose ``order_col`` is null. It is NaN for a group where no row
-    passes, ``float64``, and reads every row under any ``pairs`` rule.
+    ``first_pass`` is the smallest ``params.order_col`` value among the group's rows
+    whose value passes the ``threshold`` comparison after ``transform`` (a null passes
+    nothing, infinity passes a comparison it satisfies), skipping a row whose
+    ``order_col`` is null. It is NaN for a group where no row passes, ``float64``, and
+    reads every row under any ``pairs`` rule.
 
-    ``share`` writes, for each value of a text, categorical, boolean or integer
-    column, ``<column>_share_<value>``: the
-    seconds of a group's rows whose value is it, over the seconds of the rows
-    whose value is not null. It weighs rows as ``duration`` does, reads the
-    column as it is after ``filter_expr`` and every row under any ``pairs``
-    rule, and is ``float64``. A null row is in neither sum, a group of null
+    ``share`` writes, for each value of a text, categorical, boolean or integer column,
+    ``<column>_share_<value>``: the seconds of a group's rows whose value is it, over
+    the seconds of the rows whose value is not null. It weighs rows as ``duration``
+    does, reads the column as it is after ``filter_expr`` and every row under any
+    ``pairs`` rule, and is ``float64``. A null row is in neither sum, a group of null
     rows only is NaN in every share column, and a value the group lacks is 0.
-    Each value's text is the string, ``true`` or ``false``, or the decimal
-    integer. The values are ``params.categories`` in their order when set, and
-    otherwise those of the rows that belong to a group: integers by number,
-    other values by code point. The columns of a ``share`` stand where it is in
-    ``aggs``, within each column. Only a call with ``duration`` or ``share``
-    reads ``time``.
+    Each value's text is the string, ``true`` or ``false``, or the decimal integer. The
+    values are ``params.categories`` in their order when set, and otherwise those of the
+    rows that belong to a group: integers by number, other values by code point. The
+    columns of a ``share`` stand where it is in ``aggs``, within each column. Only a
+    call with ``duration`` or ``share`` reads ``time``.
 
-    With ``params.bin_s`` the groups split by bin as well, and the result has a
-    row per group and bin in which a row of the group starts. A row starts in
+    With ``params.bin_s`` the groups split by bin as well, and the result has a row per
+    group and bin in which a row of the group starts. A row starts in
     the bin ``floor(time / bin_s)``, and a row with no finite ``time`` belongs
-    to no group. Every aggregation but ``duration`` and ``share`` reads a row
-    in the bin it starts in. ``duration`` and ``share`` credit each bin with the
-    overlap of the row's interval, from its time for its seconds, and drop what
-    falls in a bin of the group where no row starts.
+    to no group. Every aggregation but ``duration`` and ``share`` reads a row in the bin
+    it starts in. ``duration`` and ``share`` credit each bin with the overlap of the
+    row's interval, from its time for its seconds, and drop what falls in a bin of the
+    group where no row starts.
 
     Args:
         df: The rows to reduce.
@@ -2111,25 +2116,22 @@ def blank_reduction(
 ) -> pd.DataFrame:
     """One row per distinct ``keys`` of ``df`` that reduces no values.
 
-    For an entry whose ``filter_expr`` keeps no row, or whose ``subsets`` leave
-    some subset no row, or whose ``value_bins`` leave it none. It has the columns
-    that
+    For an entry whose ``filter_expr`` keeps no row, or whose ``subsets`` leave some
+    subset no row, or whose ``value_bins`` leave it none. It has the columns that
     :func:`reduce_column` gives an entry that keeps rows: each of
-    ``params.keep_columns`` holds its one value in the group's rows before the
-    filter, each of the ``sum``, ``count`` and ``duration`` aggregations is 0
-    (seconds for ``duration``), as for a group none of whose rows it reads, and
-    every other aggregation, ``first_pass`` among them, is NaN. ``share`` is
-    NaN in the column of each of ``params.categories``, in their order, and
-    writes no column when that is unset, since the entry has no value to name
-    one. A row whose key is null
-    belongs to no group. With ``params.bin_s`` the row of each group has NaN
-    ``bin_start`` and ``bin_end`` after the keys: no row of the entry starts in
-    a bin, and the row keeps the entry, its kept labels and the columns that an
-    entry with rows writes. With *subsets*, each group has one such row for each
-    name, in the ``subset`` column that follows the keys. With ``value_bins`` the
-    row has a null ``<column>_bin`` of the nullable integer type for each entry,
-    after the subset, and under ``dense`` the group has a row for every bin of
-    the grid instead.
+    ``params.keep_columns`` holds its one value in the group's rows before the filter,
+    each of the ``sum``, ``count`` and ``duration`` aggregations is 0 (seconds for
+    ``duration``), as for a group none of whose rows it reads, and every other
+    aggregation, ``first_pass`` among them, is NaN. ``share`` is NaN in the column of
+    each of ``params.categories``, in their order, and writes no column when that is
+    unset, since the entry has no value to name one. A row whose key is null belongs to
+    no group. With ``params.bin_s`` the row of each group has NaN ``bin_start`` and
+    ``bin_end`` after the keys: no row of the entry starts in a bin, and the row keeps
+    the entry, its kept labels and the columns that an entry with rows writes. With
+    *subsets*, each group has one such row for each name, in the ``subset`` column that
+    follows the keys. With ``value_bins`` the row has a null ``<column>_bin`` of the
+    nullable integer type for each entry, after the subset, and under ``dense`` the
+    group has a row for every bin of the grid instead.
 
     Args:
         df: The rows before the filter, which hold the keys and the kept columns.
@@ -2252,7 +2254,7 @@ def blank_rows(
 
 def _bin_counts(value_bins: Sequence[ValueBins]) -> dict[str, int]:
     """The number of bins of each entry, by the name of its key."""
-    return {bin_key(entry.column): entry.edge_array().size - 1 for entry in value_bins}
+    return {_bin_key(entry.column): entry.edge_array().size - 1 for entry in value_bins}
 
 
 def _bin_grid(counts: Mapping[str, int]) -> pd.DataFrame:

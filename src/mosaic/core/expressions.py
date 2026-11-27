@@ -344,7 +344,8 @@ def evaluate(
     for name in names_read(parsed):
         if name not in columns:
             raise ExpressionError(
-                f"Expression {text!r} reads the column {name!r}, which the table does not have."
+                f"Expression {text!r} reads the column {name!r}, which the table "
+                "does not have."
             )
         read[name] = _read_column(text, name, columns[name], n_rows)
 
@@ -420,8 +421,9 @@ def _need_boolean(text: str, where: str, *operands: Value) -> None:
         kind = np.asarray(operand).dtype.kind
         if kind != "b":
             raise ExpressionError(
-                f"Expression {text!r} gives {where} a {np.asarray(operand).dtype} operand, "
-                f"which must be boolean. Compare it first, for example with '> 0'."
+                f"Expression {text!r} gives {where} a "
+                f"{np.asarray(operand).dtype} operand, which must be boolean. "
+                "Compare it first, for example with '> 0'."
             )
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import textwrap
 import types
+from collections.abc import Iterable
 from dataclasses import dataclass
 from inspect import cleandoc
 from typing import (
@@ -446,6 +447,32 @@ class Params(DeclaredModel):
             if isinstance(value, NestedParams):
                 dumped[name] = value.identity_dump()
         return dumped
+
+    def drop_at_default(
+        self, dumped: dict[str, object], names: Iterable[str]
+    ) -> dict[str, object]:
+        """Return ``dumped`` less each named field that holds its declared default.
+
+        A feature that adds a field after a version shipped leaves the field out of
+        its :meth:`identity_dump` while it holds its default, so a run that never
+        sets it keeps its run id. The default is the field's own, with a default
+        factory called, so the rule cannot drift from the declaration.
+
+        Args:
+            dumped: The dump to filter, usually ``super().identity_dump()``. It is
+                not modified.
+            names: The fields to drop while they equal their defaults.
+
+        Returns:
+            A new dict holding every other entry of ``dumped``.
+        """
+        fields = type(self).model_fields
+        kept = dict(dumped)
+        for name in names:
+            default: object = fields[name].get_default(call_default_factory=True)
+            if getattr(self, name) == default:
+                _ = kept.pop(name, None)
+        return kept
 
     @classmethod
     def from_overrides(cls, overrides: dict[str, object] | None = None) -> Self:

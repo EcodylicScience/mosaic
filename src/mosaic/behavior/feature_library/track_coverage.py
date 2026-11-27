@@ -50,6 +50,7 @@ from .aggregate_common import (
     distinct_quantiles,
     quantile_text,
     quantiles_or_nan,
+    repeated_items,
 )
 from .registry import register_feature
 
@@ -231,14 +232,12 @@ class TrackCoverage:
             cls, value: list[PresenceRule]
         ) -> list[PresenceRule]:
             """Refuse a rule name listed twice, which would name its columns twice."""
-            seen: set[str] = set()
-            for rule in value:
-                if rule.name in seen:
-                    raise ValueError(
-                        f"the rule {rule.name!r} is listed twice. Each rule needs "
-                        "its own name."
-                    )
-                seen.add(rule.name)
+            repeated = repeated_items(rule.name for rule in value)
+            if repeated:
+                raise ValueError(
+                    f"the rule {repeated[0]!r} is listed twice. Each rule needs "
+                    "its own name."
+                )
             return value
 
         @field_validator("gap_quantiles", check_fields=False)
@@ -251,7 +250,7 @@ class TrackCoverage:
         @classmethod
         def _thresholds_are_distinct(cls, value: list[int]) -> list[int]:
             """Refuse a threshold listed twice, which would name a column twice."""
-            repeated = sorted({t for t in value if value.count(t) > 1})
+            repeated = sorted(repeated_items(value))
             if repeated:
                 raise ValueError(f"gap_thresholds lists {repeated[0]} more than once")
             return value

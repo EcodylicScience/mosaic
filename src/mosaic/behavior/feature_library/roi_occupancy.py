@@ -281,12 +281,9 @@ class RoiOccupancy:
             A run that leaves them unset writes the output of the version before
             they existed, so it keeps its identifier.
             """
-            dumped = super().identity_dump()
-            if not self.center_angle:
-                _ = dumped.pop("center_angle", None)
-            if self.angle_center is None:
-                _ = dumped.pop("angle_center", None)
-            return dumped
+            return self.drop_at_default(
+                super().identity_dump(), ("center_angle", "angle_center")
+            )
 
         @model_validator(mode="after")
         def _regions_or_the_angle(self) -> Self:
@@ -444,7 +441,7 @@ class RoiOccupancy:
         group, sequence = df[C.group_col].iloc[0], df[C.seq_col].iloc[0]
         if self._tracklets.get((text_cell(group), text_cell(sequence))) is False:
             return np.full(len(df), np.nan)
-        return angle_steps(
+        return _angle_steps(
             df[C.frame_col].to_numpy(dtype=np.float64, na_value=np.nan),
             pd.factorize(df[C.id_col])[0],
             columns.angle,
@@ -568,7 +565,7 @@ def reads_arena_data(params: RoiOccupancy.Params) -> bool:
     )
 
 
-def angle_steps(
+def _angle_steps(
     frame: FloatArray, ids: npt.NDArray[np.intp], angle: FloatArray
 ) -> FloatArray:
     """Each row's angle minus the angle of the same id on the previous frame.
