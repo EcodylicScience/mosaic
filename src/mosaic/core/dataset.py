@@ -339,14 +339,19 @@ from .pipeline.labels_index import (
     write_labels_row,
 )
 from .pipeline.tracks_raw_index import (
+    CompanionRule,
     TracksRawIndexRow,
     TracksRawIndexScope,
     build_tracks_raw_row,
+    companion_records,
+    companions_of,
     frame_from_rows as _tracks_frame_from_rows,
     group_for_path,
     iter_track_files,
     load_tracks_raw_index_frame,
+    no_companions,
     read_tracks_raw_index as _read_tracks_raw_index,
+    refuse_malformed_companions,
     source_file_filter,
     source_members_from_rows,
     stem_as_sequence,
@@ -479,6 +484,35 @@ def _md5(path: Path, chunk=1 << 20) -> str:
                 break
             h.update(b)
     return h.hexdigest()
+
+
+def _carried_md5(
+    carried: Mapping[Path, str], compute_md5: bool
+) -> Callable[[Path], str]:
+    """The checksum a scan records for a file: carried when known, else read.
+
+    ``""`` when *compute_md5* is off. *carried* is :meth:`Dataset._prior_digests`,
+    keyed by resolved path; a hit is a digest whose file has not moved.
+    """
+
+    def digest(path: Path) -> str:
+        if not compute_md5:
+            return ""
+        return carried.get(path.resolve()) or _md5(path)
+
+    return digest
+
+
+def _companion_rule_of(src_format: str) -> CompanionRule:
+    """The rule that lists the companions of files of *src_format*.
+
+    Tolerant like :func:`_format_merges_per_sequence`: a format with no
+    registered converter, which a scope of a test or an import may name, lists
+    none.
+    """
+    ensure_track_converters_registered()
+    converter_cls = TRACK_CONVERTERS.get(src_format)
+    return no_companions if converter_cls is None else converter_cls().companion_files
 
 
 def _format_merges_per_sequence(src_format: str) -> bool:
@@ -3620,6 +3654,8 @@ class Dataset:
                 dataset records *source*'s ``uuid``, either dataset's media root
                 is not ``media_raw``, or one of the indexes written already has
                 a row. Nothing is written then.
+            ValueError: If a ``companions`` cell of *source*'s adopted rows does
+                not parse. Nothing is written then.
         """
         from mosaic.core.media.prune import LINK_COLUMNS
 
@@ -3709,6 +3745,8 @@ class Dataset:
                     }
                 )
 
+        for rows in raw_rows.values():
+            refuse_malformed_companions(rows)
         if media_rows:
             with index_lock(indexes["media_raw"]):
                 _refuse_adopting_into(indexes["media_raw"])
@@ -4164,6 +4202,7 @@ class Dataset:
             ]
             if len(raw_kept) == len(committed):
                 return 0
+            refuse_malformed_companions(raw_kept)
             write_tracks_raw_index_rows(index_path, _tracks_frame_from_rows(raw_kept))
         if kind == "labels":
             self._write_labels_raw_compositions(raw_kept)
@@ -7388,7 +7427,7 @@ class Dataset:
         return sequence_index_path(self, root)
 
     def _prior_digests(self, index_path: Path) -> dict[Path, str]:
-        """A prior row's ``md5``, reusable when the file it describes has not moved.
+        """The digests of a prior row and its companions, reusable while their files hold.
 
         Keyed on the resolved absolute path and admitted only when the stored
         ``size_bytes`` and ``mtime_iso`` both still match the file on disk --
@@ -7398,6 +7437,11 @@ class Dataset:
         on a slow share is the difference between a usable default and one
         everybody turns off.
 
+        A companion's digest is keyed by the file beside the row's resolved file
+        that the record names, and admitted by the same rule. A row whose
+        ``companions`` cell does not parse contributes no companion: the scan
+        refuses it under the lock if it keeps the row.
+
         A size-and-mtime match is **not** proof of identical content, and this
         is the write path, which is allowed to be cheap. The audit that catches a
         file replaced in place with the same size and timestamp is a separate
@@ -7405,22 +7449,37 @@ class Dataset:
         do not apply this shortcut there, because a cache that skips the read
         skips the comparison that IS the check.
         """
+
+        def unmoved(path: Path, size: object, mtime: object) -> bool:
+            try:
+                stat_result = path.stat()
+            except OSError:
+                return False
+            return str(size) == str(stat_result.st_size) and str(mtime) == mtime_iso(
+                stat_result.st_mtime
+            )
+
         digests: dict[Path, str] = {}
         for row in _read_tracks_raw_index(index_path):
             stored = str(row.get("abs_path", "") or "").strip()
-            digest = str(row.get("md5", "") or "").strip()
-            if not stored or not digest:
+            if not stored:
                 continue
             resolved = self.resolve_path(stored).resolve()
+            digest = str(row.get("md5", "") or "").strip()
+            if digest and unmoved(
+                resolved, row.get("size_bytes", ""), row.get("mtime_iso", "")
+            ):
+                digests[resolved] = digest
             try:
-                stat_result = resolved.stat()
-            except OSError:
+                recorded = companions_of(row)
+            except ValueError:
                 continue
-            if str(row.get("size_bytes", "")) != str(stat_result.st_size):
-                continue
-            if str(row.get("mtime_iso", "")) != mtime_iso(stat_result.st_mtime):
-                continue
-            digests[resolved] = digest
+            for companion in recorded:
+                beside = resolved.parent / companion.name
+                if companion.md5 and unmoved(
+                    beside, companion.size_bytes, companion.mtime_iso
+                ):
+                    digests[beside.resolve()] = companion.md5
         return digests
 
     @staticmethod
@@ -9828,7 +9887,12 @@ class Dataset:
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
-        Columns: group, sequence, abs_path, src_format, size_bytes, mtime_iso, md5
+        Columns: group, sequence, abs_path, src_format, size_bytes, mtime_iso, md5,
+        companions
+
+        ``companions`` records the files beside each source that its converter may
+        read, with each one's size, modification time and checksum, so a change to
+        one marks the conversion stale. It is empty for a converter that lists none.
 
         Parameters
         ----------
@@ -9904,6 +9968,7 @@ class Dataset:
             corpus too large or too slow to hash and accept an unestablished
             composition: an honest empty, not a wrong value.
         """
+        converter = get_track_converter(src_format)
         return self._index_raw(
             target_root="tracks_raw",
             composition_writer=self._write_tracks_raw_compositions,
@@ -9915,7 +9980,8 @@ class Dataset:
             # convert. Which files come several per sequence, and what names the
             # individual within one, are the converter's to declare -- neither is
             # anything this method knows.
-            sequence_from_stem=get_track_converter(src_format).sequence_from_stem,
+            sequence_from_stem=converter.sequence_from_stem,
+            companion_files=converter.companion_files,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
@@ -9941,6 +10007,7 @@ class Dataset:
         patterns: Iterable[str] | str,
         src_format: str,
         sequence_from_stem: Callable[[str], str],
+        companion_files: CompanionRule,
         index_filename: str = "index.csv",
         recursive: bool = True,
         multi_sequences_per_file: bool = False,
@@ -9959,11 +10026,10 @@ class Dataset:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
         The body shared by :meth:`index_tracks_raw` and :meth:`index_labels_raw`.
-        A raw source file carries the same seven columns whichever root it lands
-        in (``group, sequence, abs_path, src_format, size_bytes, mtime_iso,
-        md5``), and the scan, row build and md5 carry-forward are identity-free,
-        so only *target_root* and *composition_writer* -- which sequence-index to
-        project into -- distinguish a tracks source from a label source.
+        A raw source file carries the same columns whichever root it lands in, and
+        the scan, row build and md5 carry-forward are identity-free, so only
+        *target_root* and *composition_writer* -- which sequence-index to project
+        into -- distinguish a tracks source from a label source.
 
         *sequence_from_stem* is the one thing that varies with the source's
         format, and it arrives as a rule rather than being decided here. A format
@@ -9977,6 +10043,12 @@ class Dataset:
         defaulted, because a default is where a third caller would silently get
         the wrong answer.
 
+        *companion_files* is the second rule of that kind: it lists the files
+        beside a source that its converter may read. Each is stat-ed and
+        checksummed under the source's ``compute_md5`` setting, a carried digest
+        standing in for the read while its size and mtime hold, and recorded in
+        the row's ``companions`` cell.
+
         *other_sources* returns what the dataset's other sources of this kind
         claim. A skipped file whose target one of them claims leaves that source's
         row alone. It is called only when the scan skips a file, because building
@@ -9988,12 +10060,9 @@ class Dataset:
         # Advisory, and read before the lock like the media probe phase's caches:
         # a stale entry costs a re-hash, never a wrong digest, because every hit
         # is re-validated against the file's current size and mtime.
-        carried = self._prior_digests(out_csv) if compute_md5 else {}
-
-        def _digest(path: Path) -> str:
-            if not compute_md5:
-                return ""
-            return carried.get(path.resolve()) or _md5(path)
+        digest = _carried_md5(
+            self._prior_digests(out_csv) if compute_md5 else {}, compute_md5
+        )
 
         # Materialized once: `search_dirs` is an Iterable read both here and by
         # the claim below, so a generator argument left the claim empty.
@@ -10068,7 +10137,10 @@ class Dataset:
                     group=grp,
                     sequence=seq,
                     src_format=src_format,
-                    md5=_digest(p),
+                    md5=digest(p),
+                    # What a conversion reads is the stored file, which a
+                    # symlink's target is, and what lies beside that.
+                    companions=companion_records(p.resolve(), companion_files, digest),
                 )
             )
 
@@ -10129,6 +10201,7 @@ class Dataset:
             # Preserved rows come back from the reader as plain mappings, while
             # this pass built typed rows; the frame builder takes either.
             merged: list[dict[str, object] | TracksRawIndexRow] = [*preserved, *rows]
+            refuse_malformed_companions(merged)
             df = _tracks_frame_from_rows(merged)
             write_tracks_raw_index_rows(out_csv, df)
         # The merged rows, not the scanned ones: the composition writer replaces
@@ -10329,6 +10402,8 @@ class Dataset:
             # otherwise, so there is no rule to resolve from the converter the
             # way the tracks side does.
             sequence_from_stem=stem_as_sequence,
+            # No label converter reads a file beside its source.
+            companion_files=no_companions,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
@@ -10379,6 +10454,11 @@ class Dataset:
         Passing no scopes rewrites the index verbatim (idempotent). This is the
         single entry point a future API raw-track-import flow calls -- it owns
         none of these semantics itself.
+
+        A row records the companions that its scope's format lists, as a scan of
+        that format does, so a sequence's composition does not depend on which
+        writer wrote it. A format with no registered converter lists none. A kept
+        row whose ``companions`` cell does not parse refuses the write.
         """
         out_csv = self.get_root("tracks_raw") / index_filename
         scope_list = list(scopes)
@@ -10392,15 +10472,13 @@ class Dataset:
         # only. The rows to preserve are re-read authoritatively there; this read
         # is advisory, and a stale entry costs a re-hash rather than a wrong
         # digest because every hit is re-validated against size and mtime.
-        carried = self._prior_digests(out_csv) if compute_md5 else {}
-
-        def _digest(path: Path) -> str:
-            if not compute_md5:
-                return ""
-            return carried.get(path.resolve()) or _md5(path)
+        digest = _carried_md5(
+            self._prior_digests(out_csv) if compute_md5 else {}, compute_md5
+        )
 
         fresh: list[TracksRawIndexRow] = []
         for scope in scope_list:
+            companion_rule = _companion_rule_of(scope.src_format)
             for path, st in iter_track_files(
                 [scope.directory],
                 pat_list,
@@ -10415,7 +10493,10 @@ class Dataset:
                         group=scope.group,
                         sequence=scope.sequence,
                         src_format=scope.src_format,
-                        md5=_digest(path),
+                        md5=digest(path),
+                        companions=companion_records(
+                            path.resolve(), companion_rule, digest
+                        ),
                     )
                 )
 
@@ -10441,6 +10522,7 @@ class Dataset:
             # path, so the dedup only ever fires fresh-vs-fresh across
             # overlapping scopes (caller error).
             merged = [*preserved, *fresh]
+            refuse_malformed_companions(merged)
             frame = _tracks_frame_from_rows(merged).drop_duplicates(subset=["abs_path"])
             write_tracks_raw_index_rows(out_csv, frame)
         self._write_tracks_raw_compositions(frame.to_dict("records"))

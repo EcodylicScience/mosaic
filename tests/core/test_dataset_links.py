@@ -71,6 +71,7 @@ from tests.helpers import (
     register_sleap_model,
     register_trained_model,
     revision_file,
+    set_companions_cell,
     tree_snapshot,
     write_media_index,
 )
@@ -1282,6 +1283,18 @@ def test_adopting_into_an_index_that_has_a_row_is_refused(
     )
 
     _refuses_without_writing(copy, source, "already has")
+
+
+@pytest.mark.parametrize("root", ["tracks_raw", "labels_raw"])
+def test_adopting_a_malformed_companions_cell_is_refused_without_writing(
+    tmp_path: Path, root: str
+) -> None:
+    source = raw_source(tmp_path / "source")
+    set_companions_cell(source.get_root(root) / "index.csv", "", "[broken")
+    copy = make_dataset(tmp_path / "copy")
+    _ = copy.add_link(DatasetLink(id="source", path="../source"))
+
+    _refuses_without_writing(copy, source, "companions cell")
 
 
 def test_adopting_from_a_dataset_with_the_same_uuid_is_refused(tmp_path: Path) -> None:

@@ -30,11 +30,10 @@ state a rate that is wrong for every frame.
 **The raw table has no time column**, so it needs its sibling: the same stem with
 ``_tracked_fixed_final.tsv`` in place of ``_tracked.csv``, in the same directory.
 Without the sibling the entry fails with an error that names it. There is no
-fallback to a rate. The sibling is not part of the raw variant's provenance: the
-``tracks_raw`` composition and ``source_md5`` cover ``_tracked.csv`` alone, and so
-does the check that a table is current. A changed corrected table leaves the raw
-variant stale without a signal, so rerun ``convert-tracks --overwrite`` after
-editing one.
+fallback to a rate. The sibling is a companion file of the raw table: its digest
+is part of the sequence's ``tracks_raw`` composition, so a changed corrected table
+makes the raw conversion stale. The corrected table lists the raw table in the same
+way, whatever its params.
 
 **Pixels.** ``X`` and ``Y`` are Tracktor's ``pos_x`` and ``pos_y``, in pixels of
 the arena video, and the schema is ``mosaic_v1``. No file records the scale, about
@@ -84,6 +83,8 @@ __all__ = [
     "TracktorParams",
     "TracktorRawCsvConverter",
     "TracktorTsvConverter",
+    "corrected_sibling",
+    "raw_sibling",
 ]
 
 RAW_SUFFIX: Final = "_tracked.csv"
@@ -91,6 +92,29 @@ RAW_SUFFIX: Final = "_tracked.csv"
 
 CORRECTED_SUFFIX: Final = "_tracked_fixed_final.tsv"
 """What a corrected table's name ends in, and what the raw table's sibling ends in."""
+
+
+def corrected_sibling(path: Path) -> Path | None:
+    """The corrected table beside the raw table *path*, or ``None``.
+
+    ``None`` when the name does not end in :data:`RAW_SUFFIX`. The file may be
+    absent.
+    """
+    if not path.name.endswith(RAW_SUFFIX):
+        return None
+    return path.with_name(path.name.removesuffix(RAW_SUFFIX) + CORRECTED_SUFFIX)
+
+
+def raw_sibling(path: Path) -> Path | None:
+    """The raw table beside the corrected table *path*, or ``None``.
+
+    ``None`` when the name does not end in :data:`CORRECTED_SUFFIX`. The file may
+    be absent.
+    """
+    if not path.name.endswith(CORRECTED_SUFFIX):
+        return None
+    return path.with_name(path.name.removesuffix(CORRECTED_SUFFIX) + RAW_SUFFIX)
+
 
 _FLY_ID: Final = re.compile(r"^Fly(\d+)$")
 _LABEL_COLUMNS: Final = ("strain", "sex", "n_inds", "place", "prefix")
@@ -325,6 +349,16 @@ class TracktorTsvConverter(_TracktorConverter):
     # The corrected ids follow the animals.
     carries_tracklets = True
 
+    @override
+    def companion_files(self, path: Path) -> tuple[Path, ...]:
+        """The raw table beside *path*, when it is a file.
+
+        Listed whatever the params, because a scan has none: a changed raw table
+        marks a conversion stale even when the conversion carries no value from it.
+        """
+        sibling = raw_sibling(path)
+        return (sibling,) if sibling is not None and sibling.is_file() else ()
+
     def convert(
         self, path: Path, params: TracktorParams, hints: EntryHints
     ) -> pd.DataFrame:
@@ -353,17 +387,23 @@ class TracktorRawCsvConverter(_TracktorConverter):
     # The raw ids swap between animals, which the corrected table undoes.
     carries_tracklets = False
 
+    @override
+    def companion_files(self, path: Path) -> tuple[Path, ...]:
+        """The corrected table beside *path*, when it is a file."""
+        sibling = corrected_sibling(path)
+        return (sibling,) if sibling is not None and sibling.is_file() else ()
+
     def convert(
         self, path: Path, params: TracktorParams, hints: EntryHints
     ) -> pd.DataFrame:
-        if not path.name.endswith(RAW_SUFFIX):
+        sibling = corrected_sibling(path)
+        if sibling is None:
             message = (
                 f"{path} is not a raw Tracktor table, whose name ends in "
                 f"{RAW_SUFFIX}. The corrected table that times it is named by "
                 "that ending."
             )
             raise ValueError(message)
-        sibling = path.with_name(path.name.removesuffix(RAW_SUFFIX) + CORRECTED_SUFFIX)
         if not sibling.is_file():
             message = (
                 f"{path} has no time column, and its sibling {sibling} is absent. "

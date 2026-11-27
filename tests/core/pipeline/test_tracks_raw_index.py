@@ -13,6 +13,7 @@ manifest resolves to the manifest path rather than its parent.
 """
 
 import fnmatch
+import hashlib
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -23,24 +24,41 @@ import pandas as pd
 import pytest
 
 import mosaic.core.track_library  # noqa: F401  -- registers the trex_npz converter
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.composition import SourceMember, tracks_raw_composition
 from mosaic.core.pipeline.definitions.store import is_under_definitions_root
 from mosaic.core.pipeline.label_series import is_under_label_series
+from mosaic.core.pipeline.scan_claim import ScanClaim
+from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracking_roots import is_under_tracking_root
 from mosaic.core.pipeline.tracks_raw_index import (
     TRACKS_RAW_INDEX_COLUMNS,
+    CompanionRecord,
     TracksRawIndexScope,
     build_tracks_raw_row,
+    companions_cell,
+    companions_of,
     frame_from_rows,
     group_for_path,
     iter_track_files,
     load_tracks_raw_index_frame,
+    no_companions,
     read_tracks_raw_index,
     source_file_filter,
+    source_members_from_rows,
     stem_as_sequence,
     write_tracks_raw_index_rows,
 )
 
-from tests.helpers import make_dataset, write_trex_npz
+from tests.helpers import (
+    TRACKTOR_STEM,
+    make_dataset,
+    set_companions_cell,
+    tracktor_dataset,
+    write_calms21_npy,
+    write_tracktor_recording,
+    write_trex_npz,
+)
 
 # The raw uploads and the tables converted from them, and nothing else: no test
 # here reads media, and a root a test never touches would only obscure which
@@ -1155,3 +1173,453 @@ class TestGroupForPath:
 
     def test_a_group_rule_never_misses(self) -> None:
         assert self.decide("x.npy", group_from_path=lambda path: "g") == "g"
+
+
+# --- the companions column -------------------------------------------------
+
+STAMP = "2026-01-02T03:04:05.000006+00:00"
+"""A modification time as the index spells one."""
+
+RAW_NAME = f"{TRACKTOR_STEM}_tracked.csv"
+CORRECTED_NAME = f"{TRACKTOR_STEM}_tracked_fixed_final.tsv"
+
+
+def _md5_of(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _companions_in(
+    ds: Dataset, root: str = "tracks_raw"
+) -> dict[str, tuple[CompanionRecord, ...]]:
+    """Each indexed file's companion records, keyed by the file's basename."""
+    return {
+        Path(row["abs_path"]).name: companions_of(row)
+        for row in read_tracks_raw_index(ds.get_root(root) / "index.csv")
+    }
+
+
+def test_a_companions_cell_is_compact_json_sorted_by_name() -> None:
+    records = (
+        CompanionRecord(name="b.tsv", size_bytes=7, mtime_iso=STAMP, md5="d2"),
+        CompanionRecord(name="a.tsv", size_bytes=3, mtime_iso=STAMP, md5="d1"),
+    )
+
+    cell = companions_cell(records)
+
+    assert cell == (
+        f'[{{"name":"a.tsv","size_bytes":3,"mtime_iso":"{STAMP}","md5":"d1"}},'
+        f'{{"name":"b.tsv","size_bytes":7,"mtime_iso":"{STAMP}","md5":"d2"}}]'
+    )
+    assert companions_cell(()) == ""
+
+
+def test_a_companions_cell_round_trips_through_a_written_index(tmp_path: Path) -> None:
+    source = tmp_path / "a.csv"
+    source.write_bytes(b"x")
+    records = (
+        CompanionRecord(name="b.tsv", size_bytes=7, mtime_iso=STAMP, md5="d2"),
+        CompanionRecord(name="a.tsv", size_bytes=3, mtime_iso=STAMP, md5=""),
+    )
+    row = build_tracks_raw_row(
+        path=source,
+        stat=source.stat(),
+        to_store_path=lambda path: path.name,
+        group="",
+        sequence="a",
+        src_format="tracktor_raw_csv",
+        companions=records,
+    )
+    index_path = tmp_path / "index.csv"
+
+    write_tracks_raw_index_rows(index_path, frame_from_rows([row]))
+
+    assert row["companions"] == companions_cell(records)
+    (record,) = read_tracks_raw_index(index_path)
+    assert companions_of(record) == tuple(sorted(records, key=lambda r: r.name))
+    assert list(load_tracks_raw_index_frame(index_path)["companions"]) == [
+        companions_cell(records)
+    ]
+
+
+@pytest.mark.parametrize("cell", ["", None, float("nan")], ids=["blank", "none", "nan"])
+def test_a_blank_absent_or_missing_cell_lists_no_companions(
+    cell: str | float | None,
+) -> None:
+    assert companions_of({"abs_path": "a.csv", "companions": cell}) == ()
+    assert companions_of({"abs_path": "a.csv"}) == ()
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "not json",
+        "{}",
+        "[1]",
+        '[{"name":"a.tsv"}]',
+        '[{"name":"a.tsv","size_bytes":"3","mtime_iso":"x","md5":"y"}]',
+        '[{"name":"","size_bytes":3,"mtime_iso":"x","md5":"y"}]',
+        '[{"name":"a.tsv","size_bytes":3,"mtime_iso":"x","md5":"y","extra":1}]',
+        7,
+    ],
+)
+def test_a_malformed_cell_raises_and_names_the_file(cell: str | int) -> None:
+    with pytest.raises(ValueError, match=re.escape("raw/some_file.csv")):
+        _ = companions_of({"abs_path": "raw/some_file.csv", "companions": cell})
+
+
+def test_an_index_written_without_the_column_reads_a_blank_cell(
+    tmp_path: Path,
+) -> None:
+    index_path = tmp_path / "index.csv"
+    pd.DataFrame(
+        [{"group": "", "sequence": "s", "abs_path": "raw/s.npy", "src_format": "x"}]
+    ).to_csv(index_path, index=False)
+
+    frame = load_tracks_raw_index_frame(index_path)
+
+    assert frame.loc[0, "companions"] == ""
+
+
+def test_rows_missing_a_text_cell_carry_a_blank_and_keep_a_numeric_size() -> None:
+    frame = frame_from_rows(
+        [{"group": "g", "sequence": "s", "abs_path": "p", "size_bytes": 3}]
+    )
+
+    assert frame.loc[0, "companions"] == ""
+    assert frame.loc[0, "md5"] == ""
+    assert frame.loc[0, "size_bytes"] == 3
+    assert pd.api.types.is_numeric_dtype(frame["size_bytes"])
+
+
+def _two_source_dataset(tmp_path: Path) -> tuple[Dataset, Path, Path]:
+    """A dataset holding a calms21 source B and a TREx source A, both unscanned."""
+    base = (tmp_path / "ds").resolve()
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
+    source_a = base / "a_src"
+    source_b = base / "b_src"
+    write_trex_npz(source_a / "alpha_fish0.npz", n=6)
+    write_trex_npz(source_a / "alpha_fish1.npz", n=6, individual=1)
+    (source_b / "one.npy").parent.mkdir(parents=True)
+    (source_b / "one.npy").write_bytes(b"one")
+    (source_b / "two.npy").write_bytes(b"two")
+    return ds, source_a, source_b
+
+
+def _scan_a(ds: Dataset, source_a: Path, *, compute_md5: bool = True) -> Path:
+    return ds.index_tracks_raw(
+        [source_a],
+        patterns=["*.npz"],
+        src_format="trex_npz",
+        compute_md5=compute_md5,
+    )
+
+
+def _scan_b(ds: Dataset, source_b: Path) -> Path:
+    return ds.index_tracks_raw([source_b], patterns=["*.npy"], src_format="calms21_npy")
+
+
+@pytest.mark.parametrize("compute_md5", [True, False])
+def test_a_malformed_cell_in_a_kept_row_refuses_the_scan_before_any_write(
+    tmp_path: Path, compute_md5: bool
+) -> None:
+    ds, source_a, source_b = _two_source_dataset(tmp_path)
+    index_path = _scan_b(ds, source_b)
+    set_companions_cell(index_path, "b_src/one.npy", "[broken")
+    sequences = ds.get_root("tracks_raw") / "sequences.csv"
+    index_before = index_path.read_bytes()
+    sequences_before = sequences.read_bytes()
+
+    with pytest.raises(ValueError, match=re.escape("b_src/one.npy")):
+        _ = _scan_a(ds, source_a, compute_md5=compute_md5)
+
+    assert index_path.read_bytes() == index_before
+    assert sequences.read_bytes() == sequences_before
+
+
+def test_dropping_rows_refuses_a_malformed_cell_in_a_kept_row_before_any_write(
+    tmp_path: Path,
+) -> None:
+    ds, source_a, source_b = _two_source_dataset(tmp_path)
+    _ = _scan_a(ds, source_a)
+    index_path = _scan_b(ds, source_b)
+    set_companions_cell(index_path, "b_src/one.npy", "[broken")
+    sequences = ds.get_root("tracks_raw") / "sequences.csv"
+    index_before = index_path.read_bytes()
+    sequences_before = sequences.read_bytes()
+
+    with pytest.raises(ValueError, match=re.escape("b_src/one.npy")):
+        _ = ds.drop_claimed_rows("tracks", ScanClaim.over_directories([source_a]))
+
+    assert index_path.read_bytes() == index_before
+    assert sequences.read_bytes() == sequences_before
+
+
+def test_a_malformed_cell_in_a_row_the_scan_replaces_is_replaced(
+    tmp_path: Path,
+) -> None:
+    ds, _, source_b = _two_source_dataset(tmp_path)
+    index_path = _scan_b(ds, source_b)
+    set_companions_cell(index_path, "b_src/one.npy", "[broken")
+
+    _ = _scan_b(ds, source_b)
+
+    assert set(_companions_in(ds).values()) == {()}
+
+
+def test_write_tracks_raw_index_refuses_a_malformed_cell_in_a_kept_row(
+    tmp_path: Path,
+) -> None:
+    ds, _, source_b = _two_source_dataset(tmp_path)
+    index_path = _scan_b(ds, source_b)
+    set_companions_cell(index_path, "b_src/one.npy", "[broken")
+    scope_dir = ds.base_dir / "tracks_raw" / "seqA"
+    scope_dir.mkdir(parents=True)
+    (scope_dir / "a.npy").write_bytes(b"payload")
+    scope = TracksRawIndexScope(
+        directory=scope_dir, group="", sequence="seqA", src_format="calms21_npy"
+    )
+    index_before = index_path.read_bytes()
+
+    with pytest.raises(ValueError, match=re.escape("b_src/one.npy")):
+        _ = ds.write_tracks_raw_index([scope], patterns=["*.npy"])
+
+    assert index_path.read_bytes() == index_before
+
+
+def test_a_seven_column_index_of_another_source_is_kept_with_its_composition(
+    tmp_path: Path,
+) -> None:
+    ds, source_a, source_b = _two_source_dataset(tmp_path)
+    index_path = _scan_b(ds, source_b)
+    old = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    old.drop(columns=["companions"]).to_csv(index_path, index=False)
+    assert len(pd.read_csv(index_path).columns) == 7
+    composed_before = read_sequence_index(ds, "tracks_raw")
+    assert set(composed_before["sequence"]) == {"one", "two"}
+
+    _ = _scan_a(ds, source_a)
+
+    rewritten = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    assert list(rewritten.columns) == TRACKS_RAW_INDEX_COLUMNS
+    assert sorted(rewritten["sequence"]) == ["alpha", "alpha", "one", "two"]
+    assert set(rewritten["companions"]) == {""}
+    composed = read_sequence_index(ds, "tracks_raw")
+    assert set(composed["sequence"]) == {"alpha", "one", "two"}
+    compared = ["group", "sequence", "composition", "member_count"]
+    kept = composed[composed["sequence"].isin(["one", "two"])]
+    pd.testing.assert_frame_equal(
+        kept[compared].sort_values("sequence").reset_index(drop=True),
+        composed_before[compared].sort_values("sequence").reset_index(drop=True),
+    )
+
+
+def test_a_labels_scan_writes_blank_companion_cells(tmp_path: Path) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = make_dataset(base)
+    write_calms21_npy(base / "uploads" / "file.npy", {"annotator": {"seq": 4}})
+
+    index_path = ds.index_labels_raw(
+        [base / "uploads"], patterns=["*.npy"], src_format="calms21_npy"
+    )
+
+    rows = read_tracks_raw_index(index_path)
+    assert len(rows) == 1
+    assert rows[0]["companions"] == ""
+    assert list(pd.read_csv(index_path).columns) == TRACKS_RAW_INDEX_COLUMNS
+
+
+def test_a_scan_records_each_companion_of_a_tracktor_table(tmp_path: Path) -> None:
+    ds, recording = tracktor_dataset(
+        tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv"
+    )
+
+    (record,) = _companions_in(ds)[RAW_NAME]
+
+    assert record.name == CORRECTED_NAME
+    assert record.size_bytes == recording.tsv.stat().st_size
+    assert record.md5 == _md5_of(recording.tsv)
+    members = [
+        SourceMember(name=RAW_NAME, digest=_md5_of(recording.csv), algo="md5"),
+        SourceMember(name=CORRECTED_NAME, digest=_md5_of(recording.tsv), algo="md5"),
+    ]
+    (composition,) = read_sequence_index(ds, "tracks_raw")["composition"]
+    assert composition == tracks_raw_composition(members).digest
+
+
+def test_the_companion_digest_is_left_blank_and_the_composition_incomplete_without_md5(
+    tmp_path: Path,
+) -> None:
+    ds, _ = tracktor_dataset(tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv")
+
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv"],
+        src_format="tracktor_raw_csv",
+        compute_md5=False,
+    )
+
+    (record,) = _companions_in(ds)[RAW_NAME]
+    assert record.name == CORRECTED_NAME
+    assert record.md5 == ""
+    composed = read_sequence_index(ds, "tracks_raw")
+    assert list(composed["composition"]) == [""]
+    assert list(composed["member_count"]) == ["2"]
+
+
+def _hashed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the name of each file the scan reads for a digest."""
+    names: list[str] = []
+
+    def counted(path: Path, chunk: int = 1 << 20) -> str:
+        names.append(path.name)
+        return _md5_of(path)
+
+    monkeypatch.setattr("mosaic.core.dataset._md5", counted)
+    return names
+
+
+def test_a_companions_digest_is_carried_while_its_size_and_mtime_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, _ = tracktor_dataset(tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv")
+    names = _hashed(monkeypatch)
+
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv"],
+        src_format="tracktor_raw_csv",
+    )
+
+    assert names == []
+
+
+@pytest.mark.parametrize("moved", ["mtime", "size"])
+def test_a_companions_digest_is_recomputed_when_its_size_or_mtime_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    ds, recording = tracktor_dataset(
+        tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv"
+    )
+    stat = recording.tsv.stat()
+    if moved == "size":
+        with recording.tsv.open("ab") as handle:
+            _ = handle.write(b"\n")
+        os.utime(recording.tsv, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    else:
+        os.utime(recording.tsv, (stat.st_mtime + 10, stat.st_mtime + 10))
+    names = _hashed(monkeypatch)
+
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv"],
+        src_format="tracktor_raw_csv",
+    )
+
+    assert names == [CORRECTED_NAME]
+    (record,) = _companions_in(ds)[RAW_NAME]
+    assert record.md5 == _md5_of(recording.tsv)
+
+
+def test_a_companion_is_one_member_per_name_within_a_merged_sequence() -> None:
+    def row(path: str, md5: str, *records: CompanionRecord) -> dict[str, object]:
+        return {
+            "group": "g",
+            "sequence": "s",
+            "abs_path": path,
+            "md5": md5,
+            "companions": companions_cell(records),
+        }
+
+    shared = CompanionRecord(name="beside.tsv", size_bytes=1, mtime_iso=STAMP, md5="c1")
+    other = CompanionRecord(name="other.tsv", size_bytes=1, mtime_iso=STAMP, md5="c2")
+
+    members = source_members_from_rows(
+        [
+            row("a/x_fish0.csv", "d0", shared),
+            row("a/x_fish1.csv", "d1", shared, other),
+            row("a/x_fish2.csv", "d2"),
+        ]
+    )
+
+    assert sorted(m.name for m in members[("g", "s")]) == [
+        "beside.tsv",
+        "other.tsv",
+        "x_fish0.csv",
+        "x_fish1.csv",
+        "x_fish2.csv",
+    ]
+    assert {m.name: m.digest for m in members[("g", "s")]}["beside.tsv"] == "c1"
+    assert all(m.algo == "md5" for m in members[("g", "s")])
+
+
+def test_no_companions_lists_nothing(tmp_path: Path) -> None:
+    assert no_companions(tmp_path / "a.csv") == ()
+
+
+def test_calms21_and_trex_compositions_are_those_of_their_own_files(
+    tmp_path: Path,
+) -> None:
+    """A source whose converter lists no companion composes from its files alone."""
+    ds, source_a, source_b = _two_source_dataset(tmp_path)
+    _ = _scan_a(ds, source_a)
+    _ = _scan_b(ds, source_b)
+
+    expected = {
+        ("", "alpha"): tracks_raw_composition(
+            [
+                SourceMember(
+                    name=f"alpha_fish{n}.npz",
+                    digest=_md5_of(source_a / f"alpha_fish{n}.npz"),
+                    algo="md5",
+                )
+                for n in (0, 1)
+            ]
+        ).digest,
+        **{
+            ("", name): tracks_raw_composition(
+                [
+                    SourceMember(
+                        name=f"{name}.npy",
+                        digest=_md5_of(source_b / f"{name}.npy"),
+                        algo="md5",
+                    )
+                ]
+            ).digest
+            for name in ("one", "two")
+        },
+    }
+    composed = read_sequence_index(ds, "tracks_raw")
+    assert {
+        (row["group"], row["sequence"]): row["composition"]
+        for _, row in composed.iterrows()
+    } == expected
+    assert set(_companions_in(ds).values()) == {()}
+
+
+def test_write_tracks_raw_index_records_the_companions_of_its_scopes_format(
+    tmp_path: Path,
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
+    recording = write_tracktor_recording(base / "tracks_raw" / "arena")
+    other = base / "tracks_raw" / "other"
+    other.mkdir(parents=True)
+    (other / "x.npz").write_bytes(b"x")
+    scopes = [
+        TracksRawIndexScope(
+            directory=recording.csv.parent,
+            group="",
+            sequence="arena",
+            src_format="tracktor_raw_csv",
+        ),
+        TracksRawIndexScope(
+            directory=other, group="", sequence="other", src_format="trex"
+        ),
+    ]
+
+    _ = ds.write_tracks_raw_index(scopes, patterns=["*_tracked.csv", "*.npz"])
+
+    found = _companions_in(ds)
+    assert [record.name for record in found[RAW_NAME]] == [CORRECTED_NAME]
+    assert found[RAW_NAME][0].md5 == _md5_of(recording.tsv)
+    assert found["x.npz"] == ()

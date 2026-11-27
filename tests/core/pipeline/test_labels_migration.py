@@ -6,10 +6,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.labels_migration import migrate_labels_raw, revert_labels
+from tests.helpers import set_companions_cell
 
 _LEGACY_LABEL_COLUMNS = [
     "kind",
@@ -55,6 +57,21 @@ def test_forward_migration_populates_labels_raw_without_moving_files(
     assert (labels_raw / "sequences.csv").exists()
     # The file is referenced where it lies -- never copied or moved.
     assert source_file.exists()
+
+
+def test_forward_migration_refuses_a_malformed_companions_cell_without_writing(
+    tmp_path: Path,
+) -> None:
+    ds, _ = _dataset_with_legacy_label_source(tmp_path)
+    set_companions_cell(ds.get_root("tracks_raw") / "index.csv", "f1.npy", "[broken")
+    labels_raw = ds.get_root("labels_raw")
+
+    with pytest.raises(ValueError, match="f1.npy"):
+        _ = migrate_labels_raw(ds)
+
+    # The lock leaves an empty index file behind; no row reaches it.
+    assert (labels_raw / "index.csv").read_bytes() == b""
+    assert not (labels_raw / "sequences.csv").exists()
 
 
 def test_forward_migration_is_idempotent(tmp_path: Path) -> None:

@@ -9,11 +9,16 @@ real converted-tracks index reads as the one the caller probably wanted, and
 picking the wrong one is a silent wrong answer rather than an import error.
 
 The raw-tracks index (``tracks_raw/index.csv``) is a mosaic-defined artifact
-with invariants mosaic owns: the ``TRACKS_RAW_INDEX_COLUMNS`` schema, an
-``abs_path`` stored root-relative when the file lives inside the dataset tree
-(absolute otherwise), and atomic writes. This module owns the Dataset-agnostic
-serialization of that artifact so a single body of code enforces those
-invariants for every caller (today: ``Dataset.index_tracks_raw``).
+with invariants mosaic owns: the ``TRACKS_RAW_INDEX_COLUMNS`` schema (``group``,
+``sequence``, ``abs_path``, ``src_format``, ``size_bytes``, ``mtime_iso``,
+``md5`` and ``companions``), an ``abs_path`` stored root-relative when the file
+lives inside the dataset tree (absolute otherwise), and atomic writes. The
+``companions`` cell records the files beside a source that its converter may
+read: a JSON array, sorted by name, of each one's ``name`` (its basename),
+``size_bytes``, ``mtime_iso`` and ``md5``, or an empty cell when it lists
+none. This module owns the Dataset-agnostic serialization of that artifact so a
+single body of code enforces those invariants for every caller (today:
+``Dataset.index_tracks_raw``).
 
 It is the tracks sibling of :mod:`mosaic.core.pipeline.media_index`, but
 simpler: tracks have no within-sequence ordering (no ``video_order``), no
@@ -52,6 +57,8 @@ from __future__ import annotations
 
 import csv
 import fnmatch
+import json
+import math
 import os
 import re
 import sys
@@ -65,6 +72,7 @@ import pandas as pd
 from mosaic.core.pipeline.composition import SourceMember
 
 from mosaic.core.entry import validate_entry_name
+from mosaic.core.narrowing import is_object_list, is_str_mapping
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.label_series import is_under_label_series
 from mosaic.core.pipeline.definitions.store import is_under_definitions_root
@@ -82,6 +90,7 @@ TRACKS_RAW_INDEX_COLUMNS = [
     "size_bytes",
     "mtime_iso",
     "md5",
+    "companions",
 ]
 
 # The only numeric raw-tracks column; every other column is a text cell that
@@ -121,6 +130,8 @@ class TracksRawIndexRow(TypedDict):
     ``group``/``sequence`` are the raw file's assigned identity, ``src_format``
     names its converter, ``abs_path`` is the stored (root-relative or absolute)
     path, and ``md5`` is empty unless the caller opted into hashing.
+    ``companions`` is the cell :func:`companions_cell` writes: the files beside
+    the source that its converter may read, or empty when it lists none.
     """
 
     group: str
@@ -130,6 +141,175 @@ class TracksRawIndexRow(TypedDict):
     size_bytes: int
     mtime_iso: str
     md5: str
+    companions: str
+
+
+@dataclass(frozen=True)
+class CompanionRecord:
+    """A file beside a raw source that its converter may read, as the scan saw it.
+
+    Attributes:
+        name: The companion's basename. A companion is always beside its source,
+            and a basename survives a dataset moving between machines.
+        size_bytes: Its size when scanned.
+        mtime_iso: Its modification time when scanned, spelled as the index
+            spells one.
+        md5: Its checksum, empty when the scan did not hash.
+    """
+
+    name: str
+    size_bytes: int
+    mtime_iso: str
+    md5: str
+
+
+type CompanionRule = Callable[[Path], tuple[Path, ...]]
+"""Lists the files beside a raw source that its converter may read."""
+
+
+def no_companions(path: Path) -> tuple[Path, ...]:
+    """The rule of a source whose converter reads nothing beside it.
+
+    Every labels source follows it, and so does a format with no registered
+    converter.
+    """
+    _ = path
+    return ()
+
+
+def _is_blank(value: object) -> bool:
+    """Whether a cell holds nothing: absent, ``None`` or the NaN of a missing cell."""
+    return (
+        value is None
+        or value is pd.NA
+        or (isinstance(value, float) and math.isnan(value))
+    )
+
+
+def companions_cell(records: Iterable[CompanionRecord]) -> str:
+    """The ``companions`` cell for *records*: compact JSON sorted by name, or ``""``.
+
+    One spelling per value, so the same companions give the same bytes whatever
+    order they were listed in.
+    """
+    ordered = sorted(records, key=lambda record: record.name)
+    if not ordered:
+        return ""
+    return json.dumps(
+        [
+            {
+                "name": record.name,
+                "size_bytes": record.size_bytes,
+                "mtime_iso": record.mtime_iso,
+                "md5": record.md5,
+            }
+            for record in ordered
+        ],
+        separators=(",", ":"),
+    )
+
+
+def _companion_from(entry: object) -> CompanionRecord | None:
+    """The record an array entry spells, or ``None`` when it is not one."""
+    if not is_str_mapping(entry) or set(entry) != {
+        "name",
+        "size_bytes",
+        "mtime_iso",
+        "md5",
+    }:
+        return None
+    name, size_bytes = entry["name"], entry["size_bytes"]
+    mtime, digest = entry["mtime_iso"], entry["md5"]
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(size_bytes, int)
+        or isinstance(size_bytes, bool)
+        or not isinstance(mtime, str)
+        or not isinstance(digest, str)
+    ):
+        return None
+    return CompanionRecord(
+        name=name, size_bytes=size_bytes, mtime_iso=mtime, md5=digest
+    )
+
+
+def companions_of(row: Mapping[str, object]) -> tuple[CompanionRecord, ...]:
+    """The companions a row's ``companions`` cell records, in the cell's order.
+
+    A blank, absent, ``None`` or NaN cell reads as no companions, because an
+    index written before the column holds no cell and rows built from one hold a
+    missing value.
+
+    Raises:
+        ValueError: The cell is not the array :func:`companions_cell` writes.
+            The message names the row's ``abs_path``.
+    """
+    cell = row.get("companions")
+    if _is_blank(cell) or cell == "":
+        return ()
+    where = str(row.get("abs_path", "") or "")
+    problem = (
+        f"the companions cell of {where} is not the JSON array of objects with "
+        "name, size_bytes, mtime_iso and md5 that a scan writes"
+    )
+    if not isinstance(cell, str):
+        raise ValueError(problem)
+    try:
+        entries: object = json.loads(cell)
+    except json.JSONDecodeError as error:
+        raise ValueError(problem) from error
+    if not is_object_list(entries):
+        raise ValueError(problem)
+    records: list[CompanionRecord] = []
+    for entry in entries:
+        record = _companion_from(entry)
+        if record is None:
+            raise ValueError(problem)
+        records.append(record)
+    return tuple(records)
+
+
+def refuse_malformed_companions(rows: Iterable[Mapping[str, object]]) -> None:
+    """Parse every row's ``companions`` cell, so a malformed one is refused.
+
+    Raises:
+        ValueError: A cell does not parse. The message names the row's file.
+    """
+    for row in rows:
+        _ = companions_of(row)
+
+
+def companion_records(
+    path: Path, rule: CompanionRule, digest: Callable[[Path], str]
+) -> tuple[CompanionRecord, ...]:
+    """The records of the files *rule* lists beside *path*, sorted by name.
+
+    *path* is the file the index stores, which a conversion reads. A listed file
+    that is gone by the time it is read is left out, as it would be had the scan
+    run a moment later.
+
+    Args:
+        path: The raw source file, resolved.
+        rule: The converter's :meth:`~TrackConverter.companion_files`, or
+            :func:`no_companions`.
+        digest: Returns a file's checksum, or ``""`` when the scan does not hash.
+    """
+    records: list[CompanionRecord] = []
+    for companion in rule(path):
+        try:
+            stat = companion.stat()
+        except FileNotFoundError:
+            continue
+        records.append(
+            CompanionRecord(
+                name=companion.name,
+                size_bytes=stat.st_size,
+                mtime_iso=mtime_iso(stat.st_mtime),
+                md5=digest(companion),
+            )
+        )
+    return tuple(sorted(records, key=lambda record: record.name))
 
 
 def read_tracks_raw_index(index_path: Path) -> list[dict[str, str]]:
@@ -162,7 +342,8 @@ def load_tracks_raw_index_frame(index_path: Path) -> pd.DataFrame:
     here is a size the index never recorded, not a size of zero.
 
     Missing columns are added, so an index written before a column existed still
-    reads.
+    reads: an index of seven columns reads a blank ``companions`` cell, which is
+    no companions.
     """
     df = pd.DataFrame(columns=TRACKS_RAW_INDEX_COLUMNS)
     if index_path.exists():
@@ -191,8 +372,18 @@ def frame_from_rows(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     hence a ``Mapping[str, object]``) and preserved string-cell records from
     :func:`read_tracks_raw_index`, so the projection can merge the two without
     per-row normalization.
+
+    A text cell a row lacks is ``""``, not a float NaN, so a row read from an
+    index written before a column carries a blank cell to whatever reads the
+    frame next. ``size_bytes`` stays numeric.
     """
-    return pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
+    frame = pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
+    for column in TRACKS_RAW_INDEX_COLUMNS:
+        if column not in TRACKS_RAW_NUMERIC_COLUMNS:
+            frame[column] = [
+                "" if _is_blank(value) else value for value in frame[column].tolist()
+            ]
+    return frame
 
 
 def _skip_reason(
@@ -566,6 +757,7 @@ def build_tracks_raw_row(
     sequence: str,
     src_format: str,
     md5: str = "",
+    companions: Sequence[CompanionRecord] = (),
 ) -> TracksRawIndexRow:
     """Assemble one raw-tracks-index row.
 
@@ -573,7 +765,8 @@ def build_tracks_raw_row(
     ``abs_path`` is produced by *to_store_path*, so the in-tree-relative /
     out-of-tree-absolute rule is enforced in one place. *md5* is passed by the
     caller (empty unless hashing was requested) rather than computed here, so
-    this stays a stat-only, read-light assembler.
+    this stays a stat-only, read-light assembler. *companions* are written as
+    the row's ``companions`` cell.
     """
     return {
         "group": validate_entry_name(group, "group"),
@@ -583,6 +776,7 @@ def build_tracks_raw_row(
         "size_bytes": stat.st_size,
         "mtime_iso": mtime_iso(stat.st_mtime),
         "md5": md5,
+        "companions": companions_cell(companions),
     }
 
 
@@ -603,19 +797,35 @@ def source_members_from_rows(
     the file covers many sequences at once. Composing them under one key
     ``(group, "")`` would mint a value describing no sequence in particular, and
     a fiction is worse here than an absence.
+
+    A row's companions follow its own member, one member per companion name
+    within a sequence: the files of a merged sequence sit beside each other, and
+    one companion listed by several of them is one file. A companion without a
+    digest leaves the composition incomplete, as a source without one does. A row
+    without companions adds none, so the composition of a sequence whose converter
+    lists none is what its files alone give.
     """
     members: dict[tuple[str, str], list[SourceMember]] = {}
+    companion_names: dict[tuple[str, str], set[str]] = {}
     for row in rows:
         sequence = str(row.get("sequence", "") or "")
         if not sequence:
             continue
         key = (str(row.get("group", "") or ""), sequence)
         stored = str(row.get("abs_path", "") or "")
-        members.setdefault(key, []).append(
+        found = members.setdefault(key, [])
+        found.append(
             SourceMember(
                 name=Path(stored).name,
                 digest=str(row.get("md5", "") or ""),
                 algo="md5",
             )
         )
+        seen = companion_names.setdefault(key, set())
+        for companion in companions_of(row):
+            if companion.name not in seen:
+                seen.add(companion.name)
+                found.append(
+                    SourceMember(name=companion.name, digest=companion.md5, algo="md5")
+                )
     return members

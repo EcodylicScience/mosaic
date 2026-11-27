@@ -489,6 +489,39 @@ def write_tracktor_recording(
     )
 
 
+def tracktor_dataset(
+    root: Path,
+    src_format: str,
+    pattern: str,
+    *,
+    write_tsv: bool = True,
+    write_csv: bool = True,
+) -> tuple[Dataset, TracktorRecording]:
+    """A dataset whose ``tracks_raw`` indexes one Tracktor recording's *pattern* files.
+
+    Args:
+        root: Where the dataset lives. Its recording is written under ``raw``.
+        src_format: The converter the scan names, ``tracktor_raw_csv`` or
+            ``tracktor_corrected_tsv``.
+        pattern: The glob that picks the recording's file for that format.
+        write_tsv: Whether the recording's corrected table is written.
+        write_csv: Whether the recording's raw table is written.
+
+    Returns:
+        The dataset, scanned and not converted, and the recording.
+    """
+    from tests.helpers.datasets import make_dataset
+
+    dataset = make_dataset(root.resolve())
+    recording = write_tracktor_recording(
+        dataset.base_dir / "raw", write_tsv=write_tsv, write_csv=write_csv
+    )
+    _ = dataset.index_tracks_raw(
+        [dataset.base_dir / "raw"], patterns=[pattern], src_format=src_format
+    )
+    return dataset, recording
+
+
 def add_track_sequences(
     dataset: Dataset | MockDataset,
     *entries: TrackEntry,
@@ -1445,3 +1478,18 @@ def set_tracks_cell(
     )
     rows.loc[selected, column] = value
     rows.to_csv(path, index=False)
+
+
+def set_companions_cell(index_path: Path, abs_path_suffix: str, cell: str) -> None:
+    """Write *cell* as the ``companions`` of each row of a raw index ending so.
+
+    Args:
+        index_path: A ``tracks_raw`` or ``labels_raw`` ``index.csv``.
+        abs_path_suffix: The end of the stored ``abs_path`` of the rows to set.
+        cell: The cell's text, which a test makes malformed or well formed.
+    """
+    rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    selected = rows["abs_path"].str.endswith(abs_path_suffix)
+    assert selected.any(), f"no row of {index_path} ends in {abs_path_suffix}"
+    rows.loc[selected, "companions"] = cell
+    rows.to_csv(index_path, index=False)

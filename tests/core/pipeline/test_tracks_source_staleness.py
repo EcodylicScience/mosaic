@@ -26,6 +26,7 @@ recomputed, so no existing dataset is forced to redo work.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -76,9 +77,12 @@ from tests.helpers import (
     CropLike,
     PlainFeature,
     add_feature_run,
+    TRACKTOR_STEM,
     add_tracks_variant,
     convert_tracks_from_raw,
+    tracktor_dataset,
     write_media_index,
+    write_tracktor_recording,
     write_trex_npz,
 )
 
@@ -1450,3 +1454,171 @@ def test_a_scan_reads_each_variants_tracks_compositions_once(
         (record.name, record.run_id): record.drift for record in found.records
     } == expected
     assert expected[(runs[0].feature, runs[0].run_id)] == (("", "seq_a"),)
+
+
+RAW_TABLE = ("tracktor_raw_csv", "*_tracked.csv")
+"""The format and the glob of a scan that indexes each recording's raw table."""
+
+CORRECTED_TABLE = ("tracktor_corrected_tsv", "*_tracked_fixed_final.tsv")
+"""The format and the glob of a scan that indexes each recording's corrected table."""
+
+
+def _rewritten(path: Path, column: str, separator: str) -> None:
+    """Change *column* of the table at *path*, one no conversion reads, and its mtime.
+
+    The conversions that follow therefore have the same table to write, and the
+    mtime moves by seconds so that the size and mtime check of a digest carried
+    from the last scan cannot mistake the file for unchanged.
+    """
+    table = pd.read_csv(path, sep=separator, dtype=str, keep_default_na=False)
+    table[column] = "edited"
+    table.to_csv(path, sep=separator, index=False)
+    later = path.stat().st_mtime + 10
+    os.utime(path, (later, later))
+
+
+def _scanned_again(ds: Dataset, table: tuple[str, str]) -> None:
+    src_format, pattern = table
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"], patterns=[pattern], src_format=src_format
+    )
+
+
+def _converted_recording(
+    root: Path,
+    table: tuple[str, str],
+    *,
+    write_tsv: bool = True,
+    write_csv: bool = True,
+) -> tuple[Dataset, str]:
+    """A dataset that scanned and converted one recording, and its variant."""
+    ds, _ = tracktor_dataset(root, *table, write_tsv=write_tsv, write_csv=write_csv)
+    outcome = ds.convert_all_tracks()
+    assert outcome.failed == 0
+    (variant,) = read_tracks_index(ds)["run_id"].unique().tolist()
+    return ds, str(variant)
+
+
+class TestACompanionFileIsPartOfItsSource:
+    """A file a conversion reads beside its source marks the conversion stale.
+
+    The companion's digest is a member of the sequence's ``tracks_raw``
+    composition, so a conversion made before the companion changed, appeared or
+    disappeared no longer matches what the sources hold once a scan records the
+    change. A stale conversion is one the next ``convert_all_tracks`` writes
+    again, and a current one it skips.
+    """
+
+    @pytest.mark.parametrize(
+        "table", [RAW_TABLE, CORRECTED_TABLE], ids=["raw", "corrected"]
+    )
+    def test_an_unchanged_rescan_keeps_the_conversion_current(
+        self, tmp_path: Path, table: tuple[str, str]
+    ) -> None:
+        ds, _ = _converted_recording(tmp_path / "ds", table)
+
+        _scanned_again(ds, table)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (1, 1, 0)
+
+    def test_a_changed_corrected_table_makes_the_raw_conversion_stale(
+        self, tmp_path: Path
+    ) -> None:
+        ds, variant = _converted_recording(tmp_path / "ds", RAW_TABLE)
+        before = ds.load_tracks("", TRACKTOR_STEM)
+        recorded = tracks_compositions(ds, (variant,))[("", TRACKTOR_STEM)]
+
+        _rewritten(
+            ds.base_dir / "raw" / f"{TRACKTOR_STEM}_tracked_fixed_final.tsv",
+            "timestamp",
+            "\t",
+        )
+        _scanned_again(ds, RAW_TABLE)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (1, 0, 0)
+        assert read_tracks_index(ds)["run_id"].unique().tolist() == [variant]
+        assert tracks_compositions(ds, (variant,))[("", TRACKTOR_STEM)] != recorded
+        pd.testing.assert_frame_equal(ds.load_tracks("", TRACKTOR_STEM), before)
+
+    def test_a_changed_raw_table_makes_the_corrected_conversion_stale(
+        self, tmp_path: Path
+    ) -> None:
+        ds, variant = _converted_recording(tmp_path / "ds", CORRECTED_TABLE)
+        before = ds.load_tracks("", TRACKTOR_STEM)
+
+        _rewritten(
+            ds.base_dir / "raw" / f"{TRACKTOR_STEM}_tracked.csv", "center_x", ","
+        )
+        _scanned_again(ds, CORRECTED_TABLE)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (1, 0, 0)
+        assert read_tracks_index(ds)["run_id"].unique().tolist() == [variant]
+        pd.testing.assert_frame_equal(ds.load_tracks("", TRACKTOR_STEM), before)
+
+    def test_a_companion_that_disappears_makes_the_raw_conversion_stale(
+        self, tmp_path: Path
+    ) -> None:
+        """The raw conversion needs its companion, so the stale entry fails to convert."""
+        ds, _ = _converted_recording(tmp_path / "ds", RAW_TABLE)
+
+        (ds.base_dir / "raw" / f"{TRACKTOR_STEM}_tracked_fixed_final.tsv").unlink()
+        _scanned_again(ds, RAW_TABLE)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (0, 0, 1)
+
+    def test_a_companion_that_disappears_makes_the_corrected_conversion_stale(
+        self, tmp_path: Path
+    ) -> None:
+        ds, variant = _converted_recording(tmp_path / "ds", CORRECTED_TABLE)
+        before = ds.load_tracks("", TRACKTOR_STEM)
+
+        (ds.base_dir / "raw" / f"{TRACKTOR_STEM}_tracked.csv").unlink()
+        _scanned_again(ds, CORRECTED_TABLE)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (1, 0, 0)
+        assert read_tracks_index(ds)["run_id"].unique().tolist() == [variant]
+        pd.testing.assert_frame_equal(ds.load_tracks("", TRACKTOR_STEM), before)
+
+    def test_a_companion_that_appears_makes_the_corrected_conversion_stale(
+        self, tmp_path: Path
+    ) -> None:
+        ds, variant = _converted_recording(
+            tmp_path / "ds", CORRECTED_TABLE, write_csv=False
+        )
+        before = ds.load_tracks("", TRACKTOR_STEM)
+
+        _ = write_tracktor_recording(ds.base_dir / "raw")
+        _scanned_again(ds, CORRECTED_TABLE)
+
+        outcome = ds.convert_all_tracks()
+        assert (outcome.converted, outcome.current, outcome.failed) == (1, 0, 0)
+        assert read_tracks_index(ds)["run_id"].unique().tolist() == [variant]
+        pd.testing.assert_frame_equal(ds.load_tracks("", TRACKTOR_STEM), before)
+
+    def test_a_feature_over_the_conversion_recomputes_after_a_companion_changes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds, variant = _converted_recording(tmp_path / "ds", RAW_TABLE)
+        _ = run_feature(ds, _Upstream(), tracks_run_id=variant)
+        _ = capsys.readouterr()
+        _ = run_feature(ds, _Upstream(), tracks_run_id=variant)
+        assert "cannot serve cached output" not in capsys.readouterr().err
+
+        _rewritten(
+            ds.base_dir / "raw" / f"{TRACKTOR_STEM}_tracked_fixed_final.tsv",
+            "timestamp",
+            "\t",
+        )
+        _scanned_again(ds, RAW_TABLE)
+        _ = ds.convert_all_tracks()
+        _ = run_feature(ds, _Upstream(), tracks_run_id=variant)
+
+        assert (
+            f"cannot serve cached output for (,{TRACKTOR_STEM})"
+            in capsys.readouterr().err
+        )

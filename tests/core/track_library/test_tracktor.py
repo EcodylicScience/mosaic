@@ -16,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from mosaic.behavior.feature_library import SpeedAngvel
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import ensure_track_schema
@@ -28,15 +27,19 @@ from mosaic.core.track_converter import (
     TimedTrackConvertParams,
 )
 from mosaic.core.track_library.tracktor import (
+    CORRECTED_SUFFIX,
+    RAW_SUFFIX,
     TracktorParams,
     TracktorRawCsvConverter,
     TracktorTsvConverter,
+    corrected_sibling,
+    raw_sibling,
 )
 from tests.helpers import (
     TRACKTOR_STEM,
     TracktorRecording,
-    make_dataset,
     result_outputs,
+    tracktor_dataset,
     write_tracktor_recording,
 )
 
@@ -261,8 +264,8 @@ def test_the_table_records_no_frame_rate_column(tmp_path: Path) -> None:
 
 
 def test_a_dataset_default_rate_does_not_time_the_table(tmp_path: Path) -> None:
-    dataset, recording = _dataset_with(
-        tmp_path, "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
+    dataset, recording = tracktor_dataset(
+        tmp_path / "ds", "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
     )
     dataset.meta["fps_default"] = 25.0
 
@@ -423,6 +426,90 @@ def test_a_raw_file_that_does_not_end_in_tracked_is_refused(tmp_path: Path) -> N
         _ = _csv(renamed)
 
 
+# --- companion files -------------------------------------------------------------
+
+
+def test_the_raw_format_lists_its_corrected_sibling_when_present(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path)
+
+    assert TracktorRawCsvConverter().companion_files(recording.csv) == (recording.tsv,)
+
+
+def test_the_raw_format_lists_nothing_when_its_sibling_is_absent(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path, write_tsv=False)
+
+    assert TracktorRawCsvConverter().companion_files(recording.csv) == ()
+
+
+def test_a_raw_name_without_the_raw_ending_lists_nothing(tmp_path: Path) -> None:
+    recording = _recording(tmp_path)
+    renamed = recording.csv.with_name("arena.csv")
+    _ = recording.csv.rename(renamed)
+
+    assert TracktorRawCsvConverter().companion_files(renamed) == ()
+
+
+def test_the_corrected_format_lists_its_raw_sibling_when_present(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path)
+
+    assert TracktorTsvConverter().companion_files(recording.tsv) == (recording.csv,)
+
+
+def test_the_corrected_format_lists_nothing_when_its_sibling_is_absent(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path)
+    recording.csv.unlink()
+
+    assert TracktorTsvConverter().companion_files(recording.tsv) == ()
+
+
+def test_a_corrected_name_without_the_corrected_ending_lists_nothing(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path)
+    renamed = recording.tsv.with_name("arena.tsv")
+    _ = recording.tsv.rename(renamed)
+
+    assert TracktorTsvConverter().companion_files(renamed) == ()
+
+
+def test_the_sibling_rules_map_one_ending_to_the_other(tmp_path: Path) -> None:
+    recording = _recording(tmp_path)
+
+    assert corrected_sibling(recording.csv) == recording.tsv
+    assert raw_sibling(recording.tsv) == recording.csv
+    assert corrected_sibling(recording.tsv) is None
+    assert raw_sibling(recording.csv) is None
+    assert corrected_sibling(tmp_path / f"arena{RAW_SUFFIX}") == (
+        tmp_path / f"arena{CORRECTED_SUFFIX}"
+    )
+
+
+def test_the_raw_conversion_reads_the_file_its_companions_list(
+    tmp_path: Path,
+) -> None:
+    recording = _recording(tmp_path)
+    converter = TracktorRawCsvConverter()
+    (companion,) = converter.companion_files(recording.csv)
+    moved = companion.with_name("moved.tsv")
+    _ = companion.rename(moved)
+
+    assert converter.companion_files(recording.csv) == ()
+    with pytest.raises(ValueError, match="no time column") as raised:
+        _ = _csv(recording.csv)
+
+    assert companion.name in str(raised.value)
+    _ = moved.rename(companion)
+    assert len(_csv(recording.csv)) > 0
+
+
 # --- sequence names -------------------------------------------------------------
 
 
@@ -440,22 +527,11 @@ def test_both_formats_name_a_recording_the_same_way() -> None:
 # --- a dataset ------------------------------------------------------------------
 
 
-def _dataset_with(
-    tmp_path: Path, src_format: str, pattern: str, *, write_tsv: bool = True
-) -> tuple[Dataset, TracktorRecording]:
-    dataset = make_dataset((tmp_path / "ds").resolve())
-    recording = write_tracktor_recording(dataset.base_dir / "raw", write_tsv=write_tsv)
-    _ = dataset.index_tracks_raw(
-        [dataset.base_dir / "raw"], patterns=[pattern], src_format=src_format
-    )
-    return dataset, recording
-
-
 def test_a_dataset_converts_a_corrected_file_with_no_frame_rate_anywhere(
     tmp_path: Path,
 ) -> None:
-    dataset, recording = _dataset_with(
-        tmp_path, "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
+    dataset, recording = tracktor_dataset(
+        tmp_path / "ds", "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
     )
 
     _ = dataset.convert_all_tracks()
@@ -476,7 +552,7 @@ def test_a_dataset_converts_a_corrected_file_with_no_frame_rate_anywhere(
 def test_a_dataset_converts_a_raw_file_beside_its_corrected_sibling(
     tmp_path: Path,
 ) -> None:
-    dataset, _ = _dataset_with(tmp_path, "tracktor_raw_csv", "*_tracked.csv")
+    dataset, _ = tracktor_dataset(tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv")
 
     _ = dataset.convert_all_tracks()
 
@@ -487,8 +563,8 @@ def test_a_dataset_converts_a_raw_file_beside_its_corrected_sibling(
 def test_a_dataset_fails_a_raw_file_without_its_sibling_and_names_it(
     tmp_path: Path,
 ) -> None:
-    dataset, _ = _dataset_with(
-        tmp_path, "tracktor_raw_csv", "*_tracked.csv", write_tsv=False
+    dataset, _ = tracktor_dataset(
+        tmp_path / "ds", "tracktor_raw_csv", "*_tracked.csv", write_tsv=False
     )
 
     failures: list[tuple[str, BaseException]] = []
@@ -503,8 +579,8 @@ def test_a_dataset_fails_a_raw_file_without_its_sibling_and_names_it(
 
 
 def test_speed_is_over_the_recorded_time_and_not_a_frame_rate(tmp_path: Path) -> None:
-    dataset, recording = _dataset_with(
-        tmp_path, "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
+    dataset, recording = tracktor_dataset(
+        tmp_path / "ds", "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
     )
     _ = dataset.convert_all_tracks()
 

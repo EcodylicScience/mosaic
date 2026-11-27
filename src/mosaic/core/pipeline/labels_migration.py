@@ -36,6 +36,7 @@ from .labels_index import (
 from .tracks_raw_index import (
     frame_from_rows,
     read_tracks_raw_index,
+    refuse_malformed_companions,
     write_tracks_raw_index_rows,
 )
 
@@ -86,6 +87,7 @@ def migrate_labels_raw(ds: Dataset) -> dict[str, int]:
     out.parent.mkdir(parents=True, exist_ok=True)
     frame = frame_from_rows(rows)
     with index_lock(out):
+        refuse_malformed_companions(rows)
         write_tracks_raw_index_rows(out, frame)
     # Same projection the live writer uses, so the migrated composition is
     # byte-identical to one produced by index_labels_raw.

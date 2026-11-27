@@ -265,7 +265,7 @@ class TrackConverter(Generic[P]):
     a typed ``Params``, registered by decorator. Subclass, declare
     ``src_format`` / ``Params``, implement ``convert``. The hooks are
     ``tracklets``, ``input_file``, ``convert``, ``frames_read``,
-    ``enumerate_sequences`` and ``sequence_from_stem``.
+    ``companion_files``, ``enumerate_sequences`` and ``sequence_from_stem``.
 
     Class variables:
         src_format: The raw format this handles, and the registry key. One
@@ -401,6 +401,22 @@ class TrackConverter(Generic[P]):
             return self.frames_read(path)
         except (OSError, ValueError) as error:
             return error
+
+    def companion_files(self, path: Path) -> tuple[Path, ...]:
+        """Return the files beside *path* that :meth:`convert` may read, sorted.
+
+        Only files that exist now are listed. The base returns ``()``: the
+        converter reads nothing beside its source. An override reads no file's
+        content, and takes no params because a scan runs before any conversion
+        has params, so it lists a companion whatever the params would decide. A
+        converter reads beside its source only the files this lists, so that a
+        change to one marks the conversion stale.
+
+        Args:
+            path: The raw tracks file.
+        """
+        _ = path
+        return ()
 
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
         """The ``(group, sequence)`` pairs *path* contains.
