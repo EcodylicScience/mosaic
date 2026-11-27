@@ -87,6 +87,8 @@ No other run id or output moves.
   `savgol_mode` off its default. Its run ids stay while `rolling_edges` is
   `min_periods`, and the output of the `rolling` and `savgol` paths and of
   `movement-filter-interpolate` is unchanged.
+- The MCP tools' `limit` takes up to 150 where it took 100, so one page of
+  `describe_step_types` still lists every registered step type.
 
 ## Unreleased: features that read only results compute in every track space
 

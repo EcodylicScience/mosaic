@@ -200,7 +200,7 @@ SHARED_TOOL_LIMIT: Final = 16
 MAX_SCHEMA_BYTES: Final = 8448
 """The most bytes of compact JSON that one tool's input or output schema takes."""
 
-MAX_PAGE_SIZE: Final = 100
+MAX_PAGE_SIZE: Final = 150
 """The most items one page of a listing returns."""
 
 DEFAULT_PAGE_SIZE: Final = 20

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
+    MAX_PAGE_SIZE,
     CONFIRMATION_CONDITIONS,
     MAX_PREVIEW_ROWS,
     MAX_RESULT_CHARS,
@@ -274,16 +275,19 @@ def test_the_preview_bound_is_the_one_the_preview_reader_enforces() -> None:
     assert MAX_PREVIEW_ROWS == preview.MAX_PREVIEW_ROWS
 
 
-def test_a_page_larger_than_one_hundred_is_refused_before_the_backend() -> None:
+def test_a_page_larger_than_the_cap_is_refused_before_the_backend() -> None:
     backend = LocalBackend([], warm=False)
 
-    refused = call_tool(backend, "list_datasets", {"limit": 101})
+    refused = call_tool(backend, "list_datasets", {"limit": MAX_PAGE_SIZE + 1})
 
     assert isinstance(refused, ErrorEnvelope)
     assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
     assert refused.detail is not None
     assert refused.detail["errors"] == [
-        {"field": "limit", "message": "Input should be less than or equal to 100"}
+        {
+            "field": "limit",
+            "message": f"Input should be less than or equal to {MAX_PAGE_SIZE}",
+        }
     ]
 
 
