@@ -27,6 +27,12 @@ every converter imported ``dataset`` to register itself while ``dataset``
 imported the registry to dispatch -- the cycle noted in ``dataset.py``'s own
 comments, which says closing it needs the registry moved out. It is moved out
 here: this module imports nothing from ``mosaic.core.dataset``.
+
+**One declaration of ``keep_empty_frames``.** :data:`KeepEmptyFrames` is the
+annotation that every converter's ``keep_empty_frames`` field uses, so its prose
+is written once. Each converter chooses its default and drops the field from its
+``identity_dump`` at that default through :meth:`Params.drop_at_default`, so a
+conversion that never sets it keeps its variant.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ __all__ = [
     "EntryHints",
     "FrameRateUnknownError",
     "InstalledConverterState",
+    "KeepEmptyFrames",
     "TimedTrackConvertParams",
     "TrackConvertParams",
     "TrackConverter",
@@ -189,6 +196,16 @@ def conversion_rate(
     raise FrameRateUnknownError(message)
 
 
+_KEEP_EMPTY_FRAMES_DESCRIPTION = (
+    "Write a row for every frame and individual that the source records, with "
+    "NaN positions, keypoints and scores where it has none. Unset keeps the "
+    "converter's default."
+)
+
+KeepEmptyFrames = Annotated[bool, Declared(_KEEP_EMPTY_FRAMES_DESCRIPTION)]
+"""The type of every converter's ``keep_empty_frames`` field."""
+
+
 class TrackConvertParams(Params):
     """Base for every converter's parameters.
 
@@ -246,7 +263,9 @@ class TrackConverter(Generic[P]):
 
     Mirrors ``core.pipeline.ops.Op``: a class with declared class variables and
     a typed ``Params``, registered by decorator. Subclass, declare
-    ``src_format`` / ``Params``, implement ``convert``.
+    ``src_format`` / ``Params``, implement ``convert``. The hooks are
+    ``tracklets``, ``input_file``, ``convert``, ``frames_read``,
+    ``enumerate_sequences`` and ``sequence_from_stem``.
 
     Class variables:
         src_format: The raw format this handles, and the registry key. One
@@ -348,6 +367,23 @@ class TrackConverter(Generic[P]):
             hints: Which entry to produce. Never hashed -- see :class:`EntryHints`.
         """
         raise NotImplementedError
+
+    def frames_read(self, path: Path) -> int | None:
+        """Return the number of frames the file *path* records, or ``None``.
+
+        The base returns ``None``: the converter records no count. An override
+        returns the count from the file's shape where it can, and raises
+        ``OSError`` or ``ValueError`` on a file it cannot read. An enumerable
+        converter keeps the base, because one file's count is not a sequence's.
+        A conversion that merges several files records the count of its first
+        file, the one its tracks row names as its source. The count is
+        provenance and enters no identifier.
+
+        Args:
+            path: The raw tracks file.
+        """
+        _ = path
+        return None
 
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
         """The ``(group, sequence)`` pairs *path* contains.

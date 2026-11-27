@@ -40,7 +40,7 @@ from mosaic.core.track_library.sleap import (
 )
 from mosaic.core.track_library.trex import TrexNpzConverter
 
-from tests.helpers import make_dataset
+from tests.helpers import converted_variant, make_dataset, read_string_golden
 
 VARIANT = re.compile(r"^[a-z0-9_-]+\.[0-9]+(?:\.[0-9]+)*-[0-9a-f]{10}$")
 
@@ -346,3 +346,26 @@ def test_a_variant_is_scope_free_across_the_sequences_it_covers() -> None:
     assert tracks_run_id(
         "trex", "0.1", tracker_variant_payload(settings)
     ) == tracks_run_id("trex", "0.1", tracker_variant_payload(settings))
+
+
+def test_sleap_keep_empty_frames_joins_the_variant_only_when_set() -> None:
+    """Unset and false are the golden default variant, and true is another."""
+    golden = read_string_golden("op_identity_golden.json")[
+        "tracks/convert-variant-sleap_analysis_h5"
+    ]
+
+    unset = converted_variant(SleapAnalysisH5Converter, SleapConvertParams())
+    false = converted_variant(
+        SleapAnalysisH5Converter, SleapConvertParams(keep_empty_frames=False)
+    )
+    true = converted_variant(
+        SleapAnalysisH5Converter, SleapConvertParams(keep_empty_frames=True)
+    )
+
+    assert unset == golden
+    assert false == golden
+    assert true != golden
+    assert "keep_empty_frames" not in SleapConvertParams().identity_dump()
+    assert SleapConvertParams(keep_empty_frames=True).identity_dump()[
+        "keep_empty_frames"
+    ]

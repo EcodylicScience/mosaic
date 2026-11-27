@@ -20,9 +20,12 @@ missing (an older ``sleap-io``), it falls back to the documented ``matlab``
 order.
 
 Each SLEAP ``Track`` becomes one ``id`` (its 0-based track index), emitted only
-on frames where that track is present. Keypoints are written in node order as
-``poseX0..N`` / ``poseY0..N`` (with ``poseP0..N`` point confidence), and ``X``/``Y``
-carry the mean of that frame's keypoints as the body centre.
+on frames where that track is present, unless ``keep_empty_frames`` is set: then
+every track has a row on every frame ``0 .. n_frames - 1`` of the file, with NaN
+keypoints, ``X``, ``Y`` and scores where every node of the track is NaN, and a
+track absent from every frame has its rows too. Keypoints are written in node
+order as ``poseX0..N`` / ``poseY0..N`` (with ``poseP0..N`` point confidence), and
+``X``/``Y`` carry the mean of that frame's keypoints as the body center.
 
 Nothing else is derived here. Velocity, speed and heading used to be computed in
 this module and written into the table, where they were indistinguishable from
@@ -53,6 +56,7 @@ from mosaic.core.params import Declared
 from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
+    KeepEmptyFrames,
     TimedTrackConvertParams,
     TrackConverter,
     conversion_rate,
@@ -81,6 +85,9 @@ _NODE_ALIASES = frozenset({"node", "nodes"})
 # The documented matlab-preset axis orders, used when a dataset has no ``dims``.
 _TRACKS_MATLAB_DIMS = ("track", "xy", "node", "frame")
 _SCORES_MATLAB_DIMS = ("track", "node", "frame")
+
+# The order `_read_analysis_h5` gives ``tracks``, with the frame axis first.
+_TRACKS_CANONICAL_DIMS = ("frame", "track", "node", "xy")
 
 # The arrays the converter reads, each as float64.
 _ANALYSIS_ARRAYS = ("tracks", "point_scores")
@@ -128,21 +135,59 @@ def _decode_dims(raw: object) -> tuple[str, ...] | None:
     return tuple(tokens) if tokens else None
 
 
-def _reorder(
-    arr: np.ndarray, dims: tuple[str, ...], target: tuple[str, ...]
-) -> np.ndarray:
-    """Transpose *arr* whose axes are *dims* into *target* canonical order."""
+def _dataset_dims(path: Path, dataset: h5py.Dataset) -> tuple[str, ...] | None:
+    """The decoded ``dims`` attribute of *dataset*, or None when it has none."""
+    return _decode_dims(
+        read_hdf5_attribute(path, dataset, "dims", variable_string=True)
+    )
+
+
+def _tracks_dataset(
+    path: Path, arrays: dict[str, h5py.Dataset]
+) -> tuple[h5py.Dataset, tuple[int, ...], list[int]]:
+    """The ``tracks`` dataset among *arrays*, its shape, and its axis order.
+
+    The axis order takes the dataset's axes to ``(frame, track, node, xy)``
+    from its ``dims``, or from the documented ``matlab`` order when it has none.
+
+    Raises:
+        ValueError: *arrays* has no ``tracks`` dataset, the dataset has no
+            shape, or its ``dims`` do not name the axes the converter reads.
+    """
+    if "tracks" not in arrays:
+        raise ValueError(f"SLEAP analysis HDF5 has no 'tracks' dataset: {path}")
+    dataset = arrays["tracks"]
+    shape = dataset.shape
+    if shape is None:
+        raise ValueError(f"SLEAP analysis 'tracks' dataset has no shape: {path}")
+    dims = _dataset_dims(path, dataset) or _TRACKS_MATLAB_DIMS
+    return dataset, shape, _axis_order(len(shape), dims, _TRACKS_CANONICAL_DIMS)
+
+
+def _axis_order(ndim: int, dims: tuple[str, ...], target: tuple[str, ...]) -> list[int]:
+    """The axes of an *ndim*-axis array named *dims*, in *target* canonical order.
+
+    Raises:
+        ValueError: *dims* names another number of axes than *ndim*, or lacks an
+            axis of *target*.
+    """
     canon = [_canon_axis(d) for d in dims]
-    if arr.ndim != len(canon):
-        msg = f"SLEAP analysis dataset has {arr.ndim} axes but dims={brief(dims)}"
+    if ndim != len(canon):
+        msg = f"SLEAP analysis dataset has {ndim} axes but dims={brief(dims)}"
         raise ValueError(msg)
     try:
-        order = [canon.index(name) for name in target]
+        return [canon.index(name) for name in target]
     except ValueError as exc:
         raise ValueError(
             f"SLEAP analysis dataset dims {brief(dims)} do not cover {target}"
         ) from exc
-    return np.transpose(arr, order)
+
+
+def _reorder(
+    arr: np.ndarray, dims: tuple[str, ...], target: tuple[str, ...]
+) -> np.ndarray:
+    """Transpose *arr* whose axes are *dims* into *target* canonical order."""
+    return np.transpose(arr, _axis_order(arr.ndim, dims, target))
 
 
 def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
@@ -163,22 +208,15 @@ def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
 
     with h5py.File(str(path), "r") as handle:
         arrays = _analysis_arrays(path, handle)
-        dims = {
-            name: _decode_dims(
-                read_hdf5_attribute(path, dataset, "dims", variable_string=True)
-            )
-            for name, dataset in arrays.items()
-        }
-        if "tracks" not in arrays:
-            raise ValueError(f"SLEAP analysis HDF5 has no 'tracks' dataset: {path}")
-        tracks_raw = np.asarray(arrays["tracks"], dtype=np.float64)
-        tracks_dims = dims["tracks"] or _TRACKS_MATLAB_DIMS
-        tracks = _reorder(tracks_raw, tracks_dims, ("frame", "track", "node", "xy"))
+        tracks_dataset, _, tracks_order = _tracks_dataset(path, arrays)
+        tracks_raw = np.asarray(tracks_dataset, dtype=np.float64)
+        tracks = np.transpose(tracks_raw, tracks_order)
 
         scores: np.ndarray | None = None
         if "point_scores" in arrays:
-            scores_raw = np.asarray(arrays["point_scores"], dtype=np.float64)
-            scores_dims = dims["point_scores"] or _SCORES_MATLAB_DIMS
+            scores_dataset = arrays["point_scores"]
+            scores_raw = np.asarray(scores_dataset, dtype=np.float64)
+            scores_dims = _dataset_dims(path, scores_dataset) or _SCORES_MATLAB_DIMS
             scores = _reorder(scores_raw, scores_dims, ("frame", "track", "node"))
 
     return tracks, scores
@@ -223,21 +261,32 @@ def _track_to_trex_df(
     group: str,
     sequence: str,
     fps: float,
+    keep_empty_frames: bool,
 ) -> pd.DataFrame | None:
-    """Build a per-frame ``mosaic_v1`` frame for one track, or None if never present.
+    """Build a per-frame ``mosaic_v1`` frame for one track.
 
     *xy* is ``(n_frames, n_nodes, 2)`` for this track; *scores* is
     ``(n_frames, n_nodes)`` or None. Frames where every node is NaN (the track is
-    absent) are dropped, so the table is per-detection.
+    absent) are dropped, so the table is per-detection, and a track present on no
+    frame returns None.
+
+    With *keep_empty_frames*, every frame ``0 .. n_frames - 1`` is a row, a track
+    present on no frame included. On a frame where every node is NaN the
+    keypoints, ``X``, ``Y`` and every score are NaN, whatever score the file
+    holds there.
     """
     n_frames, n_nodes = xy.shape[0], xy.shape[1]
     present = ~np.all(np.isnan(xy.reshape(n_frames, -1)), axis=1)
-    if not present.any():
+    if keep_empty_frames:
+        rows = np.ones(n_frames, dtype=bool)
+    elif present.any():
+        rows = present
+    else:
         return None
-    frame_idx = np.nonzero(present)[0].astype(int)
+    frame_idx = np.nonzero(rows)[0].astype(int)
 
-    x = xy[present, :, 0]
-    y = xy[present, :, 1]
+    x = xy[rows, :, 0]
+    y = xy[rows, :, 1]
     cx, cy = keypoint_centroid(x, y)
 
     frame_f = frame_idx.astype(float)
@@ -255,7 +304,7 @@ def _track_to_trex_df(
         data[f"poseX{k}"] = x[:, k]
         data[f"poseY{k}"] = y[:, k]
     if scores is not None:
-        track_scores = scores[present, :]
+        track_scores = np.where(present[rows, None], scores[rows, :], np.nan)
         for k in range(n_nodes):
             data[f"poseP{k}"] = track_scores[:, k]
 
@@ -274,17 +323,22 @@ class SleapConvertParams(TimedTrackConvertParams):
     """Parameters for the SLEAP analysis-HDF5 converter."""
 
     tracks_named: Annotated[bool | None, Declared(_TRACKS_NAMED_DESCRIPTION)] = None
+    keep_empty_frames: KeepEmptyFrames = False
 
     @override
     def identity_dump(self) -> dict[str, object]:
-        """The hashed params, with ``tracks_named`` left out while it is unset.
+        """The hashed params, without the fields that are at their defaults.
 
-        A conversion without an answer has the identity it had before the field
-        existed. An answer enters the identity, because a table converted again
-        under the same identifier would be served from the cache with its old
-        row. The rates are left out while unset, as the base does.
+        ``tracks_named`` and ``keep_empty_frames`` are left out at their
+        defaults, so a conversion without an answer, and one that keeps only the
+        frames with a track, has the identity it had before the fields existed.
+        An answer enters the identity, because a table converted again under the
+        same identifier would be served from the cache with its old row. The
+        rates are left out while unset, as the base does.
         """
-        return self.drop_at_default(super().identity_dump(), ("tracks_named",))
+        return self.drop_at_default(
+            super().identity_dump(), ("tracks_named", "keep_empty_frames")
+        )
 
 
 def empty_sleap_tracks() -> pd.DataFrame:
@@ -332,11 +386,38 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
                 group,
                 sequence,
                 fps,
+                params.keep_empty_frames,
             )
             if df is not None:
                 frames.append(df)
 
         return pd.concat(frames, ignore_index=True) if frames else empty_sleap_tracks()
+
+    @override
+    def frames_read(self, path: Path) -> int | None:
+        """Return the length of the frame axis of the ``tracks`` dataset in *path*.
+
+        The count is read from the dataset's shape and its ``dims``, with no data
+        read, and the file is refused as `convert` refuses it. It is the file's
+        frame count, which the table's extent understates when the last frames
+        lack a track.
+
+        Args:
+            path: The SLEAP analysis HDF5.
+
+        Raises:
+            ValueError: The file has no ``tracks`` dataset, or its ``dims`` do
+                not name the axes the converter reads.
+            UnsafeRawFileError: An array is refused.
+            OSError: The file is not HDF5.
+        """
+        # Deferred for the reason that ``_read_analysis_h5`` gives.
+        import h5py
+
+        with h5py.File(str(path), "r") as handle:
+            arrays = _analysis_arrays(path, handle)
+            _, shape, order = _tracks_dataset(path, arrays)
+            return shape[order[0]]
 
 
 @dataclass(frozen=True, slots=True)

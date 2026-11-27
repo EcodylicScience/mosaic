@@ -29,6 +29,11 @@ from mosaic.core.pipeline.appearance import (
     appearance_path,
     write_appearance,
 )
+from mosaic.core.pipeline.tracks_identity import (
+    convert_variant_payload,
+    converter_op,
+    tracks_run_id,
+)
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     tracks_index_path,
@@ -617,6 +622,17 @@ def write_trex_npz(
     for name in omit:
         del fields[name]
     np.savez(path, allow_pickle=False, **fields)
+
+
+def converted_variant[P: TrackConvertParams](
+    converter: type[TrackConverter[P]], params: TrackConvertParams
+) -> str:
+    """The tracks variant that *converter* names for a conversion under *params*."""
+    return tracks_run_id(
+        converter_op(converter.src_format),
+        converter.version,
+        convert_variant_payload(params.identity_dump()),
+    )
 
 
 type SleapPreset = Literal["matlab", "standard"]

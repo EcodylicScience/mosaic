@@ -22,7 +22,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar, override
+from typing import Annotated, ClassVar, Literal, get_args, override
 
 import numpy as np
 import pandas as pd
@@ -33,6 +33,7 @@ from mosaic.core.params import Declared
 from mosaic.core.track_converter import (
     TRACK_CONVERTERS,
     EntryHints,
+    KeepEmptyFrames,
     TrackConverter,
     TrackConvertParams,
     builtin_track_converters,
@@ -826,6 +827,133 @@ def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -
     assert len(df[df["id"] == 0]) == 4
 
 
+type _SleapPreset = Literal["matlab", "standard"]
+
+
+def _five_frame_fixture() -> tuple[np.ndarray, np.ndarray]:
+    """5 frames, 3 tracks, 2 nodes, and a last frame on which no track is present.
+
+    Track 0 is present on frames 0 to 3, track 1 on frames 1 and 2 with a file
+    score of 0.0 on the frames it is absent, and track 2 on none, with a score of
+    0.7 throughout.
+    """
+    tracks = np.full((5, 3, 2, 2), np.nan)
+    for frame in range(4):
+        tracks[frame, 0, 0] = [10.0 + frame, 20.0]
+        tracks[frame, 0, 1] = [12.0 + frame, 22.0]
+    for frame in (1, 2):
+        tracks[frame, 1, 0] = [100.0, 200.0 + frame]
+        tracks[frame, 1, 1] = [102.0, 202.0 + frame]
+    scores = np.full((5, 3, 2), np.nan)
+    scores[:, 0, :] = 0.9
+    scores[:, 1, :] = 0.0
+    scores[1:3, 1, :] = 0.8
+    scores[:, 2, :] = 0.7
+    return tracks, scores
+
+
+def _convert_five_frames(
+    tmp_path: Path, *, keep_empty_frames: bool, preset: _SleapPreset = "matlab"
+) -> pd.DataFrame:
+    tracks, scores = _five_frame_fixture()
+    h5 = tmp_path / "five.analysis.h5"
+    write_sleap_analysis_h5(h5, tracks, scores, preset=preset)
+    return SleapAnalysisH5Converter().convert(
+        h5,
+        SleapConvertParams(fps=25.0, keep_empty_frames=keep_empty_frames),
+        EntryHints(group="g", sequence="s"),
+    )
+
+
+def test_sleap_default_table_has_no_row_for_an_absent_track_or_empty_frame(
+    tmp_path: Path,
+) -> None:
+    df = _convert_five_frames(tmp_path, keep_empty_frames=False)
+
+    assert sorted(set(df["id"])) == [0, 1]
+    assert 4 not in set(df["frame"])
+    assert len(df) == 6
+
+
+def test_sleap_keeps_every_frame_of_every_track_when_asked(tmp_path: Path) -> None:
+    default = _convert_five_frames(tmp_path, keep_empty_frames=False)
+    every = _convert_five_frames(tmp_path, keep_empty_frames=True)
+
+    assert len(every) == 15
+    assert not every.duplicated(["frame", "id"]).any()
+    for track_id in (0, 1, 2):
+        frames = every.loc[every["id"] == track_id, "frame"]
+        assert sorted(frames) == [0, 1, 2, 3, 4]
+    assert every["time"].tolist() == pytest.approx((every["frame"] / 25.0).tolist())
+
+    keyed = every.merge(default[["frame", "id"]], on=["frame", "id"], how="inner")
+    assert len(keyed) == len(default)
+    sorted_every = keyed.sort_values(["id", "frame"]).reset_index(drop=True)
+    sorted_default = default.sort_values(["id", "frame"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(sorted_every, sorted_default)
+
+    absent = every.merge(
+        default[["frame", "id"]], on=["frame", "id"], how="left", indicator=True
+    )
+    absent = absent[absent["_merge"] == "left_only"]
+    assert len(absent) == 9
+    value_columns = [
+        column
+        for column in every.columns
+        if column in ("X", "Y") or column.startswith("pose")
+    ]
+    assert {"poseX0", "poseY1", "poseP0", "poseP1"} <= set(value_columns)
+    assert absent[value_columns].isna().all().all()
+
+
+def test_sleap_every_frame_table_keeps_the_default_columns(tmp_path: Path) -> None:
+    default = _convert_five_frames(tmp_path, keep_empty_frames=False)
+    every = _convert_five_frames(tmp_path, keep_empty_frames=True)
+
+    assert list(every.columns) == list(default.columns)
+    assert every.dtypes.to_dict() == default.dtypes.to_dict()
+
+
+@pytest.mark.parametrize("preset", ["matlab", "standard"])
+def test_sleap_frames_read_is_the_frame_axis_of_the_file(
+    tmp_path: Path, preset: _SleapPreset
+) -> None:
+    tracks, scores = _five_frame_fixture()
+    h5 = tmp_path / "five.analysis.h5"
+    write_sleap_analysis_h5(h5, tracks, scores, preset=preset)
+
+    assert SleapAnalysisH5Converter().frames_read(h5) == 5
+
+
+def test_sleap_frames_read_falls_back_to_the_matlab_order_without_dims(
+    tmp_path: Path,
+) -> None:
+    tracks, scores = _five_frame_fixture()
+    h5 = tmp_path / "nodims.analysis.h5"
+    write_sleap_analysis_h5(h5, tracks, scores, preset="matlab", with_dims=False)
+
+    assert SleapAnalysisH5Converter().frames_read(h5) == 5
+
+
+def test_sleap_frames_read_refuses_a_file_without_tracks(tmp_path: Path) -> None:
+    import h5py
+
+    h5 = tmp_path / "empty.analysis.h5"
+    with h5py.File(str(h5), "w") as handle:
+        handle["node_names"] = np.array([b"a"], "S")
+
+    with pytest.raises(ValueError, match="no 'tracks' dataset"):
+        SleapAnalysisH5Converter().frames_read(h5)
+
+
+def test_sleap_frames_read_passes_on_a_file_that_is_not_hdf5(tmp_path: Path) -> None:
+    text = tmp_path / "not.h5"
+    _ = text.write_text("not hdf5")
+
+    with pytest.raises(OSError):
+        SleapAnalysisH5Converter().frames_read(text)
+
+
 # --- reconversion after a source change -------------------------------------
 
 
@@ -1557,3 +1685,23 @@ def test_the_default_hook_returns_the_path_it_is_given(
     )
 
     assert returned == path
+
+
+def test_keep_empty_frames_declares_the_shared_prose() -> None:
+    declarations = [m for m in get_args(KeepEmptyFrames)[1:] if isinstance(m, Declared)]
+
+    assert get_args(KeepEmptyFrames)[0] is bool
+    assert [d.description for d in declarations] == [
+        "Write a row for every frame and individual that the source records, "
+        "with NaN positions, keypoints and scores where it has none. Unset "
+        "keeps the converter's default."
+    ]
+
+
+def test_a_converter_that_keeps_the_base_hook_records_no_frame_count(
+    tmp_path: Path,
+) -> None:
+    converter = get_track_converter("calms21_npy")
+
+    assert type(converter).frames_read is TrackConverter.frames_read
+    assert converter.frames_read(tmp_path / "unread.npy") is None

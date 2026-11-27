@@ -87,6 +87,7 @@ by `mosaic convert-tracks`.
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 | `tracks_named` | `boolean` \| `None` | `null` |  | Whether the export's tracks are named: each track index follows one animal over the video. A SLEAP export records identities only when its tracks are named, so the file cannot say. Leave unset to record no answer; the plan then does not refuse a step that needs ids following an animal. |
+| `keep_empty_frames` | `boolean` | `false` |  | Write a row for every frame and individual that the source records, with NaN positions, keypoints and scores where it has none. Unset keeps the converter's default. |
 
 #### `synthetic`
 

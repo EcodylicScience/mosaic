@@ -84,7 +84,6 @@ from mosaic.core.pipeline.transcode import (
     transcode_run_id,
 )
 from mosaic.core.pipeline.tracks_identity import (
-    convert_variant_payload,
     converter_op,
     infer_variant_payload,
     tracks_run_id,
@@ -129,6 +128,7 @@ from mosaic.tracking.ultralytics_track.version import (
 
 from tests.helpers import (
     UPDATE_GOLDEN_ENV,
+    converted_variant,
     read_string_golden,
     regenerate_command,
     updating_golden,
@@ -461,11 +461,7 @@ def _default_convert_variant[P: TrackConvertParams](
     converter: type[TrackConverter[P]],
 ) -> str:
     """The variant of *converter* run on its default params."""
-    return tracks_run_id(
-        converter_op(converter.src_format),
-        converter.version,
-        convert_variant_payload(converter.Params().identity_dump()),
-    )
+    return converted_variant(converter, converter.Params())
 
 
 def _zebrafish_3d_convert_variant() -> str:
