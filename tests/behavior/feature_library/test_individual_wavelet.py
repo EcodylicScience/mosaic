@@ -21,6 +21,10 @@ from mosaic.behavior.feature_library.wavelet import (
     wavelet_band,
     wavelet_columns,
 )
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Result
@@ -314,6 +318,16 @@ def test_cols_naming_only_absent_columns_raises() -> None:
         ValueError, match=r"\[individual-wavelet\] None of the requested"
     ):
         _feature({"cols": ["absent"]}).apply(_tracks())
+
+
+def test_cols_is_met_by_any_one_of_its_columns_before_apply() -> None:
+    """``apply`` transforms the named columns that exist, and needs only one."""
+    feature = _feature({"cols": ["a", "absent"]})
+    present = ["id", "time", "frame", "a"]
+
+    check_input_columns(feature, present)
+    with pytest.raises(MissingInputColumns, match="'a' or 'absent'"):
+        check_input_columns(feature, ["id", "time", "frame", "b"])
 
 
 def test_the_pc_prefix_columns_come_before_other_numeric_columns() -> None:

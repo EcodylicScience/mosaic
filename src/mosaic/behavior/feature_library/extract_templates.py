@@ -12,6 +12,7 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     Column,
+    ParamColumn,
     Payload,
     Provides,
     Requirement,
@@ -131,10 +132,13 @@ class ExtractTemplates:
     track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Fit reads each entry's sequence and samples its payload columns, every one
     # or those that ``columns`` names. Apply returns an empty table, because the
-    # sample in ``save_state`` is the output. ``columns`` is not declared, because
-    # a requirement on a list param is met by any one of its names. The fit
-    # refuses each named column that the input lacks.
-    requires: ClassVar[tuple[Requirement, ...]] = (Column(C.seq_col), Payload())
+    # sample in ``save_state`` is the output. The fit refuses each named column
+    # that the input lacks.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.seq_col),
+        Payload(),
+        ParamColumn("columns"),
+    )
     provides: ClassVar[Provides] = Provides()
     TemplatesArtifact = TemplatesArtifact
     ProvenanceArtifact = ProvenanceArtifact

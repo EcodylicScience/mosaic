@@ -16,6 +16,10 @@ import pytest
 
 from mosaic.behavior.feature_library.body_length import BodyLength
 from mosaic.behavior.feature_library.scale_to_bl import ScaleToBodyLength
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 
 
 def _fish(lengths: dict[int, float], n: int = 5) -> pd.DataFrame:
@@ -125,6 +129,18 @@ def test_an_index_past_the_table_refuses() -> None:
 
 
 # --- scale-to-bl ----------------------------------------------------------------
+
+
+def test_an_empty_columns_list_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="at least 1 item"):
+        _ = ScaleToBodyLength(params={"length": 4.0, "columns": []})
+
+
+def test_a_named_column_the_input_lacks_is_refused_before_apply() -> None:
+    feature = ScaleToBodyLength(params={"length": 4.0, "columns": ["X", "nope"]})
+    with pytest.raises(MissingInputColumns, match="lacks 'nope'"):
+        check_input_columns(feature, ["X", "Y"])
+    check_input_columns(feature, ["X", "nope"])
 
 
 def test_an_explicit_length_divides_every_length_column() -> None:

@@ -12,7 +12,12 @@ import pytest
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.column_contract import needs_of, param_values
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+    needs_of,
+    param_values,
+)
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline, run_pipeline
 from mosaic.core.pipeline.inventory import FeatureRunRef
 from mosaic.core.pipeline.preview import preview_artifact
@@ -190,6 +195,16 @@ def test_a_subgroup_column_the_input_lacks_fails_the_entry_by_name(
             {"columns": ["value"], "aggs": ["count"], "subgroup_col": subgroup_col},
             table,
         )
+
+
+def test_a_subgroup_list_needs_every_column_before_apply() -> None:
+    feature = SequenceAggregate(
+        params={"columns": ["value"], "subgroup_col": ["event", "tag"]}
+    )
+
+    check_input_columns(feature, ["group", "sequence", "value", "event", "tag"])
+    with pytest.raises(MissingInputColumns, match="lacks 'tag'"):
+        check_input_columns(feature, ["group", "sequence", "value", "event"])
 
 
 def test_once_halves_the_sum_and_not_the_mean_of_one_step() -> None:

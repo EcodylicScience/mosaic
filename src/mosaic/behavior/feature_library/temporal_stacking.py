@@ -19,6 +19,7 @@ from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
+    ParamColumn,
     ParamIs,
     Payload,
     Provides,
@@ -276,11 +277,10 @@ class TemporalStackingFeature:
     track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # ``apply`` also sorts a pair input, one with ``id1`` and ``id2``, by
     # ``frame``. A requirement cannot depend on the input's other columns.
-    # ``columns`` is not declared, because a requirement on a list param is met
-    # by any one of its names. ``apply`` refuses each named column that the
-    # input lacks.
+    # ``apply`` refuses each named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Payload(),
+        ParamColumn("columns"),
         When(
             Column(C.time_col),
             (ParamIs("add_pool"), ParamIs("fps", negated=True)),

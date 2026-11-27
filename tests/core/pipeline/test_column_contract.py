@@ -454,6 +454,101 @@ def test_a_requirement_on_an_unset_field_is_left_out() -> None:
     assert needs_of((ParamColumn("subgroup_col"),), {"subgroup_col": None}) == ()
 
 
+def test_a_list_param_requirement_needs_every_column_it_names() -> None:
+    """One column of ``["strain", "tag"]`` does not meet a requirement for both."""
+    needs = needs_of(
+        (ParamColumn("subgroup_col"),), {"subgroup_col": ["strain", "tag"]}
+    )
+
+    assert needs == (
+        NamedColumns(columns=("strain",), params=("subgroup_col",)),
+        NamedColumns(columns=("tag",), params=("subgroup_col",)),
+    )
+    assert [need.met_by({"strain"}) for need in needs] == [True, False]
+    assert all(need.met_by({"strain", "tag"}) for need in needs)
+
+
+def test_a_string_param_requirement_needs_its_one_column() -> None:
+    needs = needs_of((ParamColumn("speed_col"),), {"speed_col": "speed"})
+
+    assert needs == (NamedColumns(columns=("speed",), params=("speed_col",)),)
+
+
+def test_a_repeated_name_in_a_list_param_is_one_requirement() -> None:
+    needs = needs_of((ParamColumn("columns"),), {"columns": ["a", "a", "b"]})
+
+    assert [need.columns for need in needs] == [("a",), ("b",)]
+
+
+def test_an_unreadable_list_param_stays_one_unknown_requirement() -> None:
+    needs = needs_of((ParamColumn("columns"),), {"columns": ["a", 3]})
+
+    assert needs == (NamedColumns(params=("columns",), unknown=True),)
+
+
+def test_a_conditional_list_param_requirement_needs_every_column() -> None:
+    gated = When(ParamColumn("columns"), (ParamIs("aggs", equals="mean"),))
+    values: dict[str, JsonValue] = {"columns": ["a", "b"], "aggs": ["mean"]}
+
+    assert [need.columns for need in needs_of((gated,), values)] == [("a",), ("b",)]
+    assert needs_of((gated,), {**values, "aggs": ["max"]}) == ()
+    (unknown_a, unknown_b) = needs_of((gated,), {"columns": ["a", "b"]})
+    assert unknown_a.unknown
+    assert unknown_b.unknown
+
+
+def test_an_any_of_group_of_a_list_param_is_met_by_any_one_column() -> None:
+    """``AnyOf`` is the one way to ask for any one of the columns a list names."""
+    (need,) = needs_of((AnyOf((ParamColumn("cols"),)),), {"cols": ["a", "b"]})
+
+    assert need.columns == ("a", "b")
+    assert need.met_by({"b"})
+    assert not need.met_by({"c"})
+
+
+def test_a_derivation_that_writes_one_column_of_a_list_leaves_the_rest_required() -> (
+    None
+):
+    requires: tuple[Requirement, ...] = (_SPECS, ParamColumn("columns"))
+    values: dict[str, JsonValue] = {
+        "specs": [{"new_col": "a", "source_col": "x"}],
+        "columns": ["a", "b"],
+    }
+
+    needs = needs_of(requires, values)
+
+    assert [need.columns for need in needs] == [("x",), ("b",)]
+
+
+def test_a_list_param_requirement_leaves_out_its_possible_prefixes() -> None:
+    """A family that a non-empty output may lack is never a hard requirement."""
+    ref = ParamColumn("columns", suffixes="aggs", families=("q",), members="members")
+    values: dict[str, JsonValue] = {
+        "columns": ["a", "b"],
+        "aggs": ["mean", "q"],
+        "members": None,
+    }
+
+    needs = needs_of((ref,), values)
+
+    assert [need.columns for need in needs] == [("a_mean",), ("b_mean",)]
+    assert all(not need.possible_prefixes for need in needs)
+
+
+def test_a_prefix_and_a_family_template_stay_one_requirement_each() -> None:
+    requires: tuple[Requirement, ...] = (
+        Prefix("poseX"),
+        Template("{head}_", family=True),
+    )
+
+    needs = needs_of(requires, {"head": "nose"})
+
+    assert needs == (
+        NamedColumns(prefixes=("poseX",)),
+        NamedColumns(prefixes=("nose_",), params=("head",)),
+    )
+
+
 _SPECS = Derived("specs", name_key="new_col", source_key="source_col")
 """A derivation spelled as ``nn-delta-bins`` spells its ``category_specs``."""
 

@@ -29,6 +29,7 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.pipeline.column_contract import (
     Column,
+    ParamColumn,
     Payload,
     Provides,
     Requirement,
@@ -240,10 +241,12 @@ class ArHmmFeature:
     # Apply decodes each series' payload columns in frame order, every one or
     # those that ``columns`` names. A series is an individual or an ordered
     # pair. Its code names the frame column literally, and so does this
-    # declaration. ``columns`` is not declared, because a requirement on a list
-    # param is met by any one of its names. The fit refuses each named column
-    # that the input lacks.
-    requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
+    # declaration. The fit refuses each named column that the input lacks.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column("frame"),
+        Payload(),
+        ParamColumn("columns"),
+    )
     provides: ClassVar[Provides] = Provides(
         adds=(Column("frame"), Column("syllable")),
         conditional=kept("id", "id1", "id2", "perspective", "group", "sequence"),

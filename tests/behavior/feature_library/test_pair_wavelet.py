@@ -20,6 +20,10 @@ import pytest
 import pywt
 
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.run import run_feature
@@ -245,6 +249,15 @@ def test_cols_keeps_the_present_columns_in_the_order_given() -> None:
 
     assert out.attrs["input_columns"] == ["speed", "area"]
     _assert_bit_for_bit(out, _reference(table, ["speed", "area"], fps=30.0))
+
+
+def test_cols_is_met_by_any_one_of_its_columns_before_apply() -> None:
+    """``apply`` transforms the named columns that exist, and needs only one."""
+    feature = _feature({"cols": ["a", "absent"]})
+
+    check_input_columns(feature, ["perspective", "time", "frame", "a"])
+    with pytest.raises(MissingInputColumns, match="'a' or 'absent'"):
+        check_input_columns(feature, ["perspective", "time", "frame", "b"])
 
 
 def test_cols_naming_only_absent_columns_raises() -> None:

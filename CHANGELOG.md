@@ -20,6 +20,14 @@ No run id or output moves.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` accept a list of
   columns in `subgroup_col`. Their run ids stay while `subgroup_col` is unset, one column
   or a list of one, and only a longer list is a new run.
+- A step that names several columns in a list param, such as `subgroup_col`,
+  `keep_columns` or the aggregates' `columns`, now needs every one of them in its
+  input, and a recipe whose input lacks one is refused when it is planned. A column
+  the input lacked used to pass the plan whenever another listed column was present.
+  `scale-to-cm` and `scale-to-bl` check `columns` the same way, and `arhmm`,
+  `extract-templates`, `extract-labeled-templates` and `temporal-stack` now check
+  theirs at plan time instead of failing each entry. `scale-to-cm` and `scale-to-bl`
+  refuse an empty `columns` list, which failed every entry.
 
 ## Unreleased: features that read only results compute in every track space
 

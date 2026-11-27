@@ -438,6 +438,19 @@ def test_a_fish_whose_rows_are_all_excluded_emits_no_row() -> None:
     assert out.index.tolist() == [1]
 
 
+def test_every_listed_exclusion_column_is_required_before_apply() -> None:
+    feature = SocialMotionSummary(
+        params={"exclude_cols": ["unbridgeable", "long_interp"]}
+    )
+    df = _make_merged_df()
+    df["unbridgeable"] = False
+
+    with pytest.raises(MissingInputColumns, match="'long_interp'"):
+        check_input_columns(feature, df.columns)
+    df["long_interp"] = False
+    check_input_columns(feature, df.columns)
+
+
 def test_an_exclusion_column_the_input_lacks_is_refused_before_apply() -> None:
     feature = SocialMotionSummary(params={"exclude_cols": ["unbridgeable"]})
     with pytest.raises(MissingInputColumns, match="unbridgeable"):

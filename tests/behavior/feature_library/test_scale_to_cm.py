@@ -22,6 +22,10 @@ import pytest
 
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm, scalable_columns
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 
 from tests.helpers import MediaClip, add_media_sequence, make_dataset, write_media_index
 
@@ -88,6 +92,25 @@ def test_the_suffix_is_configurable() -> None:
 def test_naming_a_column_the_table_lacks_refuses() -> None:
     with pytest.raises(ValueError, match="does not carry"):
         _ = ScaleToCm(params={"cm_per_pixel": 1.0, "columns": ["nope"]}).apply(_table())
+
+
+def test_an_empty_columns_list_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError, match="at least 1 item"):
+        _ = ScaleToCm(params={"cm_per_pixel": 1.0, "columns": []})
+
+
+def test_a_named_column_the_input_lacks_is_refused_before_apply() -> None:
+    feature = ScaleToCm(params={"cm_per_pixel": 1.0, "columns": ["X", "nope"]})
+    with pytest.raises(MissingInputColumns, match="lacks 'nope'"):
+        check_input_columns(feature, ["X", "Y"])
+    check_input_columns(feature, ["X", "nope"])
+
+
+def test_unset_columns_need_one_length_column_before_apply() -> None:
+    feature = ScaleToCm(params={"cm_per_pixel": 1.0})
+    check_input_columns(feature, ["id", "ANGLE", "X"])
+    with pytest.raises(MissingInputColumns, match="'X' or"):
+        check_input_columns(feature, ["id", "ANGLE"])
 
 
 def test_a_table_with_nothing_to_scale_refuses() -> None:

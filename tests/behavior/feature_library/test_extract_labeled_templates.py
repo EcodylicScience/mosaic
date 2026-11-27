@@ -17,6 +17,10 @@ from mosaic.behavior.feature_library.extract_labeled_templates import (
 from mosaic.behavior.feature_library import helpers
 from mosaic.behavior.feature_library.helpers import feature_columns
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 from mosaic.core.pipeline.loading import load_entry_data
 from mosaic.core.pipeline.types import (
     GroundTruthLabelsSource,
@@ -1342,3 +1346,18 @@ def test_a_masked_class_draws_no_template_and_leaves_the_labeled_range(
         for row in provenance.to_dict("records")
     }
     assert ranges["a"] == (5, 15)
+
+
+def test_a_named_payload_column_the_input_lacks_is_refused_before_fit() -> None:
+    feature = ExtractLabeledTemplates(
+        ExtractLabeledTemplates.Inputs((Result(feature="upstream"),)),
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": 10,
+            "columns": ["a", "b"],
+        },
+    )
+
+    with pytest.raises(MissingInputColumns, match="lacks 'b'"):
+        check_input_columns(feature, ["sequence", "frame", "a"])
+    check_input_columns(feature, ["sequence", "frame", "a", "b"])

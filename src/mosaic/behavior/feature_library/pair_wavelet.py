@@ -13,6 +13,7 @@ import pandas as pd
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
+    AnyOf,
     Column,
     Conditional,
     ParamColumn,
@@ -111,12 +112,13 @@ class PairWavelet:
     emits: EmitsLevel = "pair"
     follows_ids: bool = True
     track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
-    # apply transforms the columns that cols names and needs only one of them.
+    # apply transforms the columns that cols names and needs only one of them,
+    # so cols sits in an AnyOf, where a ParamColumn alone needs every column.
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column("perspective"),
         Column(C.time_col),
-        ParamColumn("cols"),
+        AnyOf((ParamColumn("cols"),)),
         Payload(),
     )
     # One W_<column>_f<index> column per input column and frequency. The order

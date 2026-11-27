@@ -15,6 +15,7 @@ from mosaic.core.helpers import UNLABELED
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.column_contract import (
     Column,
+    ParamColumn,
     Payload,
     Provides,
     Requirement,
@@ -266,13 +267,13 @@ class ExtractLabeledTemplates:
     track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     # Fit aligns each entry's labels by frame and samples its payload columns,
     # every one or those that ``columns`` names. Apply returns an empty table,
-    # because the sample in ``save_state`` is the output. ``columns`` is not
-    # declared, because a requirement on a list param is met by any one of its
-    # names. The fit refuses each named column that the input lacks.
+    # because the sample in ``save_state`` is the output. The fit refuses each
+    # named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.seq_col),
         Column(C.frame_col),
         Payload(),
+        ParamColumn("columns"),
     )
     provides: ClassVar[Provides] = Provides()
     LabeledTemplatesArtifact = LabeledTemplatesArtifact

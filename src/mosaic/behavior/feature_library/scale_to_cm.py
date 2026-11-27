@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, final
 
 import pandas as pd
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
@@ -150,14 +150,19 @@ def scalable_columns(columns: list[str]) -> list[str]:
     return out
 
 
-LENGTH_COLUMNS: Requirement = AnyOf(
-    (
-        ParamColumn("columns"),
-        *(Column(name) for name in sorted(_LENGTH_NAMES)),
-        *(Prefix(prefix) for prefix in _LENGTH_PREFIXES),
-    )
+LENGTH_COLUMNS: tuple[Requirement, ...] = (
+    ParamColumn("columns"),
+    When(
+        AnyOf(
+            (
+                *(Column(name) for name in sorted(_LENGTH_NAMES)),
+                *(Prefix(prefix) for prefix in _LENGTH_PREFIXES),
+            )
+        ),
+        (ParamIs("columns", negated=True),),
+    ),
 )
-"""One column to scale: one that ``columns`` names, or one length column.
+"""The columns to scale: every one that ``columns`` names, else one length column.
 
 Shared with ``scale-to-bl``, which scales the same columns by another unit.
 """
@@ -205,15 +210,14 @@ class ScaleToCm:
     emits: EmitsLevel = "individual"
     follows_ids: bool = False
     # ``apply`` reads the group and sequence to find the calibration, unless
-    # ``cm_per_pixel`` is set. The scaled columns are met by one column that
-    # ``columns`` names or by one length column. ``apply`` refuses an input that
-    # lacks a column that ``columns`` names.
+    # ``cm_per_pixel`` is set. ``columns`` needs every column it names, and unset
+    # it is met by one length column.
     requires: ClassVar[tuple[Requirement, ...]] = (
         *(
             When(Column(name), (ParamIs("cm_per_pixel", negated=True),))
             for name in (C.group_col, C.seq_col)
         ),
-        LENGTH_COLUMNS,
+        *LENGTH_COLUMNS,
     )
     # ``derive`` writes ``<column><suffix>`` per scaled column beside the
     # identity columns. ``convert`` returns its input with the scaled columns
@@ -242,7 +246,10 @@ class ScaleToCm:
             "derive"
         )
         suffix: Annotated[str, Declared(_SUFFIX_DESCRIPTION)] = "_cm"
-        columns: Annotated[list[str] | None, Declared(_COLUMNS_DESCRIPTION)] = None
+        columns: Annotated[
+            Annotated[list[str], Field(min_length=1)] | None,
+            Declared(_COLUMNS_DESCRIPTION),
+        ] = None
 
         @model_validator(mode="after")
         def _a_suffix_names_nothing_in_convert_mode(self) -> Self:

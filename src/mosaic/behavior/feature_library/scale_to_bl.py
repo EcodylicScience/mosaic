@@ -29,7 +29,7 @@ from typing import Annotated, ClassVar, Literal, Self, final
 
 import numpy as np
 import pandas as pd
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
@@ -120,7 +120,7 @@ class ScaleToBodyLength:
             When(Column(name), (ParamIs("length", negated=True),))
             for name in (C.group_col, C.seq_col)
         ),
-        LENGTH_COLUMNS,
+        *LENGTH_COLUMNS,
     )
     provides: ClassVar[Provides] = Provides(
         conditional=(
@@ -145,7 +145,10 @@ class ScaleToBodyLength:
             "derive"
         )
         suffix: Annotated[str, Declared(_SUFFIX_DESCRIPTION)] = "_bl"
-        columns: Annotated[list[str] | None, Declared(_COLUMNS_DESCRIPTION)] = None
+        columns: Annotated[
+            Annotated[list[str], Field(min_length=1)] | None,
+            Declared(_COLUMNS_DESCRIPTION),
+        ] = None
 
         @model_validator(mode="after")
         def _check(self) -> Self:

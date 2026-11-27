@@ -20,16 +20,17 @@ A reference names columns by name (:class:`Column`), by the value of a params
 field (:class:`ParamColumn`), by a template over the params (:class:`Template`),
 or as a family sharing a prefix (:class:`Prefix`). A params field resolves from
 the step's params, which contain the field's default when the step does not set
-it. A requirement is a reference, a group that any one member meets
-(:class:`AnyOf`), the keypoint columns that a ``PoseConfig`` selects
-(:class:`Keypoints`), the columns that ``apply`` derives from other columns
-(:class:`Derived`), the columns that ``apply`` computes from expressions over
-other columns (:class:`Expressions`), or any numeric payload column
-(:class:`Payload`). A global model reads every payload column of its merged
-input, whatever its name. A requirement that ``apply`` reads under some params
-only applies under conditions on them (:class:`When`). An output names its
-columns by reference, or names a family of columns after each payload column of
-its merged input (``Provides.payload_families``).
+it. A :class:`ParamColumn` requirement needs every column its field names. A
+requirement is a reference, a group that any one member meets (:class:`AnyOf`),
+the keypoint columns that a ``PoseConfig`` selects (:class:`Keypoints`), the
+columns that ``apply`` derives from other columns (:class:`Derived`), the columns
+that ``apply`` computes from expressions over other columns
+(:class:`Expressions`), or any numeric payload column (:class:`Payload`). A
+global model reads every payload column of its merged input, whatever its name.
+A requirement that ``apply`` reads under some params only applies under
+conditions on them (:class:`When`). An output names its columns by reference, or
+names a family of columns after each payload column of its merged input
+(``Provides.payload_families``).
 """
 
 from __future__ import annotations
@@ -117,6 +118,13 @@ class ParamColumn:
     item. With a *key*, a list of mappings names the columns that each mapping
     holds under it. An unset field (``None`` or empty) names none, unless
     *fallback* names a column instead.
+
+    As an entry of ``requires``, whether bare or under :class:`When`, it needs
+    every column it names: a list of two columns needs both. Its possible
+    prefixes name columns that a non-empty output may lack, so they are never
+    required. :class:`AnyOf` is the one requirement that any single column
+    meets, and a :class:`ParamColumn` inside it contributes all its names as
+    alternatives.
 
     Attributes:
         field: The params field.
@@ -705,7 +713,9 @@ class NamedColumns:
     """What a reference, or a requirement, names for one step's params.
 
     Attributes:
-        columns: Column names. A requirement is met by any one of them.
+        columns: Column names. A requirement is met by any one of them, so
+            :func:`needs_of` splits a requirement that needs several columns
+            into one :class:`NamedColumns` per column.
         prefixes: Prefixes of column families, met by any column they begin.
         possible_prefixes: Prefixes of column families that a non-empty output
             may lack. A column that one of them begins meets a requirement, as
@@ -1009,6 +1019,29 @@ def _keypoint_needs(requirement: Keypoints, values: ParamValues) -> list[NamedCo
     ]
 
 
+def _each_named(named: NamedColumns) -> list[NamedColumns]:
+    """One requirement per column and per prefix that *named* lists.
+
+    Each keeps the params fields and the unknown flag of *named*. Possible
+    prefixes name columns that a non-empty output may lack, so none becomes a
+    requirement. A reference that names nothing readable stays one unknown
+    requirement.
+    """
+    parts = [
+        *(
+            NamedColumns(columns=(name,), params=named.params, unknown=named.unknown)
+            for name in _dedupe(named.columns)
+        ),
+        *(
+            NamedColumns(prefixes=(prefix,), params=named.params, unknown=named.unknown)
+            for prefix in _dedupe(named.prefixes)
+        ),
+    ]
+    if not parts and named.unknown:
+        return [named]
+    return parts
+
+
 def _holds(condition: ParamIs, values: ParamValues) -> bool | None:
     """Whether *condition* holds under *values*, ``None`` when its field is not there."""
     present, value = _lookup(values, condition.field)
@@ -1031,8 +1064,11 @@ def needs_of(
     A requirement is left out when its params field is unset, as an unset
     ``subgroup_col`` is, or when a condition on it does not hold. A requirement
     is also left out when a derivation listed before it writes a column that
-    meets it. A derivation contributes one requirement per column that it reads
-    from the input, and a keypoint selection one per column that it selects. A
+    meets it, and that check applies to each column on its own. A
+    :class:`ParamColumn` needs every column it names and contributes one
+    requirement per column, as a derivation does for each column that it reads
+    from the input and a keypoint selection for each column that it selects. An
+    :class:`AnyOf` group is one requirement that any of its columns meets. A
     payload requirement resolves to one that any payload column meets.
     """
     found: list[NamedColumns] = []
@@ -1070,6 +1106,8 @@ def needs_of(
             needs = _keypoint_needs(applied, values)
         elif isinstance(applied, Payload):
             needs = [NamedColumns(payload=True)]
+        elif isinstance(applied, ParamColumn):
+            needs = _each_named(resolve_names(applied, values))
         else:
             needs = [_resolved(applied, values)]
         for need in needs:

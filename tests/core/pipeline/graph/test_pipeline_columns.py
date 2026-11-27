@@ -924,6 +924,82 @@ def test_a_kept_column_that_the_feature_input_cannot_provide_is_refused(
 
 
 @pytest.mark.parametrize("feature", AGGREGATES)
+def test_a_subgroup_list_naming_a_column_the_input_lacks_is_refused(
+    feature: str,
+) -> None:
+    """``speed-angvel`` declares ``vx`` and no ``tag``, and a list needs both."""
+    step: dict[str, JsonValue] = {
+        "id": "agg",
+        "type": "feature",
+        "feature": feature,
+        "inputs": [{"step": "speed"}],
+        "params": {
+            "columns": ["speed"],
+            "aggs": ["mean"],
+            "subgroup_col": ["vx", "tag"],
+        },
+    }
+    expected = (
+        "needs 'tag', and its merged input from speed lacks it. "
+        "The tracks input may contain it"
+    )
+
+    assert validation_report({"steps": [_SPEED, step]}).problems == (
+        Problem("agg", "inputs", expected),
+    )
+
+
+@pytest.mark.parametrize(
+    ("feature", "required"),
+    [("temporal-stack", {}), ("arhmm", {}), ("extract-templates", {"n_templates": 3})],
+)
+def test_a_payload_column_list_naming_a_column_the_input_lacks_is_refused(
+    feature: str, required: dict[str, JsonValue]
+) -> None:
+    """``speed-angvel`` declares ``vx`` and no ``nope``, and a list needs both."""
+    step: dict[str, JsonValue] = {
+        "id": "payload",
+        "type": "feature",
+        "feature": feature,
+        "inputs": [{"step": "speed"}],
+        "params": {**required, "columns": ["vx", "nope"]},
+    }
+    expected = (
+        "needs 'nope', and its merged input from speed lacks it. "
+        "The tracks input may contain it"
+    )
+
+    assert validation_report({"steps": [_SPEED, step]}).problems == (
+        Problem("payload", "inputs", expected),
+    )
+
+
+@pytest.mark.parametrize("feature", ["scale-to-cm", "scale-to-bl"])
+def test_a_scaled_column_list_naming_a_column_the_input_lacks_is_refused(
+    feature: str,
+) -> None:
+    """``speed-angvel`` declares ``vx`` and no ``nope``, and a list needs both."""
+    step: dict[str, JsonValue] = {
+        "id": "scale",
+        "type": "feature",
+        "feature": feature,
+        "inputs": [{"step": "speed"}],
+        "params": {
+            "columns": ["vx", "nope"],
+            ("cm_per_pixel" if feature == "scale-to-cm" else "length"): 2.0,
+        },
+    }
+    expected = (
+        "needs 'nope', and its merged input from speed lacks it. "
+        "The tracks input may contain it"
+    )
+
+    assert validation_report({"steps": [_SPEED, step]}).problems == (
+        Problem("scale", "inputs", expected),
+    )
+
+
+@pytest.mark.parametrize("feature", AGGREGATES)
 def test_a_kept_column_is_a_caution_when_the_tracks_are_among_the_inputs(
     feature: str,
 ) -> None:
@@ -957,7 +1033,7 @@ def test_a_kept_column_that_the_feature_input_declares_is_not_refused(
 def test_each_subgroup_column_of_a_list_is_named_in_the_wire(
     declaration: type[FrameAggregate | SequenceAggregate | IndividualAggregate],
 ) -> None:
-    """A list in ``subgroup_col`` names one column per item, as a string names one."""
+    """A list in ``subgroup_col`` needs and provides one column per item."""
     params: dict[str, JsonValue] = {
         "columns": ["speed"],
         "subgroup_col": ["strain", "tag"],
@@ -980,7 +1056,7 @@ def test_each_subgroup_column_of_a_list_is_named_in_the_wire(
         if need.params == ("subgroup_col",)
     ]
 
-    assert [need.columns for need in needs] == [("strain", "tag")]
+    assert [need.columns for need in needs] == [("strain",), ("tag",)]
     assert added.columns == ("strain", "tag")
     assert single_need.columns == ("strain",)
 
