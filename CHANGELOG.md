@@ -10,8 +10,12 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: registered features for recurring definitions
 
-No run id or output moves.
+No other run id or output moves.
 
+- `pair-world` moves to version 0.3 and writes its measurements as float64 where 0.2
+  rounded them to float32, so a `bearing` of straight behind is exactly `-pi`. Its run
+  ids change with the version: the `0.2-` prefix becomes `0.3-` and the hash stays the
+  same, so a run of 0.2 is not reused.
 - `derive-columns` is a new feature that appends columns computed from row arithmetic
   over its input's columns, such as `speed * 30 / 100`. No existing run id changes.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `first_pass`

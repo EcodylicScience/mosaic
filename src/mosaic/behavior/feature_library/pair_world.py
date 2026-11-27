@@ -272,7 +272,7 @@ class PairWorld:
     One row per frame, pair and perspective: perspective 0 measures ``id2``
     from ``id1`` and perspective 1 the reverse, ``id1`` being the focal. A pair
     has rows on each frame where both individuals have one. Pairs are formed
-    within one arena. The columns, float32, lengths in meters and angles in
+    within one arena. The columns, float64, lengths in meters and angles in
     radians:
 
     - ``dist``, ``dist_xy``: the 3D and the horizontal distance to the partner.
@@ -299,7 +299,8 @@ class PairWorld:
 
     category = "per-frame"
     name = _NAME
-    version = "0.2"
+    # 0.3 writes the measurements as float64 where 0.2 rounded them to float32.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -495,12 +496,7 @@ def _pair_rows[T: Hashable](
                 "id1": [focal] * len(frames),
                 "id2": [partner] * len(frames),
                 C.seq_col: meta.get(C.seq_col),
-                **{
-                    name: values.astype(np.float32)
-                    for name, values in _measure(
-                        focal_track, partner_track, closing
-                    ).items()
-                },
+                **_measure(focal_track, partner_track, closing),
                 **({C.group_col: meta[C.group_col]} if C.group_col in meta else {}),
             }
         )

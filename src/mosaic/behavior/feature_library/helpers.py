@@ -786,7 +786,7 @@ def unwrap_diff(theta: np.ndarray, sample_times: np.ndarray) -> np.ndarray:
 
 
 def wrap_angle(x: np.ndarray) -> np.ndarray:
-    """Wrap angles to [-pi, pi]."""
+    """Wrap angles to [-pi, pi)."""
     return (x + np.pi) % (2 * np.pi) - np.pi
 
 

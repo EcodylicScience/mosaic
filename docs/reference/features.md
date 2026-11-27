@@ -553,7 +553,7 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
 
 ### `pair-world`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld` &middot; Track spaces `world_m`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld` &middot; Track spaces `world_m`
 
 Per-frame geometry of every pair of individuals, in the world frame.
 

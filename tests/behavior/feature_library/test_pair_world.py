@@ -242,7 +242,7 @@ def test_a_partner_directly_behind_has_one_bearing(y: float) -> None:
     )
 
     behind = _series(_rows(out, 0, 1), "bearing", range(5))
-    assert behind == [float(np.float32(-PI))] * 5
+    assert behind == [-PI] * 5
     _check(
         _at(out, 0, 1),
         {
@@ -505,12 +505,18 @@ def _provided() -> list[str]:
     return [ref.name for ref in PAIR_WORLD_PROVIDES.adds if isinstance(ref, Column)]
 
 
+@pytest.mark.parametrize("column", MEASURES)
+def test_every_measure_is_float64(column: str) -> None:
+    out = _apply(_chase())
+
+    assert out[column].dtype == np.float64
+
+
 def test_the_output_holds_the_declared_columns_sorted_by_pair_and_frame() -> None:
     out = _apply(_chase())
 
     assert list(out.columns) == [*_provided(), "group", "time"]
     assert _provided() == ["frame", "perspective", "id1", "id2", "sequence", *MEASURES]
-    assert all(out[column].dtype == np.float32 for column in MEASURES)
     assert (out["sequence"] == "s").all() and (out["group"] == "g").all()
     expected = out.sort_values(["id1", "id2", "perspective", "frame"])
     pd.testing.assert_frame_equal(out, expected.reset_index(drop=True))

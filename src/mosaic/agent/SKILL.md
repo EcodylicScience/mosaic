@@ -356,7 +356,7 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `synthetic_3d` converters) is in **meters** in a right-handed world frame with +Z up,
   and `Z` is the body center's height. The media calibration does not apply to it. Run
   `pose-egocentric` (keypoints in each animal's body frame), `pair-world` (distance,
-  bearing and elevation between animals), `keypoint-kinematics` (per-keypoint speeds in
+  bearing and elevation between animals, in float64), `keypoint-kinematics` (per-keypoint speeds in
   m/s) and `pair-posedistance-pca` with `dimensions: 3` on it. A planar feature refuses
   it with `schema_family_mismatch`, as a recipe does when it is planned or, for tracks
   the recipe itself writes, when the step starts. `pair-posedistance-pca` at its default

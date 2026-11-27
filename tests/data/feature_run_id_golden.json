@@ -82,7 +82,7 @@
   "pair-series-correlation/default": "0.1-fe6351d882",
   "pair-wavelet/default": "0.3-be1b51767c",
   "pair-wavelet/params-nfreq": "0.3-19c154574c",
-  "pair-world/params-front-rear": "0.2-a8c43c2a97",
+  "pair-world/params-front-rear": "0.3-a8c43c2a97",
   "pose-egocentric/params-heading": "0.1-87b00b2eed",
   "probability-ensemble/fit": "0.2-a4cfca157f",
   "probability-ensemble/threshold-mapping": "0.2-052429b39c",
