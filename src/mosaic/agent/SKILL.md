@@ -596,8 +596,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   two distinct columns. `delta_response: false` skips the windowed delta, so no `dx` to
   `dspeed` column is written and `time` and the speed column are not read. The window
   then no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
-  `divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `time_shuffle` moves the
-  neighbor's `partner_cols` values with its position.
+  `divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `neighbor_columns` lists
+  numeric columns that each pair row carries for both individuals, `<column>` from the
+  focal's row and `neighbor_<column>` from the neighbor's row in the same frame, float64
+  and NaN where the neighbor has no value. A column whose output name the feature already
+  writes, such as `dist` (`neighbor_dist`), is refused. `time_shuffle` moves the
+  neighbor's `partner_cols` and `neighbor_columns` values with its position.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

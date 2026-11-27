@@ -37,6 +37,9 @@ No run id or output moves.
   vector on it, and a switch that skips the windowed delta. Its run ids stay while they
   are unset, and the step's output is unchanged. A plan's message for a missing delta
   column now says it is written when `delta_response` is set.
+- `neighbor-delta-response` gains `neighbor_columns`, other columns written for the focal
+  as `<column>` and for the neighbor as `neighbor_<column>`. Its run ids stay while the
+  list is empty, and the step's output is unchanged.
 
 ## Unreleased: features that read only results compute in every track space
 

@@ -571,6 +571,146 @@ def test_the_shuffle_leaves_the_focal_response_where_it_is() -> None:
         np.testing.assert_array_equal(shuffled[column], plain[column])
 
 
+def _with_neighbor_values() -> pd.DataFrame:
+    """Two fish with a float column ``h`` and an integer column ``n`` of their own."""
+    df = _two_fish()
+    rng = np.random.default_rng(11)
+    df["h"] = rng.normal(size=len(df)) * 90.0
+    df["n"] = rng.integers(0, 50, size=len(df))
+    return df
+
+
+def test_each_row_of_a_pair_records_the_other_rows_neighbor_columns() -> None:
+    df = _with_neighbor_values()
+
+    out = _respond(df, delta_response=False, neighbor_columns=["h", "n"])
+
+    for focal_id, partner_id in ((0, 1), (1, 0)):
+        focal, partner = _fish(df, focal_id), _fish(df, partner_id)
+        got = _focal_rows(out, focal_id)
+        assert len(got) == len(focal)
+        np.testing.assert_array_equal(got["h"], focal["h"].to_numpy())
+        np.testing.assert_array_equal(got["neighbor_h"], partner["h"].to_numpy())
+        np.testing.assert_array_equal(got["n"], focal["n"].to_numpy(dtype=float))
+        np.testing.assert_array_equal(
+            got["neighbor_n"], partner["n"].to_numpy(dtype=float)
+        )
+        for column in ("h", "n", "neighbor_h", "neighbor_n"):
+            assert got[column].dtype == np.float64
+
+
+def test_neighbor_columns_follow_the_rows_the_windowed_delta_keeps() -> None:
+    df = _with_neighbor_values()
+
+    out = _respond(df, neighbor_columns=["h"])
+
+    focal, partner = _fish(df, 0), _fish(df, 1)
+    got = _focal_rows(out, 0)
+    kept = got["frame"].to_numpy()
+    assert 0 < len(kept) < len(focal)
+    np.testing.assert_array_equal(got["h"], focal["h"].to_numpy()[kept])
+    np.testing.assert_array_equal(got["neighbor_h"], partner["h"].to_numpy()[kept])
+
+
+def test_a_missing_neighbor_value_is_nan_and_keeps_the_row() -> None:
+    df = _with_neighbor_values()
+    df.loc[(df["id"] == 1) & (df["frame"] == 5), "h"] = np.nan
+
+    out = _respond(df, delta_response=False, neighbor_columns=["h"])
+
+    got = _focal_rows(out, 0)
+    expected = _fish(df, 1)["h"].to_numpy()
+    assert np.isnan(expected[5])
+    np.testing.assert_array_equal(got["neighbor_h"], expected)
+    np.testing.assert_array_equal(got["h"], _fish(df, 0)["h"].to_numpy())
+
+
+def test_a_neighbor_without_a_row_in_a_frame_leaves_the_pair_out() -> None:
+    df = _with_neighbor_values()
+    df = df[~((df["id"] == 1) & (df["frame"] == 5))]
+
+    out = _respond(df, delta_response=False, neighbor_columns=["h"])
+
+    got = _focal_rows(out, 0)
+    assert 5 not in got["frame"].tolist()
+    assert not got["neighbor_h"].isna().any()
+
+
+def test_neighbor_columns_add_nothing_while_empty() -> None:
+    df = _with_neighbor_values()
+
+    plain = _respond(df, delta_response=False)
+    empty = _respond(df, delta_response=False, neighbor_columns=[])
+
+    pd.testing.assert_frame_equal(empty, plain)
+    assert "h" not in plain.columns
+
+
+def test_the_shuffle_rolls_the_neighbor_columns_with_the_positions() -> None:
+    """The ``PX`` column is the position ``X``, so the rolled ``PX`` is the rolled position."""
+    n_frames = 200
+    frames = np.arange(n_frames, dtype=float)
+    df = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "frame": np.arange(n_frames),
+                    "time": frames / 10.0,
+                    "id": fid,
+                    "group": "g",
+                    "sequence": "s",
+                    "X": frames * 3.0 + 5.0 * fid + np.sin(frames / 7.0).round() * fid,
+                    "Y": 2.0 * fid + np.cos(frames / 5.0).round() * fid,
+                    "vx": 1.0,
+                    "vy": 0.0,
+                }
+            )
+            for fid in (0, 1)
+        ],
+        ignore_index=True,
+    )
+    df["PX"] = df["X"]
+    params = {
+        "delta_response": False,
+        "reference_cols": ["vx", "vy"],
+        "neighbor_columns": ["PX"],
+    }
+
+    plain = _focal_rows(_respond(df, **params), 0)
+    shuffled = _focal_rows(
+        _respond(df, **params, time_shuffle=True, shuffle_min_shift=20), 0
+    )
+
+    focal = _fish(df, 0)
+    # The reference is (1, 0), so neighbor_x is the partner's X less the focal's, and
+    # every value is a whole number, so the sums are exact.
+    for out in (plain, shuffled):
+        np.testing.assert_array_equal(out["PX"], focal["PX"].to_numpy())
+        np.testing.assert_array_equal(
+            out["neighbor_PX"], focal["X"].to_numpy() + out["neighbor_x"].to_numpy()
+        )
+    assert not np.array_equal(plain["neighbor_PX"], shuffled["neighbor_PX"])
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"neighbor_columns": ["label"]}, id="neighbor_columns"),
+        pytest.param({"partner_cols": ["label", "vy"]}, id="partner_cols"),
+        pytest.param({"response_cols": ["ax", "label"]}, id="response_cols"),
+        pytest.param({"reference_cols": ["label", "vy"]}, id="reference_cols"),
+    ],
+)
+def test_a_column_that_is_not_numeric_is_refused_by_name(
+    params: dict[str, object],
+) -> None:
+    df = _two_fish()
+    df["label"] = "a"
+
+    with pytest.raises(ValueError, match=r"neighbor-delta-response.*'label'"):
+        _ = _respond(df, delta_response=False, **params)
+
+
 # --- the parameters -----------------------------------------------------------------
 
 
@@ -620,6 +760,61 @@ def test_the_default_delta_options_are_accepted_without_the_windowed_delta() -> 
     assert not feature.params.delta_response
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "frame",
+        "time",
+        "group",
+        "sequence",
+        "id1",
+        "id2",
+        "perspective",
+        "x",
+        "y",
+        "dist",
+        "rank",
+        "focal",
+        "neighbor_x",
+        "dx",
+        "dspeed",
+        "response_par",
+        "partner_norm",
+        "Focal_fish",
+    ],
+)
+def test_a_neighbor_column_that_collides_with_an_output_is_refused(name: str) -> None:
+    with pytest.raises(ValidationError, match="already writes"):
+        _ = NeighborDeltaResponse(params={"neighbor_columns": [name]})
+
+
+@pytest.mark.parametrize("names", [["h", "neighbor_h"], ["neighbor_h", "h"]])
+def test_two_neighbor_columns_that_write_one_name_are_refused(
+    names: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="already writes"):
+        _ = NeighborDeltaResponse(params={"neighbor_columns": names})
+
+
+def test_a_neighbor_column_named_like_the_flag_column_is_refused() -> None:
+    with pytest.raises(ValidationError, match="already writes"):
+        _ = NeighborDeltaResponse(
+            params={"focal_col": "flag", "neighbor_columns": ["flag"]}
+        )
+
+
+def test_a_neighbor_column_listed_twice_is_refused() -> None:
+    with pytest.raises(ValidationError, match="twice"):
+        _ = NeighborDeltaResponse(params={"neighbor_columns": ["h", "h"]})
+
+
+def test_neighbor_columns_that_do_not_collide_are_accepted() -> None:
+    feature = NeighborDeltaResponse(
+        params={"neighbor_columns": ["heading_deg", "X", "neighbor"]}
+    )
+    assert feature.params.neighbor_columns == ["heading_deg", "X", "neighbor"]
+
+
 def test_the_new_params_leave_the_identity_while_at_their_defaults() -> None:
     base = NeighborDeltaResponse().params.identity_dump()
     at_default = NeighborDeltaResponse(
@@ -630,6 +825,7 @@ def test_the_new_params_leave_the_identity_while_at_their_defaults() -> None:
             "reference_cols": None,
             "response_cols": None,
             "partner_cols": None,
+            "neighbor_columns": [],
         }
     ).params.identity_dump()
 
@@ -641,6 +837,7 @@ def test_the_new_params_leave_the_identity_while_at_their_defaults() -> None:
         "reference_cols",
         "response_cols",
         "partner_cols",
+        "neighbor_columns",
     } & set(base)
 
 
@@ -693,6 +890,16 @@ _BASE_NEEDS = {"frame", "id", "X", "Y"}
             id="partner",
         ),
         pytest.param(
+            {"delta_response": False, "neighbor_columns": ["h", "n"]},
+            _BASE_NEEDS | {"ANGLE", "h", "n"},
+            id="neighbor-columns",
+        ),
+        pytest.param(
+            {"delta_response": False, "neighbor_columns": []},
+            _BASE_NEEDS | {"ANGLE"},
+            id="no-neighbor-columns",
+        ),
+        pytest.param(
             {"speed_col": "v", "delta_response": True},
             _BASE_NEEDS | {"ANGLE", "time", "v", "speed"},
             id="named-speed",
@@ -714,6 +921,17 @@ def test_a_vector_list_needs_every_column_it_names() -> None:
     with pytest.raises(MissingInputColumns, match="lacks 'pvy'"):
         check_input_columns(feature, columns)
     check_input_columns(feature, [*columns, "pvy"])
+
+
+def test_a_neighbor_column_list_needs_every_column_it_names() -> None:
+    feature = NeighborDeltaResponse(
+        params={"delta_response": False, "neighbor_columns": ["h", "n"]}
+    )
+    columns = ["frame", "id", "X", "Y", "ANGLE", "h"]
+
+    with pytest.raises(MissingInputColumns, match="lacks 'n'"):
+        check_input_columns(feature, columns)
+    check_input_columns(feature, [*columns, "n"])
 
 
 def test_the_heading_is_one_requirement_when_two_conditions_name_it() -> None:

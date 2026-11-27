@@ -145,6 +145,14 @@ _PARTNER_COLS_DESCRIPTION = (
     "time_shuffle they move with the neighbor's position."
 )
 
+_NEIGHBOR_COLUMNS_DESCRIPTION = (
+    "Numeric columns written for the focal as <column>, from its own row, and "
+    "for the neighbor as neighbor_<column>, from its row in the same frame. "
+    "Both are float64, and neighbor_<column> is NaN where the neighbor has no "
+    "value. With time_shuffle the neighbor's values move with its position. "
+    "A column whose output name the feature already writes is refused."
+)
+
 _VECTOR_PAIR_FIELDS = ("reference_cols", "response_cols", "partner_cols")
 """The params fields that each name two columns, a vector's components."""
 
@@ -161,6 +169,7 @@ _IDENTITY_OPTIONAL_FIELDS = (
     "y_col",
     "delta_response",
     *_VECTOR_PAIR_FIELDS,
+    "neighbor_columns",
 )
 """The fields that leave a run's identity while they hold their defaults."""
 
@@ -170,6 +179,18 @@ _SPEED_FALLBACK = "speed"
 _DELTA_COLUMNS = ("dx", "dy", "dt", "dangle", "dspeed")
 _RESPONSE_COLUMNS = ("response_par", "response_perp")
 _PARTNER_COLUMNS = ("partner_par", "partner_perp", "partner_norm")
+
+_PAIR_COLUMNS = (
+    "id1",
+    "id2",
+    "perspective",
+    "neighbor_x",
+    "neighbor_y",
+    "neighbor_dist",
+    "neighbor_rank",
+    "neighbor_focal",
+)
+"""The columns of every pair row that the focal and the neighbor define."""
 
 _NAME = "neighbor-delta-response"
 
@@ -192,7 +213,9 @@ class NeighborDeltaResponse:
     the heading, ``response_cols`` projects the focal's own vector on it
     (``response_par``, ``response_perp``), and ``partner_cols`` projects the
     neighbor's vector in the same frame (``partner_par``, ``partner_perp``,
-    ``partner_norm``). ``delta_response=False`` skips the windowed delta, and a
+    ``partner_norm``). ``neighbor_columns`` carries other columns of both rows
+    of a pair, as ``<column>`` and ``neighbor_<column>``.
+    ``delta_response=False`` skips the windowed delta, and a
     focal row then counts where its response and its offsets are finite.
 
     Field documentation is on
@@ -218,6 +241,7 @@ class NeighborDeltaResponse:
         ParamColumn("reference_cols"),
         ParamColumn("response_cols"),
         ParamColumn("partner_cols"),
+        ParamColumn("neighbor_columns"),
         When(Column(C.orientation_col), (ParamIs("reference_cols", negated=True),)),
         When(Column(C.orientation_col), (ParamIs("delta_response"),)),
         When(Column(C.time_col), (ParamIs("delta_response"),)),
@@ -236,6 +260,8 @@ class NeighborDeltaResponse:
             Column("neighbor_y"),
             Column("neighbor_dist"),
             Column("neighbor_rank"),
+            ParamColumn("neighbor_columns"),
+            ParamColumn("neighbor_columns", prefix="neighbor_"),
         ),
         conditional=(
             *(
@@ -276,6 +302,9 @@ class NeighborDeltaResponse:
         partner_cols: Annotated[
             list[str] | None, Declared(_PARTNER_COLS_DESCRIPTION)
         ] = None
+        neighbor_columns: Annotated[
+            list[str], Declared(_NEIGHBOR_COLUMNS_DESCRIPTION)
+        ] = Field(default_factory=list)
         speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "SPEED"
         focal_col: Annotated[str, Declared(_FOCAL_COL_DESCRIPTION)] = "Focal_fish"
         diff_numframes: Annotated[
@@ -318,6 +347,43 @@ class NeighborDeltaResponse:
             return value
 
         @model_validator(mode="after")
+        def _neighbor_columns_are_new_columns(self) -> Self:
+            """Refuse a repeated column, or one writing a name already taken.
+
+            A name is taken by an output the feature writes, or by an earlier
+            column of the list: ``h`` and ``neighbor_h`` both write ``neighbor_h``.
+            """
+            if not has_fields(self, "neighbor_columns"):
+                return self
+            taken = {
+                C.frame_col,
+                C.time_col,
+                C.group_col,
+                C.seq_col,
+                *_PAIR_COLUMNS,
+                *_DELTA_COLUMNS,
+                *_RESPONSE_COLUMNS,
+                *_PARTNER_COLUMNS,
+            }
+            if has_fields(self, "focal_col"):
+                taken.add(self.focal_col)
+            seen: set[str] = set()
+            for name in self.neighbor_columns:
+                if name in seen:
+                    raise ValueError(f"{_NAME}: neighbor_columns lists {name!r} twice.")
+                seen.add(name)
+                written_by = (name, f"neighbor_{name}")
+                for written in written_by:
+                    if written in taken:
+                        raise ValueError(
+                            f"{_NAME}: neighbor_columns lists {name!r}, whose "
+                            f"output column {written!r} the feature already "
+                            "writes."
+                        )
+                taken.update(written_by)
+            return self
+
+        @model_validator(mode="after")
         def _delta_options_need_the_delta(self) -> Self:
             """Refuse a changed delta option while ``delta_response`` is False."""
             if not has_fields(self, "delta_response", *_DELTA_OPTION_FIELDS):
@@ -344,7 +410,9 @@ class NeighborDeltaResponse:
             dumped = super().identity_dump()
             fields = type(self).model_fields
             for name in _IDENTITY_OPTIONAL_FIELDS:
-                if getattr(self, name) == fields[name].default:
+                if getattr(self, name) == fields[name].get_default(
+                    call_default_factory=True
+                ):
                     del dumped[name]
             return dumped
 
@@ -378,6 +446,7 @@ class NeighborDeltaResponse:
         required = [C.frame_col, C.id_col, p.x_col, p.y_col]
         for pair in (p.reference_cols, p.response_cols, p.partner_cols):
             required.extend(pair or [])
+        required.extend(p.neighbor_columns)
         if p.delta_response:
             required.extend([C.time_col, speed_col])
         if p.delta_response or p.reference_cols is None:
@@ -398,7 +467,7 @@ class NeighborDeltaResponse:
         def grid_of(column: str) -> np.ndarray:
             """One column of every individual on the frame grid, NaN where untracked."""
             grid = np.full((n_frames, len(ids)), np.nan)
-            grid[frame_idx, id_idx] = rows[column].to_numpy(dtype=float)
+            grid[frame_idx, id_idx] = _floats(rows, column)
             return grid
 
         grid_x = grid_of(p.x_col)
@@ -408,6 +477,7 @@ class NeighborDeltaResponse:
             if p.partner_cols
             else (None, None)
         )
+        neighbor_grids = {name: grid_of(name) for name in p.neighbor_columns}
         focal_flags = None
         if p.focal_col in rows.columns:
             focal_flags = np.full((n_frames, len(ids)), np.nan, dtype=object)
@@ -416,7 +486,13 @@ class NeighborDeltaResponse:
         if p.time_shuffle:
             shifts = self._shuffle_shifts(rows, len(ids), n_frames)
             for k, shift in enumerate(shifts):
-                for grid in (grid_x, grid_y, partner_x, partner_y):
+                for grid in (
+                    grid_x,
+                    grid_y,
+                    partner_x,
+                    partner_y,
+                    *neighbor_grids.values(),
+                ):
                     if grid is not None:
                         grid[:, k] = np.roll(grid[:, k], shift)
                 if focal_flags is not None:
@@ -441,12 +517,12 @@ class NeighborDeltaResponse:
             window = None
             ok = np.ones(len(g), dtype=bool)
             if p.delta_response:
-                vals = g[delta_cols].to_numpy(dtype=float)
+                vals = np.column_stack([_floats(g, c) for c in delta_cols])
                 lags = np.full(len(g), lag, dtype=np.int64)
                 window, ok = windowed_delta(vals, lags, i_frm, forward=True)
             response = None
             if p.response_cols:
-                response = g[p.response_cols].to_numpy(dtype=float)
+                response = np.column_stack([_floats(g, c) for c in p.response_cols])
                 ok = ok & np.isfinite(response).all(axis=1)
             if not ok.any():
                 continue
@@ -460,8 +536,8 @@ class NeighborDeltaResponse:
             px, py = -uy, ux
 
             # (rows, neighbors) offsets in the focal's frame.
-            wdx = grid_x[at][:, others] - sel[p.x_col].to_numpy(dtype=float)[:, None]
-            wdy = grid_y[at][:, others] - sel[p.y_col].to_numpy(dtype=float)[:, None]
+            wdx = grid_x[at][:, others] - _floats(sel, p.x_col)[:, None]
+            wdy = grid_y[at][:, others] - _floats(sel, p.y_col)[:, None]
             ex = wdx * ux[:, None] + wdy * uy[:, None]
             ey = wdx * px[:, None] + wdy * py[:, None]
             dist = np.hypot(wdx, wdy)
@@ -519,6 +595,9 @@ class NeighborDeltaResponse:
                 out["partner_par"] = par[r_idx, n_idx]
                 out["partner_perp"] = perp[r_idx, n_idx]
                 out["partner_norm"] = np.sqrt(vx2**2 + vy2**2)[r_idx, n_idx]
+            for name, grid in neighbor_grids.items():
+                out[name] = _floats(sel, name)[r_idx]
+                out[f"neighbor_{name}"] = grid[at][:, others][r_idx, n_idx]
             if focal_flags is not None:
                 out[p.focal_col] = sel[p.focal_col].to_numpy()[r_idx]
                 out["neighbor_focal"] = focal_flags[at][:, others][r_idx, n_idx]
@@ -551,6 +630,20 @@ class NeighborDeltaResponse:
         return rng.integers(min_shift, n_frames - min_shift + 1, size=n_ids)
 
 
+def _floats(rows: pd.DataFrame, column: str) -> np.ndarray:
+    """One column of *rows* as float64, or an error naming the column.
+
+    Raises:
+        ValueError: When the column holds values that are not numbers.
+    """
+    try:
+        return rows[column].to_numpy(dtype=float)
+    except (ValueError, TypeError) as error:
+        raise ValueError(
+            f"{_NAME}: column {column!r} is not numeric: {error}"
+        ) from error
+
+
 def _rows_of(rows: pd.DataFrame, focal_id: object) -> pd.DataFrame:
     """The rows of one individual, in their order."""
     return rows[rows[C.id_col] == focal_id]
@@ -565,10 +658,10 @@ def _unit_vectors(
     A zero or missing vector gives NaN, which leaves the row's neighbors out.
     """
     if reference_cols is None:
-        heading = rows[C.orientation_col].to_numpy(dtype=float)
+        heading = _floats(rows, C.orientation_col)
         return np.cos(heading), np.sin(heading)
-    vx = rows[reference_cols[0]].to_numpy(dtype=float)
-    vy = rows[reference_cols[1]].to_numpy(dtype=float)
+    vx = _floats(rows, reference_cols[0])
+    vy = _floats(rows, reference_cols[1])
     with np.errstate(divide="ignore", invalid="ignore"):
         norm = np.sqrt(vx**2 + vy**2)
         return vx / norm, vy / norm

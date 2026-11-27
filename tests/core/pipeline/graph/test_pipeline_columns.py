@@ -2138,3 +2138,17 @@ def test_neighbor_delta_response_writes_a_vector_projection_only_when_its_list_i
 
     assert not unset.possible & columns
     assert named.guaranteed - unset.guaranteed == columns
+
+
+def test_neighbor_delta_response_writes_each_neighbor_column_for_both_roles() -> None:
+    unset = _neighbor_output()
+    empty = _neighbor_output(neighbor_columns=[])
+    named = _neighbor_output(neighbor_columns=["heading_deg", "speed"])
+
+    assert empty == unset
+    assert named.guaranteed - unset.guaranteed == {
+        "heading_deg",
+        "neighbor_heading_deg",
+        "speed",
+        "neighbor_speed",
+    }

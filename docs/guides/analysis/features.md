@@ -85,7 +85,12 @@ the neighbor has no value, and under `time_shuffle` it moves with the neighbor's
 position. Each list is two distinct columns. `delta_response: false` skips the windowed
 delta: no `dx` to `dspeed` column is written, `time` and the speed column are not read,
 the window no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
-`divide_dangle_by_frames` or `scale_dangle_by_fps` is refused.
+`divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `neighbor_columns` lists
+numeric columns that each pair row carries for both individuals: `<column>` from the
+focal's row and `neighbor_<column>` from the neighbor's row in the same frame, float64
+and NaN where the neighbor has no value. A column whose output name the feature already
+writes, such as `dist` (`neighbor_dist`), is refused. Under `time_shuffle` the
+neighbor's values move with its position, with those of `partner_cols`.
 
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,

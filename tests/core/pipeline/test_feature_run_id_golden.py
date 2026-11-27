@@ -1276,14 +1276,15 @@ def test_unset_subsets_keep_each_aggregate_run_id_and_a_set_mapping_moves_it(
     assert with_subsets({"fast": slow, "slow": fast}) != set_once
 
 
-def test_the_vector_params_of_neighbor_delta_response_move_its_run_id_only_when_set() -> (
+def test_the_new_params_of_neighbor_delta_response_move_its_run_id_only_when_set() -> (
     None
 ):
     """Each new param at its default is the golden run, and each set value is another.
 
     ``reference_cols``, ``response_cols`` and ``partner_cols`` name the same
     columns here, and the three are still three runs, as are two orders of one
-    list.
+    list. An empty ``neighbor_columns`` is the golden run, and a list of them is
+    another.
     """
     if updating_golden():
         pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
@@ -1295,14 +1296,17 @@ def test_the_vector_params_of_neighbor_delta_response_move_its_run_id_only_when_
         return _identifier(replace(case, params=params))
 
     assert _identifier(case) == golden
-    for at_default in (
+    no_columns: list[str] = []
+    at_defaults: tuple[dict[str, object], ...] = (
         {"x_col": "X"},
         {"y_col": "Y"},
         {"delta_response": True},
         {"reference_cols": None},
         {"response_cols": None},
         {"partner_cols": None},
-    ):
+        {"neighbor_columns": no_columns},
+    )
+    for at_default in at_defaults:
         assert with_params(**at_default) == golden, at_default
 
     moved = {
@@ -1313,6 +1317,9 @@ def test_the_vector_params_of_neighbor_delta_response_move_its_run_id_only_when_
         "response_cols": with_params(response_cols=["vx", "vy"]),
         "partner_cols": with_params(partner_cols=["vx", "vy"]),
         "reference_cols reversed": with_params(reference_cols=["vy", "vx"]),
+        "neighbor_columns": with_params(neighbor_columns=["heading_deg"]),
+        "neighbor_columns reversed": with_params(neighbor_columns=["b", "a"]),
+        "neighbor_columns in order": with_params(neighbor_columns=["a", "b"]),
     }
     assert golden not in moved.values()
     assert len(set(moved.values())) == len(moved)
