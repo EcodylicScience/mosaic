@@ -41,9 +41,11 @@ __all__ = [
     "consecutive_runs",
     "events",
     "frame_flags",
+    "gap_lengths",
     "instance_body_lengths",
     "presence",
     "row_flags",
+    "rule_presence",
     "select",
 ]
 
@@ -255,6 +257,31 @@ def _known(body: float | None, criterion: Criterion) -> float:
     return body
 
 
+def rule_presence(
+    table: pd.DataFrame, columns: Sequence[str], mode: Literal["all", "any"]
+) -> npt.NDArray[np.bool_]:
+    """Return whether each row of *table* passes a presence rule over *columns*.
+
+    Each column is read as float64, a missing value as NaN. A row passes when
+    every column (``all``) or at least one column (``any``) is finite.
+
+    Args:
+        table: A table with the columns.
+        columns: The columns the rule reads, at least one.
+        mode: ``all`` or ``any``.
+
+    Returns:
+        A boolean array, one value per row.
+
+    Raises:
+        KeyError: A column is not in *table*.
+    """
+    finite = np.column_stack([np.isfinite(_floats(table, name)) for name in columns])
+    if mode == "all":
+        return finite.all(axis=1)
+    return finite.any(axis=1)
+
+
 def presence(table: pd.DataFrame) -> np.ndarray:
     """Return whether each row of *table* is present.
 
@@ -265,7 +292,27 @@ def presence(table: pd.DataFrame) -> np.ndarray:
         A boolean array, one value per row, true where ``X`` and ``Y`` are both
         finite.
     """
-    return np.isfinite(_floats(table, "X")) & np.isfinite(_floats(table, "Y"))
+    return rule_presence(table, ("X", "Y"), "all")
+
+
+def gap_lengths(
+    span_frames: npt.ArrayLike, none_present: npt.ArrayLike
+) -> npt.NDArray[np.int64]:
+    """Return the lengths of the runs of frames where no id is present.
+
+    The runs are those :func:`consecutive_runs` finds over *span_frames* where
+    *none_present* is true. A run at the first or last frame of the span counts
+    as a gap.
+
+    Args:
+        span_frames: The frames of the span, in increasing order.
+        none_present: One flag per frame, true where no id passes the rule.
+
+    Returns:
+        The length of each run, in order, as int64. Empty without a run.
+    """
+    runs = consecutive_runs(span_frames, none_present)
+    return np.array([stop - start for start, stop in runs], dtype=np.int64)
 
 
 def body_length(

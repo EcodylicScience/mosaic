@@ -17,9 +17,11 @@ from mosaic.core.track_quality import (
     consecutive_runs,
     events,
     frame_flags,
+    gap_lengths,
     instance_body_lengths,
     presence,
     row_flags,
+    rule_presence,
     select,
 )
 
@@ -128,6 +130,80 @@ def test_a_row_is_present_when_its_x_and_y_are_finite() -> None:
         }
     )
     assert presence(table).tolist() == [True, False, False]
+
+
+def test_presence_reads_x_and_y_as_an_all_rule() -> None:
+    table = pd.DataFrame(
+        {
+            "frame": [0, 1, 2, 3],
+            "id": [1, 1, 1, 1],
+            "X": [1.0, NAN, 3.0, np.inf],
+            "Y": [1.0, 2.0, NAN, 4.0],
+        }
+    )
+    np.testing.assert_array_equal(
+        presence(table), rule_presence(table, ("X", "Y"), "all")
+    )
+    np.testing.assert_array_equal(
+        presence(table), np.isfinite(table["X"]) & np.isfinite(table["Y"])
+    )
+
+
+def _rule_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "a": [1.0, NAN, NAN, 4.0, np.inf],
+            "b": [1.0, 2.0, NAN, NAN, 5.0],
+            "c": [1.0, 2.0, NAN, 4.0, 5.0],
+        }
+    )
+
+
+def test_an_all_rule_needs_every_column_finite() -> None:
+    table = _rule_table()
+    a = table["a"].to_numpy(dtype=np.float64)
+    b = table["b"].to_numpy(dtype=np.float64)
+    result = rule_presence(table, ["a", "b"], "all")
+    assert result.dtype == np.bool_
+    np.testing.assert_array_equal(result, np.isfinite(a) & np.isfinite(b))
+    np.testing.assert_array_equal(result, [True, False, False, False, False])
+
+
+def test_an_any_rule_needs_one_column_finite() -> None:
+    table = _rule_table()
+    a = table["a"].to_numpy(dtype=np.float64)
+    b = table["b"].to_numpy(dtype=np.float64)
+    result = rule_presence(table, ["a", "b"], "any")
+    assert result.dtype == np.bool_
+    np.testing.assert_array_equal(result, np.isfinite(a) | np.isfinite(b))
+    np.testing.assert_array_equal(result, [True, True, False, True, True])
+
+
+def test_a_rule_over_one_column_is_that_columns_finiteness_in_both_modes() -> None:
+    table = _rule_table()
+    expected = np.isfinite(table["c"].to_numpy())
+    np.testing.assert_array_equal(rule_presence(table, ("c",), "all"), expected)
+    np.testing.assert_array_equal(rule_presence(table, ("c",), "any"), expected)
+
+
+def test_a_rule_reads_a_missing_value_of_a_nullable_column_as_not_finite() -> None:
+    table = pd.DataFrame(
+        {
+            "a": pd.array([1.0, None, 3.0, None], dtype="Float64"),
+            "b": pd.array([1, 2, None, None], dtype="Int64"),
+        }
+    )
+    np.testing.assert_array_equal(
+        rule_presence(table, ("a", "b"), "all"), [True, False, False, False]
+    )
+    np.testing.assert_array_equal(
+        rule_presence(table, ("a", "b"), "any"), [True, True, True, False]
+    )
+
+
+def test_a_rule_names_a_column_the_table_lacks() -> None:
+    with pytest.raises(KeyError):
+        rule_presence(_rule_table(), ("a", "missing"), "all")
 
 
 def test_the_body_length_is_the_median_head_to_tail_length_of_present_rows() -> None:
@@ -653,3 +729,77 @@ def test_no_candidate_selects_nothing() -> None:
     chosen = select(_candidates([]), n_frames=5, min_separation=0, exclude=[], seed=0)
     assert chosen.empty
     assert list(chosen.columns) == list(_candidates([]).columns)
+
+
+def _gap_lengths_reference(none_present: list[bool]) -> list[int]:
+    lengths: list[int] = []
+    run = 0
+    for flag in none_present:
+        if flag:
+            run += 1
+        elif run:
+            lengths.append(run)
+            run = 0
+    if run:
+        lengths.append(run)
+    return lengths
+
+
+@pytest.mark.parametrize(
+    "none_present",
+    [
+        [False, False, False],
+        [True, True, True],
+        [True, False, False, True, True, False, True],
+        [False, True, False, True, True, True, False],
+        [True],
+        [False],
+    ],
+)
+def test_gap_lengths_are_the_runs_where_no_id_is_present(
+    none_present: list[bool],
+) -> None:
+    frames = np.arange(10, 10 + len(none_present))
+    result = gap_lengths(frames, np.array(none_present))
+    assert result.dtype == np.int64
+    np.testing.assert_array_equal(
+        result, np.array(_gap_lengths_reference(none_present), dtype=np.int64)
+    )
+
+
+def test_a_gap_at_either_edge_of_the_span_counts() -> None:
+    frames = np.arange(7)
+    none_present = np.array([True, True, False, True, False, True, True])
+    np.testing.assert_array_equal(
+        gap_lengths(frames, none_present), np.array([2, 1, 2], dtype=np.int64)
+    )
+
+
+def test_a_span_without_a_gap_has_no_lengths() -> None:
+    result = gap_lengths(np.arange(4), np.zeros(4, dtype=bool))
+    assert result.dtype == np.int64
+    assert result.shape == (0,)
+
+
+def test_an_empty_span_has_no_lengths() -> None:
+    result = gap_lengths(np.arange(0), np.zeros(0, dtype=bool))
+    assert result.dtype == np.int64
+    assert result.shape == (0,)
+
+
+def test_frames_without_rows_form_gaps_of_the_span() -> None:
+    table = pd.DataFrame(
+        {
+            "frame": [2, 2, 3, 7, 8],
+            "id": [1, 2, 1, 1, 1],
+            "X": [1.0, 1.0, NAN, 1.0, 1.0],
+            "Y": [1.0, 1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    rows = table["frame"].to_numpy(dtype=np.int64)
+    span = np.arange(int(rows.min()), int(rows.max()) + 1, dtype=np.int64)
+    passes = rule_presence(table, ("X", "Y"), "all")
+    with_a_pass = np.isin(span, rows[passes])
+    np.testing.assert_array_equal(
+        gap_lengths(span, ~with_a_pass), np.array([4], dtype=np.int64)
+    )
