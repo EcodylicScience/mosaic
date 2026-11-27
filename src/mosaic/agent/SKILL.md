@@ -583,6 +583,21 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or subgroup
   column, and an input with one is refused. A filter or `subsets` makes `pairs: auto`
   read every row.
+- `neighbor-delta-response` writes one row per focal, neighbor and frame, with the
+  neighbor's offset in the focal's frame (`neighbor_x` along the heading, `neighbor_y`
+  to its left) and the focal's windowed response (`dx`, `dy`, `dt`, `dangle`,
+  `dspeed`). `x_col` and `y_col` name the position columns. `reference_cols`
+  (`[vx, vy]`) replaces the heading as the frame's direction with a vector per focal row,
+  and a row whose vector is zero or missing is left out. `response_cols` (`[ax, ay]`, the
+  focal's row) writes `response_par` and `response_perp`, the vector along and across
+  that direction, and leaves out a focal row where either is not finite. `partner_cols`
+  (`[vx, vy]`, read from the neighbor's row in the same frame) writes `partner_par`,
+  `partner_perp` and `partner_norm`, NaN where the neighbor has no value. Each list is
+  two distinct columns. `delta_response: false` skips the windowed delta, so no `dx` to
+  `dspeed` column is written and `time` and the speed column are not read. The window
+  then no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
+  `divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `time_shuffle` moves the
+  neighbor's `partner_cols` values with its position.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

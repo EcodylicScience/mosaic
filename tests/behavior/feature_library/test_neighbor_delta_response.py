@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from mosaic.behavior.feature_library.neighbor_delta_response import (
     NeighborDeltaResponse,
@@ -17,6 +18,12 @@ from mosaic.behavior.feature_library.neighbor_delta_response import (
 )
 from mosaic.behavior.feature_library.nn_delta_bins import NearestNeighborDeltaBins
 from mosaic.behavior.feature_library.nn_delta_response import NearestNeighborDelta
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+    needs_of,
+    param_values,
+)
 
 
 def _school(n_frames: int = 30, fps: float = 10.0) -> pd.DataFrame:
@@ -227,3 +234,492 @@ def test_category_split_still_works_on_every_neighbor() -> None:
         _respond(df)
     )
     assert set(out["center_category"].dropna().unique()) == {0, 1}
+
+
+# --- vector projections ---------------------------------------------------------
+
+_DELTA_COLUMNS = ["dx", "dy", "dt", "dangle", "dspeed"]
+_PROJECTION_COLUMNS = ["response_par", "response_perp"]
+_PARTNER_COLUMNS = ["partner_par", "partner_perp", "partner_norm"]
+
+
+def _two_fish(n_frames: int = 12) -> pd.DataFrame:
+    """Two fish on arbitrary positions, headings and vectors.
+
+    ``vx``/``vy`` are a reference vector, ``ax``/``ay`` the focal's response and
+    ``xs``/``ys`` another pair of position columns.
+    """
+    rng = np.random.default_rng(7)
+    frames = np.arange(n_frames)
+    tables: list[pd.DataFrame] = []
+    for fid in (0, 1):
+        tables.append(
+            pd.DataFrame(
+                {
+                    "frame": frames,
+                    "time": frames / 10.0,
+                    "id": fid,
+                    "group": "g",
+                    "sequence": "s",
+                    "X": rng.normal(size=n_frames) * 10.0,
+                    "Y": rng.normal(size=n_frames) * 10.0,
+                    "xs": rng.normal(size=n_frames) * 10.0,
+                    "ys": rng.normal(size=n_frames) * 10.0,
+                    "ANGLE": rng.uniform(-np.pi, np.pi, size=n_frames),
+                    "speed": 1.0,
+                    "vx": rng.normal(size=n_frames),
+                    "vy": rng.normal(size=n_frames),
+                    "ax": rng.normal(size=n_frames),
+                    "ay": rng.normal(size=n_frames),
+                }
+            )
+        )
+    return pd.concat(tables, ignore_index=True)
+
+
+def _fish(df: pd.DataFrame, fid: int) -> pd.DataFrame:
+    return df[df["id"] == fid].reset_index(drop=True)
+
+
+def _focal_rows(out: pd.DataFrame, fid: int) -> pd.DataFrame:
+    return out[out["id1"] == fid].sort_values("frame").reset_index(drop=True)
+
+
+def test_reference_vectors_project_offsets_response_and_partner() -> None:
+    df = _two_fish()
+    out = _respond(
+        df,
+        delta_response=False,
+        x_col="xs",
+        y_col="ys",
+        reference_cols=["vx", "vy"],
+        response_cols=["ax", "ay"],
+        partner_cols=["vx", "vy"],
+    )
+    focal, partner = _fish(df, 0), _fish(df, 1)
+    vx, vy = focal["vx"].to_numpy(), focal["vy"].to_numpy()
+    nrm = np.sqrt(vx**2 + vy**2)
+    ux, uy, px, py = vx / nrm, vy / nrm, -vy / nrm, vx / nrm
+    x = partner["xs"].to_numpy() - focal["xs"].to_numpy()
+    y = partner["ys"].to_numpy() - focal["ys"].to_numpy()
+    ax, ay = focal["ax"].to_numpy(), focal["ay"].to_numpy()
+    vx2, vy2 = partner["vx"].to_numpy(), partner["vy"].to_numpy()
+
+    got = _focal_rows(out, 0)
+
+    assert len(got) == len(focal)
+    np.testing.assert_array_equal(got["neighbor_x"], x * ux + y * uy)
+    np.testing.assert_array_equal(got["neighbor_y"], x * px + y * py)
+    np.testing.assert_array_equal(got["neighbor_dist"], np.hypot(x, y))
+    np.testing.assert_array_equal(got["response_par"], ax * ux + ay * uy)
+    np.testing.assert_array_equal(got["response_perp"], ax * px + ay * py)
+    np.testing.assert_array_equal(got["partner_par"], vx2 * ux + vy2 * uy)
+    np.testing.assert_array_equal(got["partner_perp"], vx2 * px + vy2 * py)
+    np.testing.assert_array_equal(got["partner_norm"], np.sqrt(vx2**2 + vy2**2))
+    assert got["partner_norm"].dtype == np.float64
+
+
+def test_a_response_and_partner_project_on_the_orientation_without_a_reference() -> (
+    None
+):
+    df = _two_fish()
+    out = _respond(
+        df,
+        delta_response=False,
+        response_cols=["ax", "ay"],
+        partner_cols=["vx", "vy"],
+    )
+    focal, partner = _fish(df, 0), _fish(df, 1)
+    angle = focal["ANGLE"].to_numpy()
+    ux, uy = np.cos(angle), np.sin(angle)
+    px, py = -uy, ux
+    x = partner["X"].to_numpy() - focal["X"].to_numpy()
+    y = partner["Y"].to_numpy() - focal["Y"].to_numpy()
+    ax, ay = focal["ax"].to_numpy(), focal["ay"].to_numpy()
+    vx2, vy2 = partner["vx"].to_numpy(), partner["vy"].to_numpy()
+
+    got = _focal_rows(out, 0)
+
+    np.testing.assert_array_equal(
+        got["neighbor_x"], x * np.cos(angle) + y * np.sin(angle)
+    )
+    np.testing.assert_array_equal(
+        got["neighbor_y"], -x * np.sin(angle) + y * np.cos(angle)
+    )
+    np.testing.assert_array_equal(got["response_par"], ax * ux + ay * uy)
+    np.testing.assert_array_equal(got["response_perp"], ax * px + ay * py)
+    np.testing.assert_array_equal(got["partner_par"], vx2 * ux + vy2 * uy)
+    np.testing.assert_array_equal(got["partner_perp"], vx2 * px + vy2 * py)
+    np.testing.assert_array_equal(got["partner_norm"], np.sqrt(vx2**2 + vy2**2))
+
+
+def test_the_partner_is_read_from_its_own_row_for_the_other_perspective() -> None:
+    df = _two_fish()
+    out = _respond(
+        df, delta_response=False, reference_cols=["vx", "vy"], partner_cols=["ax", "ay"]
+    )
+    focal, partner = _fish(df, 1), _fish(df, 0)
+    vx, vy = focal["vx"].to_numpy(), focal["vy"].to_numpy()
+    nrm = np.sqrt(vx**2 + vy**2)
+    ux, uy = vx / nrm, vy / nrm
+    vx2, vy2 = partner["ax"].to_numpy(), partner["ay"].to_numpy()
+
+    got = _focal_rows(out, 1)
+
+    assert (got["perspective"] == 1).all()
+    np.testing.assert_array_equal(got["partner_par"], vx2 * ux + vy2 * uy)
+
+
+def test_a_missing_partner_value_stays_missing_and_keeps_the_row() -> None:
+    df = _two_fish()
+    df.loc[(df["id"] == 1) & (df["frame"] == 4), "vx"] = np.nan
+    out = _respond(
+        df, delta_response=False, reference_cols=["vx", "vy"], partner_cols=["vx", "vy"]
+    )
+
+    got = _focal_rows(out, 0)
+
+    assert len(got) == 12
+    assert got["partner_par"].isna().tolist() == [f == 4 for f in range(12)]
+    assert got["partner_norm"].isna().tolist() == [f == 4 for f in range(12)]
+    assert got["neighbor_x"].notna().all()
+
+
+def test_a_reference_leaves_the_response_of_the_windowed_delta_as_it_is() -> None:
+    df = _two_fish()
+    plain = _respond(df)
+    referenced = _respond(df, reference_cols=["vx", "vy"])
+
+    assert len(plain) == len(referenced) == 8 * 2
+    for column in _DELTA_COLUMNS:
+        np.testing.assert_array_equal(referenced[column], plain[column])
+    assert not np.array_equal(referenced["neighbor_x"], plain["neighbor_x"])
+
+
+def test_other_position_columns_place_the_offsets_and_the_windowed_delta() -> None:
+    df = _two_fish()
+    out = _respond(df, x_col="xs", y_col="ys")
+    focal, partner = _fish(df, 0), _fish(df, 1)
+    angle = focal["ANGLE"].to_numpy()[:8]
+    x = (partner["xs"].to_numpy() - focal["xs"].to_numpy())[:8]
+    y = (partner["ys"].to_numpy() - focal["ys"].to_numpy())[:8]
+
+    got = _focal_rows(out, 0)
+
+    np.testing.assert_array_equal(
+        got["neighbor_x"], x * np.cos(angle) + y * np.sin(angle)
+    )
+    np.testing.assert_array_equal(
+        got["dx"], focal["xs"].to_numpy()[4:] - focal["xs"].to_numpy()[:8]
+    )
+    np.testing.assert_array_equal(
+        got["dy"], focal["ys"].to_numpy()[4:] - focal["ys"].to_numpy()[:8]
+    )
+
+
+def test_without_the_windowed_delta_every_focal_row_counts_and_no_delta_is_written() -> (
+    None
+):
+    df = _two_fish()
+    out = _respond(df, delta_response=False)
+
+    assert len(out) == 12 * 2
+    assert set(out.columns) == {
+        "frame",
+        "time",
+        "group",
+        "sequence",
+        "id1",
+        "id2",
+        "perspective",
+        "neighbor_x",
+        "neighbor_y",
+        "neighbor_dist",
+        "neighbor_rank",
+    }
+
+
+def test_without_the_windowed_delta_the_speed_and_time_columns_are_not_read() -> None:
+    df = _two_fish().drop(columns=["speed", "time"])
+
+    out = NeighborDeltaResponse(params={"delta_response": False}).apply(df)
+
+    assert len(out) == 12 * 2
+    assert "time" not in out.columns
+
+
+def test_without_the_windowed_delta_a_response_column_adds_its_projections() -> None:
+    df = _two_fish()
+    out = _respond(df, delta_response=False, response_cols=["ax", "ay"])
+
+    assert set(out.columns) >= set(_PROJECTION_COLUMNS)
+    assert not set(out.columns) & set(_DELTA_COLUMNS + _PARTNER_COLUMNS)
+
+
+def test_a_focal_row_without_a_finite_response_is_left_out() -> None:
+    df = _two_fish()
+    df.loc[(df["id"] == 0) & (df["frame"] == 5), "ay"] = np.nan
+    df.loc[(df["id"] == 1) & (df["frame"] == 2), "ax"] = np.inf
+
+    without = _respond(df, delta_response=False)
+    with_response = _respond(df, delta_response=False, response_cols=["ax", "ay"])
+
+    assert len(without) == 12 * 2
+    assert _focal_rows(with_response, 0)["frame"].tolist() == [
+        f for f in range(12) if f != 5
+    ]
+    assert _focal_rows(with_response, 1)["frame"].tolist() == [
+        f for f in range(12) if f != 2
+    ]
+
+
+def test_a_response_column_also_filters_rows_under_the_windowed_delta() -> None:
+    df = _two_fish()
+    df.loc[(df["id"] == 0) & (df["frame"] == 5), "ax"] = np.nan
+
+    out = _respond(df, response_cols=["ax", "ay"])
+
+    assert _focal_rows(out, 0)["frame"].tolist() == [0, 1, 2, 3, 4, 6, 7]
+    assert _focal_rows(out, 1)["frame"].tolist() == list(range(8))
+
+
+def test_a_zero_reference_drops_its_rows() -> None:
+    df = _two_fish()
+    zero = (df["id"] == 0) & df["frame"].isin([3, 4])
+    df.loc[zero, ["vx", "vy"]] = 0.0
+
+    out = _respond(df, delta_response=False, reference_cols=["vx", "vy"])
+
+    assert _focal_rows(out, 0)["frame"].tolist() == [
+        f for f in range(12) if f not in (3, 4)
+    ]
+    assert _focal_rows(out, 1)["frame"].tolist() == list(range(12))
+
+
+def test_a_missing_reference_drops_its_rows() -> None:
+    df = _two_fish()
+    df.loc[(df["id"] == 1) & (df["frame"] == 6), "vy"] = np.nan
+
+    out = _respond(df, delta_response=False, reference_cols=["vx", "vy"])
+
+    assert 6 not in _focal_rows(out, 1)["frame"].tolist()
+    assert 6 in _focal_rows(out, 0)["frame"].tolist()
+
+
+def test_the_shuffle_rolls_the_partner_vectors_with_its_positions() -> None:
+    """The partner's ``PX`` is its ``X``, so a rolled ``PX`` is the rolled position."""
+    n_frames = 200
+    frames = np.arange(n_frames, dtype=float)
+    df = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "frame": np.arange(n_frames),
+                    "time": frames / 10.0,
+                    "id": fid,
+                    "group": "g",
+                    "sequence": "s",
+                    "X": frames * 3.0 + 5.0 * fid + np.sin(frames / 7.0).round() * fid,
+                    "Y": 2.0 * fid + np.cos(frames / 5.0).round() * fid,
+                    "vx": 1.0,
+                    "vy": 0.0,
+                }
+            )
+            for fid in (0, 1)
+        ],
+        ignore_index=True,
+    )
+    df["PX"] = df["X"]
+    df["PY"] = df["Y"]
+    params = {
+        "delta_response": False,
+        "reference_cols": ["vx", "vy"],
+        "partner_cols": ["PX", "PY"],
+    }
+
+    plain = _focal_rows(_respond(df, **params), 0)
+    shuffled = _focal_rows(
+        _respond(df, **params, time_shuffle=True, shuffle_min_shift=20), 0
+    )
+
+    focal = _fish(df, 0)
+    # The reference is (1, 0), so a neighbor offset is its world offset and a partner
+    # vector is its own components. Every value is a whole number, so sums are exact.
+    for out in (plain, shuffled):
+        np.testing.assert_array_equal(
+            out["partner_par"], focal["X"].to_numpy() + out["neighbor_x"].to_numpy()
+        )
+        np.testing.assert_array_equal(
+            out["partner_perp"], focal["Y"].to_numpy() + out["neighbor_y"].to_numpy()
+        )
+    assert not np.array_equal(plain["partner_par"], shuffled["partner_par"])
+
+
+def test_the_shuffle_leaves_the_focal_response_where_it_is() -> None:
+    df = _two_fish(n_frames=200)
+    params = {
+        "delta_response": False,
+        "reference_cols": ["vx", "vy"],
+        "response_cols": ["ax", "ay"],
+    }
+    plain = _focal_rows(_respond(df, **params), 0)
+    shuffled = _focal_rows(
+        _respond(df, **params, time_shuffle=True, shuffle_min_shift=20), 0
+    )
+
+    for column in _PROJECTION_COLUMNS:
+        np.testing.assert_array_equal(shuffled[column], plain[column])
+
+
+# --- the parameters -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["reference_cols", "response_cols", "partner_cols"])
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (["vx"], "two columns"),
+        ([], "two columns"),
+        (["vx", "vy", "ax"], "two columns"),
+        (["vx", "vx"], "distinct"),
+    ],
+)
+def test_a_vector_list_is_two_distinct_columns(
+    field: str, value: list[str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _ = NeighborDeltaResponse(params={field: value})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"diff_numframes": 5},
+        {"wrap_angle": False},
+        {"divide_dangle_by_frames": False},
+        {"scale_dangle_by_fps": False},
+    ],
+)
+def test_a_delta_option_is_refused_without_the_windowed_delta(
+    override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="delta_response"):
+        _ = NeighborDeltaResponse(params={"delta_response": False, **override})
+
+
+def test_the_default_delta_options_are_accepted_without_the_windowed_delta() -> None:
+    feature = NeighborDeltaResponse(
+        params={
+            "delta_response": False,
+            "diff_numframes": 4,
+            "wrap_angle": True,
+            "divide_dangle_by_frames": True,
+            "scale_dangle_by_fps": True,
+        }
+    )
+    assert not feature.params.delta_response
+
+
+def test_the_new_params_leave_the_identity_while_at_their_defaults() -> None:
+    base = NeighborDeltaResponse().params.identity_dump()
+    at_default = NeighborDeltaResponse(
+        params={
+            "x_col": "X",
+            "y_col": "Y",
+            "delta_response": True,
+            "reference_cols": None,
+            "response_cols": None,
+            "partner_cols": None,
+        }
+    ).params.identity_dump()
+
+    assert at_default == base
+    assert not {
+        "x_col",
+        "y_col",
+        "delta_response",
+        "reference_cols",
+        "response_cols",
+        "partner_cols",
+    } & set(base)
+
+
+# --- the requirements ---------------------------------------------------------------
+
+
+def _needed(**params: object) -> set[str]:
+    feature = NeighborDeltaResponse(params=params)
+    values = param_values(feature.params, type(feature.params).model_fields)
+    return {
+        column for need in needs_of(feature.requires, values) for column in need.columns
+    }
+
+
+_BASE_NEEDS = {"frame", "id", "X", "Y"}
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        pytest.param(
+            {}, _BASE_NEEDS | {"ANGLE", "time", "SPEED", "speed"}, id="defaults"
+        ),
+        pytest.param(
+            {"delta_response": False}, _BASE_NEEDS | {"ANGLE"}, id="no-delta-no-ref"
+        ),
+        pytest.param(
+            {"delta_response": False, "reference_cols": ["vx", "vy"]},
+            _BASE_NEEDS | {"vx", "vy"},
+            id="no-delta-with-ref",
+        ),
+        pytest.param(
+            {"reference_cols": ["vx", "vy"]},
+            _BASE_NEEDS | {"vx", "vy", "ANGLE", "time", "SPEED", "speed"},
+            id="delta-with-ref",
+        ),
+        pytest.param(
+            {"delta_response": False, "x_col": "xs", "y_col": "ys"},
+            {"frame", "id", "xs", "ys", "ANGLE"},
+            id="own-positions",
+        ),
+        pytest.param(
+            {"delta_response": False, "response_cols": ["ax", "ay"]},
+            _BASE_NEEDS | {"ANGLE", "ax", "ay"},
+            id="response",
+        ),
+        pytest.param(
+            {"delta_response": False, "partner_cols": ["pvx", "pvy"]},
+            _BASE_NEEDS | {"ANGLE", "pvx", "pvy"},
+            id="partner",
+        ),
+        pytest.param(
+            {"speed_col": "v", "delta_response": True},
+            _BASE_NEEDS | {"ANGLE", "time", "v", "speed"},
+            id="named-speed",
+        ),
+    ],
+)
+def test_each_requirement_follows_its_condition(
+    params: dict[str, object], expected: set[str]
+) -> None:
+    assert _needed(**params) == expected
+
+
+def test_a_vector_list_needs_every_column_it_names() -> None:
+    feature = NeighborDeltaResponse(
+        params={"delta_response": False, "partner_cols": ["pvx", "pvy"]}
+    )
+    columns = ["frame", "id", "X", "Y", "ANGLE", "pvx"]
+
+    with pytest.raises(MissingInputColumns, match="lacks 'pvy'"):
+        check_input_columns(feature, columns)
+    check_input_columns(feature, [*columns, "pvy"])
+
+
+def test_the_heading_is_one_requirement_when_two_conditions_name_it() -> None:
+    feature = NeighborDeltaResponse()
+    values = param_values(feature.params, type(feature.params).model_fields)
+
+    named = [need.columns for need in needs_of(feature.requires, values)]
+
+    assert named.count(("ANGLE",)) == 1

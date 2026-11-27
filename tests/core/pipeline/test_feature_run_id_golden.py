@@ -1276,6 +1276,48 @@ def test_unset_subsets_keep_each_aggregate_run_id_and_a_set_mapping_moves_it(
     assert with_subsets({"fast": slow, "slow": fast}) != set_once
 
 
+def test_the_vector_params_of_neighbor_delta_response_move_its_run_id_only_when_set() -> (
+    None
+):
+    """Each new param at its default is the golden run, and each set value is another.
+
+    ``reference_cols``, ``response_cols`` and ``partner_cols`` name the same
+    columns here, and the three are still three runs, as are two orders of one
+    list.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case_id = "neighbor-delta-response/default"
+    case = next(case for case in CASES if case.case_id == case_id)
+    golden = read_string_golden(GOLDEN)[case_id]
+
+    def with_params(**params: object) -> str:
+        return _identifier(replace(case, params=params))
+
+    assert _identifier(case) == golden
+    for at_default in (
+        {"x_col": "X"},
+        {"y_col": "Y"},
+        {"delta_response": True},
+        {"reference_cols": None},
+        {"response_cols": None},
+        {"partner_cols": None},
+    ):
+        assert with_params(**at_default) == golden, at_default
+
+    moved = {
+        "x_col": with_params(x_col="x_s"),
+        "y_col": with_params(y_col="y_s"),
+        "delta_response": with_params(delta_response=False),
+        "reference_cols": with_params(reference_cols=["vx", "vy"]),
+        "response_cols": with_params(response_cols=["vx", "vy"]),
+        "partner_cols": with_params(partner_cols=["vx", "vy"]),
+        "reference_cols reversed": with_params(reference_cols=["vy", "vx"]),
+    }
+    assert golden not in moved.values()
+    assert len(set(moved.values())) == len(moved)
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

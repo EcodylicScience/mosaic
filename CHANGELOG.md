@@ -31,6 +31,12 @@ No run id or output moves.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `subsets`
   option, a mapping of names to filters that adds a `subset` key column after the
   subgroup columns. Their run ids stay while `subsets` is unset.
+- `neighbor-delta-response` gains `x_col`, `y_col`, `delta_response`, `reference_cols`,
+  `response_cols` and `partner_cols`: other position columns, a vector per focal row as
+  the frame of the offsets, projections of the focal's response and the neighbor's
+  vector on it, and a switch that skips the windowed delta. Its run ids stay while they
+  are unset, and the step's output is unchanged. A plan's message for a missing delta
+  column now says it is written when `delta_response` is set.
 
 ## Unreleased: features that read only results compute in every track space
 

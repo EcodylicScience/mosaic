@@ -291,6 +291,12 @@ Change in a focal individual's position, heading and speed, by each neighbor.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `x_col` | `string` | `"X"` |  | The x position of the focal and the neighbor, read for the offsets, the frame grid and the windowed delta. |
+| `y_col` | `string` | `"Y"` |  | The y position of the focal and the neighbor, read for the offsets, the frame grid and the windowed delta. |
+| `delta_response` | `boolean` | `true` |  | Write the focal's windowed delta: dx, dy, dt, dangle and dspeed. When False they are not computed, the window no longer limits the rows, and a non-default diff_numframes, wrap_angle, divide_dangle_by_frames or scale_dangle_by_fps is refused. |
+| `reference_cols` | list of `string` \| `None` | `null` |  | Two columns [vx, vy], a vector per focal row that sets the frame of neighbor_x (along it) and neighbor_y (to its left) in place of the heading. Unset, the frame follows the heading column. A focal row whose vector is zero or missing has no frame, and its rows are left out. |
+| `response_cols` | list of `string` \| `None` | `null` |  | Two columns [ax, ay] of the focal's own row, projected on the frame as response_par and response_perp. A focal row where either is not finite is left out. |
+| `partner_cols` | list of `string` \| `None` | `null` |  | Two columns [vx, vy] of the neighbor's row in the same frame, projected on the focal's frame as partner_par and partner_perp, with their norm as partner_norm. They are NaN where the neighbor has no value. With time_shuffle they move with the neighbor's position. |
 | `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
 | `focal_col` | `string` | `"Focal_fish"` |  | The column flagging a focal individual. Passed through for the focal and looked up for the neighbor as neighbor_focal when present, the category columns nn-delta-bins splits by. |
 | `diff_numframes` | `integer` | `4` | >= `1` | How far ahead the response delta is measured. [frames] |

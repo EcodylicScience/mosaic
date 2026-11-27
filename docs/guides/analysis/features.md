@@ -74,6 +74,19 @@ row per focal and neighbor, and `nn-delta-bins` maps either: where neighbors sit
 (`occupancy`), and how the focal turns and speeds against them, within a
 `start_time`/`end_time` window. Its `time_shuffle` gives the chance-level map.
 
+`neighbor-delta-response` also reads other position columns (`x_col`, `y_col`) and
+takes a vector per focal row as the frame of the offsets in place of the heading:
+`reference_cols` (`[vx, vy]`) sets the direction `neighbor_x` runs along, and a row whose
+vector is zero or missing is left out. `response_cols` (`[ax, ay]`, the focal's own row)
+adds `response_par` and `response_perp`, that vector along and across the direction, and
+leaves out a row where either is not finite. `partner_cols` (`[vx, vy]`, the neighbor's
+row in the same frame) adds `partner_par`, `partner_perp` and `partner_norm`, NaN where
+the neighbor has no value, and under `time_shuffle` it moves with the neighbor's
+position. Each list is two distinct columns. `delta_response: false` skips the windowed
+delta: no `dx` to `dspeed` column is written, `time` and the speed column are not read,
+the window no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
+`divide_dangle_by_frames` or `scale_dangle_by_fps` is refused.
+
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.

@@ -25,6 +25,9 @@ from typer.testing import CliRunner
 from mosaic.behavior.feature_library.derive_columns import DeriveColumns
 from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
 from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
+from mosaic.behavior.feature_library.neighbor_delta_response import (
+    NeighborDeltaResponse,
+)
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
@@ -38,6 +41,7 @@ from mosaic.core.pipeline.column_contract import (
     Payload,
     Prefix,
     Provides,
+    param_values,
 )
 from mosaic.core.pipeline.graph import (
     TRACKS_INPUT,
@@ -183,9 +187,12 @@ def test_a_bins_step_reading_speed_names_every_response_column() -> None:
     for column, problem in zip(
         ("neighbor_x", "neighbor_y", "dangle", "dspeed"), problems, strict=True
     ):
+        # neighbor-delta-response writes the delta columns while delta_response is set.
+        condition = " (when delta_response is set)" if column[0] == "d" else ""
         assert problem.message == (
             f"needs '{column}', and its merged input from speed, focal_tags "
-            "lacks it. neighbor-delta-response; nn-delta-response provide it"
+            f"lacks it. neighbor-delta-response{condition}; nn-delta-response "
+            "provide it"
         )
 
 
@@ -2071,3 +2078,63 @@ def test_a_time_filter_over_the_tracks_is_not_a_problem() -> None:
 
 def test_a_frame_filter_over_an_input_without_time_is_not_a_problem() -> None:
     assert check_recipe(_filtered_aggregate({"filter_start_frame": 3})) == ()
+
+
+# --- neighbor-delta-response -------------------------------------------------------
+
+_BASE_OUTPUT = {
+    "frame",
+    "id1",
+    "id2",
+    "perspective",
+    "neighbor_x",
+    "neighbor_y",
+    "neighbor_dist",
+    "neighbor_rank",
+}
+_DELTA_OUTPUT = {"dx", "dy", "dt", "dangle", "dspeed"}
+_PAIR_INPUT = ColumnSet(
+    guaranteed=frozenset({"frame", "id", "X", "Y", "ANGLE", "time", "speed"}),
+    possible=frozenset({"frame", "id", "X", "Y", "ANGLE", "time", "speed"}),
+)
+
+
+def _neighbor_output(**params: object) -> ColumnSet:
+    feature = NeighborDeltaResponse(params=params)
+    values = param_values(feature.params, type(feature.params).model_fields)
+    return output_columns(NeighborDeltaResponse.provides, _PAIR_INPUT, values)
+
+
+def test_neighbor_delta_response_with_default_params_writes_the_columns_it_always_did() -> (
+    None
+):
+    output = _neighbor_output()
+
+    assert output.guaranteed == _BASE_OUTPUT | _DELTA_OUTPUT | {"time"}
+    assert output.possible == output.guaranteed
+
+
+def test_neighbor_delta_response_without_the_windowed_delta_writes_no_delta_column() -> (
+    None
+):
+    output = _neighbor_output(delta_response=False)
+
+    assert output.guaranteed == _BASE_OUTPUT | {"time"}
+    assert not output.possible & _DELTA_OUTPUT
+
+
+@pytest.mark.parametrize(
+    ("param", "columns"),
+    [
+        ("response_cols", {"response_par", "response_perp"}),
+        ("partner_cols", {"partner_par", "partner_perp", "partner_norm"}),
+    ],
+)
+def test_neighbor_delta_response_writes_a_vector_projection_only_when_its_list_is_set(
+    param: str, columns: set[str]
+) -> None:
+    unset = _neighbor_output()
+    named = _neighbor_output(**{param: ["vx", "vy"]})
+
+    assert not unset.possible & columns
+    assert named.guaranteed - unset.guaranteed == columns

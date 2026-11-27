@@ -1069,7 +1069,9 @@ def needs_of(
     requirement per column, as a derivation does for each column that it reads
     from the input and a keypoint selection for each column that it selects. An
     :class:`AnyOf` group is one requirement that any of its columns meets. A
-    payload requirement resolves to one that any payload column meets.
+    payload requirement resolves to one that any payload column meets. A need
+    that an earlier one repeats exactly, as two conditions naming one column
+    do, is listed once.
     """
     found: list[NamedColumns] = []
     written: set[str] = set()
@@ -1115,7 +1117,9 @@ def needs_of(
                 continue
             if unknown:
                 need = replace(need, unknown=True)
-            if need.columns or need.prefixes or need.unknown or need.payload:
+            if (
+                need.columns or need.prefixes or need.unknown or need.payload
+            ) and need not in found:
                 found.append(need)
     return tuple(found)
 
