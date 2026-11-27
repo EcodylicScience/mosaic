@@ -6,13 +6,14 @@ Reads OUT/results.tsv, which timed.py appends to, and prints each run's wall
 time. It then prints the target figures: the wall of one cached step process
 (``mosaic run --graph-request`` and ``pipeline settle``), the 61-step recipe
 cached in one process, and the parent's cost per entry of the cold speed-angvel
-step in thread and in process mode at WORKERS (default 8). That cost is the
-cold run's wall less the shorter of the cached runs of the same mode, over
-ENTRIES (default 160). It prints the serial cold wall over the thread-mode cold
-wall at WORKERS, and for the cold process-mode run the mean CPU of its WORKERS
-busiest child processes and the CPU seconds of the parent and of those workers,
-from its ``.cpu.txt``, and the build and apply seconds of its entries from its
-``.builds.txt``. Last it prints the bytes per entry that the process-mode run
+step and of the widening recipe's stack step in thread and in process mode at
+WORKERS (default 8). That cost is the cold run's wall less the shorter of the
+cached runs of the same mode, over ENTRIES (default 160). It prints the serial
+cold wall over the thread-mode cold wall at WORKERS, and for each cold
+process-mode run the mean CPU of its WORKERS busiest child processes and the CPU
+seconds of the parent and of those workers, from its ``.cpu.txt``, and for the
+speed-angvel run the build and apply seconds of its entries from its
+``.builds.txt``. Last it prints the bytes per entry that the process-mode runs
 of pipes.py sent to its workers and received from them, and the mean bytes each
 worker was sent at its spawn, from OUT/pipes.tsv. A run that is missing leaves
 its figure out.
@@ -48,21 +49,42 @@ def main() -> None:
     wide = matching("wide cached, one process")
     if wide:
         print(f"61 cached steps in one process: {min(wide):.2f} s")
-    for mode, cached_prefix in (
-        ("thread", "speed-angvel recipe cached, one process"),
-        ("process", "speed-angvel recipe cached, process"),
+    for step, cold_prefix, cached_prefix, cached_suffixes in (
+        (
+            "speed-angvel",
+            "speed-angvel cold, ",
+            "speed-angvel recipe cached, ",
+            {"thread": "one process", "process": "process"},
+        ),
+        (
+            "widening stack",
+            "widening cold, ",
+            "widening cached, ",
+            {"thread": f"thread{workers}", "process": f"process{workers}"},
+        ),
     ):
-        cold = walls.get(f"speed-angvel cold, {mode}{workers}")
-        cached = matching(cached_prefix)
-        if cold is not None and cached:
-            per_entry = (cold - min(cached)) / entries * 1000
-            print(f"parent per-entry cost, cold {mode} {workers}: {per_entry:.1f} ms")
-    serial = walls.get("speed-angvel cold, serial")
-    thread = walls.get(f"speed-angvel cold, thread{workers}")
-    if serial is not None and thread is not None:
-        print(f"cold thread {workers} speed over serial: {serial / thread:.2f}")
-    cpu = out / f"speed-angvel cold, process{workers}.cpu.txt"
-    if cpu.is_file():
+        for mode, cached_suffix in cached_suffixes.items():
+            cold = walls.get(f"{cold_prefix}{mode}{workers}")
+            cached = matching(f"{cached_prefix}{cached_suffix}")
+            if cold is not None and cached:
+                per_entry = (cold - min(cached)) / entries * 1000
+                print(
+                    f"parent per-entry cost, cold {step} {mode} {workers}:"
+                    f" {per_entry:.1f} ms"
+                )
+        serial = walls.get(f"{cold_prefix}serial")
+        thread = walls.get(f"{cold_prefix}thread{workers}")
+        if serial is not None and thread is not None:
+            print(
+                f"cold {step} thread {workers} speed over serial: {serial / thread:.2f}"
+            )
+    for step, cold_prefix in (
+        ("speed-angvel", "speed-angvel cold, "),
+        ("widening stack", "widening cold, "),
+    ):
+        cpu = out / f"{cold_prefix}process{workers}.cpu.txt"
+        if not cpu.is_file():
+            continue
         # The lines rank each process by its summed samples, busiest first.
         processes = [
             (match.group(1), float(match.group(2)), float(match.group(3)))
@@ -73,7 +95,7 @@ def main() -> None:
         parent = [process for process in processes if process[0] == "parent"]
         if children and parent:
             print(
-                f"cold process {workers}: mean CPU of a worker"
+                f"cold {step} process {workers}: mean CPU of a worker"
                 f" {statistics.mean(mean for _, mean, _ in children):.1f}%"
                 f" over {len(children)}, CPU seconds of the parent {parent[0][2]:.1f},"
                 f" of the workers {sum(seconds for _, _, seconds in children):.1f}"
@@ -81,7 +103,7 @@ def main() -> None:
     builds = out / f"speed-angvel cold, process{workers}.builds.txt"
     if builds.is_file():
         for line in builds.read_text().splitlines():
-            print(f"cold process {workers}: {line}")
+            print(f"cold speed-angvel process {workers}: {line}")
     pipes = out / "pipes.tsv"
     if pipes.is_file():
         for line in pipes.read_text().splitlines():

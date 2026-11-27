@@ -1,0 +1,68 @@
+{
+ "schema_version": 1,
+ "name": "step-cost widening",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  },
+  {
+   "id": "speed",
+   "type": "feature",
+   "feature": "speed-angvel",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "heading",
+   "type": "feature",
+   "feature": "heading",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "pairs",
+   "type": "feature",
+   "feature": "pair-position",
+   "inputs": [
+    "tracks",
+    {
+     "step": "heading"
+    }
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "stack",
+   "type": "feature",
+   "feature": "temporal-stack",
+   "inputs": [
+    {
+     "step": "pairs"
+    },
+    {
+     "step": "speed"
+    }
+   ],
+   "params": {
+    "half": 2,
+    "skip": 1,
+    "add_pool": false
+   }
+  }
+ ]
+}

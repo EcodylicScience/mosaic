@@ -17,7 +17,7 @@ at the top of `run.sh`.
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `run.sh`         | builds the dataset and runs each section                                                                                                                                   |
 | `make_raw.py`    | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry                                                                          |
-| `recipes/`       | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60)                                                                           |
+| `recipes/`       | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60); widening (`temporal-stack` over `pair-position` and `speed-angvel`)      |
 | `timed.py`       | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv`                                                                                    |
 | `summary.py`     | prints `results.tsv`, the target figures, the CPU of the process workers, their build and apply seconds, the pipe bytes per entry and the spawn bytes per worker           |
 | `pipes.py`       | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, and the bytes each worker is sent at its spawn, in `OUT/pipes.tsv` |
@@ -386,3 +386,86 @@ before and after. So are the fingerprints of the 21 datasets that
 `--basetemp` (seven cases, each in serial, thread 3 and process 3), run at
 `a323d870` and at the commit that adds this section on a second Linux machine:
 270 lines, every one equal.
+
+### Widening loads in the workers, before and after
+
+A `temporal-stack` step over the pair rows of `pair-position` and the
+individual rows of `speed-angvel` reads each entry's individual rows widened
+onto its pair rows. Its worker now reads, merges and widens the entry's input,
+as it reads any other, where the parent did before. The recipe
+(`recipes/widening.json`) is `convert`, `speed-angvel`, `heading`,
+`pair-position` and `temporal-stack`. The synthetic tracks carry no heading, so
+`pair-position` reads them joined with the output of `heading`. As a feature
+that emits pair rows over two inputs, it loads under the widening flag, so its
+load moves to the workers too. `speed-angvel` and `heading` have one input and
+`convert` is cached, so it is the only one of the four steps that the change
+reaches. The first four steps run once, in thread mode at 8 workers (`widening`
+section of `run.sh`), and each cold run of the stack step starts from a fresh
+copy of that dataset. Measured before (at `d151e29b`) and after (at the commit
+that adds this section), back to back in the containers of the workers-write
+section, over one `WORK` path, 160 entries, 8 workers.
+
+Three of the four first cached thread-8 runs, 9.61 to 10.50 s, are out of line
+with the other five cached thread-8 runs, 8.68 to 8.87 s, and with the eight
+cached process-8 runs, 8.69 to 8.84 s. Each after run followed its before run
+directly, on a host that the bench's own earlier runs had warmed. The serial
+cold walls of the before runs, 130.75 and 131.10 s, are 8 s above those of the
+after runs, 122.71 and 123.37 s, in both pairs, so the thread-8 speed over
+serial falls from 3.82 and 3.63 to 3.57 and 3.56 with the serial wall and not
+the thread-8 wall. The run of the four steps before the stack, which the table
+lists, is 12 to 13 s slower after the change in both pairs.
+
+The host (28 logical CPUs, the containers pinned to the ten of 16 to 25) ran
+523 to 529 processes and was otherwise idle. Its load average was 0.04 at the
+start of the first before run and 3.88 at the start of the first after run, and
+2.43 and 5.67 at the starts of the second pair of the `widening` section, whose
+figures are in brackets. The load averages trail the bench's own runs and show
+no other work.
+
+| Figure                                                | Before                      | After                       |
+| ----------------------------------------------------- | --------------------------- | --------------------------- |
+| the four steps before the stack, thread 8 (s)         | 55.94 (56.30)               | 69.05 (68.41)               |
+| stack step cold, serial (s)                           | 130.75 (131.10)             | 122.71 (123.37)             |
+| stack step cold, thread 8 (s)                         | 34.25 (36.11)               | 34.40 (34.62)               |
+| stack step cold, process 8 (s)                        | 38.09 (41.73)               | 37.40 (39.81)               |
+| stack step cold, process 8, counting its pipes (s)    | 37.35 (37.30)               | 34.82 (34.45)               |
+| the same recipe cached, thread 8, shorter of two (s)  | 8.69 (8.69)                 | 8.81 (8.68)                 |
+| the same recipe cached, process 8, shorter of two (s) | 8.71 (8.70)                 | 8.70 (8.69)                 |
+| parent cost per entry, cold thread 8 (ms)             | 159.8 (171.4)               | 159.9 (162.1)               |
+| parent cost per entry, cold process 8 (ms)            | 183.6 (206.4)               | 179.4 (194.5)               |
+| cold thread 8, speed over serial                      | 3.82 (3.63)                 | 3.57 (3.56)                 |
+| bytes per entry to the workers, process 8             | 18,146,565 (18,146,565)     | 2,429 (2,429)               |
+| bytes per entry from the workers, process 8           | 388 (388)                   | 391 (391)                   |
+| bytes sent to a worker at its spawn, process 8        | 43,097 (43,097)             | 43,097 (43,097)             |
+| process 8, mean CPU of a worker                       | 91.6% (90.5%)               | 102.0% (100.9%)             |
+| process 8, CPU seconds of the parent / the workers    | 31.4 / 206.2 (32.8 / 209.4) | 12.4 / 228.4 (12.5 / 235.2) |
+
+The bytes to the workers fall from the widened table to the load's description:
+18,146,565 bytes per entry before the change and 2,429 after it, over the same
+168 messages of the call queue's feeder thread. The result grows by 3 bytes,
+to 391. The spawn of each worker carries the same 43,097 bytes in both runs.
+
+The parent's cost per entry moves little. The stack step's `apply` takes most
+of each entry's time, so the cold run less the cached run measures the compute
+that the workers share, and it falls only where a mode's wall does: by 4.2 and
+11.9 ms in process mode, and in thread mode by 9.3 ms in the second pair and
+not at all in the first (0.1 ms higher), where the thread-8 wall differs by
+1.49 and 0.15 s. In the process run the parent spends 19 to 20 s less CPU and
+the workers 22 to 26 s more, and a worker's mean CPU rises from 91.6% and 90.5%
+to 102.0% and 100.9%. The wall of the process run under `pipes.py` falls by 2.5
+and 2.9 s, and the wall of the unwrapped process run by 0.7 and 1.9 s. The four
+steps before the stack, of which only `pair-position` moved its load to the
+workers, run 12 to 13 s slower in thread mode, with the parent process using
+106.4 and 112.4 CPU seconds before the change and 135.5 and 126.4 after it. The
+bench records no wall per step, so these figures do not show that
+`pair-position` causes the slowdown.
+
+The `fingerprint-*.txt` files of the six bench datasets that the section leaves
+(the converted base, the dataset of the first four steps, and the four stack
+datasets of serial, thread 8, process 8 and process 8 under `pipes.py`) are
+byte-identical before and after, and the four stack datasets of each run are
+byte-identical to one another. So are the fingerprints of the 24 datasets that
+`tests/core/pipeline/test_output_byte_identity.py` leaves under a fixed
+`--basetemp` (eight cases, each in serial, thread 3 and process 3, the
+`widening` case among them), run at `d151e29b` and at the commit that adds this
+section on a second Linux machine: every line equal.

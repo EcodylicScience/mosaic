@@ -11,6 +11,13 @@
 #                in process mode
 #   pipes        speed-angvel cold in process mode, counting the bytes this
 #                process sends to its workers and receives from them
+#   widening     convert, speed-angvel, heading, pair-position and a
+#                temporal-stack step over the pair and speed rows, whose input
+#                widens each entry's individual rows onto its pair rows: the
+#                steps before the stack once, then the stack step cold in
+#                serial, thread and process mode from fresh copies and cached
+#                in thread and process mode, and the process run again
+#                counting the bytes sent to the workers
 #   request      the six-step recipe cold and cached, one process per step,
 #                and the start-up and import times
 #   settle       one `pipeline settle` process per cached step (after request)
@@ -27,7 +34,7 @@
 set -u
 
 if [ $# -lt 2 ]; then
-    sed -n '2,26p' "$0"
+    sed -n '2,33p' "$0"
     exit 2
 fi
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -41,7 +48,7 @@ ENTRIES="${ENTRIES:-160}"
 WORKERS="${WORKERS:-8}"
 RECIPES="$here/recipes"
 if [ $# -eq 0 ]; then
-    set -- build cold pipes request settle wide micro fingerprint
+    set -- build cold pipes widening request settle wide micro fingerprint
 fi
 
 timed() {
@@ -50,9 +57,13 @@ timed() {
     "$PY" "$here/timed.py" "$OUT" "$label" -- "$@"
 }
 
+fresh_from() {
+    rm -rf "${WORK:?}/$2"
+    cp -R "$WORK/$1" "$WORK/$2"
+}
+
 fresh() {
-    rm -rf "${WORK:?}/$1"
-    cp -R "$WORK/base" "$WORK/$1"
+    fresh_from base "$1"
 }
 
 request_id() {
@@ -103,6 +114,44 @@ section_pipes() {
     fresh "pipes_process$WORKERS"
     "$PY" "$here/pipes.py" "$OUT" "speed-angvel cold, process$WORKERS" -- pipeline run \
         -m "$WORK/pipes_process$WORKERS/dataset.yaml" --recipe "@$RECIPES/speed.json" \
+        --workers "$WORKERS" --parallel-mode process > /dev/null 2>&1
+    status=$?
+    tail -1 "$OUT/pipes.tsv"
+    return "$status"
+}
+
+section_widening() {
+    local name workers mode setting status prefix
+    prefix="$("$PY" -c 'import json, pathlib, sys
+recipe = json.loads(pathlib.Path(sys.argv[1]).read_text())
+recipe["steps"] = recipe["steps"][:4]
+print(json.dumps(recipe))' "$RECIPES/widening.json")"
+    fresh widening_base
+    timed "widening base, steps before stack, thread $WORKERS" "$PY" -m mosaic pipeline run \
+        -m "$WORK/widening_base/dataset.yaml" --recipe "$prefix" \
+        --workers "$WORKERS" --parallel-mode thread
+    fresh_from widening_base widening_serial
+    timed "widening cold, serial" "$PY" -m mosaic pipeline run \
+        -m "$WORK/widening_serial/dataset.yaml" --recipe "@$RECIPES/widening.json" --workers 1
+    for setting in "thread$WORKERS $WORKERS thread" "process$WORKERS $WORKERS process"; do
+        read -r name workers mode <<< "$setting"
+        fresh_from widening_base "widening_$name"
+        timed "widening cold, $name" "$PY" -m mosaic pipeline run \
+            -m "$WORK/widening_$name/dataset.yaml" --recipe "@$RECIPES/widening.json" \
+            --workers "$workers" --parallel-mode "$mode"
+    done
+    for setting in "thread$WORKERS $WORKERS thread" "process$WORKERS $WORKERS process"; do
+        read -r name workers mode <<< "$setting"
+        for attempt in 1 2; do
+            timed "widening cached, $name, $attempt" "$PY" -m mosaic pipeline run \
+                -m "$WORK/widening_$name/dataset.yaml" --recipe "@$RECIPES/widening.json" \
+                --workers "$workers" --parallel-mode "$mode"
+        done
+    done
+    fresh_from widening_base "widening_pipes_process$WORKERS"
+    "$PY" "$here/pipes.py" "$OUT" "widening cold, pipes process$WORKERS" -- pipeline run \
+        -m "$WORK/widening_pipes_process$WORKERS/dataset.yaml" \
+        --recipe "@$RECIPES/widening.json" \
         --workers "$WORKERS" --parallel-mode process > /dev/null 2>&1
     status=$?
     tail -1 "$OUT/pipes.tsv"
