@@ -300,10 +300,7 @@ class KeypointKinematics:
             A run without a heading has the identity it had before the field
             existed.
             """
-            dumped = super().identity_dump()
-            if self.heading is None:
-                del dumped["heading"]
-            return dumped
+            return self.drop_at_default(super().identity_dump(), ("heading",))
 
         def _check_repeats(self, names: list[str] | None) -> None:
             """Refuse a keypoint, or a pair, that is named twice or paired with itself.

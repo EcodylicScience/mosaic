@@ -762,10 +762,7 @@ class SequenceClassifier(FitReporting):
             dumped = drop_unused_cv_settings(
                 super().identity_dump(), self.cv_unit, self.cv_group_by
             )
-            if self.label_smoothing == 0.0:
-                del dumped["label_smoothing"]
-            if self.init_from is None:
-                del dumped["init_from"]
+            dumped = self.drop_at_default(dumped, ("label_smoothing", "init_from"))
             options = self.head_options()
             if options.stages == 1:
                 dumped["head_config"] = options.model_dump(exclude={"stages"})

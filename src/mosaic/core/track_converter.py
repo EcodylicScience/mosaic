@@ -235,11 +235,7 @@ class TimedTrackConvertParams(TrackConvertParams):
     @override
     def identity_dump(self) -> dict[str, object]:
         """The hashed params, with each rate left out while it is unset."""
-        dumped = super().identity_dump()
-        for name in ("fps", "fallback_fps"):
-            if dumped[name] is None:
-                del dumped[name]
-        return dumped
+        return self.drop_at_default(super().identity_dump(), ("fps", "fallback_fps"))
 
 
 P = TypeVar("P", bound=TrackConvertParams, default=TrackConvertParams)

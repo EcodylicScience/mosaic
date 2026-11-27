@@ -284,10 +284,7 @@ class SleapConvertParams(TimedTrackConvertParams):
         under the same identifier would be served from the cache with its old
         row. The rates are left out while unset, as the base does.
         """
-        dumped = super().identity_dump()
-        if self.tracks_named is None:
-            del dumped["tracks_named"]
-        return dumped
+        return self.drop_at_default(super().identity_dump(), ("tracks_named",))
 
 
 def empty_sleap_tracks() -> pd.DataFrame:

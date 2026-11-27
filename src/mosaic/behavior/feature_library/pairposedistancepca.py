@@ -255,12 +255,9 @@ class PairPoseDistancePCA:
             that fits in the plane has the identity it had before either field
             existed, so only the version segment of its run id moves.
             """
-            dumped = super().identity_dump()
-            if self.model is None:
-                del dumped["model"]
-            if self.dimensions == 2:
-                del dumped["dimensions"]
-            return dumped
+            return self.drop_at_default(
+                super().identity_dump(), ("model", "dimensions")
+            )
 
     def __init__(
         self,
