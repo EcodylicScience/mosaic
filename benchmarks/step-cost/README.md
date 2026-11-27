@@ -469,3 +469,34 @@ byte-identical to one another. So are the fingerprints of the 24 datasets that
 `--basetemp` (eight cases, each in serial, thread 3 and process 3, the
 `widening` case among them), run at `d151e29b` and at the commit that adds this
 section on a second Linux machine: every line equal.
+
+### Multi-input loads in pool threads
+
+`pair-position` over `["tracks", {"step": "heading"}]`, computed alone over a
+dataset where `convert` and `heading` are cached, before (`4f99428b`) and after
+(`62d28e80`) widening loads moved into the entry task. kn-bees, image
+`mosaic-agent:gpu-cu130-main-2c40cfa6`, `--cpuset-cpus 16-25`, 160 entries, 8
+workers, three rounds with the run order reversed in the second, on an idle
+host. The fingerprints of all 18 cold datasets are equal.
+
+| Cold wall (s) | Before | After |
+| --- | --- | --- |
+| serial | 44.16, 44.22, 44.05 | 40.80, 41.10, 41.19 |
+| thread 8 | 45.75, 45.62, 45.90 | 57.63, 58.06, 57.54 |
+| process 8 | 18.22, 18.58, 18.32 | 18.83, 18.17, 18.18 |
+
+Thread 8 is 12 s slower after the change, and the run's process uses 103.7
+CPU seconds where it used 84.2. Neither input is pair-level, so the load is a
+plain merge, not a widening join. Before the change the parent merged one entry
+at a time while the pool computed. After it, up to eight pool threads run the
+pandas merge in `_merge_parquet_inputs` at once beside an `apply` that holds
+the GIL. A merge costs the same in a pool thread as in the parent, 71 and 67 ms
+of wall per entry. One lock around the merge returns thread 8 to 43.6 to 46.4 s
+in four runs, against 55.8 to 56.2 s without it. With the ten cores kept busy
+by other work, before and after take the same wall.
+
+This is the cost of loading an entry in its task, and the code takes no lock: a
+lock would also serialize the merges of every multi-input feature that loads in
+its task. Thread mode gives a feature whose `apply` holds the GIL no speed over
+serial before or after the change, and process mode runs it 2.5 times faster
+than either, so run such a feature with `--parallel-mode process`.
