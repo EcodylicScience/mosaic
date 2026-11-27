@@ -46,7 +46,6 @@ import annotated_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
-from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_list, is_object_mapping, is_object_tuple
 from mosaic.core.params import (
@@ -59,10 +58,10 @@ from mosaic.core.params import (
 )
 from mosaic.core.pipeline._utils import canonical_json, identity_ready
 from mosaic.core.pipeline.column_contract import (
-    Provides,
-    Requirement,
     declared_provides,
     declared_requires,
+    provides_json,
+    requirement_json,
 )
 from mosaic.core.pipeline.definitions.sidecar import (
     SIDECAR_FORMAT,
@@ -209,8 +208,6 @@ _REFERENCE_TYPES: Final[tuple[type, ...]] = (Result, LabelsSource)
 """The types of a field that names another run, which a definition cannot hold."""
 
 _JSON_VALUE: Final[TypeAdapter[JsonValue]] = TypeAdapter(JsonValue)
-_REQUIREMENT: Final[TypeAdapter[Requirement]] = TypeAdapter(Requirement)
-_PROVIDES: Final[TypeAdapter[Provides]] = TypeAdapter(Provides)
 
 
 def declare_source(source: bytes, name: str) -> DefinitionSidecar:
@@ -583,8 +580,7 @@ def _attributes(cls: type, findings: _Findings) -> dict[str, object]:
     else:
         if requires is not None:
             attributes["requires"] = tuple(
-                JSON_OBJECT.validate_json(_REQUIREMENT.dump_json(requirement))
-                for requirement in requires
+                requirement_json(requirement) for requirement in requires
             )
     try:
         provides = declared_provides(cls)
@@ -592,9 +588,7 @@ def _attributes(cls: type, findings: _Findings) -> dict[str, object]:
         findings.add("attribute", "provides", str(exc))
     else:
         if provides is not None:
-            attributes["provides"] = JSON_OBJECT.validate_json(
-                _PROVIDES.dump_json(provides)
-            )
+            attributes["provides"] = provides_json(provides)
     return attributes
 
 

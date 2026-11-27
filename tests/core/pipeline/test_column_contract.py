@@ -26,6 +26,7 @@ from mosaic.core.pipeline.column_contract import (
     Column,
     Conditional,
     Derived,
+    Expressions,
     Keypoints,
     MissingInputColumns,
     PAYLOAD_LABEL,
@@ -230,6 +231,174 @@ def test_a_reference_without_families_names_no_possible_prefix() -> None:
     assert named.possible_prefixes == ()
 
 
+_BINS = ParamColumn("bins", key="column")
+"""A field spelled as ``value_bins`` spells its list of mappings."""
+
+
+def test_a_key_names_the_columns_that_each_mapping_holds() -> None:
+    values: dict[str, JsonValue] = {
+        "bins": [
+            {"column": "speed", "edges": [0, 1]},
+            {"column": ["angvel", "accel"], "edges": [2]},
+            {"column": "", "edges": []},
+            {"column": None, "edges": []},
+        ]
+    }
+
+    named = resolve_names(_BINS, values)
+
+    assert named.columns == ("speed", "angvel", "accel")
+    assert named.params == ("bins",)
+    assert not named.unknown
+
+
+@pytest.mark.parametrize("bins", [None, []], ids=["none", "empty"])
+def test_an_unset_keyed_field_names_none_or_its_fallback(bins: JsonValue) -> None:
+    values: dict[str, JsonValue] = {"bins": bins}
+
+    assert resolve_names(_BINS, values) == NamedColumns(params=("bins",))
+    fallback = ParamColumn("bins", key="column", fallback="speed")
+    assert resolve_names(fallback, values).columns == ("speed",)
+
+
+@pytest.mark.parametrize(
+    "bins",
+    [
+        "speed",
+        ["speed"],
+        [{"edges": [0]}],
+        [{"column": 3}],
+        [{"column": ["a", 3]}],
+        [{"column": {"a": 1}}],
+    ],
+    ids=["string", "not-mappings", "key-absent", "number", "mixed-list", "mapping"],
+)
+def test_a_keyed_field_of_another_shape_is_unknown(bins: JsonValue) -> None:
+    assert resolve_names(_BINS, {"bins": bins}).unknown
+
+
+def test_a_missing_keyed_field_is_unknown() -> None:
+    assert resolve_names(_BINS, {}).unknown
+
+
+def test_a_key_is_renamed_then_prefixed_then_suffixed() -> None:
+    ref = ParamColumn(
+        "bins", key="column", prefix="p_", renamed_by="renames", suffix="_bin"
+    )
+    values: dict[str, JsonValue] = {
+        "bins": [{"column": ["a", "b"]}],
+        "renames": {"a": "z"},
+    }
+
+    assert resolve_names(ref, values).columns == ("p_z_bin", "p_b_bin")
+
+
+def test_a_constant_suffix_ends_each_name() -> None:
+    ref = ParamColumn("columns", suffix="_bin")
+
+    named = resolve_names(ref, {"columns": ["speed", "angvel"]})
+
+    assert named.columns == ("speed_bin", "angvel_bin")
+    assert named.possible_prefixes == ()
+
+
+def test_a_constant_suffix_precedes_the_suffixes_field() -> None:
+    ref = ParamColumn("columns", suffix="_bin", suffixes="aggs")
+    values: dict[str, JsonValue] = {"columns": ["a"], "aggs": ["mean", "max"]}
+
+    assert resolve_names(ref, values).columns == ("a_bin_mean", "a_bin_max")
+
+
+def test_a_constant_suffix_does_not_name_an_unset_field() -> None:
+    ref = ParamColumn("columns", suffix="_bin")
+
+    assert resolve_names(ref, {"columns": []}) == NamedColumns(params=("columns",))
+
+
+def test_an_open_family_is_a_possible_prefix_beside_a_closed_one() -> None:
+    ref = ParamColumn("columns", suffixes="aggs", open_families=("q",))
+    values: dict[str, JsonValue] = {"columns": ["a", "b"], "aggs": ["mean", "q", "max"]}
+
+    named = resolve_names(ref, values)
+
+    assert named.columns == ("a_mean", "a_max", "b_mean", "b_max")
+    assert named.possible_prefixes == ("a_q_", "b_q_")
+    assert named.params == ("columns", "aggs")
+    assert not named.unknown
+
+
+def test_an_open_family_does_not_read_its_members() -> None:
+    """The member texts of ``quantile`` are formatted floats, so no list names them."""
+    ref = ParamColumn(
+        "columns",
+        suffixes="aggs",
+        families=("share",),
+        members="categories",
+        open_families=("q",),
+    )
+    values: dict[str, JsonValue] = {"columns": ["a"], "aggs": ["q"]}
+
+    named = resolve_names(ref, values)
+
+    assert named.possible_prefixes == ("a_q_",)
+    assert named.columns == ()
+    assert not named.unknown
+
+
+def test_an_open_family_and_a_member_family_name_their_own_columns() -> None:
+    ref = ParamColumn(
+        "columns",
+        suffixes="aggs",
+        families=("share",),
+        members="categories",
+        open_families=("q",),
+    )
+    values: dict[str, JsonValue] = {
+        "columns": ["a"],
+        "aggs": ["share", "q"],
+        "categories": ["x"],
+    }
+
+    named = resolve_names(ref, values)
+
+    assert named.columns == ("a_share_x",)
+    assert named.possible_prefixes == ("a_q_",)
+
+
+def test_a_family_listed_as_open_ignores_its_closed_declaration() -> None:
+    ref = ParamColumn(
+        "columns",
+        suffixes="aggs",
+        families=("share",),
+        members="categories",
+        open_families=("share",),
+    )
+    values: dict[str, JsonValue] = {"columns": ["a"], "aggs": ["share"]}
+
+    named = resolve_names(ref, values)
+
+    assert named.possible_prefixes == ("a_share_",)
+    assert not named.unknown
+
+
+def test_a_constant_suffix_in_open_families_is_a_possible_prefix_of_each_name() -> None:
+    ref = ParamColumn("columns", suffix="_q", open_families=("_q",))
+
+    named = resolve_names(ref, {"columns": ["a", "b"]})
+
+    assert named.columns == ()
+    assert named.possible_prefixes == ("a_q", "b_q")
+    assert named.met_by({"a_q0.5"})
+    assert not named.met_by({"a"})
+
+
+def test_a_key_with_a_constant_suffix_in_open_families() -> None:
+    ref = ParamColumn("rules", key="columns", suffix="_q", open_families=("_q",))
+    values: dict[str, JsonValue] = {"rules": [{"columns": ["a"]}, {"columns": "b"}]}
+
+    assert resolve_names(ref, values).possible_prefixes == ("a_q", "b_q")
+
+
 def test_possible_prefixes_meet_a_requirement_and_survive_an_any_of_group() -> None:
     assert NamedColumns(possible_prefixes=("a_share_",)).met_by({"a_share_x"})
     assert not NamedColumns(possible_prefixes=("a_share_",)).met_by({"a_mean"})
@@ -350,6 +519,162 @@ def test_a_derivation_that_cannot_be_read_leaves_what_follows_it_unknown(
         NamedColumns(params=("specs",), unknown=True),
         NamedColumns(columns=("fast",), unknown=True),
     )
+
+
+_EXPRESSIONS = Expressions("exprs", name_key="name", expr_key="expr")
+"""A list of expressions spelled as ``derive-columns`` spells its ``columns``."""
+
+
+def test_an_expression_requires_what_it_reads_unless_an_earlier_one_writes_it() -> None:
+    values: dict[str, JsonValue] = {
+        "exprs": [
+            {"name": "fast", "expr": "speed * 2 + offset"},
+            {"name": "faster", "expr": "fast + speed + sqrt(accel)"},
+        ]
+    }
+
+    needs = needs_of((_EXPRESSIONS,), values)
+
+    assert needs == (
+        NamedColumns(columns=("speed",), params=("exprs",)),
+        NamedColumns(columns=("offset",), params=("exprs",)),
+        NamedColumns(columns=("accel",), params=("exprs",)),
+    )
+
+
+def test_an_expression_reading_a_later_column_requires_it() -> None:
+    """``apply`` writes in list order, so a forward reference reads the input."""
+    values: dict[str, JsonValue] = {
+        "exprs": [
+            {"name": "faster", "expr": "fast * 2"},
+            {"name": "fast", "expr": "speed"},
+        ]
+    }
+
+    needs = needs_of((_EXPRESSIONS,), values)
+
+    assert needs == (
+        NamedColumns(columns=("fast",), params=("exprs",)),
+        NamedColumns(columns=("speed",), params=("exprs",)),
+    )
+
+
+def test_an_expression_reading_its_own_name_requires_the_input_column() -> None:
+    values: dict[str, JsonValue] = {"exprs": [{"name": "x", "expr": "x * 2"}]}
+
+    assert needs_of((_EXPRESSIONS,), values) == (
+        NamedColumns(columns=("x",), params=("exprs",)),
+    )
+
+
+def test_an_expression_meets_what_follows_it_and_not_what_precedes_it() -> None:
+    requires: tuple[Requirement, ...] = (Column("fast"), _EXPRESSIONS, Column("slow"))
+    values: dict[str, JsonValue] = {
+        "exprs": [{"name": "slow", "expr": "speed"}, {"name": "fast", "expr": "speed"}]
+    }
+
+    needs = needs_of(requires, values)
+
+    assert needs == (
+        NamedColumns(columns=("fast",)),
+        NamedColumns(columns=("speed",), params=("exprs",)),
+    )
+
+
+def test_a_mapping_without_a_name_or_an_expression_writes_nothing() -> None:
+    requires: tuple[Requirement, ...] = (_EXPRESSIONS, Column("fast"))
+    values: dict[str, JsonValue] = {
+        "exprs": [{"name": "fast", "expr": ""}, {"name": "", "expr": "speed"}]
+    }
+
+    assert needs_of(requires, values) == (NamedColumns(columns=("fast",)),)
+    assert needs_of(requires, {"exprs": None}) == (NamedColumns(columns=("fast",)),)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {},
+        {"exprs": "speed"},
+        {"exprs": ["speed"]},
+        {"exprs": [{"name": 3, "expr": "speed"}]},
+        {"exprs": [{"name": "fast", "expr": 3}]},
+        {"exprs": [{"name": "fast", "expr": "speed +"}]},
+        {"exprs": [{"name": "fast", "expr": "speed.real"}]},
+    ],
+    ids=[
+        "missing",
+        "not-a-list",
+        "not-a-mapping",
+        "name-not-text",
+        "expression-not-text",
+        "does-not-parse",
+        "refused-node",
+    ],
+)
+def test_an_expression_list_that_cannot_be_read_leaves_what_follows_it_unknown(
+    values: dict[str, JsonValue],
+) -> None:
+    requires: tuple[Requirement, ...] = (Column("X"), _EXPRESSIONS, Column("fast"))
+
+    needs = needs_of(requires, values)
+
+    assert needs == (
+        NamedColumns(columns=("X",)),
+        NamedColumns(params=("exprs",), unknown=True),
+        NamedColumns(columns=("fast",), unknown=True),
+    )
+
+
+def test_contract_fields_list_the_field_of_an_expression_list() -> None:
+    assert contract_fields((_EXPRESSIONS,), None) == {"exprs"}
+    assert contract_fields((_BINS,), None) == {"bins"}
+
+
+def test_the_expression_kind_joins_the_requirement_union() -> None:
+    adapter: TypeAdapter[tuple[Requirement, ...]] = TypeAdapter(tuple[Requirement, ...])
+
+    dumped = adapter.dump_python((_EXPRESSIONS,), mode="json")
+
+    assert dumped == [
+        {
+            "field": "exprs",
+            "name_key": "name",
+            "expr_key": "expr",
+            "kind": "expressions",
+        }
+    ]
+    assert adapter.validate_python(dumped) == (_EXPRESSIONS,)
+
+
+def test_a_stored_contract_without_the_new_fields_validates() -> None:
+    """A sidecar written before ``key``, ``suffix`` and ``open_families`` still loads."""
+    adapter: TypeAdapter[tuple[Requirement, ...]] = TypeAdapter(tuple[Requirement, ...])
+    stored: list[JsonValue] = [
+        {
+            "field": "columns",
+            "fallback": "",
+            "prefix": "",
+            "renamed_by": "",
+            "unset": "absent",
+            "suffixes": "aggs",
+            "families": ["share"],
+            "members": "categories",
+            "kind": "param",
+        },
+        {"of": [{"name": "x", "kind": "column"}], "kind": "any_of"},
+    ]
+    provides = TypeAdapter(Provides)
+
+    (requirement, _) = adapter.validate_python(stored)
+    read = provides.validate_python(
+        {"adds": [stored[0]], "conditional": [], "passthrough": False}
+    )
+
+    assert requirement == ParamColumn(
+        "columns", suffixes="aggs", families=("share",), members="categories"
+    )
+    assert read.adds == (requirement,)
 
 
 def test_a_template_names_a_column_from_the_params() -> None:

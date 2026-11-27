@@ -49,16 +49,21 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final, cast
+from functools import reduce
+from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    import numpy as np
     import pandas as pd
     from numpy.typing import NDArray
     from pandas.api.extensions import ExtensionArray
 
-    type ColumnValues = NDArray[Any] | pd.Series[Any] | ExtensionArray
+    type ColumnValues = NDArray[np.generic] | pd.Series[Any] | ExtensionArray
     """What :func:`evaluate` reads a column from: a numpy array, a pandas series
     or a pandas extension array such as ``Int64`` or ``boolean``."""
+
+    type Value = NDArray[np.generic] | np.generic
+    """What an operation of an expression computes: an array, or a numpy scalar."""
 
 __all__ = [
     "ExpressionError",
@@ -307,7 +312,7 @@ def names_read(parsed: ParsedExpression) -> tuple[str, ...]:
 
 def evaluate(
     parsed: ParsedExpression, columns: Mapping[str, ColumnValues], n_rows: int
-) -> NDArray[Any]:
+) -> NDArray[np.generic]:
     """Computes one value per row of *parsed* over *columns*.
 
     Each column the expression reads is converted by its dtype before any
@@ -333,7 +338,7 @@ def evaluate(
     import numpy as np
 
     text = parsed.text
-    read: dict[str, Any] = {}
+    read: dict[str, Value] = {}
     for name in names_read(parsed):
         if name not in columns:
             raise ExpressionError(
@@ -341,47 +346,42 @@ def evaluate(
             )
         read[name] = _read_column(text, name, columns[name], n_rows)
 
-    def compute(node: ast.expr) -> Any:
+    def compute(node: ast.expr) -> Value:
         match node:
             case ast.Constant(value=bool() as flag):
                 return np.bool_(flag)
             case ast.Constant(value=int() | float() as number):
                 return np.float64(number)
             case ast.Name(id=name):
-                return (
-                    np.float64(getattr(np, _CONSTANTS[name]))
-                    if name in _CONSTANTS
-                    else read[name]
-                )
+                if name in _CONSTANTS:
+                    constant: float = getattr(np, _CONSTANTS[name])
+                    return np.float64(constant)
+                return read[name]
             case ast.BinOp(left=left, op=op, right=right):
                 x, y = compute(left), compute(right)
                 if type(op) in _BOOLEAN:
                     _need_boolean(
                         text, "&" if isinstance(op, ast.BitAnd) else "|", x, y
                     )
-                    return getattr(np, _BOOLEAN[type(op)])(x, y)
-                return getattr(np, _ARITHMETIC[type(op)])(x, y)
+                    return _apply(_BOOLEAN[type(op)], x, y)
+                return _apply(_ARITHMETIC[type(op)], x, y)
             case ast.UnaryOp(op=op, operand=operand):
                 x = compute(operand)
                 if isinstance(op, ast.Invert):
                     _need_boolean(text, "~", x)
-                    return np.logical_not(x)
-                return (np.negative if isinstance(op, ast.USub) else np.positive)(x)
+                    return _apply("logical_not", x)
+                return _apply("negative" if isinstance(op, ast.USub) else "positive", x)
             case ast.Compare(left=left, ops=ops, comparators=comparators):
                 operands = [compute(left), *(compute(each) for each in comparators)]
-                result = None
-                for index, op in enumerate(ops):
-                    pair = getattr(np, _COMPARISONS[type(op)])(
-                        operands[index], operands[index + 1]
-                    )
-                    result = pair if result is None else np.logical_and(result, pair)
-                return result
+                pairs = [
+                    _apply(_COMPARISONS[type(op)], operands[index], operands[index + 1])
+                    for index, op in enumerate(ops)
+                ]
+                return reduce(lambda a, b: _apply("logical_and", a, b), pairs)
             case ast.IfExp(test=test, body=body, orelse=orelse):
                 condition = compute(test)
                 _need_boolean(text, "the condition of 'if else'", condition)
-                return cast(
-                    "NDArray[Any]", np.where(condition, compute(body), compute(orelse))
-                )
+                return np.where(condition, compute(body), compute(orelse))
             case ast.Call(func=ast.Name(id=function), args=args):
                 return _call(function, [compute(arg) for arg in args])
             case _:
@@ -397,11 +397,20 @@ def evaluate(
             f"Expression {text!r} could not be evaluated: {error}."
         ) from error
     if np.ndim(result) == 0:
-        return cast("NDArray[Any]", np.full(n_rows, result))
-    return cast("NDArray[Any]", np.asarray(result))
+        return np.full(n_rows, result)
+    return np.asarray(result)
 
 
-def _need_boolean(text: str, where: str, *operands: Any) -> None:
+def _apply(function: str, *operands: Value) -> Value:
+    """The numpy function called *function*, applied to *operands*."""
+    import numpy as np
+
+    operation: np.ufunc = getattr(np, function)
+    result: Value = operation(*operands)
+    return result
+
+
+def _need_boolean(text: str, where: str, *operands: Value) -> None:
     """Refuses an operand that is not boolean for ``&``, ``|``, ``~`` or a condition."""
     import numpy as np
 
@@ -414,49 +423,59 @@ def _need_boolean(text: str, where: str, *operands: Any) -> None:
             )
 
 
-def _call(function: str, values: list[Any]) -> Any:
+def _call(function: str, values: list[Value]) -> Value:
     """Applies the function of an expression to its evaluated arguments."""
     import numpy as np
 
     if function in _UNARY_FUNCTIONS:
-        return getattr(np, _UNARY_FUNCTIONS[function])(*values)
+        return _apply(_UNARY_FUNCTIONS[function], *values)
     if function in _BINARY_FUNCTIONS:
-        return getattr(np, function)(*values)
+        return _apply(function, *values)
     if function == "isnull":
         return _isnull(values[0])
     if function == "notnull":
-        return np.logical_not(_isnull(values[0]))
-    return cast("NDArray[Any]", np.where(_isnull(values[0]), values[1], values[0]))
+        return _apply("logical_not", _isnull(values[0]))
+    return np.where(_isnull(values[0]), values[1], values[0])
 
 
-def _isnull(value: Any) -> Any:
+def _isnull(value: Value) -> Value:
     """``np.isnan`` of a float, and all false on an integer or boolean."""
     import numpy as np
 
     if np.asarray(value).dtype.kind == "f":
-        return np.isnan(value)
-    return np.full(np.shape(value), False)[()]
+        return _apply("isnan", value)
+    scalar: Value = np.full(np.shape(value), False)[()]
+    return scalar
 
 
-def _read_column(text: str, name: str, column: Any, n_rows: int) -> NDArray[Any]:
+def _read_column(
+    text: str, name: str, column: ColumnValues, n_rows: int
+) -> NDArray[np.generic]:
     """Converts a column to the numpy array an operation reads, by its dtype."""
     import numpy as np
 
-    dtype = getattr(column, "dtype", None)
+    dtype: object = getattr(column, "dtype", None)
+    kind: object = getattr(dtype, "kind", None)
     if isinstance(dtype, np.dtype):
         if dtype.kind not in "fiub":
             raise _unreadable(text, name, f"has dtype {dtype}")
-        values = np.asarray(column)
-    elif dtype is not None and getattr(dtype, "kind", None) in ("i", "u", "f"):
-        values = column.to_numpy(dtype="float64", na_value=np.nan)
-    elif dtype is not None and getattr(dtype, "kind", None) == "b":
-        if bool(np.any(column.isna())):
-            raise _unreadable(
-                text,
-                name,
-                "is a boolean column with missing values, which numpy cannot hold",
-            )
-        values = column.to_numpy(dtype=bool)
+        values: NDArray[np.generic] = np.asarray(column)
+    elif kind in ("i", "u", "f", "b"):
+        import pandas as pd
+        from pandas.api.extensions import ExtensionArray
+
+        if not isinstance(column, pd.Series | ExtensionArray):
+            raise _unreadable(text, name, f"has dtype {dtype}")
+        if kind == "b":
+            if bool(np.any(column.isna())):
+                raise _unreadable(
+                    text,
+                    name,
+                    "is a boolean column with missing values, which numpy cannot hold",
+                )
+            values = column.to_numpy(dtype=bool)
+        else:
+            values = column.to_numpy(dtype="float64", na_value=np.nan)
     else:
         raise _unreadable(text, name, f"has dtype {dtype}")
     if values.shape != (n_rows,):
@@ -464,7 +483,7 @@ def _read_column(text: str, name: str, column: Any, n_rows: int) -> NDArray[Any]
             f"Expression {text!r} reads the column {name!r} with shape {values.shape}, "
             f"where the table has {n_rows} rows."
         )
-    return cast("NDArray[Any]", values)
+    return values
 
 
 def _unreadable(text: str, name: str, why: str) -> ExpressionError:

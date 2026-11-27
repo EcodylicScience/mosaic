@@ -11,6 +11,8 @@ from typing import Final
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.json_object import JSON_OBJECT
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.definitions.define import (
     define_feature,
     load_feature_definition,
@@ -73,6 +75,33 @@ REACH_SOURCE: Final = MINIMAL_SOURCE.replace(
     "    consumed_roots = ()\n    temporal_reach = None\n",
     1,
 )
+
+
+CONTRACT_SOURCE: Final = (
+    MINIMAL_SOURCE.replace(
+        "from mosaic.core.params import Params as ParamsBase\n",
+        "from mosaic.core.params import Params as ParamsBase\n"
+        "from mosaic.core.pipeline.column_contract import ParamColumn, Provides\n",
+        1,
+    )
+    .replace(
+        "    consumed_roots = ()\n",
+        "    consumed_roots = ()\n"
+        '    requires = (ParamColumn("source_col"),)\n'
+        '    provides = Provides(adds=(ParamColumn("out_col", prefix="d_"),))\n',
+        1,
+    )
+    .replace(
+        "        scale: float = 1.0\n",
+        "        scale: float = 1.0\n"
+        '        source_col: str = "X"\n'
+        '        out_col: str = "distance"\n',
+        1,
+    )
+)
+"""``MINIMAL_SOURCE`` declaring a ``ParamColumn`` in its ``requires`` and ``provides``."""
+
+NEW_PARAM_COLUMN_KEYS: Final = ("key", "suffix", "open_families")
 
 
 def _digest(source: str) -> str:
@@ -230,6 +259,102 @@ def test_a_sidecar_without_a_defaulted_fact_loads(tmp_path: Path) -> None:
     cls = load_definition(_root(dataset), MINIMAL_NAME, _digest(MINIMAL_SOURCE))
 
     assert getattr(cls, "name") == f"def:{MINIMAL_NAME}"
+
+
+def _object(value: JsonValue) -> dict[str, JsonValue]:
+    assert isinstance(value, dict)
+    return value
+
+
+def _contract_sidecar(dataset: Dataset) -> tuple[Path, dict[str, JsonValue]]:
+    path = _version_file(dataset, MINIMAL_NAME, CONTRACT_SOURCE, "json")
+    return path, JSON_OBJECT.validate_json(path.read_text(encoding="utf-8"))
+
+
+def _contract_references(
+    stored: dict[str, JsonValue],
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    """The stored ``requires`` item and ``provides`` add that the source declares."""
+    attributes = _object(stored["attributes"])
+    requires = attributes["requires"]
+    assert isinstance(requires, list)
+    adds = _object(attributes["provides"])["adds"]
+    assert isinstance(adds, list)
+    return _object(requires[0]), _object(adds[0])
+
+
+def _without_new_keys(stored: dict[str, JsonValue]) -> None:
+    """Rewrite *stored* as a sidecar from before ``ParamColumn`` had its new fields."""
+    for reference in _contract_references(stored):
+        assert set(NEW_PARAM_COLUMN_KEYS) <= reference.keys()
+        for key in NEW_PARAM_COLUMN_KEYS:
+            del reference[key]
+
+
+def _store(path: Path, stored: dict[str, JsonValue]) -> None:
+    _ = path.write_text(json.dumps(stored, sort_keys=True), encoding="utf-8")
+
+
+def test_a_sidecar_without_the_new_param_column_fields_loads(tmp_path: Path) -> None:
+    dataset = defined_dataset(tmp_path, {MINIMAL_NAME: CONTRACT_SOURCE})
+    path, stored = _contract_sidecar(dataset)
+    _without_new_keys(stored)
+    _store(path, stored)
+
+    cls = load_definition(_root(dataset), MINIMAL_NAME, _digest(CONTRACT_SOURCE))
+
+    assert getattr(cls, "name") == f"def:{MINIMAL_NAME}"
+
+
+@pytest.mark.parametrize(
+    ("index", "changed", "differing"),
+    [
+        (0, "field", "attributes.requires"),
+        (1, "prefix", "attributes.provides.adds"),
+    ],
+)
+def test_a_changed_param_column_field_is_still_a_mismatch(
+    tmp_path: Path, index: int, changed: str, differing: str
+) -> None:
+    dataset = defined_dataset(tmp_path, {MINIMAL_NAME: CONTRACT_SOURCE})
+    path, stored = _contract_sidecar(dataset)
+    _without_new_keys(stored)
+    _contract_references(stored)[index][changed] = "other"
+    _store(path, stored)
+
+    with pytest.raises(DefinitionMismatch) as caught:
+        _ = load_definition(_root(dataset), MINIMAL_NAME, _digest(CONTRACT_SOURCE))
+
+    assert caught.value.fields == (differing,)
+
+
+def test_a_stored_requirement_that_does_not_validate_is_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    dataset = defined_dataset(tmp_path, {MINIMAL_NAME: CONTRACT_SOURCE})
+    path, stored = _contract_sidecar(dataset)
+    requires = _object(stored["attributes"])["requires"]
+    assert isinstance(requires, list)
+    requires[0] = {"kind": "bogus"}
+    _store(path, stored)
+
+    with pytest.raises(DefinitionMismatch) as caught:
+        _ = load_definition(_root(dataset), MINIMAL_NAME, _digest(CONTRACT_SOURCE))
+
+    assert caught.value.fields == ("attributes.requires",)
+
+
+def test_a_new_param_column_field_set_on_one_side_is_a_mismatch(tmp_path: Path) -> None:
+    dataset = defined_dataset(tmp_path, {MINIMAL_NAME: CONTRACT_SOURCE})
+    path, stored = _contract_sidecar(dataset)
+    requires, _ = _contract_references(stored)
+    requires["suffix"] = "_bin"
+    _store(path, stored)
+
+    with pytest.raises(DefinitionMismatch) as caught:
+        _ = load_definition(_root(dataset), MINIMAL_NAME, _digest(CONTRACT_SOURCE))
+
+    assert caught.value.fields == ("attributes.requires",)
 
 
 def test_a_reach_declared_none_differs_from_an_undeclared_one(tmp_path: Path) -> None:

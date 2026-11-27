@@ -366,8 +366,12 @@ def _differing_fields(
     from mosaic.core.json_object import JSON_OBJECT
 
     fields: set[str] = set(_COMPARED)
-    loaded_facts = JSON_OBJECT.validate_json(loaded.model_dump_json(include=fields))
-    stored_facts = JSON_OBJECT.validate_json(stored.model_dump_json(include=fields))
+    loaded_facts = _canonical_contract(
+        JSON_OBJECT.validate_json(loaded.model_dump_json(include=fields))
+    )
+    stored_facts = _canonical_contract(
+        JSON_OBJECT.validate_json(stored.model_dump_json(include=fields))
+    )
     differing = [
         difference
         for field in _COMPARED
@@ -388,6 +392,31 @@ def _differing_fields(
             if path not in differing
         )
     return differing
+
+
+def _canonical_contract(facts: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """*facts* with the column contract of its attributes written in current form.
+
+    ``requires`` and ``provides`` are validated and dumped again, so a key that
+    one side lacks and the other holds at its default compares equal. A value that
+    does not validate stays as it is, and keeps its mismatch.
+    """
+    from mosaic.core.pipeline.column_contract import (
+        canonical_provides,
+        canonical_requires,
+    )
+
+    attributes = facts.get("attributes")
+    if not isinstance(attributes, dict):
+        return facts
+    canonical = dict(attributes)
+    requires = canonical.get("requires")
+    if requires is not None:
+        canonical["requires"] = canonical_requires(requires)
+    provides = canonical.get("provides")
+    if provides is not None:
+        canonical["provides"] = canonical_provides(provides)
+    return {**facts, "attributes": canonical}
 
 
 def _declared_none_defaults(record: BaseModel) -> set[str]:

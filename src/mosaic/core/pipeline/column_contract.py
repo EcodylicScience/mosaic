@@ -23,12 +23,13 @@ the step's params, which contain the field's default when the step does not set
 it. A requirement is a reference, a group that any one member meets
 (:class:`AnyOf`), the keypoint columns that a ``PoseConfig`` selects
 (:class:`Keypoints`), the columns that ``apply`` derives from other columns
-(:class:`Derived`), or any numeric payload column (:class:`Payload`). A global
-model reads every payload column of its merged input, whatever its name. A
-requirement that ``apply`` reads under some params only applies under conditions
-on them (:class:`When`). An output names its columns by reference, or names a
-family of columns after each payload column of its merged input
-(``Provides.payload_families``).
+(:class:`Derived`), the columns that ``apply`` computes from expressions over
+other columns (:class:`Expressions`), or any numeric payload column
+(:class:`Payload`). A global model reads every payload column of its merged
+input, whatever its name. A requirement that ``apply`` reads under some params
+only applies under conditions on them (:class:`When`). An output names its
+columns by reference, or names a family of columns after each payload column of
+its merged input (``Provides.payload_families``).
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from mosaic.core.expressions import ExpressionError, names_read, parse_expression
 from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.types.data_config import (
@@ -58,6 +60,7 @@ __all__ = [
     "ColumnRef",
     "Conditional",
     "Derived",
+    "Expressions",
     "Keypoints",
     "META_COLUMNS_KEPT",
     "META_KEPT",
@@ -81,6 +84,8 @@ __all__ = [
     "Requirement",
     "Template",
     "When",
+    "canonical_provides",
+    "canonical_requires",
     "check_input_columns",
     "contract_fields",
     "declared_names",
@@ -90,6 +95,8 @@ __all__ = [
     "kept",
     "needs_of",
     "param_values",
+    "provides_json",
+    "requirement_json",
     "resolve_names",
 ]
 
@@ -107,14 +114,24 @@ class ParamColumn:
     """The column, or columns, that a params field names.
 
     A string value names one column, and a list of strings names one column per
-    item. An unset field (``None`` or empty) names none, unless *fallback* names
-    a column instead.
+    item. With a *key*, a list of mappings names the columns that each mapping
+    holds under it. An unset field (``None`` or empty) names none, unless
+    *fallback* names a column instead.
 
     Attributes:
         field: The params field.
         fallback: What an unset field names: a column name, or a template over
             the step's params such as ``"{column}_{agg}"``.
         prefix: Prepended to every name, as in ``neighbor_<tag>``.
+        key: Reads the field as a list of mappings. Each mapping's *key* value,
+            a string or a list of strings, names columns, and a ``None`` or
+            empty value names none. A field of any other shape, or a mapping
+            without the key, leaves the names unknown.
+        suffix: A constant appended to every name after its *prefix*, as
+            ``_bin`` makes ``<column>_bin``. It comes before the items of
+            *suffixes*. Listed in *open_families*, it makes each name plus the
+            suffix a possible prefix instead of a column, and *suffixes* is
+            then not read.
         renamed_by: A mapping-valued params field that each name is looked up
             in, as ``id-tag-columns`` renames its label fields.
         unset: What a ``None`` field without a fallback means: no column
@@ -132,7 +149,13 @@ class ParamColumn:
             by the prefix ``<name>_<suffix>_`` in
             :attr:`NamedColumns.possible_prefixes`. An absent field, or any
             other value, leaves the names unknown. The field is read only when
-            *suffixes* lists a family suffix.
+            *suffixes* lists a family suffix that *open_families* does not.
+        open_families: The *suffixes* items whose columns the prefix
+            ``<name>_<suffix>_`` names alone, whatever the value of *members*,
+            which such an item does not read. Each is a possible prefix
+            (:attr:`NamedColumns.possible_prefixes`). An item listed here and in
+            *families* is open. A constant *suffix* listed here is a possible
+            prefix of each name (see *suffix*).
     """
 
     field: str
@@ -143,6 +166,9 @@ class ParamColumn:
     suffixes: str = ""
     families: tuple[str, ...] = ()
     members: str = ""
+    key: str = ""
+    suffix: str = ""
+    open_families: tuple[str, ...] = ()
     kind: Literal["param"] = "param"
 
 
@@ -212,6 +238,36 @@ class Derived:
     name_key: str
     source_key: str
     kind: Literal["derived"] = "derived"
+
+
+@dataclass(frozen=True, slots=True)
+class Expressions:
+    """Columns that ``apply`` writes from expressions, one per mapping in a params field.
+
+    The field contains a list of mappings, as ``columns`` of ``derive-columns``
+    does. Each mapping names the column it writes under *name_key* and the
+    expression that computes it under *expr_key*
+    (:func:`~mosaic.core.expressions.parse_expression`). ``apply`` computes the
+    columns in list order and skips a mapping that leaves either unset.
+
+    As an entry of ``requires``, it requires each column that an expression reads
+    (:func:`~mosaic.core.expressions.names_read`), unless an earlier mapping writes
+    it, with the ordering rules of :class:`Derived`. A column that an expression
+    reads and a later mapping writes is read from the input. A mapping that reads
+    its own name reads the input column. A field that cannot be read as such
+    mappings, or an expression that does not parse, leaves the requirements
+    after it unknown.
+
+    Attributes:
+        field: The list-valued params field.
+        name_key: The key under which a mapping names the column it writes.
+        expr_key: The key under which a mapping holds its expression.
+    """
+
+    field: str
+    name_key: str
+    expr_key: str
+    kind: Literal["expressions"] = "expressions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +352,7 @@ type Requirement = Annotated[
     | AnyOf
     | Keypoints
     | Derived
+    | Expressions
     | Payload
     | When,
     Field(discriminator="kind"),
@@ -432,6 +489,43 @@ POSE_Y: Final = Prefix(_POSE_DEFAULTS.y_prefix)
 _REQUIREMENTS: Final[TypeAdapter[tuple[Requirement, ...]]] = TypeAdapter(
     tuple[Requirement, ...]
 )
+_REQUIREMENT: Final[TypeAdapter[Requirement]] = TypeAdapter(Requirement)
+_PROVIDES: Final[TypeAdapter[Provides]] = TypeAdapter(Provides)
+
+
+def requirement_json(requirement: Requirement) -> dict[str, JsonValue]:
+    """The JSON object that a definition's sidecar stores for one requirement."""
+    return JSON_OBJECT.validate_json(_REQUIREMENT.dump_json(requirement))
+
+
+def provides_json(provides: Provides) -> dict[str, JsonValue]:
+    """The JSON object that a definition's sidecar stores for its provides."""
+    return JSON_OBJECT.validate_json(_PROVIDES.dump_json(provides))
+
+
+def canonical_requires(stored: JsonValue) -> JsonValue:
+    """A stored ``requires`` written as :func:`requirement_json` writes it now.
+
+    A requirement stored before a field existed gains the field at its default.
+    A value that is not a tuple of requirements is returned as it is.
+    """
+    try:
+        requires = _REQUIREMENTS.validate_python(stored)
+    except ValidationError:
+        return stored
+    return [requirement_json(requirement) for requirement in requires]
+
+
+def canonical_provides(stored: JsonValue) -> JsonValue:
+    """A stored ``provides`` written as :func:`provides_json` writes it now.
+
+    A value that is not a :class:`Provides` is returned as it is.
+    """
+    try:
+        provides = _PROVIDES.validate_python(stored)
+    except ValidationError:
+        return stored
+    return provides_json(provides)
 
 
 def declared_requires(owner: object) -> tuple[Requirement, ...] | None:
@@ -503,13 +597,14 @@ def _members(requirement: Requirement) -> tuple[ColumnRef, ...]:
 
     A conditional requirement contributes the references of the requirement it
     applies. A derivation and a keypoint selection name their columns in a
-    params value instead of a reference, and a payload requirement names none.
+    params value instead of a reference, an expression list names them in its
+    expressions, and a payload requirement names none.
     """
     if isinstance(requirement, When):
         return _members(requirement.requirement)
     if isinstance(requirement, AnyOf):
         return requirement.of
-    if isinstance(requirement, Derived | Payload | Keypoints):
+    if isinstance(requirement, Derived | Expressions | Payload | Keypoints):
         return ()
     return (requirement,)
 
@@ -521,7 +616,7 @@ def _value_fields(requirement: Requirement) -> list[str]:
             *(_top_field(condition.field) for condition in requirement.conditions),
             *_value_fields(requirement.requirement),
         ]
-    if isinstance(requirement, Derived | Keypoints):
+    if isinstance(requirement, Derived | Expressions | Keypoints):
         return [requirement.field]
     return []
 
@@ -686,6 +781,27 @@ def _listed(value: JsonValue) -> tuple[str, ...] | None:
     return None
 
 
+def _keyed(value: JsonValue, key: str) -> tuple[str, ...] | None:
+    """The column names under *key* in a list of mappings, ``None`` when unreadable.
+
+    A ``None`` value names nothing, as an unset field does. A mapping whose *key*
+    is ``None``, empty or an empty list names nothing.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        return None
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict) or key not in item:
+            return None
+        listed = _listed(item[key])
+        if listed is None:
+            return None
+        names.extend(listed)
+    return tuple(names)
+
+
 def _lookup(values: ParamValues, path: str) -> tuple[bool, JsonValue]:
     """The value at a dotted *path* into *values*, and whether the path is there."""
     first, *rest = path.split(".")
@@ -746,7 +862,7 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     if ref.field not in values:
         return unknown
     value = values[ref.field]
-    listed = _listed(value)
+    listed = _keyed(value, ref.key) if ref.key else _listed(value)
     if listed is None:
         return unknown
     if not listed:
@@ -763,13 +879,22 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     if renames is None:
         return unknown
     names = tuple(f"{ref.prefix}{renames.get(name, name)}" for name in listed)
+    if ref.suffix and ref.suffix in ref.open_families:
+        return NamedColumns(
+            possible_prefixes=tuple(f"{name}{ref.suffix}" for name in names),
+            params=read,
+        )
+    names = tuple(f"{name}{ref.suffix}" for name in names)
     if not ref.suffixes:
         return NamedColumns(columns=names, params=read)
     suffixes = _listed(values.get(ref.suffixes))
     if not suffixes:
         return unknown
     members: tuple[str, ...] | None = ()
-    if any(suffix in ref.families for suffix in suffixes):
+    if any(
+        suffix in ref.families and suffix not in ref.open_families
+        for suffix in suffixes
+    ):
         if ref.members not in values:
             return unknown
         listed_members = values[ref.members]
@@ -785,7 +910,9 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     possible: list[str] = []
     for name in names:
         for suffix in suffixes:
-            if suffix not in ref.families:
+            if suffix in ref.open_families:
+                possible.append(f"{name}_{suffix}_")
+            elif suffix not in ref.families:
                 columns.append(f"{name}_{suffix}")
             elif members is None:
                 possible.append(f"{name}_{suffix}_")
@@ -802,11 +929,13 @@ def _dedupe(items: Iterable[str]) -> tuple[str, ...]:
 
 
 def _derivations(
-    derived: Derived, values: ParamValues
-) -> tuple[tuple[str, str], ...] | None:
-    """The ``(written, read)`` column pairs that *derived* lists, in list order.
+    derived: Derived | Expressions, values: ParamValues
+) -> tuple[tuple[str, tuple[str, ...]], ...] | None:
+    """The ``(written, reads)`` pairs that *derived* lists, in list order.
 
-    ``None`` when its params value cannot be read as mappings of column names.
+    A :class:`Derived` mapping reads one column. An :class:`Expressions` mapping
+    reads the columns that its expression names. ``None`` when its params value
+    cannot be read as mappings of column names, or an expression does not parse.
     """
     if derived.field not in values:
         return None
@@ -815,17 +944,26 @@ def _derivations(
         return ()
     if not isinstance(value, list):
         return None
-    pairs: list[tuple[str, str]] = []
+    source_key = (
+        derived.source_key if isinstance(derived, Derived) else derived.expr_key
+    )
+    pairs: list[tuple[str, tuple[str, ...]]] = []
     for item in value:
         if not isinstance(item, dict):
             return None
         written = item.get(derived.name_key)
-        read = item.get(derived.source_key)
-        if not written or not read:
+        source = item.get(source_key)
+        if not written or not source:
             continue
-        if not isinstance(written, str) or not isinstance(read, str):
+        if not isinstance(written, str) or not isinstance(source, str):
             return None
-        pairs.append((written, read))
+        if isinstance(derived, Derived):
+            pairs.append((written, (source,)))
+            continue
+        try:
+            pairs.append((written, names_read(parse_expression(source))))
+        except ExpressionError:
+            return None
     return tuple(pairs)
 
 
@@ -901,16 +1039,15 @@ def needs_of(
     written: set[str] = set()
     derivation_unknown = False
     for requirement in requires:
-        if isinstance(requirement, Derived):
+        if isinstance(requirement, Derived | Expressions):
             pairs = _derivations(requirement, values)
             if pairs is None:
                 derivation_unknown = True
                 found.append(NamedColumns(params=(requirement.field,), unknown=True))
                 continue
             read: list[str] = []
-            for name, source in pairs:
-                if source not in written:
-                    read.append(source)
+            for name, sources in pairs:
+                read.extend(source for source in sources if source not in written)
                 written.add(name)
             found.extend(
                 NamedColumns(columns=(source,), params=(requirement.field,))
