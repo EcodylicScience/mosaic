@@ -10,7 +10,8 @@ in ``aggs`` for the fraction of an individual's rows that exceed it.
 ``duration`` sums the seconds of the rows, and ``share`` gives the fraction of
 the seconds that a column holds each of its values. Both read the input's
 ``time`` column. An input with an ``arena`` column keys each row by its arena
-too, and ``subgroup_col`` splits an individual's rows by that column's value.
+too, and ``subgroup_col`` splits an individual's rows by that column's value, or
+by each column's when it lists several.
 ``bin_s`` gives one row per individual and time bin of that many seconds,
 anchored at time 0.
 

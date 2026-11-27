@@ -7,8 +7,8 @@ transform, threshold, then a group-by. :func:`reduce_column` holds those steps
 and :class:`AggregateParams` the parameters they read, so the three features
 differ only in the keys they group by and in whether they take a ``pairs``
 rule (:class:`PairAggregateParams`). Each feature also groups by the input's
-``arena`` column when it has one, and by ``subgroup_col`` when it is set
-(:func:`split_keys`).
+``arena`` column when it has one, and by each column of ``subgroup_col`` when it
+is set (:func:`split_keys`).
 
 ``keep_columns`` names columns of the input that the output carries beside the
 reduction keys: a label such as a strain, which every row of a reduced group
@@ -152,10 +152,13 @@ _CATEGORIES_DESCRIPTION = (
 )
 
 _SUBGROUP_COL_DESCRIPTION = (
-    "A column of the input that splits the rows reduced together into "
-    "subgroups, one result row per value, such as a tag column or the event "
-    "of ffgroups. Rows whose value is null belong to no subgroup and are "
-    "dropped. Unset, the rows are not split."
+    "A column of the input, or a list of them, that splits the rows reduced "
+    "together into subgroups, one result row per value, or per combination "
+    "of values for a list, such as a tag column or the event of ffgroups. "
+    "The output carries each column in the order listed, after arena. Rows "
+    "whose value is null in any of them belong to no subgroup and are "
+    "dropped. A list names a column once, and a list of one column is that "
+    "column. Unset, the rows are not split."
 )
 _KEEP_COLUMNS_DESCRIPTION = (
     "Columns of the input to write to the output, after the reduction keys, "
@@ -164,7 +167,7 @@ _KEEP_COLUMNS_DESCRIPTION = (
     "the input must have it. A group whose rows disagree, or an input without "
     "the column, fails the entry. The names the reduction writes itself "
     "(group, sequence, frame, time, id, id1, id2, perspective and arena), a "
-    "name in columns and subgroup_col are refused, and with bin_s set, so "
+    "name in columns and any subgroup_col are refused, and with bin_s set, so "
     "are bin_start and bin_end."
 )
 
@@ -259,11 +262,11 @@ class AggregateParams(Params):
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
     ``threshold`` turns each column into whether it passes the comparison
     ``threshold_op`` against a value, with a null staying null.
-    ``subgroup_col`` splits the rows reduced together, and ``bin_s`` splits
-    them again by time bin. ``keep_columns`` are written to the output beside
-    the keys. ``categories`` fixes the columns that ``share`` writes.
-    ``first_pass`` gives the smallest ``order_col`` value among the rows that
-    pass ``threshold``.
+    ``subgroup_col``, one column or a list of them, splits the rows reduced
+    together, and ``bin_s`` splits them again by time bin. ``keep_columns`` are
+    written to the output beside the keys. ``categories`` fixes the columns
+    that ``share`` writes. ``first_pass`` gives the smallest ``order_col`` value
+    among the rows that pass ``threshold``.
     :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
     whose groups hold both rows of a pair.
     """
@@ -278,7 +281,9 @@ class AggregateParams(Params):
     transform: Annotated[Literal["none", "abs"], Declared(_TRANSFORM_DESCRIPTION)] = (
         "none"
     )
-    subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+    subgroup_col: Annotated[
+        str | list[str] | None, Declared(_SUBGROUP_COL_DESCRIPTION)
+    ] = None
     bin_s: Annotated[
         float | None, Declared(_BIN_S_DESCRIPTION, unit="s"), Field(gt=0)
     ] = None
@@ -301,10 +306,28 @@ class AggregateParams(Params):
         """
         if value is None:
             return value
-        repeated = sorted({item for item in value if value.count(item) > 1})
-        if repeated:
-            raise ValueError(f"lists {', '.join(repeated)} more than once")
-        return value
+        return _refuse_repeats(value)
+
+    @field_validator("subgroup_col", check_fields=False)
+    @classmethod
+    def _one_column_or_a_list_of_distinct_columns(
+        cls, value: str | list[str] | None
+    ) -> str | list[str] | None:
+        """Refuse an empty list or a repeated name, and read one item as a string."""
+        if not isinstance(value, list):
+            return value
+        if not value:
+            raise ValueError("subgroup_col lists no column")
+        value = _refuse_repeats(value)
+        return value[0] if len(value) == 1 else value
+
+    def subgroup_columns(self) -> list[str]:
+        """The subgroup columns in output order: none, one or several."""
+        if not self.subgroup_col:
+            return []
+        if isinstance(self.subgroup_col, str):
+            return [self.subgroup_col]
+        return list(self.subgroup_col)
 
     @field_validator("categories", check_fields=False)
     @classmethod
@@ -378,22 +401,24 @@ class AggregateParams(Params):
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
         With ``bin_s`` set, ``bin_start`` and ``bin_end`` are reduction keys and
-        neither a kept column nor ``subgroup_col`` may take them. A subclass
+        neither a kept column nor a subgroup column may take them. A subclass
         without the four fields leaves the verdict to the full model.
         """
         if not has_fields(self, "keep_columns", "columns", "subgroup_col", "bin_s"):
             return self
         owned = _reduction_columns()
+        subgroups = self.subgroup_columns()
         if self.bin_s is not None:
             owned = owned | {BIN_START, BIN_END}
-            if self.subgroup_col in (BIN_START, BIN_END):
-                raise ValueError(
-                    f"subgroup_col is {self.subgroup_col}, which bin_s writes itself"
-                )
+            for name in subgroups:
+                if name in (BIN_START, BIN_END):
+                    raise ValueError(
+                        f"subgroup_col is {name}, which bin_s writes itself"
+                    )
         for name in self.keep_columns:
             if name in self.columns:
                 raise ValueError(f"keep_columns lists {name}, which is also in columns")
-            if name == self.subgroup_col:
+            if name in subgroups:
                 raise ValueError(f"keep_columns lists {name}, which is subgroup_col")
             if name in owned:
                 raise ValueError(
@@ -453,6 +478,14 @@ class PairAggregateParams(AggregateParams):
         return "once" if self.pairs == "once" else "each_perspective"
 
 
+def _refuse_repeats(value: list[str]) -> list[str]:
+    """Refuse a name listed twice, which would name one result column twice."""
+    repeated = sorted({item for item in value if value.count(item) > 1})
+    if repeated:
+        raise ValueError(f"lists {', '.join(repeated)} more than once")
+    return value
+
+
 def _reduction_columns() -> frozenset[str]:
     """The names a reduction writes itself, which a kept column cannot take."""
     return frozenset(
@@ -464,11 +497,10 @@ def split_keys(df: pd.DataFrame, params: AggregateParams) -> list[str]:
     """The keys that split the rows a feature reduces together.
 
     ``arena`` when the input has the column, so the animals of different arenas
-    are never pooled, then ``subgroup_col`` when it is set.
+    are never pooled, then each subgroup column in the order listed.
     """
     keys = [ARENA_COLUMN] if ARENA_COLUMN in df.columns else []
-    if params.subgroup_col and params.subgroup_col not in keys:
-        keys.append(params.subgroup_col)
+    keys.extend(name for name in params.subgroup_columns() if name not in keys)
     return keys
 
 
@@ -965,15 +997,19 @@ def prepare_rows(
 
     Raises:
         ValueError: As :func:`reduce_column`, for what it reads from ``df``:
-            a kept column missing or varying within a group, ``bin_s`` without
-            ``time``, ``duration`` or ``share`` without a ``time`` that
-            advances, ``share`` of a column of an unaccepted kind, or
-            ``first_pass`` with an ``order_col`` that is missing or not numeric.
+            a kept or subgroup column missing, a kept column varying within a
+            group, ``bin_s`` without ``time``, ``duration`` or ``share``
+            without a ``time`` that advances, ``share`` of a column of an
+            unaccepted kind, or ``first_pass`` with an ``order_col`` that is
+            missing or not numeric.
     """
     kept = tuple(params.keep_columns)
     for column in kept:
         if column not in df.columns:
             raise ValueError(f"keep_columns column {column!r} is not in the input")
+    for column in params.subgroup_columns():
+        if column not in df.columns:
+            raise ValueError(f"subgroup_col column {column!r} is not in the input")
     bin_s = params.bin_s
     if bin_s is not None and C.time_col not in df.columns:
         raise ValueError(

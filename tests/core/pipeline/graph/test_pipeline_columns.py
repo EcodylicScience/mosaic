@@ -23,6 +23,8 @@ import pytest
 from typer.testing import CliRunner
 
 from mosaic.behavior.feature_library.derive_columns import DeriveColumns
+from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
+from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
@@ -947,6 +949,40 @@ def test_a_kept_column_that_the_feature_input_declares_is_not_refused(
 
     assert report.valid, report.problems
     assert report.cautions == ()
+
+
+@pytest.mark.parametrize(
+    "declaration", [FrameAggregate, SequenceAggregate, IndividualAggregate]
+)
+def test_each_subgroup_column_of_a_list_is_named_in_the_wire(
+    declaration: type[FrameAggregate | SequenceAggregate | IndividualAggregate],
+) -> None:
+    """A list in ``subgroup_col`` names one column per item, as a string names one."""
+    params: dict[str, JsonValue] = {
+        "columns": ["speed"],
+        "subgroup_col": ["strain", "tag"],
+    }
+    single: dict[str, JsonValue] = {**params, "subgroup_col": "strain"}
+
+    needs = [
+        need
+        for need in requires_wire(declaration.requires, params)
+        if need.params == ("subgroup_col",)
+    ]
+    (added,) = [
+        names
+        for names in provided_wire(declaration.provides, params).adds
+        if names.params == ("subgroup_col",)
+    ]
+    (single_need,) = [
+        need
+        for need in requires_wire(declaration.requires, single)
+        if need.params == ("subgroup_col",)
+    ]
+
+    assert [need.columns for need in needs] == [("strain", "tag")]
+    assert added.columns == ("strain", "tag")
+    assert single_need.columns == ("strain",)
 
 
 def test_a_frame_aggregate_provides_the_columns_it_keeps() -> None:

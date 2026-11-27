@@ -7,7 +7,8 @@ sum/count) to each chosen column. Optional pre-aggregation transforms cover the
 common cases: ``transform="abs"`` for magnitudes, ``threshold=X`` with
 ``"mean"`` in ``aggs`` for a fraction-of-ids-in-the-frame-exceeding-threshold
 summary. An input with an ``arena`` column gives one row per frame and arena,
-and ``subgroup_col`` one row per frame and value of that column.
+and ``subgroup_col`` one row per frame and value of that column, or of each
+column when it lists several.
 
 Composes naturally with pair-aware features: pointing FrameAggregate at
 ``PairPositionFeatures`` with ``columns=["AB_dist"], aggs=["mean"]`` yields

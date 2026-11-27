@@ -1202,6 +1202,43 @@ def test_the_default_order_column_keeps_each_aggregate_run_id(case_id: str) -> N
     assert over_frame != over_time
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_only_a_subgroup_list_beyond_one_column_moves_each_aggregate_run_id(
+    case_id: str,
+) -> None:
+    """An unset ``subgroup_col`` is the golden run, and a one-item list is the string.
+
+    A string and a one-item list name one column, so they are one run. A longer
+    list splits the rows by more than one column, and its order is the order of
+    the output's keys.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    params = case.params
+    assert params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+
+    def with_subgroups(value: object) -> str:
+        return _identifier(replace(case, params={**params, "subgroup_col": value}))
+
+    assert _identifier(case) == golden
+    assert with_subgroups(None) == golden
+    one = with_subgroups(["event"])
+    assert one == with_subgroups("event")
+    assert one != golden
+    two = with_subgroups(["event", "tag"])
+    assert two != one
+    assert with_subgroups(["tag", "event"]) != two
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

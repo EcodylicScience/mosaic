@@ -541,7 +541,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.
   They give one row per arena when the input has an `arena` column, and `subgroup_col`
-  splits the rows by a column such as a tag (null values are dropped).
+  splits the rows by a column such as a tag (null values are dropped). A list of columns
+  splits by every combination of their values, the output listing them in the order
+  given after `arena`, and a row null in any of them is dropped. A list of one column is
+  that column, and a repeated column is refused.
   `frame-aggregate`'s and `sequence-aggregate`'s `sum` and `count` over pair rows take
   `pairs`: `once` reads one row per pair (perspective 0), `each_perspective` every
   ordered pair row. Under `auto`, the default, a recipe's plan picks `once` when every

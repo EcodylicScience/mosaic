@@ -10,8 +10,8 @@ ids. The optional pre-aggregation steps of ``frame-aggregate`` apply here too:
 of the rows, and ``share`` gives the fraction of the seconds that a column holds
 each of its values. Both read the input's ``time`` column. An input with an
 ``arena`` column gives one row per arena, and ``subgroup_col`` one row per value
-of that column. ``bin_s`` gives one row per entry and time bin of that many
-seconds, anchored at time 0.
+of that column, or per combination of values when it lists several. ``bin_s``
+gives one row per entry and time bin of that many seconds, anchored at time 0.
 
 The class docstring states which rows of a pair table sum, count and duration read.
 """

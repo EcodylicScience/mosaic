@@ -21,6 +21,7 @@ from mosaic.behavior.feature_library.aggregate_common import (
     prepare_rows,
     reduce_column,
     reduce_prepared,
+    split_keys,
 )
 
 KEYS = ["group", "sequence"]
@@ -516,3 +517,134 @@ def test_the_order_column_leaves_the_identity_dump_while_it_is_time() -> None:
     assert "order_col" not in plain.identity_dump()
     assert named.identity_dump() == plain.identity_dump()
     assert moved.identity_dump()["order_col"] == "stim"
+
+
+def _two_subgroups() -> pd.DataFrame:
+    """Eight rows over two subgroup columns, a null in each, and an arena."""
+    return pd.DataFrame(
+        {
+            "group": "A",
+            "sequence": "S",
+            "arena": ["a", "a", "a", "a", "a", "a", "b", "b"],
+            "tag": ["x", "x", "y", "y", "x", None, "x", "x"],
+            "phase": [1.0, 2.0, 1.0, 2.0, np.nan, 1.0, 1.0, 1.0],
+            "value": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0],
+        }
+    )
+
+
+def test_split_keys_appends_each_subgroup_column_after_the_arena_in_order() -> None:
+    table = _two_subgroups()
+
+    both = AggregateParams(columns=["value"], subgroup_col=["tag", "phase"])
+    swapped = AggregateParams(columns=["value"], subgroup_col=["phase", "tag"])
+    one = AggregateParams(columns=["value"], subgroup_col="tag")
+    none = AggregateParams(columns=["value"])
+
+    assert split_keys(table, both) == ["arena", "tag", "phase"]
+    assert split_keys(table, swapped) == ["arena", "phase", "tag"]
+    assert split_keys(table, one) == ["arena", "tag"]
+    assert split_keys(table, none) == ["arena"]
+    assert split_keys(table.drop(columns=["arena"]), both) == ["tag", "phase"]
+
+
+def test_two_subgroup_columns_give_one_row_per_pair_of_values() -> None:
+    table = _two_subgroups()
+    params = AggregateParams(
+        columns=["value"], aggs=["sum", "count"], subgroup_col=["tag", "phase"]
+    )
+
+    out = reduce_column(
+        table,
+        params,
+        [*KEYS, *split_keys(table, params)],
+        who=WHO,
+        pairs="each_perspective",
+    )
+
+    # The row with a null tag and the row with a null phase are in no group.
+    assert out[["arena", "tag", "phase"]].values.tolist() == [
+        ["a", "x", 1.0],
+        ["a", "x", 2.0],
+        ["a", "y", 1.0],
+        ["a", "y", 2.0],
+        ["b", "x", 1.0],
+    ]
+    np.testing.assert_array_equal(out["value_sum"], [1.0, 2.0, 4.0, 8.0, 192.0])
+    np.testing.assert_array_equal(out["value_count"], [1, 1, 1, 1, 2])
+
+
+def test_a_null_in_either_subgroup_column_drops_the_row() -> None:
+    table = _two_subgroups().iloc[[4, 5]]
+    params = AggregateParams(
+        columns=["value"], aggs=["count"], subgroup_col=["tag", "phase"]
+    )
+
+    out = reduce_column(
+        table,
+        params,
+        [*KEYS, *split_keys(table, params)],
+        who=WHO,
+        pairs="each_perspective",
+    )
+
+    assert len(out) == 0
+
+
+@pytest.mark.parametrize(
+    "subgroup_col", ["absent", ["tag", "absent"], ["absent", "tag"]]
+)
+def test_a_subgroup_column_the_input_lacks_is_refused_by_name(
+    subgroup_col: str | list[str],
+) -> None:
+    table = _two_subgroups()
+    params = AggregateParams(columns=["value"], subgroup_col=subgroup_col)
+    keys = [*KEYS, *params.subgroup_columns()]
+
+    with pytest.raises(ValueError, match="subgroup_col column 'absent'"):
+        _ = reduce_column(table, params, keys, who=WHO, pairs="each_perspective")
+
+
+def test_a_one_item_list_validates_to_the_string() -> None:
+    listed = AggregateParams(columns=["value"], subgroup_col=["tag"])
+
+    assert listed.subgroup_col == "tag"
+
+
+def test_a_repeated_subgroup_column_is_refused() -> None:
+    with pytest.raises(ValueError, match="tag more than once"):
+        _ = AggregateParams(columns=["value"], subgroup_col=["tag", "phase", "tag"])
+
+
+def test_an_empty_subgroup_list_is_refused() -> None:
+    with pytest.raises(ValueError, match="subgroup_col.*no column"):
+        _ = AggregateParams(columns=["value"], subgroup_col=[])
+
+
+def test_a_kept_name_that_is_any_subgroup_column_is_refused() -> None:
+    with pytest.raises(ValueError, match="phase.*subgroup_col"):
+        _ = AggregateParams(
+            columns=["value"], subgroup_col=["tag", "phase"], keep_columns=["phase"]
+        )
+
+
+@pytest.mark.parametrize("name", ["bin_start", "bin_end"])
+def test_a_bin_name_in_the_subgroup_list_is_refused_with_bin_s(name: str) -> None:
+    with pytest.raises(ValueError, match=f"subgroup_col.*{name}"):
+        _ = AggregateParams(columns=["value"], bin_s=60, subgroup_col=["tag", name])
+    allowed = AggregateParams(columns=["value"], subgroup_col=["tag", name])
+    assert allowed.subgroup_col == ["tag", name]
+
+
+def test_the_subgroup_column_leaves_the_identity_dump_as_it_was() -> None:
+    unset = AggregateParams(columns=["value"])
+    string = AggregateParams(columns=["value"], subgroup_col="tag")
+    one = AggregateParams(columns=["value"], subgroup_col=["tag"])
+    two = AggregateParams(columns=["value"], subgroup_col=["tag", "phase"])
+    swapped = AggregateParams(columns=["value"], subgroup_col=["phase", "tag"])
+
+    assert one.identity_dump() == string.identity_dump()
+    assert string.identity_dump()["subgroup_col"] == "tag"
+    assert unset.identity_dump()["subgroup_col"] is None
+    assert two.identity_dump()["subgroup_col"] == ["tag", "phase"]
+    assert swapped.identity_dump() != two.identity_dump()

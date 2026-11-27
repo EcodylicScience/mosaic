@@ -472,3 +472,27 @@ def test_a_frame_aggregate_without_duration_still_validates() -> None:
 def test_bin_s_is_refused_because_a_frames_rows_are_one_frame_each():
     with pytest.raises(ValueError, match="frame-aggregate does not take bin_s"):
         _ = FrameAggregate(params={"columns": ["value"], "bin_s": 60})
+
+
+def test_two_subgroup_columns_give_one_row_per_frame_and_pair_of_values() -> None:
+    df = _make_df(
+        {0: [1.0, 2.0, 4.0, 8.0], 1: [16.0, 32.0, 64.0, 128.0]},
+        extra_cols={
+            "tag": ["x", "x", "y", None, "x", "y", "y", "y"],
+            "phase": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, np.nan, 1.0],
+        },
+    )
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["sum"], "subgroup_col": ["tag", "phase"]}, df
+    )
+
+    columns = list(out.columns)
+    assert columns.index("phase") == columns.index("tag") + 1
+    assert out[["frame", "tag", "phase"]].values.tolist() == [
+        [0, "x", 1.0],
+        [0, "y", 1.0],
+        [1, "x", 1.0],
+        [1, "y", 1.0],
+    ]
+    np.testing.assert_array_equal(out["value_sum"], [3.0, 4.0, 16.0, 32.0 + 128.0])

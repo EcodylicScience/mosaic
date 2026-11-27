@@ -150,6 +150,48 @@ def test_subgroup_col_splits_an_entry_and_drops_null_values() -> None:
     assert out["value_count"].tolist() == [2, 3]
 
 
+def test_two_subgroup_columns_split_an_entry_by_both_and_drop_a_null_in_either() -> (
+    None
+):
+    table = _individual_table().assign(
+        event=[1.0, 1.0, np.nan, 2.0, 2.0, 2.0],
+        tag=np.array(["x", "y", "x", "x", None, "x"], dtype=object),
+    )
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["count", "sum"],
+            "subgroup_col": ["event", "tag"],
+        },
+        table,
+    )
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "event",
+        "tag",
+        "value_count",
+        "value_sum",
+    ]
+    assert out[["event", "tag"]].values.tolist() == [[1.0, "x"], [1.0, "y"], [2.0, "x"]]
+    np.testing.assert_array_equal(out["value_sum"], [1.0, 2.0, 4.0 + 6.0])
+
+
+@pytest.mark.parametrize("subgroup_col", ["absent", ["event", "absent"]])
+def test_a_subgroup_column_the_input_lacks_fails_the_entry_by_name(
+    subgroup_col: str | list[str],
+) -> None:
+    table = _individual_table().assign(event=[1.0, 1.0, np.nan, 2.0, 2.0, 2.0])
+
+    with pytest.raises(ValueError, match="subgroup_col column 'absent'"):
+        _ = _apply(
+            {"columns": ["value"], "aggs": ["count"], "subgroup_col": subgroup_col},
+            table,
+        )
+
+
 def test_once_halves_the_sum_and_not_the_mean_of_one_step() -> None:
     out = _apply(
         {"columns": ["AB_dist"], "aggs": ["sum", "mean"], "pairs": "once"},

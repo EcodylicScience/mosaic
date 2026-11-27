@@ -130,6 +130,25 @@ def test_subgroup_col_splits_an_individuals_rows() -> None:
     assert out["value_mean"].tolist() == [1.0, 4.0, 2.0, 6.0, 3.0, 8.0]
 
 
+def test_two_subgroup_columns_split_an_individuals_rows_in_key_order() -> None:
+    table = _individual_table().assign(
+        phase=["x", "x", "x", "y", "y", "y"],
+        tag=np.array(["p", "q", "p", None, "q", "q"], dtype=object),
+    )
+
+    out = _apply({"columns": ["value"], "subgroup_col": ["phase", "tag"]}, table)
+
+    assert list(out.columns)[:5] == ["group", "sequence", "id", "phase", "tag"]
+    assert out[["id", "phase", "tag"]].values.tolist() == [
+        [0, "x", "p"],
+        [1, "x", "q"],
+        [1, "y", "q"],
+        [2, "x", "p"],
+        [2, "y", "q"],
+    ]
+    np.testing.assert_array_equal(out["value_mean"], [1.0, 2.0, 6.0, 3.0, 8.0])
+
+
 def test_sum_over_individual_input_adds_each_frame() -> None:
     out = _apply({"columns": ["value"], "aggs": ["sum"]}, _individual_table())
 

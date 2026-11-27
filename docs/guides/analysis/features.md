@@ -81,14 +81,18 @@ order parameters, and the discrete states they imply), `local-order-metrics`,
 shared set of parameters: to one row per frame, per sequence or per individual. Each of
 `columns` is reduced by each of `aggs` into `<column>_<agg>`. An input with an `arena`
 column gives one row per arena, and `subgroup_col` splits the rows by a column such as a
-tag. Over pair rows, `individual-aggregate` reduces every row of a focal `id1` to that
-individual's row. With `threshold`, each column becomes whether its value passes
-`threshold_op` (`>` by default, or `>=`, `<`, `<=`) against it, and a missing value stays
-missing, so `mean`, `count` and `duration` leave it out. `sequence-aggregate` and
-`individual-aggregate` also take `duration`, the seconds in which a column has a value,
-or passes the `threshold` comparison, and `share`, the fraction of the seconds in which a
-column holds each of its values, written as `<column>_share_<value>`. Both weigh a row by
-its `time`, so a table that dropped frames is measured in the seconds it covers.
+tag. Give `subgroup_col` a list of columns to split by every combination of their values,
+such as a tag and a phase: the output lists them in the order given, after `arena`, and a
+row with a missing value in any of them is dropped. A list of one column is that column,
+and a repeated column is refused. Over pair rows, `individual-aggregate` reduces every
+row of a focal `id1` to that individual's row. With `threshold`, each column becomes
+whether its value passes `threshold_op` (`>` by default, or `>=`, `<`, `<=`) against it,
+and a missing value stays missing, so `mean`, `count` and `duration` leave it out.
+`sequence-aggregate` and `individual-aggregate` also take `duration`, the seconds in
+which a column has a value, or passes the `threshold` comparison, and `share`, the
+fraction of the seconds in which a column holds each of its values, written as
+`<column>_share_<value>`. Both weigh a row by its `time`, so a table that dropped frames
+is measured in the seconds it covers.
 For a summary per window, set `bin_s` on `sequence-aggregate` or `individual-aggregate`:
 each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the recording, and
 the output has one row per entry or individual and bin, with `bin_start` and `bin_end` in

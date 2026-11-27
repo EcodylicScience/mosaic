@@ -17,6 +17,9 @@ No run id or output moves.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `first_pass`
   aggregation and its `order_col` option. Their run ids stay while `first_pass` is not
   in `aggs` and `order_col` is unset or `time`.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` accept a list of
+  columns in `subgroup_col`. Their run ids stay while `subgroup_col` is unset, one column
+  or a list of one, and only a longer list is a new run.
 
 ## Unreleased: features that read only results compute in every track space
 
