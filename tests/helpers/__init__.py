@@ -105,6 +105,9 @@ What lives where:
   the payloads that reach each op's validators, a params model narrowed the way
   a consumer narrows it, and the fields a consumer owns for an op kind.
 - ``runlog`` -- an attempt's recorded run-log events.
+- ``modes`` -- the serial, thread and process modes a run computes its entries in,
+  the ``run_feature`` arguments that ask for one, and the check that an attempt's
+  entries ran in it.
 - ``entry_outcomes`` -- an entry task's outcome as a report or a raised error, and
   the output a worker wrote for a task.
 - ``entry_points`` -- the installed entry points a test declares in this process,
@@ -503,6 +506,7 @@ from tests.helpers.paths import (
     VAME_PROTOCOL,
     VAME_RUNNER,
 )
+from tests.helpers.modes import RunMode, RunModeKwargs, assert_ran_in_mode, run_modes
 from tests.helpers.runlog import (
     all_logged_events,
     entry_error_lines,
@@ -909,6 +913,8 @@ __all__ = [
     "RecordedRequest",
     "RecordingStarter",
     "Reply",
+    "RunMode",
+    "RunModeKwargs",
     "RunnerJournal",
     "SELF_REFERENCE",
     "SEPARATED_TOOLS",
@@ -988,6 +994,7 @@ __all__ = [
     "assert_no_literal_tilde",
     "assert_marked_child_ends",
     "assert_process_exited",
+    "assert_ran_in_mode",
     "assert_ready_then_shutdown",
     "assert_stopped_writing",
     "assert_tree_unchanged",
@@ -1157,6 +1164,7 @@ __all__ = [
     "run_id_digest",
     "record_open_attempt",
     "run_id_of",
+    "run_modes",
     "run_speed",
     "runs_in_an_external_environment",
     "sandbox_home",

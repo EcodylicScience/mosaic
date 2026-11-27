@@ -43,7 +43,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -60,7 +60,7 @@ from mosaic.core.pipeline.definitions.define import (
     define_feature,
     load_feature_definition,
 )
-from mosaic.core.pipeline.parallelism import ParallelMode, process_capable
+from mosaic.core.pipeline.parallelism import process_capable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
 from mosaic.core.pipeline.types import Feature, Result
@@ -69,10 +69,11 @@ from tests.helpers import (
     MINIMAL_NAME,
     MINIMAL_SOURCE,
     add_track_sequences,
+    assert_ran_in_mode,
     definitions_forgotten,
-    latest_events,
     make_dataset,
     result_run_root,
+    run_modes,
 )
 
 _GROUPS: Final = {"ga": ("a1", "a2"), "gb": ("b1", "b2")}
@@ -94,19 +95,7 @@ _PER_ATTEMPT: Final = frozenset({"params.json", "fit_scope.json"})
 """The files of a run root whose bytes carry the attempt or the time that wrote them."""
 
 
-class _Mode(NamedTuple):
-    """How a run computes its entries."""
-
-    name: str
-    workers: int
-    kind: ParallelMode
-
-
-_MODES: Final = (
-    _Mode("serial", 1, "thread"),
-    _Mode("thread", 3, "thread"),
-    _Mode("process", 3, "process"),
-)
+_MODES: Final = run_modes(3)
 
 
 @dataclass(frozen=True)
@@ -325,16 +314,6 @@ def _widened_onto_the_pair_rows(ds: Dataset, result: Result) -> None:
             )
 
 
-def _ran_every_entry_as_asked(ds: Dataset, mode: _Mode) -> None:
-    """Assert that the last attempt computed each entry, in the mode asked for.
-
-    A cache hit writes an ``entry_end`` without a ``mode``, and a run that fell
-    back to threads writes ``thread`` where processes were asked for.
-    """
-    ends = latest_events(ds, "entry_end")
-    assert [end.get("mode") for end in ends] == [mode.kind] * _ENTRIES, mode.name
-
-
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.name)
 def test_every_mode_writes_the_same_files_under_one_run_id(
     case: _Case, tmp_path: Path
@@ -354,8 +333,7 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
             result = run_feature(
                 ds,
                 feature,
-                parallel_workers=mode.workers,
-                parallel_mode=mode.kind,
+                **mode.run_kwargs(),
                 overlap_frames=case.overlap_frames,
                 filter_start_frame=None if bounds is None else bounds[0],
                 filter_end_frame=None if bounds is None else bounds[1],
@@ -363,7 +341,7 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
                 filter_end_time=None if window is None else window[1],
             )
             assert result.failed_entries == ()
-            _ran_every_entry_as_asked(ds, mode)
+            assert_ran_in_mode(ds, mode, entries=_ENTRIES)
             if case.overlap_frames:
                 _own_frames(ds, result)
             if case.widens:

@@ -22,15 +22,16 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.entry import parse_entry_key
 from mosaic.core.pipeline.column_contract import Column, Requirement
 from mosaic.core.pipeline.index import feature_index, feature_index_path
-from mosaic.core.pipeline.parallelism import ParallelMode
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.types import Feature, Result
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     ParallelFeature,
+    RunMode,
     add_tracks_table,
     logged_events,
     make_dataset,
+    run_modes,
     track_table,
 )
 
@@ -81,19 +82,7 @@ _EXPECTED: dict[EntryError, _Expected] = {
 _ERRORS: tuple[EntryError, ...] = ("column-check", "arena-refusal", "apply")
 
 
-class _Mode(NamedTuple):
-    """How a run computes its entries."""
-
-    name: str
-    workers: int
-    kind: ParallelMode
-
-
-_MODES = (
-    _Mode("serial", 1, "thread"),
-    _Mode("thread", 3, "thread"),
-    _Mode("process", 3, "process"),
-)
+_MODES = run_modes(3)
 
 
 def _dataset(base: Path, error: EntryError, lost: frozenset[str]) -> Dataset:
@@ -126,13 +115,16 @@ def _feature(error: EntryError, lost: frozenset[str]) -> Feature:
 
 
 def _run(
-    ds: Dataset, error: EntryError, lost: frozenset[str], mode: _Mode, execution_id: str
+    ds: Dataset,
+    error: EntryError,
+    lost: frozenset[str],
+    mode: RunMode,
+    execution_id: str,
 ) -> Result:
     return run_feature(
         ds,
         _feature(error, lost),
-        parallel_workers=mode.workers,
-        parallel_mode=mode.kind,
+        **mode.run_kwargs(),
         execution_id=execution_id,
     )
 
@@ -142,7 +134,7 @@ def _check_errors(
     execution_id: str,
     error: EntryError,
     lost: frozenset[str],
-    mode: _Mode,
+    mode: RunMode,
 ) -> None:
     """Check one ``entry_error`` of *error* per entry of *lost*, and the mode run in.
 
@@ -165,7 +157,7 @@ def _check_errors(
 @pytest.mark.parametrize("error", _ERRORS)
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_entry_error_fails_its_entry_and_keeps_the_others(
-    tmp_path: Path, mode: _Mode, error: EntryError
+    tmp_path: Path, mode: RunMode, error: EntryError
 ) -> None:
     lost = frozenset({"seq_b"})
     ds = _dataset(tmp_path / "ds", error, lost)
@@ -189,7 +181,7 @@ def test_an_entry_error_fails_its_entry_and_keeps_the_others(
 @pytest.mark.parametrize("error", _ERRORS)
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_error_in_every_entry_fails_the_run(
-    tmp_path: Path, mode: _Mode, error: EntryError
+    tmp_path: Path, mode: RunMode, error: EntryError
 ) -> None:
     lost = frozenset(_SEQUENCES)
     ds = _dataset(tmp_path / "ds", error, lost)

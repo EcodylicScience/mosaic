@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Final
 
 import pandas as pd
 import pytest
@@ -27,7 +27,6 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import Params
 from mosaic.core.pipeline import entry_task, parquet_reader
 from mosaic.core.pipeline.loading import MultiInputAlignmentError
-from mosaic.core.pipeline.parallelism import ParallelMode
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
     Feature,
@@ -38,8 +37,10 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from tests.helpers import (
+    RunMode,
     add_track_sequences,
     all_logged_events,
+    assert_ran_in_mode,
     latest_events,
     latest_snapshot,
     make_dataset,
@@ -47,6 +48,7 @@ from tests.helpers import (
     record_path_calls,
     result_outputs,
     result_run_root,
+    run_modes,
 )
 
 _EMPTY = "empty"
@@ -58,19 +60,7 @@ _NO_PAIR_ROWS_MESSAGE: Final = (
 """What the entry without pair rows reports."""
 
 
-class _Mode(NamedTuple):
-    """How a run computes its entries."""
-
-    name: str
-    workers: int
-    kind: ParallelMode
-
-
-_MODES: Final = (
-    _Mode("serial", 1, "thread"),
-    _Mode("thread", 2, "thread"),
-    _Mode("process", 2, "process"),
-)
+_MODES: Final = run_modes(2)
 
 
 class _Stub:
@@ -220,16 +210,6 @@ def _results(tmp_path: Path, *sequences: str) -> tuple[Dataset, Result, Result]:
     )
 
 
-def _ran_in(ds: Dataset, mode: _Mode) -> None:
-    """Assert that every entry the last attempt computed ran in *mode*'s kind.
-
-    A run that fell back to threads writes ``thread`` where processes were asked
-    for.
-    """
-    for end in latest_events(ds, "entry_end"):
-        assert end.get("mode") == mode.kind, (mode.name, end)
-
-
 def _entry_errors(ds: Dataset) -> list[tuple[object, dict[str, str]]]:
     """The key and the parsed error of each ``entry_error`` of the last attempt."""
     errors: list[tuple[object, dict[str, str]]] = []
@@ -255,7 +235,7 @@ def _lost_the_entry_without_pair_rows(ds: Dataset, result: Result) -> None:
 def _run_in(
     ds: Dataset,
     feature: Feature,
-    mode: _Mode,
+    mode: RunMode,
     *,
     overlap_frames: int = 0,
     filter_start_time: float | None = None,
@@ -263,8 +243,7 @@ def _run_in(
     return run_feature(
         ds,
         feature,
-        parallel_workers=mode.workers,
-        parallel_mode=mode.kind,
+        **mode.run_kwargs(),
         overlap_frames=overlap_frames,
         filter_start_time=filter_start_time,
     )
@@ -272,14 +251,13 @@ def _run_in(
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_as_input_run_reads_each_pair_row_with_both_individuals(
-    tmp_path: Path, mode: _Mode
+    tmp_path: Path, mode: RunMode
 ) -> None:
     ds, pairs, individuals = _results(tmp_path, "s1")
 
     echoed = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
 
-    _ran_in(ds, mode)
-    assert len(latest_events(ds, "entry_end")) == 1
+    assert_ran_in_mode(ds, mode, entries=1)
     (table,) = result_outputs(ds, echoed).values()
     assert {"id1", "id2", "dist", "speed__id1", "speed__id2"} <= set(table.columns)
     assert "id" not in table.columns
@@ -300,14 +278,14 @@ def test_an_individual_level_consumer_keeps_the_refusal(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_entry_without_pair_rows_is_an_entry_error(
-    tmp_path: Path, mode: _Mode
+    tmp_path: Path, mode: RunMode
 ) -> None:
     """The entry is lost and reported, and the run keeps the others."""
     ds, pairs, individuals = _results(tmp_path, "s1", _EMPTY)
 
     result = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
 
-    _ran_in(ds, mode)
+    assert_ran_in_mode(ds, mode)
     _lost_the_entry_without_pair_rows(ds, result)
     assert set(result_outputs(ds, result)) == {make_entry_key("g", "s1")}
     assert [end["key"] for end in latest_events(ds, "entry_end")] == [
@@ -338,7 +316,7 @@ def test_an_entry_without_pair_rows_leaves_the_gate(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_overlapped_widening_run_records_the_entry_without_pair_rows(
-    tmp_path: Path, mode: _Mode
+    tmp_path: Path, mode: RunMode
 ) -> None:
     """A run that reads in the parent records the lost entry as a worker's run does."""
     ds, pairs, individuals = _results(tmp_path, "s1", _EMPTY)
@@ -350,7 +328,7 @@ def test_an_overlapped_widening_run_records_the_entry_without_pair_rows(
         overlap_frames=1,
     )
 
-    _ran_in(ds, mode)
+    assert_ran_in_mode(ds, mode)
     _lost_the_entry_without_pair_rows(ds, result)
 
 
@@ -371,7 +349,7 @@ def _ended_without_an_entry_error(ds: Dataset, raised: BaseException) -> None:
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_a_corrupt_input_of_a_widening_run_ends_the_run(
-    tmp_path: Path, mode: _Mode
+    tmp_path: Path, mode: RunMode
 ) -> None:
     ds, pairs, individuals = _results(tmp_path, "s1", "s2")
     _corrupt(ds, individuals, "s2")
@@ -379,13 +357,13 @@ def test_a_corrupt_input_of_a_widening_run_ends_the_run(
     with pytest.raises(ValueError, match="magic bytes not found") as raised:
         _ = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
 
-    _ran_in(ds, mode)
+    assert_ran_in_mode(ds, mode)
     _ended_without_an_entry_error(ds, raised.value)
 
 
 @pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_a_time_window_over_a_widening_input_without_time_ends_the_run(
-    tmp_path: Path, mode: _Mode
+    tmp_path: Path, mode: RunMode
 ) -> None:
     """The entry of ``_EMPTY`` is left out, since its missing pair rows raise first."""
     ds, pairs, individuals = _results(tmp_path, "s1", "s2")
@@ -400,7 +378,7 @@ def test_a_time_window_over_a_widening_input_without_time_ends_the_run(
             filter_start_time=0.0,
         )
 
-    _ran_in(ds, mode)
+    assert_ran_in_mode(ds, mode)
     _ended_without_an_entry_error(ds, raised.value)
 
 
