@@ -474,7 +474,7 @@ section on a second Linux machine: every line equal.
 
 `pair-position` over `["tracks", {"step": "heading"}]`, computed alone over a
 dataset where `convert` and `heading` are cached, before (`4f99428b`) and after
-(`62d28e80`) widening loads moved into the entry task. kn-bees, image
+(`62d28e80`) widening loads moved into the entry task. A Linux host, image
 `mosaic-agent:gpu-cu130-main-2c40cfa6`, `--cpuset-cpus 16-25`, 160 entries, 8
 workers, three rounds with the run order reversed in the second, on an idle
 host. The fingerprints of all 18 cold datasets are equal.
