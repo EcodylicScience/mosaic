@@ -8,6 +8,27 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature run's workers read a pair-filtered step's input
+
+No run id or output moves. A feature run's workers read the input of a step with a
+nearest-neighbor pair filter and build the filter themselves, as they read every other
+entry's input, except with overlap or the cross join, which the run's process still
+loads. A pool thread builds the neighbor lookup from the run's dataset, and a process
+worker from the dataset it opens without creating any of its roots. In process mode the
+filtered table no longer crosses to the worker, which cuts the bytes sent to each worker
+per entry from the table's size to a description of the load: in the pair-filter
+section of `benchmarks/step-cost/README.md`, from 5,901,990 bytes to 2,301. A neighbor
+table that cannot be read ends the run with its error, as before. An entry without pair
+rows is recorded as lost with the same error type and message, and the run goes on. In
+that bench the thread-8 wall of the step was 0.96 s longer in the first pair of runs and
+0.28 s shorter in the second, within the spread of the run order.
+
+The `entry_end` measures of a pair-filtered entry its worker loads shift as those of the
+other shapes did ("a feature run's workers read each entry's input"). Its flight starts
+at its dispatch, so at most the worker count of entries are in flight at once, and its
+`apply_seconds` contains its lookup and its load. A process worker's peak and growth
+contain them.
+
 ## Unreleased: SLEAP every frame and the recorded frame count
 
 No run id moves. `sleap_analysis_h5` takes `keep_empty_frames`, whose default keeps
@@ -29,14 +50,17 @@ identities of their own. The `pywt` default is unchanged.
 
 No run id or output moves. A feature run's workers read the input of a feature
 that widens individual-level inputs onto pair rows, as they read every other
-entry's input, except with overlap, a nearest-neighbor pair filter or the cross
-join, which the run's process still loads. In process mode the widened table no
-longer crosses to the worker, which cuts the bytes sent to each worker per
-entry from the table's size to a description of the load: in the widening
-section of `benchmarks/step-cost/README.md`, from 18,146,565 bytes to 2,429. An
-entry without pair rows is recorded as lost with the same error type and
-message, and the run goes on. In that bench the thread-mode steps before the
-stack ran 12 to 13 s slower, for a cause not yet known.
+entry's input, except with overlap or the cross join, which the run's process
+still loads. In process mode the widened table no longer crosses to the worker,
+which cuts the bytes sent to each worker per entry from the table's size to a
+description of the load: in the widening section of
+`benchmarks/step-cost/README.md`, from 18,146,565 bytes to 2,429. An entry
+without pair rows is recorded as lost with the same error type and message, and
+the run goes on. In that bench the thread-mode steps before the stack ran 12 to
+13 s slower, because up to eight pool threads run the pandas merge at once
+beside an `apply` that holds the GIL, which "Multi-input loads in pool threads"
+in the same README measures. The code takes no lock. Run a feature whose `apply`
+holds the GIL with `--parallel-mode process`.
 
 The `entry_end` measures of a widening entry its worker loads shift as those of
 the other shapes did ("a feature run's workers read each entry's input"). Its
@@ -323,13 +347,11 @@ NumPy-valued file keeps its earlier output until it is rerun with
 ## Unreleased: a feature run's workers read each entry's input
 
 No run id or output moves. A feature run's workers read each entry's input
-themselves, in every mode, except for overlap, a feature that widens individual
-inputs onto pair rows (more than one input), a nearest-neighbor pair filter and
-the cross join, which the run's process still loads. In process mode the input
-no longer crosses to the worker, which cuts the bytes sent to each worker per
-entry from the input's size to a description of the load: in the step-cost
-bench, from 2,162,061 bytes to 2,294. An input that cannot be read still fails
-the run with the same error.
+themselves, in every mode, except for overlap and the cross join, which the
+run's process still loads. In process mode the input no longer crosses to the
+worker, which cuts the bytes sent to each worker per entry from the input's size
+to a description of the load: in the step-cost bench, from 2,162,061 bytes to
+2,294. An input that cannot be read still fails the run with the same error.
 
 An entry's `entry_end` measures shift for an entry its worker loads. Its flight
 starts at its dispatch, so at most the worker count of entries are in flight at

@@ -723,13 +723,13 @@ one entry's table per worker. A thread gains little for work that holds Python's
 interpreter lock, such as a feature whose per-entry work is a Python loop. The agent
 names `parallel_mode: process` for those. Process workers use every core, and each is a
 separate interpreter that imports the feature libraries and reads each entry's input
-itself, or is handed it for overlap, a nearest-neighbor pair filter and the cross join,
-so memory grows by a whole interpreter and about one entry's tables per worker. A
-feature that does not fit in memory at four process workers may fit at two, or in
-threads. A feature that defines `set_scope`, such as the interaction crop, or declares
-`close()` runs in threads whatever the mode is, because a process worker's instance gets
-neither call. A process worker builds the feature once, at its first entry, and applies
-every entry it is handed with that instance.
+itself, or is handed it for overlap and the cross join, so memory grows by a whole
+interpreter and about one entry's tables per worker. A feature that does not fit in
+memory at four process workers may fit at two, or in threads. A feature that defines
+`set_scope`, such as the interaction crop, or declares `close()` runs in threads
+whatever the mode is, because a process worker's instance gets neither call. A process
+worker builds the feature once, at its first entry, and applies every entry it is handed
+with that instance.
 
 The agent sees what it needs to choose:
 

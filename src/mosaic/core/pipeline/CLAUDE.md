@@ -335,8 +335,8 @@ are in `graph/CLAUDE.md`.
   `CROSS_JOIN_FEATURES`. `run_feature`, `verify.py`, `_load_neighbor` and the
   declarations (`ConsumerDecl.expands_individuals`) all read it, and `merge_naming`
   names the columns for the merge and for validation. An entry whose pair input holds
-  no rows raises `PairRowsMissing` in its task, or in the parent's load under overlap
-  or a pair filter, and either is recorded as an `entry_error`
+  no rows raises `PairRowsMissing` in its task, or in the parent's load under overlap,
+  and either is recorded as an `entry_error`
   (`tests/core/pipeline/test_widening_join.py`). `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
@@ -435,12 +435,17 @@ are in `graph/CLAUDE.md`.
   load error but `PairRowsMissing`) and a trim or write failure return as an
   `EntryFailure`, and the run raises it. `PairRowsMissing` and any other entry error
   raise in the task and are recorded as an `entry_error`. The task loads its entry's
-  input, with the load's `expands_individuals`, unless the run asks for overlap, a pair
-  filter applies or the feature is the cross join. Those shapes load in the parent
-  through `iter_manifest`, which hands the task the table. Both sites call
-  `load_entry_data`. `entry_task.py` names no index module, the run-log or `job` in its
-  own imports (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
-  `tests/meta/test_entry_task_imports.py`).
+  input, with the load's `expands_individuals` and `pair_filter`, unless the run asks
+  for overlap or the feature is the cross join. Those shapes load in the parent through
+  `iter_manifest`, which hands the task the table. Both sites call `load_entry_data`. A
+  pair-filtered task builds its entry's nearest-neighbor lookup through `nn_pair_filter`
+  before the load: a pool thread from the run's dataset, and a process worker from the
+  dataset `worker_dataset` opens without its roots (`ensure_roots=False`). The fit's
+  input stream builds it in the parent. A neighbor table that cannot be read is an input
+  failure, which ends the run with its error and no `entry_error`. `entry_task.py` names
+  no index module, the run-log or `job` in its own imports
+  (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
+  `test_pair_filter_load.py`, `tests/meta/test_entry_task_imports.py`).
 - `apply_seconds` runs from the dispatch, so it contains the load of an entry whose
   worker loads it and, for the entry whose worker built the feature for it, that build,
   and ends at the end of `apply`. `after_apply` stamps it in serial and thread mode, and
