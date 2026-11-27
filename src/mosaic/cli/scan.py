@@ -87,6 +87,19 @@ def scan_command(
             ),
         ),
     ] = False,
+    checksum_workers: Annotated[
+        int,
+        typer.Option(
+            "--checksum-workers",
+            min=1,
+            help=(
+                "Threads that read tracks and labels files, and the files beside "
+                "them, for their checksums. A scan of a large corpus on a slow "
+                "share is faster with several. The rows are the same for any "
+                "count, and the media scan ignores it."
+            ),
+        ),
+    ] = 1,
     as_json: Annotated[
         bool,
         typer.Option(
@@ -153,11 +166,15 @@ def scan_command(
                 else:
                     raw = (
                         dataset.scan_tracks(
-                            only=restrict, prune_unsourced=prune_unsourced
+                            only=restrict,
+                            prune_unsourced=prune_unsourced,
+                            checksum_workers=checksum_workers,
                         )
                         if one == "tracks"
                         else dataset.scan_labels(
-                            only=restrict, prune_unsourced=prune_unsourced
+                            only=restrict,
+                            prune_unsourced=prune_unsourced,
+                            checksum_workers=checksum_workers,
                         )
                     )
                     path = raw.path

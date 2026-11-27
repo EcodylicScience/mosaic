@@ -394,6 +394,7 @@ $ mosaic scan [OPTIONS]
 * `--reassign`: Let the scan re-derive identity for rows a caller assigned. Off by default: a scan's identity is a guess and an assignment is not.
 * `--prune-unsourced`: Also drop rows no scanned source claims. Off by default: those are usually an assignment or a reference to a file elsewhere. With --only, refused when a source left out shares a folder with one scanned.
 * `--include-partial`: Write each divided recording's trailing sequence that is still recording. Off by default: it is held back until it closes.
+* `--checksum-workers <int range>`: Threads that read tracks and labels files, and the files beside them, for their checksums. A scan of a large corpus on a slow share is faster with several. The rows are the same for any count, and the media scan ignores it.  [default: 1; x>=1]
 * `--json`: Emit the written index paths and the divisions made as JSON.
 * `--help`: Show this message and exit.
 

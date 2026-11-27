@@ -16,6 +16,8 @@ import fnmatch
 import hashlib
 import os
 import re
+import threading
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -53,10 +55,12 @@ from mosaic.core.pipeline.tracks_raw_index import (
 from tests.helpers import (
     TRACKTOR_STEM,
     make_dataset,
+    raw_index_files,
     set_companions_cell,
     tracktor_dataset,
     write_calms21_npy,
     write_tracktor_recording,
+    write_tracktor_recordings,
     write_trex_npz,
 )
 
@@ -1623,3 +1627,243 @@ def test_write_tracks_raw_index_records_the_companions_of_its_scopes_format(
     assert [record.name for record in found[RAW_NAME]] == [CORRECTED_NAME]
     assert found[RAW_NAME][0].md5 == _md5_of(recording.tsv)
     assert found["x.npz"] == ()
+
+
+# --- checksum workers ------------------------------------------------------
+
+SCANNED_RECORDINGS = 6
+"""Six recordings, each a source and a companion: twelve files to hash."""
+
+
+def _scan_recordings(
+    ds: Dataset, *, checksum_workers: int = 1, compute_md5: bool = True
+) -> Path:
+    return ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv"],
+        src_format="tracktor_raw_csv",
+        compute_md5=compute_md5,
+        checksum_workers=checksum_workers,
+    )
+
+
+def _recordings_dataset(tmp_path: Path) -> Dataset:
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=RAW_AND_CONVERTED)
+    _ = write_tracktor_recordings(ds.base_dir / "raw", SCANNED_RECORDINGS)
+    return ds
+
+
+def _forget_the_scan(ds: Dataset) -> None:
+    """Delete what a scan wrote, so the next one carries no digest."""
+    for name in ("index.csv", "sequences.csv"):
+        (ds.get_root("tracks_raw") / name).unlink()
+
+
+def test_four_workers_write_the_index_and_compositions_of_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _recordings_dataset(tmp_path)
+    index_path = _scan_recordings(ds, checksum_workers=1)
+    root = ds.get_root("tracks_raw")
+    one_worker = raw_index_files(root)
+    _forget_the_scan(ds)
+    names = _hashed(monkeypatch)
+
+    _ = _scan_recordings(ds, checksum_workers=4)
+
+    assert len(names) == 2 * SCANNED_RECORDINGS
+    assert raw_index_files(root) == one_worker
+    rows = read_tracks_raw_index(index_path)
+    assert all(row["md5"] and companions_of(row)[0].md5 for row in rows)
+
+
+def test_the_digests_do_not_depend_on_the_order_the_workers_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _recordings_dataset(tmp_path)
+    index_path = _scan_recordings(ds, checksum_workers=1)
+    expected = index_path.read_bytes()
+    _forget_the_scan(ds)
+    finished: list[str] = []
+    ranked = sorted(path.name for path in (ds.base_dir / "raw").iterdir())
+
+    def slower_for_earlier_names(path: Path, chunk: int = 1 << 20) -> str:
+        time.sleep(0.01 * (len(ranked) - ranked.index(path.name)))
+        finished.append(path.name)
+        return _md5_of(path)
+
+    monkeypatch.setattr("mosaic.core.dataset._md5", slower_for_earlier_names)
+
+    _ = _scan_recordings(ds, checksum_workers=4)
+
+    assert finished != sorted(finished)
+    assert index_path.read_bytes() == expected
+
+
+def test_workers_hash_in_threads_of_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _recordings_dataset(tmp_path)
+    threads: set[int] = set()
+
+    def noting(path: Path, chunk: int = 1 << 20) -> str:
+        threads.add(threading.get_ident())
+        return _md5_of(path)
+
+    monkeypatch.setattr("mosaic.core.dataset._md5", noting)
+
+    _ = _scan_recordings(ds, checksum_workers=1)
+    assert threads == {threading.get_ident()}
+
+    threads.clear()
+    _forget_the_scan(ds)
+    _ = _scan_recordings(ds, checksum_workers=4)
+    assert threads
+    assert threading.get_ident() not in threads
+
+
+def test_a_carried_digest_is_not_recomputed_under_four_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _recordings_dataset(tmp_path)
+    _ = _scan_recordings(ds)
+    touched = sorted((ds.base_dir / "raw").glob("*_tracked.csv"))[0]
+    stat = touched.stat()
+    os.utime(touched, (stat.st_mtime + 10, stat.st_mtime + 10))
+    names = _hashed(monkeypatch)
+
+    _ = _scan_recordings(ds, checksum_workers=4)
+
+    assert names == [touched.name]
+
+
+def test_a_file_that_is_a_source_and_a_companion_is_read_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The corrected table lists the raw one beside it, which is also a source."""
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=RAW_AND_CONVERTED)
+    recording = write_tracktor_recording(ds.base_dir / "raw")
+    names = _hashed(monkeypatch)
+
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv", "*.tsv"],
+        src_format="tracktor_corrected_tsv",
+        checksum_workers=4,
+    )
+
+    assert sorted(names) == sorted([recording.csv.name, recording.tsv.name])
+
+
+def test_write_tracks_raw_index_hashes_each_file_once_and_carries_it_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = (tmp_path / "ds").resolve()
+    ds = make_dataset(base, roots=RAW_AND_CONVERTED)
+    recording = write_tracktor_recording(base / "tracks_raw" / "arena")
+    scope = TracksRawIndexScope(
+        directory=recording.csv.parent,
+        group="",
+        sequence="arena",
+        src_format="tracktor_raw_csv",
+    )
+    names = _hashed(monkeypatch)
+
+    _ = ds.write_tracks_raw_index([scope], patterns=["*_tracked.csv"])
+
+    assert sorted(names) == sorted([RAW_NAME, CORRECTED_NAME])
+    (record,) = _companions_in(ds)[RAW_NAME]
+    assert record.md5 == _md5_of(recording.tsv)
+    names.clear()
+
+    _ = ds.write_tracks_raw_index([scope], patterns=["*_tracked.csv"])
+
+    assert names == []
+
+
+def _symlink_the_corrected_table(
+    recording_directory: Path, target_directory: Path
+) -> Path:
+    """Move the corrected table to *target_directory* and leave a symlink in its place."""
+    link = recording_directory / CORRECTED_NAME
+    target_directory.mkdir(parents=True)
+    target = target_directory / CORRECTED_NAME
+    _ = link.replace(target)
+    link.symlink_to(target)
+    return target
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_a_companion_that_is_a_symlink_is_hashed_through_to_its_target(
+    tmp_path: Path, workers: int
+) -> None:
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=RAW_AND_CONVERTED)
+    recording = write_tracktor_recording(ds.base_dir / "raw")
+    target = _symlink_the_corrected_table(recording.csv.parent, tmp_path / "elsewhere")
+
+    _ = ds.index_tracks_raw(
+        [ds.base_dir / "raw"],
+        patterns=["*_tracked.csv"],
+        src_format="tracktor_raw_csv",
+        checksum_workers=workers,
+    )
+
+    (record,) = _companions_in(ds)[RAW_NAME]
+    assert record.name == CORRECTED_NAME
+    assert record.md5 == _md5_of(target)
+
+
+def test_write_tracks_raw_index_hashes_a_companion_that_is_a_symlink(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=RAW_AND_CONVERTED)
+    recording = write_tracktor_recording(ds.base_dir / "tracks_raw" / "arena")
+    target = _symlink_the_corrected_table(recording.csv.parent, tmp_path / "elsewhere")
+    scope = TracksRawIndexScope(
+        directory=recording.csv.parent,
+        group="",
+        sequence="arena",
+        src_format="tracktor_raw_csv",
+    )
+
+    _ = ds.write_tracks_raw_index([scope], patterns=["*_tracked.csv"])
+
+    (record,) = _companions_in(ds)[RAW_NAME]
+    assert record.md5 == _md5_of(target)
+
+
+@pytest.mark.parametrize("method", ["index_tracks_raw", "index_labels_raw"])
+def test_zero_checksum_workers_is_refused_before_any_write(
+    tmp_path: Path, method: str
+) -> None:
+    ds = make_dataset(
+        (tmp_path / "ds").resolve(), roots=(*RAW_AND_CONVERTED, "labels_raw")
+    )
+    _ = write_tracktor_recordings(ds.base_dir / "raw", 2)
+    scan = getattr(ds, method)
+    kwargs = (
+        {"src_format": "tracktor_raw_csv"}
+        if method == "index_tracks_raw"
+        else {"src_format": "calms21_npy"}
+    )
+
+    with pytest.raises(ValueError, match="checksum_workers"):
+        _ = scan(
+            [ds.base_dir / "raw"],
+            patterns=["*_tracked.csv"],
+            checksum_workers=0,
+            **kwargs,
+        )
+
+    assert not (ds.get_root("tracks_raw") / "index.csv").exists()
+    assert not (ds.get_root("labels_raw") / "index.csv").exists()
+
+
+@pytest.mark.parametrize("method", ["scan_tracks", "scan_labels"])
+def test_zero_checksum_workers_is_refused_by_a_source_scan(
+    tmp_path: Path, method: str
+) -> None:
+    ds = _recordings_dataset(tmp_path)
+
+    with pytest.raises(ValueError, match="checksum_workers"):
+        _ = getattr(ds, method)(checksum_workers=0)

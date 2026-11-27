@@ -344,6 +344,7 @@ from .pipeline.tracks_raw_index import (
     TracksRawIndexScope,
     build_tracks_raw_row,
     companion_records,
+    companions_cell,
     companions_of,
     frame_from_rows as _tracks_frame_from_rows,
     group_for_path,
@@ -486,21 +487,69 @@ def _md5(path: Path, chunk=1 << 20) -> str:
     return h.hexdigest()
 
 
-def _carried_md5(
-    carried: Mapping[Path, str], compute_md5: bool
-) -> Callable[[Path], str]:
-    """The checksum a scan records for a file: carried when known, else read.
+def _unhashed(path: Path) -> str:
+    """The digest of a scan phase that reads no file."""
+    _ = path
+    return ""
 
-    ``""`` when *compute_md5* is off. *carried* is :meth:`Dataset._prior_digests`,
-    keyed by resolved path; a hit is a digest whose file has not moved.
+
+@dataclass(frozen=True)
+class _RawScanPlan:
+    """What a raw scan found, before any file is checksummed or written.
+
+    Attributes:
+        rows: One row per file the scan indexes, in file order. Neither a row nor
+            its companions carry a digest yet.
+        claim: What the pass replaces: the claim given, widened by the files the
+            walk found and the ones it skipped.
     """
 
-    def digest(path: Path) -> str:
-        if not compute_md5:
-            return ""
-        return carried.get(path.resolve()) or _md5(path)
+    rows: list[TracksRawIndexRow]
+    claim: ScanClaim
 
-    return digest
+
+def _require_checksum_workers(workers: int) -> None:
+    """Refuse a worker count below one.
+
+    Raises:
+        ValueError: *workers* is below 1.
+    """
+    if workers < 1:
+        msg = f"checksum_workers must be at least 1, got {workers}"
+        raise ValueError(msg)
+
+
+def _digests(
+    paths: Iterable[Path], carried: Mapping[Path, str], *, workers: int
+) -> dict[Path, str]:
+    """The checksum of each distinct file of *paths*, by resolved path.
+
+    A file with a carried digest keeps it. Every other file is read once, however
+    many of *paths* name it, so a file that is one row's source and another row's
+    companion is hashed once. The files are taken in path order, through a
+    thread pool of *workers* threads when *workers* is above one and inline
+    otherwise. ``hashlib`` releases the GIL while it hashes a chunk, so the reads
+    overlap, and a read of a slow share is waiting rather than computing.
+
+    The result is the same for any *workers*: each digest is a function of its
+    file, and the dict is built in path order whatever order the reads end in.
+
+    Args:
+        paths: The files to checksum, in any order and with repeats.
+        carried: Digests already known, by resolved path, as
+            :meth:`Dataset._prior_digests` returns them.
+        workers: The threads that read files. One reads in the calling thread.
+    """
+    distinct = sorted({path.resolve() for path in paths})
+    known = {path: carried[path] for path in distinct if carried.get(path)}
+    unread = [path for path in distinct if path not in known]
+    if workers > 1 and len(unread) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            read = list(executor.map(_md5, unread))
+    else:
+        read = [_md5(path) for path in unread]
+    computed = dict(zip(unread, read, strict=True))
+    return {path: known.get(path) or computed[path] for path in distinct}
 
 
 def _companion_rule_of(src_format: str) -> CompanionRule:
@@ -4367,6 +4416,7 @@ class Dataset:
         only: Sequence[str] = (),
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
+        checksum_workers: int = 1,
     ) -> RawScanResult:
         """Rescan every declared tracks source and rewrite ``tracks_raw/index.csv``.
 
@@ -4388,12 +4438,20 @@ class Dataset:
             The index written, and what the scan dropped: a source whose path is
             missing, a listed file that a rule skips, and a group pattern that
             matched no file. A source whose path is missing keeps its rows.
+
+        *checksum_workers* is the threads that read files for their checksums,
+        sources and companions together. A throughput setting: it is in no manifest
+        field and no identifier, and the rows and digests equal those of one worker.
+
+        Raises:
+            ValueError: *checksum_workers* is below 1.
         """
         return self._scan_raw_sources(
             "tracks",
             only=only,
             prune_unsourced=prune_unsourced,
             index_filename=index_filename,
+            checksum_workers=checksum_workers,
         )
 
     def scan_labels(
@@ -4402,17 +4460,20 @@ class Dataset:
         only: Sequence[str] = (),
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
+        checksum_workers: int = 1,
     ) -> RawScanResult:
         """Rescan every declared labels source and rewrite ``labels_raw/index.csv``.
 
         Named for the ``labels`` source kind rather than the ``labels_raw`` root,
-        for the reason given on :meth:`scan_tracks`.
+        for the reason given on :meth:`scan_tracks`, and takes the same
+        *checksum_workers*.
         """
         return self._scan_raw_sources(
             "labels",
             only=only,
             prune_unsourced=prune_unsourced,
             index_filename=index_filename,
+            checksum_workers=checksum_workers,
         )
 
     def _scan_raw_sources(
@@ -4422,6 +4483,7 @@ class Dataset:
         only: Sequence[str],
         prune_unsourced: bool,
         index_filename: str,
+        checksum_workers: int,
     ) -> RawScanResult:
         """Drive the raw scan for *kind*, one declared source at a time.
 
@@ -4431,6 +4493,7 @@ class Dataset:
         preserves the first source's rows instead of erasing them.
 
         Raises:
+            ValueError: If *checksum_workers* is below 1.
             KeyError: If *only* names a source that is not declared.
             ValueError: If no source of this kind is declared.
             SourcesShareFiles: If a selected source and a declared source of
@@ -4439,6 +4502,7 @@ class Dataset:
                 source it leaves out shares a folder with a source it scans.
                 Nothing is written.
         """
+        _require_checksum_workers(checksum_workers)
         selected = self.scan_sources(kind, only=only)
         if not selected:
             msg = (
@@ -4491,6 +4555,7 @@ class Dataset:
                 claim=self._rescan_claim(source, others),
                 findings=log,
                 other_sources=others.claim,
+                checksum_workers=checksum_workers,
                 # Only the first pass may prune: a later one would see the
                 # earlier sources' rows as unclaimed and delete what this same
                 # scan had just written. Counted over the per-sequence sources
@@ -9884,6 +9949,7 @@ class Dataset:
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
+        checksum_workers: int = 1,
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
@@ -9967,6 +10033,11 @@ class Dataset:
             match, so a re-index re-hashes only what changed. Pass False for a
             corpus too large or too slow to hash and accept an unestablished
             composition: an honest empty, not a wrong value.
+        checksum_workers : int
+            Threads that read files for their checksums, sources and companions
+            together. A throughput setting: it is in no manifest field and no
+            identifier, and the rows and digests equal those of one worker.
+            Raises ``ValueError`` below 1.
         """
         converter = get_track_converter(src_format)
         return self._index_raw(
@@ -9996,6 +10067,7 @@ class Dataset:
             group_path_root=group_path_root,
             findings=findings,
             other_sources=other_sources,
+            checksum_workers=checksum_workers,
         )
 
     def _index_raw(
@@ -10022,6 +10094,7 @@ class Dataset:
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
+        checksum_workers: int = 1,
     ) -> Path:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
@@ -10054,16 +10127,77 @@ class Dataset:
         row alone. It is called only when the scan skips a file, because building
         those claims walks the other sources. A scan passes the claim its *claim*
         filters its folder by, so the two agree.
+
+        *checksum_workers* is the threads that read files for their checksums, a
+        throughput setting: it enters no manifest field and no identifier, and
+        the rows and digests equal those of one worker. The scan plans its rows
+        (:meth:`_plan_raw_rows`), then checksums and writes them
+        (:meth:`_commit_raw_rows`).
+
+        Raises:
+            ValueError: *checksum_workers* is below 1.
         """
-        out_csv = self.get_root(target_root) / index_filename
-        rows: list[TracksRawIndexRow] = []
-        # Advisory, and read before the lock like the media probe phase's caches:
-        # a stale entry costs a re-hash, never a wrong digest, because every hit
-        # is re-validated against the file's current size and mtime.
-        digest = _carried_md5(
-            self._prior_digests(out_csv) if compute_md5 else {}, compute_md5
+        _require_checksum_workers(checksum_workers)
+        plan = self._plan_raw_rows(
+            target_root=target_root,
+            search_dirs=search_dirs,
+            patterns=patterns,
+            src_format=src_format,
+            sequence_from_stem=sequence_from_stem,
+            companion_files=companion_files,
+            recursive=recursive,
+            multi_sequences_per_file=multi_sequences_per_file,
+            group_from=group_from,
+            group_pattern=group_pattern,
+            group_from_path=group_from_path,
+            exclude_patterns=exclude_patterns,
+            claim=claim,
+            group_path_pattern=group_path_pattern,
+            group_path_root=group_path_root,
+            findings=findings,
+            other_sources=other_sources,
+        )
+        return self._commit_raw_rows(
+            plan,
+            target_root=target_root,
+            composition_writer=composition_writer,
+            index_filename=index_filename,
+            compute_md5=compute_md5,
+            prune_unsourced=prune_unsourced,
+            checksum_workers=checksum_workers,
         )
 
+    def _plan_raw_rows(
+        self,
+        *,
+        target_root: str,
+        search_dirs: Iterable[str | Path],
+        patterns: Iterable[str] | str,
+        src_format: str,
+        sequence_from_stem: Callable[[str], str],
+        companion_files: CompanionRule,
+        recursive: bool = True,
+        multi_sequences_per_file: bool = False,
+        group_from: Optional[str] = None,
+        group_pattern: Optional[str] = None,
+        group_from_path: Optional[Callable[[Path], str]] = None,
+        exclude_patterns: Optional[Iterable[str]] = None,
+        claim: ScanClaim | None = None,
+        group_path_pattern: Optional[str] = None,
+        group_path_root: Optional[Path] = None,
+        findings: FindingLog | None = None,
+        other_sources: Callable[[], ScanClaim] | None = None,
+    ) -> _RawScanPlan:
+        """Walk a source and plan its rows, reading no file's content and writing nothing.
+
+        Each row has its group, sequence, size, modification time and the
+        companions its converter lists, each companion with its size and
+        modification time. No row has a checksum. Files the grouping rule misses
+        are reported to *findings* and left out. The plan's claim is *claim*, or
+        the claim over the searched directories, widened by the files the walk
+        found and the ones it skipped, as the media scan widens its own.
+        """
+        rows: list[TracksRawIndexRow] = []
         # Materialized once: `search_dirs` is an Iterable read both here and by
         # the claim below, so a generator argument left the claim empty.
         search = [user_path(d) for d in search_dirs]
@@ -10137,10 +10271,11 @@ class Dataset:
                     group=grp,
                     sequence=seq,
                     src_format=src_format,
-                    md5=digest(p),
                     # What a conversion reads is the stored file, which a
                     # symlink's target is, and what lies beside that.
-                    companions=companion_records(p.resolve(), companion_files, digest),
+                    companions=companion_records(
+                        p.resolve(), companion_files, _unhashed
+                    ),
                 )
             )
 
@@ -10183,6 +10318,34 @@ class Dataset:
                 ),
             ]
         )
+        return _RawScanPlan(rows=rows, claim=claim)
+
+    def _commit_raw_rows(
+        self,
+        plan: _RawScanPlan,
+        *,
+        target_root: str,
+        composition_writer: Callable[[list[dict[str, object]]], None],
+        index_filename: str,
+        compute_md5: bool,
+        prune_unsourced: bool,
+        checksum_workers: int,
+    ) -> Path:
+        """Checksum the rows of *plan*, merge them under the lock and write.
+
+        The rows, their companions and the carried digests are checksummed in one
+        call of :func:`_digests`, before the lock is taken. The merge replaces
+        what the plan's claim covers, parses every merged ``companions`` cell and
+        writes the index, then the compositions.
+        """
+        out_csv = self.get_root(target_root) / index_filename
+        rows = self._with_digests(
+            plan.rows,
+            out_csv,
+            compute_md5=compute_md5,
+            checksum_workers=checksum_workers,
+        )
+        claim = plan.claim
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         with index_lock(out_csv):
             committed = _read_tracks_raw_index(out_csv)
@@ -10210,6 +10373,49 @@ class Dataset:
         composition_writer(df.to_dict("records"))
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
+
+    def _with_digests(
+        self,
+        rows: Sequence[TracksRawIndexRow],
+        out_csv: Path,
+        *,
+        compute_md5: bool,
+        checksum_workers: int,
+    ) -> list[TracksRawIndexRow]:
+        """*rows* with the checksum of each source and each companion filled in.
+
+        One :func:`_digests` call covers every source and companion, so a file
+        listed twice is read once. A digest comes from the index at *out_csv*
+        while its file's size and mtime hold. That read is advisory and made
+        before the lock, like the media probe phase's caches: a stale entry costs
+        a re-hash, never a wrong digest, because every hit is re-validated
+        against the file's current size and mtime. A companion is looked up by the
+        resolved path of the file beside its source, as a carried digest is keyed,
+        so a companion that is a symlink takes its target's digest. Rows come back
+        in the order given, unchanged when *compute_md5* is off.
+        """
+        if not compute_md5:
+            return list(rows)
+        sources = [self.resolve_path(row["abs_path"]).resolve() for row in rows]
+        listed = [
+            [source.with_name(record.name).resolve() for record in companions_of(row)]
+            for source, row in zip(sources, rows, strict=True)
+        ]
+        digests = _digests(
+            [*sources, *(path for paths in listed for path in paths)],
+            self._prior_digests(out_csv),
+            workers=checksum_workers,
+        )
+        hashed: list[TracksRawIndexRow] = []
+        for row, source, companions in zip(rows, sources, listed, strict=True):
+            digested = row.copy()
+            digested["md5"] = digests[source]
+            digested["companions"] = companions_cell(
+                dataclasses.replace(record, md5=digests[path])
+                for record, path in zip(companions_of(row), companions, strict=True)
+            )
+            hashed.append(digested)
+        return hashed
 
     @staticmethod
     def _report_missed_files(
@@ -10362,6 +10568,7 @@ class Dataset:
         group_path_root: Optional[Path] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
+        checksum_workers: int = 1,
     ) -> Path:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
@@ -10387,6 +10594,10 @@ class Dataset:
 
         ``group_from_path`` is the same seam it is there -- a grouping that is a
         rule rather than a substring -- and carries the same contract.
+
+        ``checksum_workers`` is the threads that read files for their checksums, a
+        throughput setting in no manifest field and no identifier: the rows and
+        digests equal those of one worker. It raises ``ValueError`` below 1.
         """
         return self._index_raw(
             target_root="labels_raw",
@@ -10418,6 +10629,7 @@ class Dataset:
             group_path_root=group_path_root,
             findings=findings,
             other_sources=other_sources,
+            checksum_workers=checksum_workers,
         )
 
     def write_tracks_raw_index(
@@ -10472,11 +10684,7 @@ class Dataset:
         # only. The rows to preserve are re-read authoritatively there; this read
         # is advisory, and a stale entry costs a re-hash rather than a wrong
         # digest because every hit is re-validated against size and mtime.
-        digest = _carried_md5(
-            self._prior_digests(out_csv) if compute_md5 else {}, compute_md5
-        )
-
-        fresh: list[TracksRawIndexRow] = []
+        planned: list[TracksRawIndexRow] = []
         for scope in scope_list:
             companion_rule = _companion_rule_of(scope.src_format)
             for path, st in iter_track_files(
@@ -10485,7 +10693,7 @@ class Dataset:
                 recursive=recursive,
                 exclude_patterns=exc_list,
             ):
-                fresh.append(
+                planned.append(
                     build_tracks_raw_row(
                         path=path,
                         stat=st,
@@ -10493,12 +10701,14 @@ class Dataset:
                         group=scope.group,
                         sequence=scope.sequence,
                         src_format=scope.src_format,
-                        md5=digest(path),
                         companions=companion_records(
-                            path.resolve(), companion_rule, digest
+                            path.resolve(), companion_rule, _unhashed
                         ),
                     )
                 )
+        fresh = self._with_digests(
+            planned, out_csv, compute_md5=compute_md5, checksum_workers=1
+        )
 
         # --- Commit phase: cheap, and locked. ---
         # Preserve every existing row no scope directory covers. _row_under_dirs

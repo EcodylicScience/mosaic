@@ -489,6 +489,41 @@ def write_tracktor_recording(
     )
 
 
+def write_tracktor_recordings(
+    directory: Path,
+    count: int,
+    *,
+    frames: int = 6,
+    flies: int = 2,
+    write_csv: bool = True,
+) -> list[TracktorRecording]:
+    """Write *count* small Tracktor recordings, each a raw and a corrected table.
+
+    Each recording's stem names its own timestamp and replicate, so the files do
+    not collide and sort in the order written.
+
+    Args:
+        directory: Where to write. Created if absent.
+        count: The number of recordings.
+        frames: The frames of each recording.
+        flies: The flies of each recording.
+        write_csv: Whether each recording's raw table is written.
+
+    Returns:
+        The recordings, in the order written.
+    """
+    return [
+        write_tracktor_recording(
+            directory,
+            stem=f"2021111711{number:04d}_900s_no12-DGRP101-female-2to4-6-{number}",
+            frames=frames,
+            flies=flies,
+            write_csv=write_csv,
+        )
+        for number in range(1, count + 1)
+    ]
+
+
 def tracktor_dataset(
     root: Path,
     src_format: str,
@@ -1478,6 +1513,22 @@ def set_tracks_cell(
     )
     rows.loc[selected, column] = value
     rows.to_csv(path, index=False)
+
+
+def raw_index_files(root: Path) -> dict[str, str]:
+    """The text of a raw root's ``index.csv`` and ``sequences.csv``, without clocks.
+
+    The sequence index stamps each row with the time it was computed, which no two
+    scans share, so that column is dropped.
+
+    Args:
+        root: A ``tracks_raw`` or ``labels_raw`` root.
+    """
+    sequences = pd.read_csv(root / "sequences.csv", dtype=str, keep_default_na=False)
+    return {
+        "index.csv": (root / "index.csv").read_text(encoding="utf-8"),
+        "sequences.csv": sequences.drop(columns=["computed_at"]).to_csv(index=False),
+    }
 
 
 def set_companions_cell(index_path: Path, abs_path_suffix: str, cell: str) -> None:

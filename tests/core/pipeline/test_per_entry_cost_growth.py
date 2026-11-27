@@ -50,7 +50,7 @@ from tests.helpers import (
     count_property_reads,
     make_dataset,
     record_path_calls,
-    write_tracktor_recording,
+    write_tracktor_recordings,
 )
 
 ENTRIES = 1200
@@ -90,11 +90,7 @@ def _bulk_dataset(root: Path, entries: int) -> Dataset:
 def _tracktor_dataset(root: Path, entries: int) -> Dataset:
     dataset = make_dataset(root / f"tracktor{entries}", name=f"tracktor{entries}")
     raw = dataset.base_dir / "raw"
-    for index in range(entries):
-        stem = f"20211117{index:06d}_900s_no12-DGRP{101 + index % 40}-female-2to4-6-1"
-        _ = write_tracktor_recording(
-            raw, stem=stem, frames=20, flies=2, write_csv=False
-        )
+    _ = write_tracktor_recordings(raw, entries, frames=20, write_csv=False)
     _ = dataset.index_tracks_raw(
         [raw],
         patterns=["*_tracked_fixed_final.tsv"],

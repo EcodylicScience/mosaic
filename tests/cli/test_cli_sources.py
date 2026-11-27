@@ -7,6 +7,7 @@ where the dataset draws from, then rescan exactly that with no arguments at all.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -16,7 +17,14 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.manifest import TracksScanSource
-from tests.helpers import assert_tree_unchanged, copy_of, raw_source, tree_snapshot
+from tests.helpers import (
+    assert_tree_unchanged,
+    copy_of,
+    raw_index_files,
+    raw_source,
+    tree_snapshot,
+    write_tracktor_recordings,
+)
 
 runner = CliRunner()
 VideoWriter = Callable[..., None]
@@ -389,6 +397,48 @@ class TestScan:
         result = runner.invoke(app, ["scan", "-m", str(manifest)])
         assert result.exit_code == 0, result.output
         assert indexed(manifest) == {"one.mp4", "two.mp4"}
+
+    @staticmethod
+    def declare_recordings(tmp_path: Path) -> Path:
+        manifest = make_dataset(tmp_path)
+        _ = write_tracktor_recordings(tmp_path / "recordings", 4)
+        added = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(tmp_path / "recordings"), "--id", "recordings",
+             "--patterns", "*_tracked.csv", "--src-format", "tracktor_raw_csv"],
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+        return manifest
+
+    def test_checksum_workers_write_the_index_a_bare_scan_writes(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = self.declare_recordings(tmp_path)
+        assert runner.invoke(app, ["scan", "-m", str(manifest)]).exit_code == 0
+        raw_root = Dataset(manifest_path=manifest).load().get_root("tracks_raw")
+        bare = raw_index_files(raw_root)
+        for name in bare:
+            (raw_root / name).unlink()
+
+        result = runner.invoke(
+            app, ["scan", "-m", str(manifest), "--checksum-workers", "2"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert raw_index_files(raw_root) == bare
+
+    def test_zero_checksum_workers_is_a_usage_error(self, tmp_path: Path) -> None:
+        manifest = self.declare_recordings(tmp_path)
+
+        result = runner.invoke(
+            app, ["scan", "-m", str(manifest), "--checksum-workers", "0"]
+        )
+
+        assert result.exit_code == 2
+        assert "Invalidvaluefor'--checksum-workers'" in re.sub(
+            r"[\s\u2500-\u257f]+", "", result.output
+        )
 
     def test_only_restricts_the_pass(
         self, tmp_path: Path, write_cfr_mp4: VideoWriter
