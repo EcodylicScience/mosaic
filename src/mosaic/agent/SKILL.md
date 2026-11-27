@@ -601,6 +601,13 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `value_bins`. A bin on a column with another value on each row of a pair (`id1`, a
   directional column) makes `pairs: auto` read every row, and a bin on a symmetric
   column leaves it `once`.
+  `circmean` and `circstd` reduce a column of angles in radians: `circmean` gives the
+  mean direction in `[-pi, pi)` and `circstd` the circular standard deviation
+  (`scipy.stats.circmean` and `circstd`), each over the group's non-null values in
+  input row order, and NaN for a group with none. They read every row under any `pairs`
+  rule and are refused with `threshold` and with `transform: "abs"`. To summarize
+  angles in degrees, first make a radian column with `derive-columns`
+  (`deg2rad(angle_deg)`).
 - `neighbor-delta-response` writes one row per focal, neighbor and frame, with the
   neighbor's offset in the focal's frame (`neighbor_x` along the heading, `neighbor_y`
   to its left) and the focal's windowed response (`dx`, `dy`, `dt`, `dangle`,

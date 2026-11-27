@@ -8,6 +8,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
@@ -1419,6 +1420,60 @@ def test_first_pass_requires_its_order_column_only_for_first_pass() -> None:
 
     assert "stim" in _required_columns(first_pass)
     assert "stim" not in _required_columns(plain)
+
+
+# --- circmean and circstd ------------------------------------------------------------
+
+
+def test_circmean_and_circstd_equal_the_scipy_calls_over_the_entry() -> None:
+    angles = np.random.default_rng(3).uniform(-np.pi, np.pi, 12)
+    table = _timed_table(list(range(12)), [i / 10 for i in range(12)], angle=angles)
+
+    out = _apply({"columns": ["angle"], "aggs": ["circmean", "circstd"]}, table)
+
+    np.testing.assert_array_equal(
+        out["angle_circmean"], [stats.circmean(angles, high=np.pi, low=-np.pi)]
+    )
+    np.testing.assert_array_equal(out["angle_circstd"], [stats.circstd(angles)])
+
+
+def test_an_entry_of_null_angles_gets_nan_for_each_circular_statistic() -> None:
+    table = _timed_table([0, 1, 2], [0.0, 0.1, 0.2], angle=[np.nan] * 3)
+
+    out = _apply({"columns": ["angle"], "aggs": ["circmean", "circstd"]}, table)
+
+    np.testing.assert_array_equal(out["angle_circmean"], [np.nan])
+    np.testing.assert_array_equal(out["angle_circstd"], [np.nan])
+
+
+def test_an_entry_with_no_row_after_the_filter_has_a_nan_blank_row() -> None:
+    table = _timed_table([0, 1], [0.0, 0.1], angle=[0.5, 1.0])
+
+    out = _apply(
+        {
+            "columns": ["angle"],
+            "aggs": ["circmean", "circstd"],
+            "filter_expr": "angle > 5",
+        },
+        table,
+    )
+
+    np.testing.assert_array_equal(out["angle_circmean"], [np.nan])
+    np.testing.assert_array_equal(out["angle_circstd"], [np.nan])
+
+
+def test_circular_statistics_are_refused_with_a_threshold_or_the_absolute_value() -> (
+    None
+):
+    for agg in ("circmean", "circstd"):
+        with pytest.raises(ValueError, match=f"{agg}.*threshold"):
+            _ = SequenceAggregate(
+                params={"columns": ["angle"], "aggs": [agg], "threshold": 0.5}
+            )
+        with pytest.raises(ValueError, match=f"{agg}.*transform"):
+            _ = SequenceAggregate(
+                params={"columns": ["angle"], "aggs": [agg], "transform": "abs"}
+            )
 
 
 # --- labels of the tracks table ------------------------------------------------------

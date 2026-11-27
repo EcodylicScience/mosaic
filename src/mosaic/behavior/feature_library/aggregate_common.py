@@ -31,6 +31,11 @@ row's seconds, for ``duration`` and ``share``, divide among the bins it spans.
 passes the ``threshold`` comparison, NaN when none does. It reads every row
 under any ``pairs`` rule and skips a row whose ``order_col`` is null.
 
+``circmean`` and ``circstd`` reduce each group's angles in radians with
+``scipy.stats``, from the non-null values in input row order, NaN for a group
+with none. They read every row under any ``pairs`` rule and are refused with
+``threshold`` and with ``transform: "abs"``.
+
 ``subsets`` names filters that each reduce the rows they keep, after
 ``filter_expr``, and ``subset`` joins the reduction keys after the caller's
 keys (:data:`SUBSET`). A subset that keeps no row has no row in
@@ -80,6 +85,8 @@ type Aggregation = Literal[
     "duration",
     "share",
     "first_pass",
+    "circmean",
+    "circstd",
 ]
 
 type ThresholdOp = Literal[">", ">=", "<", "<="]
@@ -98,6 +105,9 @@ class AggregationRule:
     combines: Literal["partials", "values"]
 
 
+CIRCULAR_AGGS: Final[frozenset[Aggregation]] = frozenset({"circmean", "circstd"})
+"""The aggregations that reduce angles in radians with ``scipy.stats``."""
+
 AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
     {
         "mean": AggregationRule("partials"),
@@ -110,6 +120,8 @@ AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
         "duration": AggregationRule("partials"),
         "share": AggregationRule("partials"),
         "first_pass": AggregationRule("partials"),
+        "circmean": AggregationRule("partials"),
+        "circstd": AggregationRule("partials"),
     }
 )
 """Every member of :data:`Aggregation` and how its groups combine across entries."""
@@ -125,8 +137,8 @@ _AGGS_DESCRIPTION = (
     "The aggregations applied across the rows that the feature reduces "
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
-    "are mean, median, min, max, std, sum, count, duration, share and "
-    "first_pass. A null "
+    "are mean, median, min, max, std, sum, count, duration, share, "
+    "first_pass, circmean and circstd. A null "
     "value (NaN, None or NA) is skipped for every mode, and count counts "
     "non-null values. With threshold, a null value stays null: it passes no "
     "comparison, so mean skips it, count does not count it and duration does "
@@ -150,7 +162,12 @@ _AGGS_DESCRIPTION = (
     "against threshold, after transform, or NaN when no row does: a null "
     "value passes nothing, infinity passes a comparison it satisfies, and a "
     "row with a null order_col value is skipped. It reads every row under any "
-    "pairs rule, and is refused without threshold."
+    "pairs rule, and is refused without threshold. circmean and circstd "
+    "reduce angles in radians: scipy.stats.circmean(values, high=pi, low=-pi), "
+    "a value in [-pi, pi), and scipy.stats.circstd(values), each over the "
+    "group's non-null values in input row order, or NaN when the group has "
+    "none. They read every row under any pairs rule, and are refused with "
+    "threshold and with transform abs."
 )
 
 _CATEGORIES_DESCRIPTION = (
@@ -617,6 +634,28 @@ class AggregateParams(Params):
         return self
 
     @model_validator(mode="after")
+    def _refuse_what_a_circular_statistic_cannot_read(self) -> Self:
+        """Refuse ``circmean`` and ``circstd`` with ``threshold`` or the absolute value.
+
+        Both reduce the angles as they are, and ``threshold`` and the absolute
+        value turn them into other quantities.
+        """
+        if not has_fields(self, "aggs", "threshold", "transform"):
+            return self
+        for agg in (name for name in self.aggs if name in CIRCULAR_AGGS):
+            if self.threshold is not None:
+                raise ValueError(
+                    f"{agg} reduces angles as they are and cannot be combined "
+                    "with threshold"
+                )
+            if self.transform == "abs":
+                raise ValueError(
+                    f"{agg} reduces angles as they are and cannot be combined "
+                    "with transform 'abs'"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _refuse_a_threshold_comparison_without_a_threshold(self) -> Self:
         """Refuse a ``threshold_op`` other than ``>`` when ``threshold`` is unset."""
         if not has_fields(self, "threshold", "threshold_op"):
@@ -827,6 +866,28 @@ def _plain_values(values: pd.Series) -> np.ndarray:
     ):
         return values.to_numpy(dtype=float, na_value=np.nan)
     return values.to_numpy()
+
+
+def _circular_statistic(agg: Aggregation) -> Callable[[pd.Series], float]:
+    """The reduction of one group's angles by ``circmean`` or ``circstd``.
+
+    The reduction passes the group's non-null values, in the order its rows
+    have, to ``scipy.stats``, imported when it first runs, and gives NaN for a
+    group with none, without calling SciPy.
+    """
+
+    def reduce(values: pd.Series) -> float:
+        angles = values.to_numpy(dtype=np.float64)
+        angles = angles[~np.isnan(angles)]
+        if angles.size == 0:
+            return float("nan")
+        from scipy import stats
+
+        if agg == "circmean":
+            return float(stats.circmean(angles, high=np.pi, low=-np.pi))
+        return float(stats.circstd(angles))
+
+    return reduce
 
 
 def _is_null(value: object) -> bool:
@@ -1651,6 +1712,10 @@ def reduce_prepared(
                     .assign(_first=work[_ORDER_COLUMN].where(passing))
                     .groupby(group_keys, sort=True)["_first"]
                     .min()
+                )
+            elif agg in CIRCULAR_AGGS:
+                result = work.groupby(group_keys, sort=True)[f"_v{index}"].agg(
+                    _circular_statistic(agg)
                 )
             else:
                 source = halved if once and counting else work

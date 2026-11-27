@@ -45,6 +45,9 @@ No run id or output moves.
   `subset`, and `dense`, which writes every bin. Their run ids stay while `value_bins`
   is unset and `dense` is false. `pairs: auto` reads every row when a binned column is
   not declared symmetric.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `circmean`
+  and `circstd` aggregations for angles in radians. Their run ids stay while neither is
+  in `aggs`.
 
 ## Unreleased: features that read only results compute in every track space
 

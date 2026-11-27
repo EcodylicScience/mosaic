@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from numpy.typing import NDArray
+from scipy import stats
 
 from mosaic.behavior.feature_library.aggregate_common import (
     AGGREGATIONS,
@@ -94,6 +95,8 @@ def test_the_table_assigns_each_aggregation_its_combination() -> None:
         "duration",
         "share",
         "first_pass",
+        "circmean",
+        "circstd",
     }
     assert values == {"median"}
 
@@ -1675,3 +1678,217 @@ def test_value_bins_and_dense_leave_the_identity_dump_while_unset() -> None:
     assert dense.identity_dump()["dense"] is True
     assert len({str(p.identity_dump()) for p in (one, dense, reopened, closed)}) == 4
     assert ordered.identity_dump() != swapped.identity_dump()
+
+
+# --- circmean and circstd -------------------------------------------------------------
+
+
+def _angles(count: int = 60, seed: int = 11) -> pd.DataFrame:
+    """Two sequences' rows in an interleaved order, with random angles in radians."""
+    generator = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": np.where(generator.random(count) < 0.5, "A", "B"),
+            "id": 0,
+            "frame": np.arange(count),
+            "time": np.arange(count) / 10,
+            "angle": generator.uniform(-np.pi, np.pi, count),
+        }
+    )
+
+
+def _circular_params(**fields: object) -> AggregateParams:
+    return AggregateParams.model_validate(
+        {"columns": ["angle"], "aggs": ["circmean", "circstd"], **fields}
+    )
+
+
+def test_circmean_and_circstd_equal_the_scipy_calls_on_the_rows_in_input_order() -> (
+    None
+):
+    table = _angles()
+
+    out = reduce_column(
+        table, _circular_params(), KEYS, who=WHO, pairs="each_perspective"
+    )
+
+    mean: list[float] = []
+    spread: list[float] = []
+    for sequence in ("A", "B"):
+        values = table.loc[table["sequence"] == sequence, "angle"].to_numpy()
+        mean.append(float(stats.circmean(values, high=np.pi, low=-np.pi)))
+        spread.append(float(stats.circstd(values)))
+    assert out["sequence"].tolist() == ["A", "B"]
+    np.testing.assert_array_equal(out["angle_circmean"], mean)
+    np.testing.assert_array_equal(out["angle_circstd"], spread)
+    assert out["angle_circmean"].dtype == np.float64
+    assert out["angle_circstd"].dtype == np.float64
+
+
+def test_circular_statistics_read_the_rows_in_the_order_the_table_holds_them() -> None:
+    table = _angles(count=200, seed=5)
+    shuffled = table.sample(frac=1.0, random_state=3)
+    params = _circular_params()
+
+    out = reduce_column(shuffled, params, ["group"], who=WHO, pairs="each_perspective")
+
+    values = shuffled["angle"].to_numpy()
+    np.testing.assert_array_equal(
+        out["angle_circmean"], [stats.circmean(values, high=np.pi, low=-np.pi)]
+    )
+    np.testing.assert_array_equal(out["angle_circstd"], [stats.circstd(values)])
+
+
+def test_a_null_angle_is_skipped_and_an_all_null_group_is_nan() -> None:
+    table = _angles(count=30, seed=2)
+    table.loc[table["sequence"] == "B", "angle"] = np.nan
+    table.loc[table.index[table["sequence"] == "A"][:3], "angle"] = np.nan
+
+    out = reduce_column(
+        table, _circular_params(), KEYS, who=WHO, pairs="each_perspective"
+    )
+
+    kept = table.loc[table["sequence"] == "A", "angle"].dropna().to_numpy()
+    np.testing.assert_array_equal(
+        out["angle_circmean"],
+        [stats.circmean(kept, high=np.pi, low=-np.pi), np.nan],
+    )
+    np.testing.assert_array_equal(out["angle_circstd"], [stats.circstd(kept), np.nan])
+
+
+def test_an_empty_group_does_not_call_scipy(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*args: object, **kwargs: object) -> float:
+        raise AssertionError("scipy was called for an empty group")
+
+    monkeypatch.setattr(stats, "circmean", refuse)
+    monkeypatch.setattr(stats, "circstd", refuse)
+    table = _angles(count=6)
+    table["angle"] = pd.array([None] * 6, dtype="Float64")
+
+    out = reduce_column(
+        table, _circular_params(), ["group"], who=WHO, pairs="each_perspective"
+    )
+
+    np.testing.assert_array_equal(out["angle_circmean"], [np.nan])
+    np.testing.assert_array_equal(out["angle_circstd"], [np.nan])
+
+
+def test_a_nullable_column_gives_the_same_statistics_as_its_float_values() -> None:
+    table = _angles(count=24, seed=9)
+    nullable = table.assign(angle=table["angle"].astype("Float64"))
+    params = _circular_params()
+
+    plain = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+    out = reduce_column(nullable, params, KEYS, who=WHO, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(out, plain, check_exact=True)
+
+
+def test_circmean_and_circstd_read_every_row_under_any_pairs_rule() -> None:
+    generator = np.random.default_rng(4)
+    angles = generator.uniform(-np.pi, np.pi, 8)
+    table = pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": "S",
+            "id1": 0,
+            "id2": 1,
+            "perspective": np.tile([0, 1], 4),
+            "frame": np.repeat(np.arange(4), 2),
+            "time": np.repeat(np.arange(4), 2) / 10,
+            "angle": angles,
+        }
+    )
+    params = _circular_params()
+
+    for pairs in ("once", "each_perspective"):
+        out = reduce_column(table, params, KEYS, who=WHO, pairs=pairs)
+        np.testing.assert_array_equal(
+            out["angle_circmean"],
+            [stats.circmean(angles, high=np.pi, low=-np.pi)],
+        )
+        np.testing.assert_array_equal(out["angle_circstd"], [stats.circstd(angles)])
+
+
+def test_a_pool_of_entries_reduces_the_rows_of_its_parts_in_their_order() -> None:
+    first = _angles(count=20, seed=1).assign(group="A")
+    second = _angles(count=25, seed=2).assign(group="B")
+    params = _circular_params()
+    pool = ["sequence"]
+
+    parts = [prepare_rows(table, params, pool, who=WHO) for table in (first, second)]
+    pooled = reduce_prepared(combine_prepared(parts), params, pairs="each_perspective")
+
+    inline = reduce_column(
+        pd.concat([first, second], ignore_index=True),
+        params,
+        pool,
+        who=WHO,
+        pairs="each_perspective",
+    )
+    pd.testing.assert_frame_equal(pooled, inline, check_exact=True)
+
+
+def test_each_value_bin_takes_the_statistics_of_its_own_rows() -> None:
+    table = _angles(count=40, seed=8)
+    params = _circular_params(value_bins=[{"column": "time", "edges": [0.0, 2.0, 4.0]}])
+
+    out = reduce_column(table, params, ["group"], who=WHO, pairs="each_perspective")
+
+    low = table.loc[table["time"] < 2.0, "angle"].to_numpy()
+    high = table.loc[
+        (table["time"] >= 2.0) & (table["time"] <= 4.0), "angle"
+    ].to_numpy()
+    np.testing.assert_array_equal(
+        out["angle_circmean"],
+        [stats.circmean(part, high=np.pi, low=-np.pi) for part in (low, high)],
+    )
+    np.testing.assert_array_equal(
+        out["angle_circstd"], [stats.circstd(part) for part in (low, high)]
+    )
+
+
+def test_overlapping_subsets_each_take_the_statistics_of_their_own_rows() -> None:
+    table = _angles(count=50, seed=13)
+    params = _circular_params(subsets={"early": "time < 3.0", "late": "time >= 2.0"})
+
+    out = reduce_column(table, params, ["group"], who=WHO, pairs="each_perspective")
+
+    early = table.loc[table["time"] < 3.0, "angle"].to_numpy()
+    late = table.loc[table["time"] >= 2.0, "angle"].to_numpy()
+    overlap = table.loc[(table["time"] >= 2.0) & (table["time"] < 3.0)]
+    assert not overlap.empty
+    assert out["subset"].tolist() == ["early", "late"]
+    np.testing.assert_array_equal(
+        out["angle_circmean"],
+        [stats.circmean(part, high=np.pi, low=-np.pi) for part in (early, late)],
+    )
+    np.testing.assert_array_equal(
+        out["angle_circstd"], [stats.circstd(part) for part in (early, late)]
+    )
+
+
+def test_circular_statistics_are_refused_with_a_threshold() -> None:
+    for agg in ("circmean", "circstd"):
+        with pytest.raises(ValueError, match=f"{agg}.*threshold"):
+            _ = AggregateParams(columns=["angle"], aggs=[agg], threshold=0.5)
+
+
+def test_circular_statistics_are_refused_with_the_absolute_transform() -> None:
+    for agg in ("circmean", "circstd"):
+        with pytest.raises(ValueError, match=f"{agg}.*transform"):
+            _ = AggregateParams(columns=["angle"], aggs=[agg], transform="abs")
+
+
+def test_other_aggregations_keep_a_threshold_and_a_transform() -> None:
+    _ = AggregateParams(columns=["angle"], aggs=["mean"], threshold=0.5)
+    _ = AggregateParams(columns=["angle"], aggs=["mean"], transform="abs")
+
+
+def test_a_blank_reduction_writes_nan_for_each_circular_statistic() -> None:
+    out = blank_reduction(_angles(count=4), _circular_params(), KEYS)
+
+    for name in ("angle_circmean", "angle_circstd"):
+        assert out[name].dtype == np.float64
+        assert out[name].isna().all()

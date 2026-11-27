@@ -156,6 +156,15 @@ may not differ between the bins of a group under `dense`, and `dense` needs
 makes `pairs: auto` read every row, as a filter does, and a bin on a symmetric pair
 column leaves it `once`.
 
+`circmean` and `circstd` reduce a column of angles in radians: `circmean` writes
+`<column>_circmean`, the mean direction in `[-pi, pi)` (`scipy.stats.circmean` with
+`high=pi` and `low=-pi`), and `circstd` writes `<column>_circstd`, the circular standard
+deviation (`scipy.stats.circstd`). Each reads the group's non-null values in the order
+of the input rows, so the last bit of a result depends on that order, and gives NaN for
+a group with none. Both read every row under any `pairs` rule, and are refused with
+`threshold` and with `transform: "abs"`. A column in degrees goes through
+`derive-columns` first, for example `deg2rad(angle_deg)`.
+
 **Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
 the same value on every row of the sequence, whatever the row's id. It reads tracks with
 or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's
