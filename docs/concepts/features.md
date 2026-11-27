@@ -32,22 +32,34 @@ per *ordered* pair per frame. They share only `frame`, so merging them would pai
 individual with every pair and fit downstream on rows that never existed.
 
 mosaic refuses that merge and names both levels rather than performing it, with one
-exception: a pair consumer can read per-individual results beside pair results.
+exception: a pair consumer can read per-individual results beside pair results. A table
+that names nobody joins by its bins, its arena or the entry
+([below](#tables-that-name-nobody)).
+
+Put the input with the finest rows first. A feature that emits `as-input` takes its
+level from input 0, and the merge keeps input 0's row order.
 
 ### Individual results on pair rows
 
 A feature whose `emits` is `as-input` or `pair` (`xgboost`, `sequence-classifier`,
 `temporal-stack`, `pair-wavelet`, the global models and the other pair features) reads
 an individual-level input after a pair-level input 0 by joining it onto the pair rows
-twice. Each pair row gets the focal's values and the other individual's values, on the
-row's frame, as `<column>__id1` and `<column>__id2`. `speed` from `speed-angvel` becomes
-`speed__id1` and `speed__id2` beside `pair-egocentric`'s columns. Nothing is written to
-disk for the join, and the output is keyed by the pair rows.
+twice. Each pair row gets the focal's values and the other individual's values as
+`<column>__id1` and `<column>__id2`, joined on the row's frame (or time) and the
+individual. `speed` from `speed-angvel` becomes `speed__id1` and `speed__id2` beside
+`pair-egocentric`'s columns. Nothing is written to disk for the join, and the output is
+keyed by the pair rows.
+
+Pair rows and an individual input that share no frame or time join on the individual
+alone, plus the bins or the arena that both have. A binned `individual-aggregate` widens
+onto a binned pair summary this way: each pair's row of a bin gets each individual's
+values of that bin.
 
 - Put the pair input first. An individual-level input 0 ahead of a pair input is
   refused, because folding pair rows onto individuals needs a choice among partners.
 - A pair row whose `id1` or `id2` has no row in the individual input at that frame is
-  dropped. An individual input that repeats a `(frame, id)` is refused.
+  dropped. An individual input that repeats a key row, a `(frame, id)` or an `id` with
+  its bins or arena, is refused.
 - Only the individual input's measurements are widened. Its `id`, `fps`, `label` and the
   other identity and bookkeeping columns are dropped.
 - If two inputs would give one widened name, the later one is numbered by its position
@@ -60,6 +72,39 @@ disk for the join, and the output is keyed by the pair rows.
   individual. A model that keeps every entry in memory, as `sequence-classifier` does,
   pays that for each entry it trains on. Name the measurements to keep with the
   consumer's `columns` param where it has one.
+
+### Tables that name nobody
+
+A table with none of `id`, `id1` and `id2` describes a recording, an arena or a bin
+and not an individual. `sequence-aggregate` and the collective measures write such
+tables. These rules apply to one that shares no `frame` or `time` with the other input.
+A per-frame collective that shares them, as `frame-aggregate` writes, joins on them like
+any input, plus the bins or the arena that both have. A table that shares none joins by
+the narrowest key it can:
+
+- Both inputs have `bin_start` and `bin_end`, or `arena`: they join on those columns,
+  and the key stays one column. A binned `individual-aggregate` beside a binned
+  `sequence-aggregate` gives each individual's row of a bin the recording's value of
+  that bin.
+- Otherwise the table joins by the entry: its row is repeated onto every row of the
+  other input within the entry. An `individual-aggregate` beside a `sequence-aggregate`
+  without `bin_s` gives each fish row its recording's value. Two such tables join by
+  the entry where the one without bins or arena has one row.
+- A table joined this way has one row per key: one per bin, one per arena, or one for
+  the entry. Where both sides have more than one row the merge is refused.
+- A key must hold a value. A row whose `bin_start`, `bin_end` or `arena` is empty is
+  refused, and so is a row of the other input that has no row with its key.
+- A table that names nobody and has bins or an arena, beside rows that lack them, is
+  refused, because its value cannot be repeated onto rows it does not describe. A
+  per-bin table cannot join per-frame rows, and a per-arena table needs rows that
+  carry `arena`.
+- A `subgroup_col` names a subgroup, and a subgroup does not join. A table with one
+  row per subgroup joins by the entry where the other side has one row, and is refused
+  where both have more. Validation cautions about it, and the run decides by rows.
+- An entry in which such a table holds no rows fails as an entry error where it shares
+  no `frame` or `time` with the inputs that loaded rows, since they would be written
+  without its columns. An empty table that shares them is left out. A run whose table
+  is empty at every entry fails with all entries lost.
 
 ### What identifies a pair row
 

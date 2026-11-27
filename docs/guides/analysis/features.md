@@ -714,6 +714,14 @@ pair result put first: each pair row gets the focal's columns as `<column>__id1`
 the other's as `<column>__id2`. [Individual results on pair
 rows](../../concepts/features.md#individual-results-on-pair-rows) gives the rules.
 
+A table that names nobody and shares no `frame` or `time` with the other input, such as
+a `sequence-aggregate` output, joins by its bins, its arena or the entry: both inputs
+with `bin_start` and `bin_end`, or `arena`, join on them, and otherwise its row is
+repeated onto every row of the entry. It must have one row per key, and the input with
+the finest rows goes first. A table that names nobody and shares `frame` or `time` joins
+on them like any input. [Tables that name
+nobody](../../concepts/features.md#tables-that-name-nobody) gives the cases.
+
 Two pair results join one-to-one only when both carry `perspective`, which is what
 separates the two orderings of a pair. [What identifies a pair
 row](../../concepts/features.md#what-identifies-a-pair-row) has the key and why every

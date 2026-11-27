@@ -8,6 +8,59 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: entry-key join
+
+No run id moves, no feature `version` changes, and `FEATURE_IDENTITY_SCHEME` stays at
+`"6"`. A step whose inputs both have `bin_start`, `bin_end` or `arena` joins on them:
+its output has no `<key>__<n>` copy of the key, and rows whose keys differ between the
+inputs do not match. Each entry records the keys it joined (`consumed_summary_join`).
+Run `mosaic reconcile --apply`: it marks each entry written before this release that
+the new rule merges differently, and status then reports its step as due. A run
+recomputes such an entry once in any case, and status reports the run as reconcile
+pending until reconcile has run. A joined summary key that is empty (NaN) on a side
+refuses the merge. The marks and the pending note appear once the identity scheme
+reaches `"7"`, and are inert before it.
+
+Joins that are legal:
+
+- Inputs that share no alignment column join on the summary keys that both have, or by
+  the entry where one side names nobody (none of `id`, `id1`, `id2`). A binned
+  `individual-aggregate` beside a binned `sequence-aggregate` joins on the bins, and
+  without `bin_s` the recording's row joins every individual's row, as in a
+  `derive-columns` step that reads both. A per-frame table beside a per-entry collective
+  joins by the entry, and so do two unidentified tables where the one without bins or
+  arena has one row.
+- An individual-level input widens onto pair rows on `id` plus the summary keys both
+  sides have where the two share no frame or time.
+- The side that is repeated has one row per key, and a row of the other side with no
+  row for its key refuses. An unidentified table with a summary key that the other
+  input lacks refuses, since its value cannot be repeated onto rows it does not
+  describe.
+
+A step that joins an unidentified input fails an entry where that input holds no rows
+while another loaded rows and the input shares no frame or time with the inputs that
+loaded rows, with `BroadcastRowsMissing`, a sibling of `PairRowsMissing` under the new
+base `EntryRowsMissing`. The run is partial, a fit skips the entry, and a run whose
+input is empty at every entry raises `AllEntriesFailed`.
+
+`iter_manifest`'s `on_pairs_missing` is `on_rows_missing`, and the `skip_pairs_missing`
+helper is `skip_rows_missing`, with no alias. The callback receives either error.
+
+`mosaic reconcile` marks a row as `legacy:<keys>` before it raises the run's marker.
+It blocks a run whose inputs it cannot read as `unresolvable_pre_provenance`, and a run
+or variant whose new address is taken as `identity_shift_recompute`, with no move
+recorded. Each backup of an index has a unique name.
+
+Validation reads each join from the columns the inputs declare. It refuses an
+unidentified input with a summary key that the other input cannot have, where the other
+input names an individual or has bins or an arena. It cautions where the join by the
+entry takes a table that sets `subgroup_col` (the run decides by rows, and accepts the
+join where the other side has one row) and where an `as-input` step takes its level from
+an input that names nobody. The merged input names summary keys as the merge joins them.
+The built-in catalog's `tracks` declaration lists `arena` as conditional, which shows in
+its wire form, and a step that needs `arena` from the tracks is a caution, where it was
+a problem.
+
 ## Unreleased: position columns of the pair interaction filter
 
 No run id moves. `pair-interaction-filter` gains `position_columns`, the two

@@ -2638,6 +2638,31 @@ def test_the_tracks_of_a_recipe_may_hold_an_arena_that_no_table_guarantees() -> 
     assert "arena" in columns
 
 
+@pytest.mark.parametrize("feature", AGGREGATES)
+def test_a_subgroup_by_arena_over_the_tracks_is_a_caution_and_not_a_problem(
+    feature: str,
+) -> None:
+    """The tracks may hold an arena that no table guarantees, so the run decides."""
+    step: dict[str, JsonValue] = {
+        "id": "agg",
+        "type": "feature",
+        "feature": feature,
+        "inputs": [TRACKS_INPUT],
+        "params": {"columns": ["X"], "aggs": ["mean"], "subgroup_col": "arena"},
+    }
+
+    report = validation_report({"steps": [step]})
+
+    assert report.problems == ()
+    assert [(c.step, c.message) for c in report.cautions] == [
+        (
+            "agg",
+            "'arena' may be missing from its merged input. An input may contain it, "
+            "and none guarantees it",
+        )
+    ]
+
+
 # --- the join check over a recipe --------------------------------------------
 
 

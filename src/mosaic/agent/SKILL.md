@@ -790,7 +790,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   each column joined onto the pair rows as `<column>__id1` (the focal) and
   `<column>__id2` (the other). Put the pair input first; the reverse order, and any
   other consumer, is refused. Name the kept measurements in the consumer's `columns`
-  param, since the join doubles the individual table for every partner.
+  param, since the join doubles the individual table for every partner. A table that
+  names nobody (no `id`, `id1` or `id2`) and shares no `frame` or `time` with the other
+  input, such as a `sequence-aggregate` output, joins by its bins (`bin_start` and
+  `bin_end`), its `arena` or the entry, with one row per key: an `individual-aggregate`
+  beside a `sequence-aggregate` gives each individual's row the recording's value, or
+  its bin's. One that shares `frame` or `time` joins on them like any input. Put the
+  input with the finest rows first. A table that names nobody and has bins or an arena
+  that the other input lacks is refused, unless the other input also names nobody, has
+  no bins or arena, and has one row.
 - `arhmm` reads each individual, or each ordered pair and perspective of a pair table,
   as its own sequence, and writes `id1`, `id2`, `perspective`, `group` and `sequence`
   beside its states, so `fit-label-map` can score them (`prediction_column: syllable`).

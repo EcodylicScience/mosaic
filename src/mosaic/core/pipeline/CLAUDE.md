@@ -252,6 +252,28 @@ are in `graph/CLAUDE.md`.
   both sides is served, without a warning. Any other step records `""` and reads no
   input footer. The cell stays out of `run_id`
   (`tests/core/pipeline/test_run_feature.py`).
+- `mosaic reconcile` marks the rows of a multi-input run that were merged when a shared
+  summary key was kept as two columns (`FeatureReconciler._summary_marks`). It selects a
+  run whose marker `summary_join_unmarked` finds below `SUMMARY_JOIN_SCHEME` (`"7"`) and
+  whose inputs `may_share_summary_key`, and reads each entry's input footers once. A row
+  whose entry the current rule merges differently gets `legacy:<keys>`
+  (`LEGACY_SUMMARY_JOIN`) in `consumed_summary_join`, never the current cell, which would
+  serve old output as current. A row merged the same way stays blank. The marks are
+  written under `--apply`, after an index backup and before the marker, so a crash
+  between them leaves the run selected for the next pass. Both the marks and the pending
+  note below stay inert until `FEATURE_IDENTITY_SCHEME` reaches `"7"`.
+- A run whose inputs cannot be read for its marks is blocked as
+  `unresolvable_pre_provenance`, and a run or variant whose new address is taken is
+  blocked as `identity_shift_recompute` with no move recorded, in the features and
+  variants passes, so that no later run reads an address without a directory.
+  `backup_index` gives each backup a unique name, which keeps the earliest copy of an
+  index that several writes of one pass touch
+  (`tests/core/pipeline/test_reconcile.py`).
+- The inventory marks a multi-input run whose marker predates `"7"` in
+  `ArtifactRecord.extra["reconcile_pending"]` (`_reconcile_pending`,
+  `inventory/scan.py`), and the CLI prints a note for it. It reads the marker and
+  `params.json` alone, never a footer or a declaration, so it over-reports a run whose
+  inputs cannot share a summary key until reconcile raises the marker.
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
@@ -344,23 +366,41 @@ are in `graph/CLAUDE.md`.
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
   output with no shared identity column is refused. `CROSS_JOIN_FEATURES` is the
   closed escape (`tests/core/pipeline/test_multi_input_alignment.py`).
-- Inputs that share no alignment column (`cause == "no_keys"`) join through
-  `fallback_join` (`loading.py`), a pure function of two column sets that `merge_step`
-  calls: on the summary keys both sides have, else by the entry (a cross join, where
-  one side has one row) when a side has none of `ID_COLS`. An unidentified side with a
-  summary key the other lacks refuses, unless the other is unidentified and has none of
-  `SUMMARY_KEYS`: the sides then join by the entry (`FallbackJoin.single`), and the other
-  must have one row, which `_merge_by_entry` checks. A join on summary keys refuses a row
-  that the broadcast side does not cover. A cross-join consumer keeps its refusal.
+- The merge folds the inputs left to right, and a position takes the first rule that
+  applies. Inputs that share an alignment column join on the shared `ALIGN_COLS` plus
+  the `SUMMARY_KEYS` (`bin_start`, `bin_end`, `arena`, in `SUMMARY_KEY_ORDER`) that both
+  sides have, so a shared summary key is one column and is not renamed
+  `<key>__<position>`. A cross-join consumer joins no summary key. Inputs that share no
+  alignment column (`cause == "no_keys"`) join through `fallback_join` (`loading.py`),
+  a pure function of two column sets that `merge_step` and the plan call: on the
+  summary keys both sides have, else by the entry (a cross join, where one side has one
+  row) when a side has none of `ID_COLS`. An unidentified side with a summary key the
+  other lacks refuses, unless the other is unidentified and has none of `SUMMARY_KEYS`:
+  the sides then join by the entry (`FallbackJoin.single`), and the other must have one
+  row, which `_merge_by_entry` checks. A join on summary keys refuses a row that the
+  broadcast side does not cover. A summary key that is `NaN` on a side refuses before
+  any join that uses it, because pandas matches `NaN` keys to each other.
 - `expands_individuals` (`loading.py`) is the one gate for widening an individual-level
   input onto the pair rows of a pair-level input 0, as `<col>__id1` and `<col>__id2`:
-  `emits` of `as-input` or `pair`, outside `CROSS_JOIN_FEATURES`. `run_feature`,
-  `verify.py`, `_load_neighbor` and the declarations (`ConsumerDecl.expands_individuals`)
-  all read it, and `merge_naming` names the columns for the merge and for validation. An
-  entry whose pair input holds no rows raises `PairRowsMissing`, a subclass of
-  `EntryRowsMissing`, in its task, or in the parent's load under overlap, and either is
-  recorded as an `entry_error`
-  (`tests/core/pipeline/test_widening_join.py`). `load_values` does not widen.
+  `emits` of `as-input` or `pair`, outside `CROSS_JOIN_FEATURES`. Where the pair rows
+  and the individual input share an order column the widening joins on it and `id`.
+  Where they share none it joins on `id` plus the summary keys both sides have, so a
+  binned per-id summary widens onto binned pair summaries, and a repeated key row
+  refuses. `run_feature`, `verify.py`, `_load_neighbor` and the declarations
+  (`ConsumerDecl.expands_individuals`) all read the gate, and `merge_naming` names the
+  columns for the merge and for validation.
+- `EntryRowsMissing` (`loading.py`) is the base of the errors for an entry that loses
+  the rows its merge needs, and each is recorded as an `entry_error`, in the entry's
+  task, or in the parent's load under overlap. `PairRowsMissing` is an entry whose pair
+  input holds no rows (`tests/core/pipeline/test_widening_join.py`).
+  `BroadcastRowsMissing` is an entry whose input loaded no rows while another input did,
+  where the empty input's footer names none of `ID_COLS` and shares none of `ALIGN_COLS`
+  with the columns of the inputs that loaded: the rest would be written without its
+  columns, and the run's entries would hold mixed schemas
+  (`tests/core/pipeline/test_partial_entry_failure.py`). A fit's input stream skips such
+  an entry through `iter_manifest`'s `on_rows_missing`, which `skip_rows_missing` fills.
+  An input empty at every entry loses every entry, which raises `AllEntriesFailed`.
+  `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
   inputs as runs over disjoint entries: `build_manifest(stack=True)` unions them, takes
