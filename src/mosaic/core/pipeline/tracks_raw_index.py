@@ -72,12 +72,14 @@ import pandas as pd
 from mosaic.core.pipeline.composition import SourceMember
 
 from mosaic.core.entry import validate_entry_name
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_object_list, is_str_mapping
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.label_series import is_under_label_series
 from mosaic.core.pipeline.definitions.store import is_under_definitions_root
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, is_under_tracking_root
 from mosaic.core.pipeline.media_index import mtime_iso
+from mosaic.core.pipeline.promotion import correction_revision
 
 # Column schema and order for ``tracks_raw/index.csv``. Owned here (not in the
 # ``core/media`` leaf like ``MEDIA_INDEX_COLUMNS``) because raw-tracks columns
@@ -833,6 +835,91 @@ def group_for_path(
         found = group_re.search(sequence)
         return None if found is None else found.group(1) or ""
     return ""
+
+
+class RawEntryNamedTwice(ValueError):
+    """Two raw files of one format name one entry, and a conversion would keep one.
+
+    A conversion writes one table per entry and takes the first file that names
+    it, so the recording of the other would be lost without a message.
+
+    Attributes:
+        entry: The ``(group, sequence)`` both files name.
+        files: The two files, by resolved path, in path order.
+        sources: How each file's source is described, in the order of *files*.
+    """
+
+    def __init__(
+        self,
+        entry: tuple[str, str],
+        files: tuple[Path, Path],
+        sources: tuple[str, str],
+    ) -> None:
+        self.entry = entry
+        self.files = files
+        self.sources = sources
+        first, second = files
+        super().__init__(
+            f"{first} ({sources[0]}) and {second} ({sources[1]}) both name the "
+            f"entry {make_entry_key(*entry)!r}, and a conversion would keep one "
+            "of them and lose the other recording. Give them distinct names, "
+            "narrow the source's patterns so one is not scanned, or name the "
+            "sequence from the path with sequence_path_pattern."
+        )
+
+
+@dataclass(frozen=True)
+class EntryNamedTwice:
+    """An entry that two or more distinct files name.
+
+    Attributes:
+        entry: The ``(group, sequence)`` the files name.
+        files: Every such file by resolved path, in path order, at least two.
+    """
+
+    entry: tuple[str, str]
+    files: tuple[Path, ...]
+
+
+def entries_named_twice(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    one_file_per_sequence: bool,
+    resolve: Callable[[str], Path],
+) -> list[EntryNamedTwice]:
+    """The entries that two distinct files of *rows* name, in entry order.
+
+    *rows* are the rows of one format. A row with no sequence names no entry (it
+    is the ``multi_sequences_per_file`` shape, where the group names the file's
+    sequences), and neither does a promoted correction, which promotion indexes
+    under its upload's entry and a conversion keeps apart
+    (:func:`~mosaic.core.pipeline.promotion.correction_revision`). Files are
+    counted by their resolved path, so a symlink and its target, or a row
+    listed twice, are one file. The result is the same for any order of *rows*.
+
+    Args:
+        rows: Rows with ``group``, ``sequence`` and ``abs_path`` cells.
+        one_file_per_sequence: Whether the format's converter reads one file
+            per sequence. ``False`` for a format that merges several files into
+            one sequence or holds several sequences in one file, which names an
+            entry twice by design: nothing is reported.
+        resolve: Resolves a row's stored ``abs_path`` to the file it names.
+    """
+    if not one_file_per_sequence:
+        return []
+    named: dict[tuple[str, str], set[Path]] = {}
+    for row in rows:
+        sequence = str(row.get("sequence", "") or "")
+        stored = str(row.get("abs_path", "") or "").strip()
+        if not sequence or not stored or correction_revision(stored):
+            continue
+        entry = (str(row.get("group", "") or ""), sequence)
+        named.setdefault(entry, set()).add(resolve(stored))
+    return [
+        EntryNamedTwice(entry=entry, files=tuple(sorted(files)))
+        for entry, files in sorted(named.items())
+        if len(files) > 1
+    ]
 
 
 def write_tracks_raw_index_rows(index_path: Path, df: pd.DataFrame) -> None:

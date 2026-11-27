@@ -195,6 +195,7 @@ from .pipeline.scan_claim import ScanClaim, Unclaimed
 from .scan_findings import (
     MISSED_SAMPLE,
     FindingLog,
+    RawKind,
     ScanFinding,
     ScanProblem,
     merged as merged_findings,
@@ -341,12 +342,15 @@ from .pipeline.labels_index import (
 )
 from .pipeline.tracks_raw_index import (
     CompanionRule,
+    EntryNamedTwice,
+    RawEntryNamedTwice,
     TracksRawIndexRow,
     TracksRawIndexScope,
     build_tracks_raw_row,
     companion_records,
     companions_cell,
     companions_of,
+    entries_named_twice,
     frame_from_rows as _tracks_frame_from_rows,
     group_for_path,
     iter_track_files,
@@ -501,14 +505,45 @@ class _RawScanPlan:
     """What a raw scan found, before any file is checksummed or written.
 
     Attributes:
+        kind: Which raw index the pass feeds.
         rows: One row per file the scan indexes, in file order. Neither a row nor
             its companions carry a digest yet.
         claim: What the pass replaces: the claim given, widened by the files the
             walk found and the ones it skipped.
+        source: The id of the declared source scanned, or ``""`` for a scan of
+            none.
+        sequence_path_pattern: The pattern that named the rows' sequences, if any.
     """
 
+    kind: RawKind
     rows: list[TracksRawIndexRow]
     claim: ScanClaim
+    source: str
+    sequence_path_pattern: str | None
+
+
+@dataclass(frozen=True)
+class _SourcePass:
+    """One selected source of a scan: its findings and what it will write.
+
+    Attributes:
+        source: The declared source.
+        log: Where the source's findings go.
+        plan: The source's planned rows, or ``None`` for a label series, which
+            writes an index of its own and is never planned.
+    """
+
+    source: RawScanSource
+    log: FindingLog
+    plan: _RawScanPlan | None
+
+
+def _source_description(source: str, sequence_path_pattern: str | None) -> str:
+    """How a refusal names a source and the pattern that named its sequences."""
+    who = f"source {source!r}" if source else "no declared source"
+    if sequence_path_pattern:
+        return f"{who} with sequence_path_pattern {sequence_path_pattern!r}"
+    return who
 
 
 def _report_pattern_misses(
@@ -619,6 +654,21 @@ def _format_merges_per_sequence(src_format: str) -> bool:
     ensure_track_converters_registered()
     converter_cls = TRACK_CONVERTERS.get(src_format)
     return converter_cls is not None and converter_cls.merges_per_sequence
+
+
+def _format_names_one_file_per_sequence(src_format: str) -> bool:
+    """Does each file of this format name a sequence of its own?
+
+    ``False`` for a converter that merges several files into one sequence or
+    holds several sequences in one file, which names an entry twice by design.
+    Tolerant like :func:`_format_merges_per_sequence`: an unregistered format of a
+    row read back from an index is checked as a one-file-per-sequence format.
+    """
+    ensure_track_converters_registered()
+    converter_cls = TRACK_CONVERTERS.get(src_format)
+    return converter_cls is None or not (
+        converter_cls.merges_per_sequence or converter_cls.enumerable
+    )
 
 
 def _track_variant_id(
@@ -4520,19 +4570,25 @@ class Dataset:
 
     def _scan_raw_sources(
         self,
-        kind: SourceKind,
+        kind: RawKind,
         *,
         only: Sequence[str],
         prune_unsourced: bool,
         index_filename: str,
         checksum_workers: int,
     ) -> RawScanResult:
-        """Drive the raw scan for *kind*, one declared source at a time.
+        """Drive the raw scan for *kind*: plan every source, check, then commit each.
 
-        Each source is a separate ``_index_raw`` pass carrying that source's own
-        recipe. That is safe here where it was not before, because each pass now
-        replaces only what its own claim covers -- so the second source's write
-        preserves the first source's rows instead of erasing them.
+        Each source is a separate pass carrying that source's own recipe. That is
+        safe here where it was not before, because each pass replaces only what
+        its own claim covers -- so the second source's write preserves the first
+        source's rows instead of erasing them.
+
+        Every selected source is planned (:meth:`_plan_raw_rows`) before the first
+        pass writes, and for tracks the rows of all the plans and the committed
+        rows no plan replaces are checked together, so a refusal that concerns a
+        later source leaves the earlier sources' indexes as they were. A versioned
+        label series is written when its turn comes, after that check.
 
         Raises:
             ValueError: If *checksum_workers* is below 1.
@@ -4542,6 +4598,11 @@ class Dataset:
                 *kind* over one folder both take a file. Nothing is written.
             ValueError: If *prune_unsourced* restricts the scan to *only* and a
                 source it leaves out shares a folder with a source it scans.
+                Nothing is written.
+            ValueError: If a source's format has no registered converter, a
+                sequence path pattern is refused, or a capture names nothing.
+                Nothing is written.
+            RawEntryNamedTwice: If two files of one tracks format name one entry.
                 Nothing is written.
         """
         _require_checksum_workers(checksum_workers)
@@ -4555,11 +4616,10 @@ class Dataset:
         self._refuse_shared_files(kind, selected)
         if prune_unsourced:
             self._refuse_restricted_prune(kind, selected)
-        scan = self.index_tracks_raw if kind == "tracks" else self.index_labels_raw
         written = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / index_filename
-        position = 0
         logs: list[FindingLog] = []
         claimed: dict[str, ScanClaim] = {}
+        passes: list[_SourcePass] = []
         for source in selected:
             if not isinstance(source, RawScanSource):
                 continue
@@ -4575,17 +4635,16 @@ class Dataset:
                 # per revision, never a per-sequence composition. It is also
                 # never pruned as unsourced, because the rows a dataset wrote
                 # for its own saves sit under no source at all.
-                written = self.index_label_series(source, findings=log)
+                passes.append(_SourcePass(source, log, None))
                 continue
-            position += 1
             others = Unclaimed(
                 functools.partial(self._other_sources_claim, kind, source, claimed)
             )
-            written = scan(
-                self._search_paths(source, log),
+            plan = self._plan_raw_rows(
+                kind=kind,
+                search_dirs=self._search_paths(source, log),
                 patterns=list(source.patterns),
                 src_format=source.src_format,
-                index_filename=index_filename,
                 recursive=source.recursive,
                 multi_sequences_per_file=source.multi_sequences_per_file,
                 group_from=source.group_from,
@@ -4594,16 +4653,37 @@ class Dataset:
                 group_path_root=self.resolve_source_path(source),
                 sequence_path_pattern=source.sequence_path_pattern,
                 exclude_patterns=list(source.exclude_patterns),
-                compute_md5=source.md5,
                 claim=self._rescan_claim(source, others),
                 findings=log,
                 other_sources=others.claim,
-                checksum_workers=checksum_workers,
+            )
+            passes.append(_SourcePass(source, log, plan))
+        plans = [step.plan for step in passes if step.plan is not None]
+        scan_claim = ScanClaim()
+        for plan in plans:
+            scan_claim = scan_claim | plan.claim
+        if kind == "tracks":
+            self._refuse_planned_entries_named_twice(
+                plans, written, scan_claim, prune_unsourced=prune_unsourced
+            )
+        position = 0
+        for step in passes:
+            if step.plan is None:
+                if isinstance(step.source, LabelsScanSource):
+                    written = self.index_label_series(step.source, findings=step.log)
+                continue
+            position += 1
+            written = self._commit_raw_rows(
+                step.plan,
+                index_filename=index_filename,
+                compute_md5=step.source.md5,
                 # Only the first pass may prune: a later one would see the
                 # earlier sources' rows as unclaimed and delete what this same
                 # scan had just written. Counted over the per-sequence sources
                 # alone, so a series source declared first does not use it up.
                 prune_unsourced=prune_unsourced and position == 1,
+                checksum_workers=checksum_workers,
+                scan_claim=scan_claim,
             )
         return RawScanResult(path=written, findings=merged_findings(logs))
 
@@ -8695,6 +8775,41 @@ class Dataset:
             )
         )
 
+    def raw_index_sources(self, kind: RawKind) -> list[RawScanSource]:
+        """The declared *kind* sources that feed its raw index, in declared order.
+
+        A labels source with a ``series`` feeds a series index of its own and is
+        left out.
+        """
+        return [
+            source
+            for source in self.scan_sources(kind)
+            if isinstance(source, RawScanSource)
+            and not (isinstance(source, LabelsScanSource) and source.series is not None)
+        ]
+
+    def sources_claiming(self, kind: RawKind) -> Callable[[Path], list[str]]:
+        """A lookup from a path to the ids of the *kind* sources whose claim covers it.
+
+        The sources are those of :meth:`raw_index_sources`, in declared order, and
+        each one's :meth:`source_claim` is built on the first lookup that needs it
+        and kept, so a caller that never asks builds none. The path is compared as
+        given: resolve it first to follow links.
+        """
+        sources = self.raw_index_sources(kind)
+        claims: dict[str, ScanClaim] = {}
+
+        def claiming(path: Path) -> list[str]:
+            found: list[str] = []
+            for source in sources:
+                if source.id not in claims:
+                    claims[source.id] = self.source_claim(source)
+                if claims[source.id].claims(path):
+                    found.append(source.id)
+            return found
+
+        return claiming
+
     def scan_claim(self, source: ScanSource) -> ScanClaim:
         """What a scan of *source* may replace: nothing while its path is missing.
 
@@ -10094,20 +10209,11 @@ class Dataset:
             identifier, and the rows and digests equal those of one worker.
             Raises ``ValueError`` below 1.
         """
-        converter = get_track_converter(src_format)
         return self._index_raw(
-            target_root="tracks_raw",
-            composition_writer=self._write_tracks_raw_compositions,
+            kind="tracks",
             search_dirs=search_dirs,
             patterns=patterns,
             src_format=src_format,
-            # Resolved here, so a src_format naming no converter is refused with
-            # the registered ones listed rather than writing an index nothing can
-            # convert. Which files come several per sequence, and what names the
-            # individual within one, are the converter's to declare -- neither is
-            # anything this method knows.
-            sequence_from_stem=converter.sequence_from_stem,
-            companion_files=converter.companion_files,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
@@ -10129,13 +10235,10 @@ class Dataset:
     def _index_raw(
         self,
         *,
-        target_root: str,
-        composition_writer: Callable[[list[dict[str, object]]], None],
+        kind: RawKind,
         search_dirs: Iterable[str | Path],
         patterns: Iterable[str] | str,
         src_format: str,
-        sequence_from_stem: Callable[[str], str],
-        companion_files: CompanionRule,
         index_filename: str = "index.csv",
         recursive: bool = True,
         multi_sequences_per_file: bool = False,
@@ -10158,26 +10261,10 @@ class Dataset:
         The body shared by :meth:`index_tracks_raw` and :meth:`index_labels_raw`.
         A raw source file carries the same columns whichever root it lands in, and
         the scan, row build and md5 carry-forward are identity-free, so only
-        *target_root* and *composition_writer* -- which sequence-index to project
-        into -- distinguish a tracks source from a label source.
-
-        *sequence_from_stem* is the one thing that varies with the source's
-        format, and it arrives as a rule rather than being decided here. A format
-        whose files come several per sequence -- TRex writes one ``.npz`` per
-        individual -- has to drop what names the individual before the rest can
-        be recognized as one entry, and this body cannot ask which format it is
-        holding: ``src_format`` names a *track* converter on one path and a
-        *label* converter on the other, and the label registry is not even keyed
-        the same way. So each caller resolves the rule and passes it, the same
-        seam ``group_from_path`` is on the branch below. Required rather than
-        defaulted, because a default is where a third caller would silently get
-        the wrong answer.
-
-        *companion_files* is the second rule of that kind: it lists the files
-        beside a source that its converter may read. Each is stat-ed and
-        checksummed under the source's ``compute_md5`` setting, a carried digest
-        standing in for the read while its size and mtime hold, and recorded in
-        the row's ``companions`` cell.
+        *kind* distinguishes a tracks source from a label source: which root the
+        rows land in, which registry checks *src_format*, and what names a
+        file's sequence and lists the files beside it
+        (:meth:`_plan_raw_rows`).
 
         *other_sources* returns what the dataset's other sources of this kind
         claim. A skipped file whose target one of them claims leaves that source's
@@ -10196,12 +10283,10 @@ class Dataset:
         """
         _require_checksum_workers(checksum_workers)
         plan = self._plan_raw_rows(
-            target_root=target_root,
+            kind=kind,
             search_dirs=search_dirs,
             patterns=patterns,
             src_format=src_format,
-            sequence_from_stem=sequence_from_stem,
-            companion_files=companion_files,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,
             group_from=group_from,
@@ -10215,10 +10300,15 @@ class Dataset:
             findings=findings,
             other_sources=other_sources,
         )
+        if kind == "tracks":
+            self._refuse_planned_entries_named_twice(
+                [plan],
+                self.get_root("tracks_raw") / index_filename,
+                plan.claim,
+                prune_unsourced=prune_unsourced,
+            )
         return self._commit_raw_rows(
             plan,
-            target_root=target_root,
-            composition_writer=composition_writer,
             index_filename=index_filename,
             compute_md5=compute_md5,
             prune_unsourced=prune_unsourced,
@@ -10228,12 +10318,10 @@ class Dataset:
     def _plan_raw_rows(
         self,
         *,
-        target_root: str,
+        kind: RawKind,
         search_dirs: Iterable[str | Path],
         patterns: Iterable[str] | str,
         src_format: str,
-        sequence_from_stem: Callable[[str], str],
-        companion_files: CompanionRule,
         recursive: bool = True,
         multi_sequences_per_file: bool = False,
         group_from: Optional[str] = None,
@@ -10257,14 +10345,35 @@ class Dataset:
         the files the walk found and the ones it skipped, as the media scan
         widens its own.
 
+        This is the one entry both a single-source index and a declared-source
+        scan plan through, so every refusal that precedes a write lives here.
+        *src_format* is resolved first, and strictly: a tracks format must name a
+        registered track converter and a labels format a registered label
+        converter (the registries differ, and the label one is not keyed the same
+        way), so that a typo is refused with the known formats listed rather than
+        writing an index nothing can convert. The converter, for tracks, says
+        which files come several per sequence, what names the sequence within a
+        stem and which files lie beside a source that it reads; a label file is
+        one sequence, named by its stem, and no label converter reads a file
+        beside its source.
+
         Raises:
-            ValueError: *sequence_path_pattern* is not a regular expression, has
+            ValueError: *src_format* names no registered converter,
+                *sequence_path_pattern* is not a regular expression, has
                 no capture group, is declared beside ``multi_sequences_per_file``
                 or over a format whose converter merges several files per
                 sequence, is declared without *group_path_root*, or matches a
                 file with a capture group that names nothing. Nothing is
                 written.
         """
+        if kind == "tracks":
+            converter = get_track_converter(src_format)
+            sequence_from_stem = converter.sequence_from_stem
+            companion_files = converter.companion_files
+        else:
+            src_format = validate_label_format(src_format)
+            sequence_from_stem = stem_as_sequence
+            companion_files = no_companions
         rows: list[TracksRawIndexRow] = []
         # Materialized once: `search_dirs` is an Iterable read both here and by
         # the claim below, so a generator argument left the claim empty.
@@ -10289,11 +10398,7 @@ class Dataset:
             )
         if group_path_pattern and group_path_root is None:
             raise ValueError("group_path_pattern needs group_path_root")
-        log = (
-            findings
-            if findings is not None
-            else FindingLog("tracks" if target_root == "tracks_raw" else "labels", "")
-        )
+        log = findings if findings is not None else FindingLog(kind, "")
         if sequence_path_pattern and multi_sequences_per_file:
             msg = (
                 f"sequence_path_pattern {sequence_path_pattern!r} of "
@@ -10304,7 +10409,7 @@ class Dataset:
             raise ValueError(msg)
         if (
             sequence_path_pattern
-            and target_root == "tracks_raw"
+            and kind == "tracks"
             and _format_merges_per_sequence(src_format)
         ):
             msg = (
@@ -10421,26 +10526,43 @@ class Dataset:
                 ),
             ]
         )
-        return _RawScanPlan(rows=rows, claim=claim)
+        return _RawScanPlan(
+            kind=kind,
+            rows=rows,
+            claim=claim,
+            source=log.source,
+            sequence_path_pattern=sequence_path_pattern,
+        )
 
     def _commit_raw_rows(
         self,
         plan: _RawScanPlan,
         *,
-        target_root: str,
-        composition_writer: Callable[[list[dict[str, object]]], None],
         index_filename: str,
         compute_md5: bool,
         prune_unsourced: bool,
         checksum_workers: int,
+        scan_claim: ScanClaim | None = None,
     ) -> Path:
         """Checksum the rows of *plan*, merge them under the lock and write.
 
         The rows, their companions and the carried digests are checksummed in one
         call of :func:`_digests`, before the lock is taken. The merge replaces
-        what the plan's claim covers, parses every merged ``companions`` cell and
-        writes the index, then the compositions.
+        what the plan's claim covers, parses every merged ``companions`` cell and,
+        for tracks, refuses two files of one format that name one entry, then
+        writes the index and the compositions. The check runs under the lock, so
+        a writer that landed after the plan's check is covered too.
+
+        *scan_claim* is what the whole scan replaces, which is more than this
+        pass's claim when the scan has later passes. A row of a later pass's
+        claim is not kept: that pass drops it, so it cannot make this write
+        refuse. It defaults to the plan's claim.
+
+        Raises:
+            RawEntryNamedTwice: Two files of one tracks format that names one
+                sequence per file name one entry. Nothing is written.
         """
+        target_root = _RAW_ROOT_FOR_KIND[plan.kind]
         out_csv = self.get_root(target_root) / index_filename
         rows = self._with_digests(
             plan.rows,
@@ -10464,6 +10586,12 @@ class Dataset:
                 written,
                 self._entries_beside_tracks_raw_write(written, committed, preserved),
             )
+            if plan.kind == "tracks":
+                replaced = claim if scan_claim is None else scan_claim
+                self._refuse_entries_named_twice(
+                    [dataclasses.replace(plan, rows=rows)],
+                    [row for row in preserved if not self._row_claimed(row, replaced)],
+                )
             # Preserved rows come back from the reader as plain mappings, while
             # this pass built typed rows; the frame builder takes either.
             merged: list[dict[str, object] | TracksRawIndexRow] = [*preserved, *rows]
@@ -10473,9 +10601,118 @@ class Dataset:
         # The merged rows, not the scanned ones: the composition writer replaces
         # the per-sequence index, so projecting only what this pass walked would
         # delete the composition row of every sequence it preserved.
+        composition_writer: Callable[[list[dict[str, object]]], None] = (
+            self._write_tracks_raw_compositions
+            if plan.kind == "tracks"
+            else self._write_labels_raw_compositions
+        )
         composition_writer(df.to_dict("records"))
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
+
+    def _refuse_planned_entries_named_twice(
+        self,
+        plans: Sequence[_RawScanPlan],
+        index_path: Path,
+        replaced: ScanClaim,
+        *,
+        prune_unsourced: bool,
+    ) -> None:
+        """Refuse a duplicate entry among planned tracks rows, before any pass writes.
+
+        The kept rows are the rows of the index at *index_path* that *replaced*,
+        the union of the plans' claims, does not cover, and none under
+        *prune_unsourced*, whose first pass keeps no such row. The read is
+        advisory: each pass checks again under the lock.
+
+        Raises:
+            RawEntryNamedTwice: As :meth:`_refuse_entries_named_twice`.
+        """
+        kept = (
+            []
+            if prune_unsourced
+            else [
+                row
+                for row in _read_tracks_raw_index(index_path)
+                if not self._row_claimed(row, replaced)
+            ]
+        )
+        self._refuse_entries_named_twice(plans, kept)
+
+    def _refuse_entries_named_twice(
+        self,
+        plans: Sequence[_RawScanPlan],
+        kept: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Refuse two files of one tracks format that name one entry.
+
+        Checks the rows of *plans* and the *kept* rows beside them, each format on
+        its own, so a conversion that would take one file of an entry and lose the
+        other is refused before anything is written. A format whose converter
+        merges several files per sequence or holds several sequences per file is
+        not checked (:func:`_format_names_one_file_per_sequence`).
+
+        Raises:
+            RawEntryNamedTwice: Naming the entry, both files, and for each file
+                the source that scanned or claims it.
+        """
+        by_format: dict[str, list[Mapping[str, object]]] = {}
+        for plan in plans:
+            for row in plan.rows:
+                by_format.setdefault(row["src_format"], []).append(row)
+        for row in kept:
+            by_format.setdefault(str(row.get("src_format", "") or ""), []).append(row)
+        for src_format in sorted(by_format):
+            found = entries_named_twice(
+                by_format[src_format],
+                one_file_per_sequence=_format_names_one_file_per_sequence(src_format),
+                resolve=self._resolved_stored_path,
+            )
+            if found:
+                raise self._entry_named_twice(found[0], plans)
+
+    def _resolved_stored_path(self, stored: str) -> Path:
+        """The file a row's stored ``abs_path`` names, with links followed."""
+        return self.resolve_path(stored).resolve()
+
+    def _entry_named_twice(
+        self, found: EntryNamedTwice, plans: Sequence[_RawScanPlan]
+    ) -> RawEntryNamedTwice:
+        """The refusal for *found*, naming the source of each of its first two files.
+
+        A file a plan scanned names that plan's source. Any other file is a kept
+        row, which names the declared tracks sources that claim it, built only
+        now that a refusal fires.
+        """
+        scanned: dict[Path, _RawScanPlan] = {}
+        for plan in plans:
+            for row in plan.rows:
+                if (row["group"], row["sequence"]) == found.entry:
+                    scanned.setdefault(
+                        self._resolved_stored_path(row["abs_path"]), plan
+                    )
+        claiming = self.sources_claiming("tracks")
+        patterns = {
+            source.id: source.sequence_path_pattern
+            for source in self.raw_index_sources("tracks")
+        }
+
+        def describe(file: Path) -> str:
+            plan = scanned.get(file)
+            if plan is not None:
+                return _source_description(plan.source, plan.sequence_path_pattern)
+            claimants = claiming(file)
+            if not claimants:
+                return _source_description("", None)
+            return " and ".join(
+                _source_description(source, patterns.get(source))
+                for source in claimants
+            )
+
+        first, second = found.files[0], found.files[1]
+        return RawEntryNamedTwice(
+            found.entry, (first, second), (describe(first), describe(second))
+        )
 
     def _with_digests(
         self,
@@ -10724,21 +10961,10 @@ class Dataset:
         digests equal those of one worker. It raises ``ValueError`` below 1.
         """
         return self._index_raw(
-            target_root="labels_raw",
-            composition_writer=self._write_labels_raw_compositions,
+            kind="labels",
             search_dirs=search_dirs,
             patterns=patterns,
-            # Checked against the *label* registry, which is keyed on
-            # ``(src_format, label_kind)`` -- a track-registry lookup would be
-            # wrong even where it happened to hit, as it does for
-            # ``calms21_npy``.
-            src_format=validate_label_format(src_format),
-            # A label file is one sequence, and no label converter says
-            # otherwise, so there is no rule to resolve from the converter the
-            # way the tracks side does.
-            sequence_from_stem=stem_as_sequence,
-            # No label converter reads a file beside its source.
-            companion_files=no_companions,
+            src_format=src_format,
             index_filename=index_filename,
             recursive=recursive,
             multi_sequences_per_file=multi_sequences_per_file,

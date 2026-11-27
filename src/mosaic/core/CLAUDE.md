@@ -229,6 +229,13 @@ importing `mosaic.tracking` registers neither.
   `group_from`, or an indexer given `group_from_path`, misses nothing. A rescan drops
   the raw row of a file an earlier scan indexed with an empty group, and leaves its
   converted table.
+- A tracks scan refuses two distinct files of one format that name one entry
+  (`RawEntryNamedTwice`, `entries_named_twice`), because a conversion would keep one.
+  `_scan_raw_sources` plans every selected source (`_plan_raw_rows`), checks the
+  planned rows with the committed rows no plan replaces, and only then commits each
+  pass; `_commit_raw_rows` checks again under the lock. A blank sequence, a promoted
+  correction, a format whose converter merges per sequence or is enumerable, and a
+  labels source are exempt (`tests/core/test_scan_sources.py`).
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

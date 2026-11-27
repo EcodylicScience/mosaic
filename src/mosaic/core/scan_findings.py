@@ -26,6 +26,7 @@ __all__ = [
     "MISSED_SAMPLE",
     "FindingKind",
     "FindingLog",
+    "RawKind",
     "ScanFinding",
     "ScanProblem",
     "merged",
@@ -37,6 +38,9 @@ MISSED_SAMPLE = 5
 
 FindingKind = Literal["media", "tracks", "labels"]
 """The raw root a source feeds, as ``mosaic.core.manifest.SourceKind`` spells it."""
+
+type RawKind = Literal["tracks", "labels"]
+"""The kinds of source that feed a raw index, ``tracks_raw`` and ``labels_raw``."""
 
 ScanProblem = Literal[
     "path_missing",

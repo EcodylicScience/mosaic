@@ -24,7 +24,13 @@ from mosaic.core.manifest import (
     TracksScanSource,
 )
 from mosaic.core.pipeline.scan_claim import ScanClaim
-from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
+from mosaic.core.pipeline.promotion import promote_correction
+from mosaic.core.pipeline.tracks_raw_index import (
+    RawEntryNamedTwice,
+    read_tracks_raw_index,
+)
+
+from tests.helpers import tracktor_dataset
 
 VideoWriter = Callable[..., None]
 
@@ -1408,3 +1414,376 @@ class TestARemovalBesideASiblingOverOneFolder:
         _ = scan_kind(dataset, kind)
 
         assert raw_file_names(dataset, kind) == {"a.npy", "a2.npy"}
+
+
+def stem_named_source(
+    source_id: str, path: Path, *, sequence_path_pattern: str | None = None
+) -> TracksScanSource:
+    """A tracks source of a format that names one sequence per file, by its stem."""
+    return TracksScanSource(
+        id=source_id,
+        path=str(path),
+        patterns=("*.h5",),
+        src_format="sleap_analysis_h5",
+        sequence_path_pattern=sequence_path_pattern,
+    )
+
+
+def index_files(dataset: Dataset) -> dict[str, bytes]:
+    """The bytes of the tracks index and of its sequence index."""
+    root = dataset.get_root("tracks_raw")
+    return {name: (root / name).read_bytes() for name in ("index.csv", "sequences.csv")}
+
+
+class TestTwoFilesNamingOneEntry:
+    """A scan refuses two files of one format that name one entry, before it writes.
+
+    A conversion would keep one of the two and lose the other recording without
+    a message.
+    """
+
+    def test_two_files_under_one_source_are_refused_naming_both_and_the_source(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "raw"
+        touch_files(base / "a" / "trial1.h5", base / "a" / "other.h5")
+        dataset.add_scan_source(stem_named_source("lab", base))
+        _ = dataset.scan_tracks()
+        before = index_files(dataset)
+        touch_files(base / "b" / "trial1.h5")
+
+        with pytest.raises(RawEntryNamedTwice) as refused:
+            _ = dataset.scan_tracks()
+
+        message = str(refused.value)
+        assert str(base / "a" / "trial1.h5") in message
+        assert str(base / "b" / "trial1.h5") in message
+        assert "'lab'" in message
+        assert "trial1" in message
+        assert index_files(dataset) == before
+
+    def test_two_sources_are_each_named_for_their_file(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        left, right = tmp_path / "left", tmp_path / "right"
+        touch_files(left / "trial1.h5", right / "other.h5")
+        dataset.add_scan_source(stem_named_source("left", left))
+        dataset.add_scan_source(stem_named_source("right", right))
+        _ = dataset.scan_tracks()
+        before = index_files(dataset)
+        touch_files(right / "trial1.h5")
+
+        with pytest.raises(RawEntryNamedTwice) as refused:
+            _ = dataset.scan_tracks(only=["right"])
+
+        message = str(refused.value)
+        assert str(left / "trial1.h5") in message and "'left'" in message
+        assert str(right / "trial1.h5") in message and "'right'" in message
+        assert index_files(dataset) == before
+
+    def test_a_later_source_naming_an_earlier_sources_entry_leaves_every_pass_unwritten(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        first, second = tmp_path / "first", tmp_path / "second"
+        touch_files(first / "one.h5", second / "two.h5")
+        dataset.add_scan_source(stem_named_source("first", first))
+        dataset.add_scan_source(stem_named_source("second", second))
+        _ = dataset.scan_tracks()
+        before = index_files(dataset)
+        touch_files(first / "fresh.h5", second / "fresh.h5")
+
+        with pytest.raises(RawEntryNamedTwice):
+            _ = dataset.scan_tracks()
+
+        assert index_files(dataset) == before
+
+    def test_a_later_sources_capture_that_names_nothing_leaves_an_earlier_pass_unwritten(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        first, second = tmp_path / "first", tmp_path / "second"
+        touch_files(first / "one.h5")
+        dataset.add_scan_source(stem_named_source("first", first))
+        _ = dataset.scan_tracks()
+        before = index_files(dataset)
+        touch_files(first / "fresh.h5", second / "two.h5")
+        dataset.add_scan_source(
+            stem_named_source(
+                "second", second, sequence_path_pattern=r"^(never)?([^/]*)\.h5$"
+            )
+        )
+
+        with pytest.raises(ValueError, match="'second'.*names nothing") as refused:
+            _ = dataset.scan_tracks()
+
+        assert str(second / "two.h5") in str(refused.value)
+        assert index_files(dataset) == before
+
+    def test_a_later_sources_unregistered_format_leaves_an_earlier_pass_unwritten(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        first, second = tmp_path / "first", tmp_path / "second"
+        touch_files(first / "one.h5")
+        dataset.add_scan_source(stem_named_source("first", first))
+        _ = dataset.scan_tracks()
+        before = index_files(dataset)
+        touch_files(first / "fresh.h5", second / "two.h5")
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="second",
+                path=str(second),
+                patterns=("*.h5",),
+                src_format="no_such_format",
+            )
+        )
+
+        with pytest.raises(ValueError, match="no_such_format"):
+            _ = dataset.scan_tracks()
+
+        assert index_files(dataset) == before
+
+    def test_a_sequence_path_pattern_naming_one_entry_from_two_folders_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "raw"
+        touch_files(base / "x" / "s1" / "t.h5", base / "y" / "s1" / "t.h5")
+        pattern = r"^[^/]+/([^/]+)/"
+        dataset.add_scan_source(
+            stem_named_source("by-folder", base, sequence_path_pattern=pattern)
+        )
+
+        with pytest.raises(RawEntryNamedTwice) as refused:
+            _ = dataset.scan_tracks()
+
+        message = str(refused.value)
+        assert str(base / "x" / "s1" / "t.h5") in message
+        assert str(base / "y" / "s1" / "t.h5") in message
+        assert "'by-folder'" in message
+        assert pattern in message
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_the_index_alone_refuses_two_files_before_it_writes(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "raw"
+        touch_files(base / "a" / "trial1.h5", base / "b" / "trial1.h5")
+
+        with pytest.raises(RawEntryNamedTwice, match="no declared source"):
+            _ = dataset.index_tracks_raw(
+                [base], patterns=["*.h5"], src_format="sleap_analysis_h5"
+            )
+
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_a_stale_row_of_a_removed_source_refuses_the_scan_without_a_prune(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = stale_row_dataset(tmp_path)
+        before = index_files(dataset)
+
+        with pytest.raises(RawEntryNamedTwice, match="no declared source") as refused:
+            _ = dataset.scan_tracks()
+
+        assert str(tmp_path / "gone" / "trial1.h5") in str(refused.value)
+        assert index_files(dataset) == before
+
+    def test_a_prune_clears_the_stale_row_instead_of_refusing(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = stale_row_dataset(tmp_path)
+
+        _ = dataset.scan_tracks(prune_unsourced=True)
+
+        assert {Path(str(row["abs_path"])) for row in raw_rows(dataset, "tracks")} == {
+            tmp_path / "live" / "trial1.h5",
+            tmp_path / "live" / "other.h5",
+        }
+
+    def test_a_file_moved_into_an_earlier_source_is_not_refused_for_its_old_row(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        first, second = tmp_path / "first", tmp_path / "second"
+        touch_files(first / "one.h5", second / "moved.h5")
+        dataset.add_scan_source(stem_named_source("first", first))
+        dataset.add_scan_source(stem_named_source("second", second))
+        _ = dataset.scan_tracks()
+        (second / "moved.h5").unlink()
+        touch_files(first / "moved.h5")
+
+        _ = dataset.scan_tracks()
+
+        assert {Path(str(row["abs_path"])) for row in raw_rows(dataset, "tracks")} == {
+            first / "one.h5",
+            first / "moved.h5",
+        }
+
+    def test_a_rescan_of_a_source_holding_symlinks_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base, outside = tmp_path / "raw", tmp_path / "outside"
+        touch_files(base / "inside.h5", outside / "target.h5")
+        (base / "via_inside.h5").symlink_to(base / "inside.h5")
+        (base / "via_outside.h5").symlink_to(outside / "target.h5")
+        dataset.add_scan_source(stem_named_source("links", base))
+
+        _ = dataset.scan_tracks()
+        first = index_files(dataset)["index.csv"]
+        _ = dataset.scan_tracks()
+
+        assert index_files(dataset)["index.csv"] == first
+        assert len(raw_rows(dataset, "tracks")) == 2
+
+    def test_a_promoted_correction_followed_by_a_rescan_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        dataset, recording = tracktor_dataset(
+            tmp_path / "ds", "tracktor_corrected_tsv", "*.tsv"
+        )
+        (row,) = raw_rows(dataset, "tracks")
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="tracktor",
+                path=str(dataset.base_dir / "raw"),
+                patterns=("*.tsv",),
+                src_format="tracktor_corrected_tsv",
+            )
+        )
+        _ = promote_correction(
+            dataset,
+            str(row["group"]),
+            str(row["sequence"]),
+            recording.tsv,
+            src_format="tracktor_corrected_tsv",
+            apply=True,
+        )
+
+        _ = dataset.scan_tracks()
+
+        names = sorted(
+            Path(str(each["abs_path"])).name for each in raw_rows(dataset, "tracks")
+        )
+        assert names == sorted([recording.tsv.name, "corrected.rev1.tsv"])
+
+    def test_a_merging_format_and_a_multi_sequence_source_are_not_checked(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        merging, multi = tmp_path / "trex", tmp_path / "calms"
+        touch_files(
+            merging / "hex_7_fish0.npz",
+            merging / "hex_7_fish1.npz",
+            multi / "a" / "x.npy",
+            multi / "a" / "y.npy",
+        )
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="trex", path=str(merging), patterns=("*.npz",), src_format="trex_npz"
+            )
+        )
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="calms",
+                path=str(multi),
+                patterns=("*.npy",),
+                src_format="calms21_npy",
+                multi_sequences_per_file=True,
+                group_from="parent",
+            )
+        )
+
+        _ = dataset.scan_tracks()
+
+        assert len(raw_rows(dataset, "tracks")) == 4
+
+    def test_an_enumerable_format_with_one_stem_in_two_folders_is_not_checked(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "calms"
+        touch_files(base / "a" / "x.npy", base / "b" / "x.npy")
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="calms",
+                path=str(base),
+                patterns=("*.npy",),
+                src_format="calms21_npy",
+            )
+        )
+
+        _ = dataset.scan_tracks()
+
+        assert len(raw_rows(dataset, "tracks")) == 2
+
+    def test_a_labels_source_with_two_files_naming_one_entry_is_not_refused(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "labels"
+        touch_files(base / "a" / "ann.csv", base / "b" / "ann.csv")
+        dataset.add_scan_source(
+            LabelsScanSource(id="ann", path=str(base), patterns=("*.csv",))
+        )
+
+        _ = dataset.scan_labels()
+
+        assert len(raw_rows(dataset, "labels")) == 2
+
+
+def stale_row_dataset(tmp_path: Path) -> Dataset:
+    """A dataset holding a row of a removed source whose entry a live file also names.
+
+    The removed source's ``gone/trial1.h5`` stays indexed, and the live source
+    now holds ``live/trial1.h5``, which names the same entry.
+    """
+    dataset = make_dataset(tmp_path)
+    gone, live = tmp_path / "gone", tmp_path / "live"
+    touch_files(gone / "trial1.h5", live / "other.h5")
+    dataset.add_scan_source(stem_named_source("gone", gone))
+    dataset.add_scan_source(stem_named_source("live", live))
+    _ = dataset.scan_tracks()
+    assert dataset.remove_scan_source("tracks", "gone", save=False) == 1
+    touch_files(live / "trial1.h5")
+    return dataset
+
+
+class TestTheSourceLookupsOfTheDataset:
+    """``Dataset.raw_index_sources`` and ``Dataset.sources_claiming``."""
+
+    def test_the_sources_that_feed_the_raw_index_leave_out_a_series_source(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        files, series = tmp_path / "files", tmp_path / "series"
+        touch_files(files / "a.csv")
+        series.mkdir()
+        dataset.add_scan_source(
+            LabelsScanSource(id="files", path=str(files), patterns=("*.csv",))
+        )
+        dataset.add_scan_source(
+            LabelsScanSource(id="series", path=str(series), series="keypoints")
+        )
+        dataset.add_scan_source(stem_named_source("tracks", files))
+
+        assert [s.id for s in dataset.raw_index_sources("labels")] == ["files"]
+        assert [s.id for s in dataset.raw_index_sources("tracks")] == ["tracks"]
+
+    def test_a_path_is_claimed_by_the_sources_whose_claim_covers_it(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        left, right = tmp_path / "left", tmp_path / "right"
+        touch_files(left / "a.h5", right / "b.h5")
+        dataset.add_scan_source(stem_named_source("left", left))
+        dataset.add_scan_source(stem_named_source("right", right))
+
+        claiming = dataset.sources_claiming("tracks")
+
+        assert claiming(left / "a.h5") == ["left"]
+        assert claiming(right / "b.h5") == ["right"]
+        assert claiming(tmp_path / "elsewhere.h5") == []

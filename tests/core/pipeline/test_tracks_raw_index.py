@@ -36,10 +36,12 @@ from mosaic.core.pipeline.tracking_roots import is_under_tracking_root
 from mosaic.core.pipeline.tracks_raw_index import (
     TRACKS_RAW_INDEX_COLUMNS,
     CompanionRecord,
+    RawEntryNamedTwice,
     TracksRawIndexScope,
     build_tracks_raw_row,
     companions_cell,
     companions_of,
+    entries_named_twice,
     frame_from_rows,
     group_for_path,
     iter_track_files,
@@ -1864,10 +1866,13 @@ def test_a_file_that_is_a_source_and_a_companion_is_read_once(
     recording = write_tracktor_recording(ds.base_dir / "raw")
     names = _hashed(monkeypatch)
 
+    # Each file is named by its whole stem, so the two files are two entries.
     _ = ds.index_tracks_raw(
         [ds.base_dir / "raw"],
         patterns=["*_tracked.csv", "*.tsv"],
         src_format="tracktor_corrected_tsv",
+        group_path_root=ds.base_dir / "raw",
+        sequence_path_pattern=r"^(.*)\.(?:csv|tsv)$",
         checksum_workers=4,
     )
 
@@ -1986,3 +1991,120 @@ def test_zero_checksum_workers_is_refused_by_a_source_scan(
 
     with pytest.raises(ValueError, match="checksum_workers"):
         _ = getattr(ds, method)(checksum_workers=0)
+
+
+# --- two files naming one entry -------------------------------------------
+
+
+def _named_row(group: str, sequence: str, path: Path) -> dict[str, object]:
+    return {"group": group, "sequence": sequence, "abs_path": str(path)}
+
+
+def _resolve_stored(stored: str) -> Path:
+    return Path(stored).resolve()
+
+
+def test_two_files_naming_one_entry_are_found_with_their_resolved_paths(
+    tmp_path: Path,
+) -> None:
+    first, second = tmp_path / "a" / "t1.h5", tmp_path / "b" / "t1.h5"
+    rows = [_named_row("g", "t1", second), _named_row("g", "t1", first)]
+
+    found = entries_named_twice(
+        rows, one_file_per_sequence=True, resolve=_resolve_stored
+    )
+
+    assert [(each.entry, each.files) for each in found] == [
+        (("g", "t1"), (first.resolve(), second.resolve()))
+    ]
+
+
+def test_a_format_that_merges_or_enumerates_is_not_checked(tmp_path: Path) -> None:
+    rows = [
+        _named_row("g", "t1", tmp_path / "a" / "t1.h5"),
+        _named_row("g", "t1", tmp_path / "b" / "t1.h5"),
+    ]
+
+    assert (
+        entries_named_twice(rows, one_file_per_sequence=False, resolve=_resolve_stored)
+        == []
+    )
+
+
+def test_rows_with_a_blank_sequence_name_no_entry(tmp_path: Path) -> None:
+    rows = [
+        _named_row("g", "", tmp_path / "a.npy"),
+        _named_row("g", "", tmp_path / "b.npy"),
+    ]
+
+    assert (
+        entries_named_twice(rows, one_file_per_sequence=True, resolve=_resolve_stored)
+        == []
+    )
+
+
+def test_a_promoted_correction_is_not_a_second_file_of_its_entry(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        _named_row("g", "t1", tmp_path / "raw" / "t1.h5"),
+        _named_row("g", "t1", tmp_path / "t1" / "corrected.rev1.h5"),
+        _named_row("g", "t1", tmp_path / "t1" / "corrected.rev2.h5"),
+    ]
+
+    assert (
+        entries_named_twice(rows, one_file_per_sequence=True, resolve=_resolve_stored)
+        == []
+    )
+
+
+def test_a_file_never_collides_with_itself(tmp_path: Path) -> None:
+    target = tmp_path / "real" / "t1.h5"
+    target.parent.mkdir()
+    _ = target.write_bytes(b"\x00")
+    link = tmp_path / "link.h5"
+    link.symlink_to(target)
+    rows = [
+        _named_row("g", "t1", target),
+        _named_row("g", "t1", link),
+        _named_row("g", "t1", target),
+    ]
+
+    assert (
+        entries_named_twice(rows, one_file_per_sequence=True, resolve=_resolve_stored)
+        == []
+    )
+
+
+def test_the_files_found_do_not_depend_on_the_row_order(tmp_path: Path) -> None:
+    files = [tmp_path / name / "t1.h5" for name in ("c", "a", "b")]
+    rows = [_named_row("g", "t1", path) for path in files]
+
+    forward = entries_named_twice(
+        rows, one_file_per_sequence=True, resolve=_resolve_stored
+    )
+    backward = entries_named_twice(
+        rows[::-1], one_file_per_sequence=True, resolve=_resolve_stored
+    )
+
+    assert forward == backward
+    assert [each.files for each in forward] == [
+        tuple(sorted(path.resolve() for path in files))
+    ]
+
+
+def test_the_refusal_names_the_entry_both_files_and_each_source(
+    tmp_path: Path,
+) -> None:
+    first, second = tmp_path / "a" / "t1.h5", tmp_path / "b" / "t1.h5"
+
+    refusal = RawEntryNamedTwice(
+        ("g", "t1"), (first, second), ("source 'one'", "source 'two'")
+    )
+
+    message = str(refusal)
+    assert "g__t1" in message
+    assert str(first) in message and str(second) in message
+    assert "source 'one'" in message and "source 'two'" in message
+    assert "keep one" in message
+    assert (refusal.entry, refusal.files) == (("g", "t1"), (first, second))

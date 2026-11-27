@@ -28,14 +28,12 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import Field
 
-from mosaic.core.pipeline.scan_claim import ScanClaim
-from mosaic.core.scan_findings import missing_path_finding
+from mosaic.core.scan_findings import RawKind, missing_path_finding
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import read_runs, read_time_irregular, run_log_dir
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
-    from mosaic.core.manifest import RawScanSource
 
 __all__ = [
     "RAW_REPORT_SAMPLE",
@@ -55,9 +53,6 @@ RAW_REPORT_SAMPLE: Final = 10
 
 DUPLICATE_PATH_SAMPLE: Final = 5
 """The most paths a set of duplicates names."""
-
-type RawKind = Literal["tracks", "labels"]
-"""Which raw index a row or a source belongs to."""
 
 _KINDS: Final[tuple[RawKind, ...]] = ("tracks", "labels")
 _KIND_ORDER: Final[dict[RawKind, int]] = {"tracks": 0, "labels": 1}
@@ -324,7 +319,7 @@ def _duplicates(ds: Dataset, files: list[_RawFile]) -> tuple[list[DuplicateSet],
             kinds.add(raw.kind)
     sets = {md5: found for md5, found in by_digest.items() if len(found) > 1}
     ordered = sorted(sets, key=lambda md5: (-len(sets[md5]), md5))
-    claims = _Claims(ds)
+    claiming = {kind: ds.sources_claiming(kind) for kind in _KINDS}
     kept = [
         DuplicateSet(
             md5=md5,
@@ -334,7 +329,7 @@ def _duplicates(ds: Dataset, files: list[_RawFile]) -> tuple[list[DuplicateSet],
                     f"{kind}:{source}"
                     for path, kinds in sets[md5].items()
                     for kind in kinds
-                    for source in claims.sources_claiming(kind, path)
+                    for source in claiming[kind](path)
                 }
             ),
             paths=[str(path) for path in sorted(sets[md5])[:DUPLICATE_PATH_SAMPLE]],
@@ -342,41 +337,6 @@ def _duplicates(ds: Dataset, files: list[_RawFile]) -> tuple[list[DuplicateSet],
         for md5 in ordered[:RAW_REPORT_SAMPLE]
     ]
     return kept, len(sets)
-
-
-class _Claims:
-    """The declared sources of each kind and their claims, built lazily."""
-
-    def __init__(self, ds: Dataset) -> None:
-        self._ds = ds
-        self._claims: dict[tuple[RawKind, str], ScanClaim] = {}
-
-    def sources_claiming(self, kind: RawKind, path: Path) -> list[str]:
-        """The ids of the *kind* sources whose claim covers *path*."""
-        found: list[str] = []
-        for source in _fed_sources(self._ds, kind):
-            key = (kind, source.id)
-            if key not in self._claims:
-                self._claims[key] = self._ds.source_claim(source)
-            if self._claims[key].claims(path):
-                found.append(source.id)
-        return found
-
-
-def _fed_sources(ds: Dataset, kind: RawKind) -> list[RawScanSource]:
-    """The declared *kind* sources that feed the raw index, in order.
-
-    A labels source with a ``series`` feeds a series index of its own and is
-    left out.
-    """
-    from mosaic.core.manifest import LabelsScanSource, RawScanSource
-
-    return [
-        source
-        for source in ds.scan_sources(kind)
-        if isinstance(source, RawScanSource)
-        and not (isinstance(source, LabelsScanSource) and source.series is not None)
-    ]
 
 
 def _unhashed(files: list[_RawFile]) -> list[UnhashedRaw]:
@@ -431,7 +391,7 @@ def _source_findings(ds: Dataset) -> tuple[list[PatternMiss], list[MissingSource
     misses: list[PatternMiss] = []
     missing: list[MissingSource] = []
     for kind in _KINDS:
-        for source in _fed_sources(ds, kind):
+        for source in ds.raw_index_sources(kind):
             base = ds.resolve_source_path(source)
             absent = missing_path_finding(kind, source.id, base)
             if absent is not None:
