@@ -8,6 +8,7 @@ the registry. The rule that needs a registry entry puts one there through
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, ClassVar, override
 
@@ -391,3 +392,148 @@ def test_sleap_on_its_sample_has_no_problems(tmp_path: Path) -> None:
     )
 
     assert problems == []
+
+
+def _listing(listed: Callable[[Path], tuple[Path, ...]]) -> type[_Conforming]:
+    """A conforming class whose ``companion_files`` is *listed*."""
+
+    class Listing(_Conforming):
+        @override
+        def companion_files(self, path: Path) -> tuple[Path, ...]:
+            return listed(path)
+
+    return Listing
+
+
+def _beside(sample: Path, name: str) -> Path:
+    companion = sample.parent / name
+    _ = companion.write_text("companion\n")
+    return companion
+
+
+def test_a_companion_that_exists_beside_the_sample_conforms(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    companion = _beside(sample, "sample.extra")
+
+    assert converter_problems(_listing(lambda _path: (companion,)), sample) == []
+
+
+def test_companions_that_are_sorted_and_distinct_conform(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    first = _beside(sample, "a.extra")
+    second = _beside(sample, "b.extra")
+
+    problems = converter_problems(_listing(lambda _path: (first, second)), sample)
+
+    assert problems == []
+
+
+def test_resolved_companions_of_a_sample_in_a_symlinked_directory_conform(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    sample = _sample(real)
+    _ = _beside(sample, "sample.extra")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    def resolved(path: Path) -> tuple[Path, ...]:
+        return (path.resolve().with_name("sample.extra"),)
+
+    assert converter_problems(_listing(resolved), link / sample.name) == []
+
+
+def test_a_companion_that_is_missing_is_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    missing = tmp_path / "missing.extra"
+
+    problems = converter_problems(_listing(lambda _path: (missing,)), sample)
+
+    assert len(problems) == 1
+    assert "Listing" in problems[0]
+    assert "companion_files" in problems[0]
+    assert "missing.extra" in problems[0]
+    assert "does not exist" in problems[0]
+
+
+def test_a_companion_that_is_a_directory_is_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    directory = tmp_path / "folder.extra"
+    directory.mkdir()
+
+    problems = converter_problems(_listing(lambda _path: (directory,)), sample)
+
+    assert len(problems) == 1
+    assert "folder.extra" in problems[0]
+    assert "is not a file" in problems[0]
+
+
+def test_a_companion_in_another_directory_is_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    companion = elsewhere / "sample.extra"
+    _ = companion.write_text("companion\n")
+
+    problems = converter_problems(_listing(lambda _path: (companion,)), sample)
+
+    assert len(problems) == 1
+    assert "sample.extra" in problems[0]
+    assert "directory" in problems[0]
+
+
+def test_the_sample_listed_as_its_own_companion_is_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+
+    problems = converter_problems(_listing(lambda path: (path,)), sample)
+
+    assert len(problems) == 1
+    assert "sample.csv" in problems[0]
+    assert "is the sample" in problems[0]
+
+
+def test_companions_out_of_order_are_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    first = _beside(sample, "a.extra")
+    second = _beside(sample, "b.extra")
+
+    problems = converter_problems(_listing(lambda _path: (second, first)), sample)
+
+    assert len(problems) == 1
+    assert "sorted" in problems[0]
+
+
+def test_a_companion_listed_twice_is_reported(tmp_path: Path) -> None:
+    sample = _sample(tmp_path)
+    companion = _beside(sample, "a.extra")
+
+    problems = converter_problems(
+        _listing(lambda _path: (companion, companion)), sample
+    )
+
+    assert len(problems) == 1
+    assert "twice" in problems[0] or "repeat" in problems[0]
+
+
+def test_a_companion_files_that_raises_is_reported_naming_the_hook(
+    tmp_path: Path,
+) -> None:
+    def refuse(path: Path) -> tuple[Path, ...]:
+        raise OSError("the directory is unreadable")
+
+    problems = converter_problems(_listing(refuse), _sample(tmp_path))
+
+    assert len(problems) == 1
+    assert "Listing" in problems[0]
+    assert "companion_files" in problems[0]
+    assert "sample.csv" in problems[0]
+    assert "OSError" in problems[0]
+    assert "the directory is unreadable" in problems[0]
+
+
+def test_companions_are_not_listed_without_a_sample() -> None:
+    def never(path: Path) -> tuple[Path, ...]:
+        raise AssertionError("listed companions without a sample")
+
+    assert converter_problems(_listing(never)) == []

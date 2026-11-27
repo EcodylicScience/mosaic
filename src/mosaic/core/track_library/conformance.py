@@ -24,10 +24,13 @@ Given a sample file it also converts it with ``EntryHints()`` and checks that:
 - the table passes ``ensure_track_schema(..., strict=True)`` against
   ``output_schema``;
 - ``frames_read`` of the sample is ``None`` or a count no smaller than the number
-  of distinct ``frame`` values in the table.
+  of distinct ``frame`` values in the table;
+- ``companion_files`` of the sample returns paths that are sorted and without
+  repeats, and each exists, is a file, lies in the sample's directory and is
+  not the sample.
 
-A conversion or a ``frames_read`` that raises is a problem that names the
-exception.
+A conversion, a ``frames_read`` or a ``companion_files`` that raises is a
+problem that names the exception.
 """
 
 from __future__ import annotations
@@ -75,7 +78,8 @@ def converter_problems(
         cls: The converter class to check.
         sample: A raw file of the converter's format. Given one, the converter
             converts it, the table is validated against ``output_schema`` and
-            ``frames_read`` of the file is compared with the table's frames.
+            ``frames_read`` of the file is compared with the table's frames,
+            and the files that ``companion_files`` lists are checked.
         params: The conversion params for the sample. Defaults to
             ``cls.Params()``.
 
@@ -166,7 +170,10 @@ def _sample_problems(
             f"{name} converted {sample.name} to a table that fails the "
             f"{cls.output_schema} schema: {exc}"
         ]
-    return _frame_count_problems(cls, sample, table)
+    return [
+        *_frame_count_problems(cls, sample, table),
+        *_companion_problems(cls, sample),
+    ]
 
 
 def _frame_count_problems(
@@ -194,3 +201,47 @@ def _frame_count_problems(
             f"the {frames} distinct frames of the table it converts to."
         ]
     return []
+
+
+def _companion_problems[P: TrackConvertParams](
+    cls: type[TrackConverter[P]], sample: Path
+) -> list[str]:
+    """Check what ``companion_files`` lists for *sample*.
+
+    The hook is called directly, for the reason that ``frames_read`` is: any
+    exception is a defect of the converter, and the check reports it. It gets the
+    resolved sample, as a scan gives it, so a hook that returns resolved paths
+    lists files in the sample's directory whatever the spelling of *sample*. A
+    companion is not resolved, so a symlink inside the directory is one.
+    """
+    name = cls.__name__
+    sample = sample.resolve()
+    try:
+        listed = cls().companion_files(sample)
+    except Exception as exc:
+        return [
+            f"{name} raised {type(exc).__name__} in companion_files of "
+            f"{sample.name}: {exc}"
+        ]
+    prefix = f"{name}.companion_files of {sample.name}"
+    problems: list[str] = []
+    if list(listed) != sorted(listed):
+        problems.append(f"{prefix} is not sorted.")
+    if len(set(listed)) != len(listed):
+        problems.append(f"{prefix} repeats a path.")
+    for companion in dict.fromkeys(listed):
+        if not companion.exists():
+            problems.append(f"{prefix} lists {companion.name}, which does not exist.")
+        elif not companion.is_file():
+            problems.append(f"{prefix} lists {companion.name}, which is not a file.")
+        elif companion.parent != sample.parent:
+            problems.append(
+                f"{prefix} lists {companion}, which is not in the sample's "
+                f"directory {sample.parent}."
+            )
+        elif companion.samefile(sample):
+            problems.append(
+                f"{prefix} lists {companion.name}, which is the sample, not a "
+                "companion of it."
+            )
+    return problems

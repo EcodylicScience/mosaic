@@ -54,6 +54,7 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
 )
 from mosaic.core.root_lookup import RootLookup
+from mosaic.core.track_library.tracktor import TracktorParams
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 from tests.helpers import (
@@ -62,6 +63,7 @@ from tests.helpers import (
     tree_snapshot,
     write_dlc_csv,
     write_sleap_analysis_h5,
+    write_tracktor_recording,
     write_trex_npz,
     write_ultralytics_predictions,
 )
@@ -235,8 +237,20 @@ def _write_sleap_sample(directory: Path) -> Path:
     return path
 
 
+def _write_tracktor_raw_sample(directory: Path) -> Path:
+    """Write a Tracktor recording, both tables, and return its raw table."""
+    return write_tracktor_recording(directory).csv
+
+
+def _write_tracktor_corrected_sample(directory: Path) -> Path:
+    """Write a Tracktor recording, both tables, and return its corrected table."""
+    return write_tracktor_recording(directory).tsv
+
+
 CONFORMANCE_SAMPLES: dict[str, tuple[Callable[[Path], Path], TrackConvertParams]] = {
     "sleap_analysis_h5": (_write_sleap_sample, SleapConvertParams(fps=30.0)),
+    "tracktor_raw_csv": (_write_tracktor_raw_sample, TracktorParams()),
+    "tracktor_corrected_tsv": (_write_tracktor_corrected_sample, TracktorParams()),
 }
 """A format's sample factory and the params to convert the sample with.
 
