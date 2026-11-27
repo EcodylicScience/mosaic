@@ -45,10 +45,22 @@ def logged_events(
     return _events_in(run_log_path(base_dir, execution_id), ev)
 
 
+def all_logged_events(base_dir: Path, execution_id: str) -> list[dict[str, object]]:
+    """Return every event that attempt *execution_id* logged, in file order.
+
+    *base_dir* is the base directory of the dataset whose run-logs hold it.
+    """
+    return _read_events(run_log_path(base_dir, execution_id))
+
+
+def _read_events(log: Path) -> list[dict[str, object]]:
+    """Return every event of the run-log *log*, in file order."""
+    return [_EVENT.validate_json(line) for line in log.read_text().splitlines()]
+
+
 def _events_in(log: Path, ev: str) -> list[dict[str, object]]:
     """Return every *ev* event of the run-log *log*, in order."""
-    events = [_EVENT.validate_json(line) for line in log.read_text().splitlines()]
-    return [event for event in events if event.get("ev") == ev]
+    return [event for event in _read_events(log) if event.get("ev") == ev]
 
 
 def _latest_log(ds: Dataset) -> Path:

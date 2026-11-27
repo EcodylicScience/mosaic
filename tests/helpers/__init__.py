@@ -504,6 +504,7 @@ from tests.helpers.paths import (
     VAME_RUNNER,
 )
 from tests.helpers.runlog import (
+    all_logged_events,
     entry_error_lines,
     latest_events,
     latest_snapshot,
@@ -967,6 +968,7 @@ __all__ = [
     "add_raw_track_files",
     "add_track_sequences",
     "add_tracks_table",
+    "all_logged_events",
     "add_tracks_variant",
     "add_tracks_variant_in_bulk",
     "convert_tracks_from_raw",

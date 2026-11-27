@@ -4,11 +4,20 @@ The loader's rule is pinned in ``test_multi_input_alignment.py``. These run
 ``run_feature`` over a pair-level and an individual-level result, so the flag
 reaches the loader from the feature's ``emits``, and an entry whose pair input
 holds no rows is reported as lost.
+
+Each run goes in three modes: serial (one worker), thread (two workers) and
+process (two workers), and each test asserts that the entries it computed ran in
+the mode asked for, so a fallback to threads cannot pass. A run with overlap
+widens too, and loses the entry without pair rows as a run without overlap does.
+The stubs are built as ``cls(inputs, params)`` so that a process worker can
+build them.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Final, NamedTuple
 
 import pandas as pd
 import pytest
@@ -16,18 +25,51 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import Params
+from mosaic.core.pipeline import parquet_reader
 from mosaic.core.pipeline.loading import MultiInputAlignmentError
+from mosaic.core.pipeline.parallelism import ParallelMode
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
+from mosaic.core.pipeline.types import (
+    Feature,
+    Inputs,
+    InputStream,
+    Result,
+    TrackInput,
+)
 from mosaic.core.pipeline.feature_levels import EmitsLevel
 from tests.helpers import (
     add_track_sequences,
-    entry_error_lines,
+    all_logged_events,
+    latest_events,
+    latest_snapshot,
     make_dataset,
+    record_path_calls,
     result_outputs,
+    result_run_root,
 )
 
 _EMPTY = "empty"
+
+_NO_PAIR_ROWS_MESSAGE: Final = (
+    "input 0 holds no pair rows for this entry, so the individual rows of "
+    "input 1 have none to widen onto"
+)
+"""What the entry without pair rows reports."""
+
+
+class _Mode(NamedTuple):
+    """How a run computes its entries."""
+
+    name: str
+    workers: int
+    kind: ParallelMode
+
+
+_MODES: Final = (
+    _Mode("serial", 1, "thread"),
+    _Mode("thread", 2, "thread"),
+    _Mode("process", 2, "process"),
+)
 
 
 class _Stub:
@@ -45,8 +87,8 @@ class _Stub:
     class Params(Params):
         pass
 
-    def __init__(self) -> None:
-        self.params: _Stub.Params = self.Params.from_overrides(None)
+    def __init__(self, params: dict[str, object] | None = None) -> None:
+        self.params: _Stub.Params = self.Params.from_overrides(params)
 
     def load_state(
         self,
@@ -123,8 +165,10 @@ class _Echo(_Stub):
     class Inputs(Inputs[Result]):
         pass
 
-    def __init__(self, inputs: _Echo.Inputs) -> None:
-        super().__init__()
+    def __init__(
+        self, inputs: _Echo.Inputs, params: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(params)
         self.inputs: _Echo.Inputs = inputs
 
 
@@ -133,8 +177,10 @@ class _FitsEcho(_Echo):
 
     name = "test-fits-echo"
 
-    def __init__(self, inputs: _Echo.Inputs) -> None:
-        super().__init__(inputs)
+    def __init__(
+        self, inputs: _Echo.Inputs, params: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(inputs, params)
         self.fitted_entries: list[str] = []
 
     def load_state(
@@ -147,6 +193,13 @@ class _FitsEcho(_Echo):
 
     def fit(self, inputs: InputStream) -> None:
         self.fitted_entries = [entry_key for entry_key, _ in inputs()]
+
+
+class _EchoWithOverlap(_Echo):
+    """An ``as-input`` consumer that accepts overlap."""
+
+    name = "test-echo-overlap"
+    accepts_overlap = True
 
 
 class _EchoPerIndividual(_Echo):
@@ -166,13 +219,66 @@ def _results(tmp_path: Path, *sequences: str) -> tuple[Dataset, Result, Result]:
     )
 
 
+def _ran_in(ds: Dataset, mode: _Mode) -> None:
+    """Assert that every entry the last attempt computed ran in *mode*'s kind.
+
+    A run that fell back to threads writes ``thread`` where processes were asked
+    for.
+    """
+    for end in latest_events(ds, "entry_end"):
+        assert end.get("mode") == mode.kind, (mode.name, end)
+
+
+def _entry_errors(ds: Dataset) -> list[tuple[object, dict[str, str]]]:
+    """The key and the parsed error of each ``entry_error`` of the last attempt."""
+    errors: list[tuple[object, dict[str, str]]] = []
+    for event in latest_events(ds, "entry_error"):
+        error = event["error"]
+        assert isinstance(error, str)
+        errors.append((event["key"], json.loads(error)))
+    return errors
+
+
+def _lost_the_entry_without_pair_rows(ds: Dataset, result: Result) -> None:
+    """Assert that the run lost the entry of ``_EMPTY``, recorded it and went on."""
+    assert result.failed_entries == (make_entry_key("g", _EMPTY),)
+    errors = _entry_errors(ds)
+    assert len(errors) == 1
+    key, error = errors[0]
+    assert key == make_entry_key("g", _EMPTY)
+    assert error["type"] == "PairRowsMissing"
+    assert error["message"] == _NO_PAIR_ROWS_MESSAGE
+    assert latest_snapshot(ds)["status"] == "finished"
+
+
+def _run_in(
+    ds: Dataset,
+    feature: Feature,
+    mode: _Mode,
+    *,
+    overlap_frames: int = 0,
+    filter_start_time: float | None = None,
+) -> Result:
+    return run_feature(
+        ds,
+        feature,
+        parallel_workers=mode.workers,
+        parallel_mode=mode.kind,
+        overlap_frames=overlap_frames,
+        filter_start_time=filter_start_time,
+    )
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
 def test_an_as_input_run_reads_each_pair_row_with_both_individuals(
-    tmp_path: Path,
+    tmp_path: Path, mode: _Mode
 ) -> None:
     ds, pairs, individuals = _results(tmp_path, "s1")
 
-    echoed = run_feature(ds, _Echo(_Echo.Inputs((pairs, individuals))))
+    echoed = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
 
+    _ran_in(ds, mode)
+    assert len(latest_events(ds, "entry_end")) == 1
     (table,) = result_outputs(ds, echoed).values()
     assert {"id1", "id2", "dist", "speed__id1", "speed__id2"} <= set(table.columns)
     assert "id" not in table.columns
@@ -191,19 +297,128 @@ def test_an_individual_level_consumer_keeps_the_refusal(tmp_path: Path) -> None:
         )
 
 
-def test_an_entry_without_pair_rows_is_an_entry_error(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_an_entry_without_pair_rows_is_an_entry_error(
+    tmp_path: Path, mode: _Mode
+) -> None:
     """The entry is lost and reported, and the run keeps the others."""
     ds, pairs, individuals = _results(tmp_path, "s1", _EMPTY)
-    execution_id = "TESTWIDEN1"
+
+    result = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
+
+    _ran_in(ds, mode)
+    _lost_the_entry_without_pair_rows(ds, result)
+    assert set(result_outputs(ds, result)) == {make_entry_key("g", "s1")}
+    assert [end["key"] for end in latest_events(ds, "entry_end")] == [
+        make_entry_key("g", "s1")
+    ]
+
+
+def test_an_entry_without_pair_rows_leaves_the_gate(tmp_path: Path) -> None:
+    """The lost entry leaves the in-flight record before the next one enters."""
+    ds, pairs, individuals = _results(tmp_path, _EMPTY, "s1", "s2")
+    execution_id = "TESTWIDENGATE"
 
     result = run_feature(
         ds, _Echo(_Echo.Inputs((pairs, individuals))), execution_id=execution_id
     )
 
     assert result.failed_entries == (make_entry_key("g", _EMPTY),)
-    errors = entry_error_lines(ds, execution_id)
-    assert len(errors) == 1
-    assert "PairRowsMissing" in errors[0]
+    events = all_logged_events(ds.base_dir, execution_id)
+    names = [event["ev"] for event in events]
+    assert names.index("entry_error") < names.index("entry_end")
+    ends = [event for event in events if event["ev"] == "entry_end"]
+    assert [end["key"] for end in ends] == [
+        make_entry_key("g", "s1"),
+        make_entry_key("g", "s2"),
+    ]
+    assert [end["in_flight"] for end in ends] == [1, 1]
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_an_overlapped_widening_run_records_the_entry_without_pair_rows(
+    tmp_path: Path, mode: _Mode
+) -> None:
+    """A run that reads in the parent records the lost entry as a worker's run does."""
+    ds, pairs, individuals = _results(tmp_path, "s1", _EMPTY)
+
+    result = _run_in(
+        ds,
+        _EchoWithOverlap(_EchoWithOverlap.Inputs((pairs, individuals))),
+        mode,
+        overlap_frames=1,
+    )
+
+    _ran_in(ds, mode)
+    _lost_the_entry_without_pair_rows(ds, result)
+
+
+def _corrupt(ds: Dataset, result: Result, sequence: str) -> None:
+    """Overwrite the output of *result* for *sequence* with bytes that are not parquet."""
+    path = result_run_root(ds, result) / f"{make_entry_key('g', sequence)}.parquet"
+    assert path.exists()
+    _ = path.write_bytes(b"not a parquet file")
+
+
+def _ended_without_an_entry_error(ds: Dataset, raised: BaseException) -> None:
+    """Assert that the run failed with *raised* and wrote no ``entry_error``."""
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "failed"
+    assert json.loads(snapshot["error_json"])["type"] == type(raised).__name__
+    assert latest_events(ds, "entry_error") == []
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_a_corrupt_input_of_a_widening_run_ends_the_run(
+    tmp_path: Path, mode: _Mode
+) -> None:
+    ds, pairs, individuals = _results(tmp_path, "s1", "s2")
+    _corrupt(ds, individuals, "s2")
+
+    with pytest.raises(ValueError, match="magic bytes not found") as raised:
+        _ = _run_in(ds, _Echo(_Echo.Inputs((pairs, individuals))), mode)
+
+    _ran_in(ds, mode)
+    _ended_without_an_entry_error(ds, raised.value)
+
+
+@pytest.mark.parametrize("mode", _MODES, ids=lambda mode: mode.name)
+def test_a_time_window_over_a_widening_input_without_time_ends_the_run(
+    tmp_path: Path, mode: _Mode
+) -> None:
+    """The entry of ``_EMPTY`` is left out, since its missing pair rows raise first."""
+    ds, pairs, individuals = _results(tmp_path, "s1", "s2")
+
+    with pytest.raises(
+        ValueError, match="a time filter reads the 'time' column"
+    ) as raised:
+        _ = _run_in(
+            ds,
+            _Echo(_Echo.Inputs((pairs, individuals))),
+            mode,
+            filter_start_time=0.0,
+        )
+
+    _ran_in(ds, mode)
+    _ended_without_an_entry_error(ds, raised.value)
+
+
+def test_a_widening_run_parses_each_input_footer_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, pairs, individuals = _results(tmp_path, _EMPTY, "s1")
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    result = run_feature(
+        ds,
+        _Echo(_Echo.Inputs((pairs, individuals))),
+        parallel_workers=2,
+        parallel_mode="thread",
+    )
+
+    assert result.failed_entries == (make_entry_key("g", _EMPTY),)
+    assert parsed
+    assert len(parsed) == len(set(parsed)), sorted(parsed)
 
 
 def test_a_fit_skips_an_entry_without_pair_rows_and_apply_reports_it(

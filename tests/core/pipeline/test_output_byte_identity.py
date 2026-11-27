@@ -20,6 +20,10 @@ its own copy of the dataset, and compares the three:
 - ``overlap``: ``SpeedAngvel`` with ``overlap_frames=2`` over continuous groups,
   so that each entry is read with its neighbors' frames, computed, and trimmed
   to its own.
+- ``widening``: ``TemporalStackingFeature``, an ``as-input`` consumer over the
+  pair rows of ``PairPositionFeatures`` and the individual rows of
+  ``SpeedAngvel``, so that each entry's individual rows are widened onto its
+  pair rows wherever the entry loads.
 - ``bounds``: ``SpeedAngvel`` with a start frame that cuts the first sequence of
   each group and an end time that cuts the last, so that each filter runs
   wherever the entry loads.
@@ -50,6 +54,7 @@ from mosaic.behavior.feature_library.global_scaler import GlobalScaler
 from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
 from mosaic.behavior.feature_library.pair_position import PairPositionFeatures
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.definitions.define import (
     define_feature,
@@ -117,6 +122,8 @@ class _Case:
             ``filter_end_frame``, each ``None`` where the run sets none.
         time_window: The start and end of ``filter_start_time`` and
             ``filter_end_time``, each ``None`` where the run sets none.
+        widens: Whether each output must carry the columns of both
+            individuals of its pair rows.
     """
 
     name: str
@@ -124,6 +131,7 @@ class _Case:
     overlap_frames: int = 0
     frame_bounds: tuple[int | None, int | None] | None = None
     time_window: tuple[float | None, float | None] | None = None
+    widens: bool = False
 
 
 def _fixture(base: Path) -> Dataset:
@@ -182,6 +190,15 @@ def _pair(_ds: Dataset) -> Feature:
     return PairPositionFeatures()
 
 
+def _widening(ds: Dataset) -> Feature:
+    pairs = run_feature(ds, PairPositionFeatures())
+    speed = run_feature(ds, SpeedAngvel())
+    return TemporalStackingFeature(
+        inputs=TemporalStackingFeature.Inputs((pairs, speed)),
+        params={"half": 2, "skip": 1, "add_pool": False},
+    )
+
+
 def _definition(ds: Dataset) -> Feature:
     _ = define_feature(ds, MINIMAL_NAME, MINIMAL_SOURCE)
     return load_feature_definition(ds, f"def:{MINIMAL_NAME}")()
@@ -193,6 +210,7 @@ _CASES: Final = (
     _Case("fitted", _fitted),
     _Case("pair", _pair),
     _Case("definition", _definition),
+    _Case("widening", _widening, widens=True),
     _Case("overlap", _per_frame, overlap_frames=2),
     # The frames of a sequence are 20 * position .. 20 * position + 19 and the
     # time of a frame is frame / 30. A start frame of 5 cuts frames 0 to 4 from
@@ -289,6 +307,24 @@ def _kept_only_the_bounds(ds: Dataset, result: Result, case: _Case) -> None:
     assert len(outputs := sorted(root.glob("*.parquet"))) == _ENTRIES, outputs
 
 
+def _widened_onto_the_pair_rows(ds: Dataset, result: Result) -> None:
+    """Assert that each output carries a column of each individual of its pairs.
+
+    Without them the case would compare runs that widen nothing.
+    """
+    root = result_run_root(ds, result)
+    outputs = sorted(root.glob("*.parquet"))
+    assert len(outputs) == _ENTRIES
+    for output in outputs:
+        columns = pd.read_parquet(output).columns
+        for slot in ("id1", "id2"):
+            prefix = f"speed__{slot}"
+            assert any(name.startswith(prefix) for name in columns), (
+                output.name,
+                prefix,
+            )
+
+
 def _ran_every_entry_as_asked(ds: Dataset, mode: _Mode) -> None:
     """Assert that the last attempt computed each entry, in the mode asked for.
 
@@ -330,6 +366,8 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
             _ran_every_entry_as_asked(ds, mode)
             if case.overlap_frames:
                 _own_frames(ds, result)
+            if case.widens:
+                _widened_onto_the_pair_rows(ds, result)
             if bounds is not None or window is not None:
                 _kept_only_the_bounds(ds, result, case)
             written[mode.name] = _written(ds, result)
