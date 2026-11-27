@@ -54,7 +54,9 @@ the user can grant that.
 ### Task machine settings
 
 The task machine keeps its settings outside the repository, in
-`~/.config/mosaic-suite/` (or `$MOSAIC_SUITE_CONFIG`):
+`$MOSAIC_SUITE_CONFIG`, else in a `mosaic-suite/` directory beside the task clone
+(for a shared login, whose `~/.config` belongs to others), else in
+`~/.config/mosaic-suite/`:
 
 - `env`: sourced before the run. It sets a `PATH` whose ffmpeg has
   libx264, and the `MOSAIC_CI_*`, `MOSAIC_ULTRALYTICS_BIN`, `MOSAIC_POLO_BIN` and

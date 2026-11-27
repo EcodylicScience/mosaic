@@ -9,7 +9,9 @@
 # Runs `.venv/bin/python -m pytest -m "slow or not slow" -q -rfE` in the
 # checkout that holds this script, with any extra pytest arguments appended.
 # The per-machine settings live outside the repository, in the directory
-# named by MOSAIC_SUITE_CONFIG (default ~/.config/mosaic-suite):
+# named by MOSAIC_SUITE_CONFIG. Without it, they live in mosaic-suite beside
+# the checkout when that directory exists, which keeps them off a shared
+# login's ~/.config, and in ~/.config/mosaic-suite otherwise:
 #   env                    sourced with every assignment exported, for
 #                          PATH and the MOSAIC_* variables that enable the
 #                          external-tool tests on this machine; $root names
@@ -24,7 +26,13 @@
 set -u
 
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
-config="${MOSAIC_SUITE_CONFIG:-$HOME/.config/mosaic-suite}"
+if [ -n "${MOSAIC_SUITE_CONFIG:-}" ]; then
+    config="$MOSAIC_SUITE_CONFIG"
+elif [ -d "$root/../mosaic-suite" ]; then
+    config="$(cd "$root/../mosaic-suite" && pwd)"
+else
+    config="$HOME/.config/mosaic-suite"
+fi
 baseline="$config/baseline-failures.txt"
 
 update=0
