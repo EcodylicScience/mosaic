@@ -3,6 +3,8 @@
 The values are those of ``log_power``, which ``pair-wavelet`` shares, so a track
 without gaps or NaN equals the same series run through ``pair-wavelet``. A missing
 frame reads as NaN, and a coefficient is NaN where its wavelet support covers one.
+Under ``motionmapper`` the values are those of ``morlet_log_amplitude``, NaN within 8
+scales of a NaN or a missing frame.
 """
 
 from __future__ import annotations

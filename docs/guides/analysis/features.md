@@ -45,10 +45,11 @@ between keypoints, and with `heading` each keypoint's velocity and position in t
 animal's own frame), `trajectory-smooth`, `body-scale`, `body-length` (length along a
 chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (lengths in
 body lengths, for comparing animals of different sizes), `individual-wavelet` (the log
-power of chosen columns at a band of frequencies), `track-subsample`, and, for 3D tracks
-in the world frame, `pose-egocentric` (each keypoint in the animal's own body frame,
-from a left-right pair or a front-rear pair of keypoints), and `roi-occupancy` (which
-regions of an arena each position lies in; see [Time in regions](#time-in-regions)).
+power of chosen columns at a band of frequencies, or with `method` the MotionMapper
+log amplitude), `track-subsample`, and, for 3D tracks in the world frame,
+`pose-egocentric` (each keypoint in the animal's own body frame, from a left-right pair
+or a front-rear pair of keypoints), and `roi-occupancy` (which regions of an arena each
+position lies in; see [Time in regions](#time-in-regions)).
 
 `body-length` reports the median over each individual's rows of the length along a
 chain of keypoints. `statistic` takes `median`, `mean` or `percentile` (with

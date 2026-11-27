@@ -105,14 +105,17 @@ compared, so give it the fit's params, `pose_indices` among them.
 **Where this comes from.** The chain follows the approach of Berman et al. (2014),
 MotionMapper ([doi:10.1098/rsif.2014.0672](https://doi.org/10.1098/rsif.2014.0672)),
 which maps the stereotyped behavior of one animal from wavelet spectra of its posture.
-Mosaic differs in four ways:
+Mosaic differs in five ways:
 
 - The posture basis is rotation-invariant keypoint distances within and between the two
   animals of a pair, not image eigenmodes of a single animal.
 - `pair-wavelet` defaults to a 0.2 to 5 Hz band, where the original used 1 to 50 Hz.
+- The default transform is the log power of PyWavelets' `cmor1.5-1.0` wavelet.
+  `method: motionmapper` with `omega0` gives the log of Berman's normalized Morlet
+  amplitude instead.
 - Nothing normalizes each time point's spectrogram to sum to one. `pair-wavelet` writes
-  the clamped log power, and `global-scaler` standardizes each column across the
-  templates.
+  the clamped log power, or the log amplitude under `motionmapper`, and `global-scaler`
+  standardizes each column across the templates.
 - States come from k-means or Ward clustering of the scaled templates, not from a
   watershed segmentation of a density estimate over the embedding.
 

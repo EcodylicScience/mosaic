@@ -830,7 +830,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   individual wavelets through a join to pair rows. A dropout (a missing frame or a NaN,
   such as a keypoint the tracker lost) blanks each frequency for half its wavelet's
   support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default wavelet.
-  Raising `f_min` shortens it
+  Raising `f_min` shortens it. `method: motionmapper` with `omega0` (5 in MotionMapper)
+  computes MotionMapper's Morlet log amplitude for either wavelet feature, and a NaN, or
+  in `individual-wavelet` a missing frame, then blanks about 32 s at 0.2 Hz and 1.3 s at
+  5 Hz on each side
   (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-sequence-networks/).
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the

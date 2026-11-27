@@ -30,7 +30,10 @@ behavior: 0.5 to 15 Hz served 30 fps mouse video, and the default is 0.2 to 5 Hz
 model reads individual wavelets through a join to pair rows. A dropout (a missing frame
 or a NaN, such as a keypoint the tracker lost) blanks each frequency for half its
 wavelet's support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default
-wavelet. Raising `f_min` shortens it.
+wavelet. Raising `f_min` shortens it. `method: motionmapper` with `omega0` (5 in
+MotionMapper) computes MotionMapper's Morlet log amplitude for either wavelet feature,
+and a NaN, or in `individual-wavelet` a missing frame, then blanks about 32 s at 0.2 Hz
+and 1.3 s at 5 Hz on each side.
 
 `lightning-action` and `sequence-classifier` model the temporal structure themselves,
 so they do not need this step. See [Model the sequence directly](#model-the-sequence-directly)

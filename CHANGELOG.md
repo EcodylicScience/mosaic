@@ -8,6 +8,14 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: MotionMapper wavelet method
+
+No run id or output moves. `pair-wavelet` and `individual-wavelet` gain `method:
+motionmapper` with `omega0`, which computes the log amplitude of the normalized Morlet
+wavelet of Berman et al. (2014) and writes it as float64. It refuses a `wavelet` other
+than the default, which the Morlet wavelet of `omega0` replaces, and its runs have
+identities of their own. The `pywt` default is unchanged.
+
 ## Unreleased: a feature run's workers read a widening step's input
 
 No run id or output moves. A feature run's workers read the input of a feature

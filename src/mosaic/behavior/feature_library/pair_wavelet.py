@@ -92,9 +92,9 @@ class PairWavelet:
     ``omega0``, which that method requires and the other refuses: each column
     gives the natural log of its normalized amplitude, computed by convolving the
     zero-padded series with the wavelet in the Fourier domain, clamped from below
-    at ``log_floor``, in float64. A NaN, or a frame the table lacks, blanks the
-    rows within 8 scales of it in the columns it touches, and no others. A
-    ``wavelet`` other than its default is refused under ``motionmapper``.
+    at ``log_floor``, in float64. A NaN blanks the rows within 8 scales of it in
+    the columns it touches, and no others. A ``wavelet`` other than its default
+    is refused under ``motionmapper``.
 
     Differences from Berman et al. (2014):
 

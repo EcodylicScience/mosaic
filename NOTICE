@@ -611,7 +611,8 @@ MotionMapper
   In:          src/mosaic/behavior/feature_library/, the feature chain
                pair-posedistance-pca -> pair-wavelet -> extract-templates
                -> global-scaler -> global-tsne -> global-kmeans |
-               global-ward.
+               global-ward, and the motionmapper method of pair-wavelet
+               and individual-wavelet.
   Citation:    Berman, G. J., Choi, D. M., Bialek, W., Shaevitz, J. W.
                (2014). Mapping the stereotyped behaviour of freely moving
                fruit flies. Journal of the Royal Society Interface
