@@ -360,8 +360,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `synthetic_3d` converters) is in **meters** in a right-handed world frame with +Z up,
   and `Z` is the body center's height. The media calibration does not apply to it. Run
   `pose-egocentric` (keypoints in each animal's body frame), `pair-world` (distance,
-  bearing and elevation between animals, in float64), `keypoint-kinematics` (per-keypoint speeds in
-  m/s) and `pair-posedistance-pca` with `dimensions: 3` on it. A planar feature refuses
+  bearing and elevation between animals, in float64), `keypoint-kinematics` (per-keypoint
+  speeds in m/s), `pair-posedistance-pca` with `dimensions: 3` and `body-length` with
+  `dimensions: 3` (the length along a keypoint chain in 3D) on it. A planar feature refuses
   it with `schema_family_mismatch`, as a recipe does when it is planned or, for tracks
   the recipe itself writes, when the step starts. `pair-posedistance-pca` at its default
   `dimensions: 2` accepts the table when planned and fails when the step runs, with a
@@ -540,7 +541,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   after every input column. A name that the input already has, a metadata column's
   name (`group`, `sequence`, `frame`, `time`, `id`, `id1`, `id2`, `perspective`,
   `arena`), `pi`, `nan` or `inf`, a repeated name and an expression that reads a later
-  entry's column are refused. The feature runs in any track space.
+  entry's column are refused. The feature runs in any track space
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#row-arithmetic).
 - `track-coverage` summarizes how much of a recording holds animals, one row per entry
   (per arena with an `arena` column). `rules` is a list of `{name, columns, mode}`
   entries, default one named `xy` over `X` and `Y` with `all`: a row passes when every
@@ -554,8 +556,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `gap_thresholds` adds `<name>_gaps_over_<t>`, the gaps longer than `t` frames. With a
   `time` column it writes `time_step_median` and `time_step_max`, between consecutive
   frames that have rows. Follow it with `derive-columns` for a percentage, such as
-  `xy_frames_none / n_frames * 100`. It reads ids that name one animal over time, and
-  runs in any track space.
+  `xy_frames_none / n_frames * 100`. It refuses a null `arena` in an input that has the
+  column. It reads ids that name one animal over time and runs in any track space
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#recording-coverage).
 - `collective-motion-metrics` writes `hull_perimeter` when its `hull_perimeter` param is
   true: the perimeter of the convex hull of each frame's (or subgroup's) finite
   positions, whatever `area_method` says, `none` included. It is NaN below three
@@ -563,7 +566,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   follow `min_individuals`: it is written whenever three distinct positions exist. The
   hull takes the points in the order of their ids with repeated positions kept, so its
   last digit can differ from a perimeter computed over the sorted distinct positions,
-  the points `area` uses.
+  the points `area` uses
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
 - `body-length` reports the median, over each individual's rows, of the length along a
   keypoint chain. `statistic` (`median`, `mean`, or `percentile` with `percentile` from
   0 to 100) changes the statistic, and `per: sequence` pools every row of the entry so
@@ -572,15 +576,17 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   It runs on a world-frame table with `dimensions: 3`, measuring in 3D over `poseX`,
   `poseY` and `poseZ`, and with `source: keypoints` refuses such a table under the
   default `dimensions: 2`. `dimensions: 3` and `segment_statistic` need
-  `source: keypoints`.
+  `source: keypoints`
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
 - `movement-smooth` with `rolling_edges: zero_padded` takes the rolling mean as
   `np.convolve(x, np.ones(window) / window, mode="same")` of each individual's series of
   each coordinate, in float64, with the samples beyond an end counting as 0. It needs
   `method: rolling`, `statistic: mean` and an odd `window`, and refuses `min_periods`,
   an `fps`, and a `polyorder` or `savgol_mode` off its default, none of which it reads.
   A NaN sample makes NaN every output whose window covers it and a series shorter than
-  `window` is NaN throughout, so run `movement-filter-interpolate` first to smooth across
-  gaps. The step is planned only where `movement` is installed.
+  `window` is NaN throughout, so run `movement-filter-interpolate` first to smooth
+  across gaps. The step is planned only where `movement` is installed
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.
@@ -592,8 +598,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `frame-aggregate`'s and `sequence-aggregate`'s `sum` and `count` over pair rows take
   `pairs`: `once` reads one row per pair (perspective 0), `each_perspective` every
   ordered pair row. Under `auto`, the default, a recipe's plan picks `once` when every
-  column is one its producer declares symmetric, such as `AB_dist`, and every row
-  otherwise; the plan's step shows the rule in `pairs`. A direct run (`mosaic run
+  column, binned columns included, is one its producer declares symmetric, such as
+  `AB_dist`, and neither `filter_expr` nor `subsets` is set. It picks every row
+  otherwise, and the plan's step shows the rule in `pairs`. A direct run (`mosaic run
   --feature`, `run_feature`) has no recipe to resolve `auto` and reads every row, so a
   symmetric column counts each pair twice. Set `pairs` to `once` there.
   `individual-aggregate` has no `pairs`: over pair rows it reads every row of each focal
@@ -625,33 +632,29 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   from before the filters. A subset that keeps no row has a blank row in
   `sequence-aggregate`, so each entry has a row per subset, and none in
   `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or subgroup
-  column, and an input with one is refused. A filter or `subsets` makes `pairs: auto`
-  read every row. `value_bins` splits the rows by the values of numeric columns: a
-  list of `{column, edges, closed_last}`, where `edges` is a list of at least two
-  finite, strictly increasing numbers, or `{linspace: [start, stop, num]}` or
-  `{arange: [start, stop, step]}` as numpy reads them (at most 10000 edges), and a
-  number may be the text `pi` or `-pi`. A row goes to bin
-  `searchsorted(edges, x, side="right") - 1`; with `closed_last` (default) a value on
-  the last edge is in the last bin, as in `numpy.histogram`, and without it the last
-  bin is half open, as in `numpy.digitize`. A row outside every bin, or with a null
-  value, is dropped, and
-  with several columns a row needs a bin in each. The output has a nullable integer
-  `<column>_bin` per entry, after `subset` and before `bin_start`, and the binned
-  column may also be in `columns`. With `dense: true` every bin is written for each
-  combination of the other keys that has a row, `0` for `sum`, `count` and `duration`
-  and NaN otherwise, and `sequence-aggregate` writes the full grid for an entry with
-  no row in any bin. `<column>_bin` may not be a kept or subgroup column, a kept
-  column may not differ between the bins of a group under `dense`, and `dense` needs
-  `value_bins`. A bin on a column with another value on each row of a pair (`id1`, a
-  directional column) makes `pairs: auto` read every row, and a bin on a symmetric
-  column leaves it `once`.
+  column, and an input with one is refused. `value_bins` splits the rows by the values
+  of numeric columns: a list of `{column, edges, closed_last}`, where `edges` is a list
+  of at least two finite, strictly increasing numbers, or `{linspace: [start, stop,
+  num]}` or `{arange: [start, stop, step]}` as numpy reads them (at most 10000 edges),
+  and a number may be the text `pi` or `-pi`. A row goes to bin `searchsorted(edges, x,
+  side="right") - 1`; with `closed_last` (default) a value on the last edge is in the
+  last bin, as in `numpy.histogram`, and without it the last bin is half open, as in
+  `numpy.digitize`. A row outside every bin, or with a null value, is dropped, and with
+  several columns a row needs a bin in each. The output has a nullable integer
+  `<column>_bin` per entry, after `subset` and before `bin_start`, and the binned column
+  may also be in `columns`. With `dense: true` every bin is written for each combination
+  of the other keys that has a row, `0` for `sum`, `count` and `duration` and NaN
+  otherwise, and `sequence-aggregate` writes the full grid for an entry with no row in
+  any bin. `<column>_bin` may not be a kept or subgroup column, a kept column may not
+  differ between the bins of a group under `dense`, and `dense` needs `value_bins`.
   `circmean` and `circstd` reduce a column of angles in radians: `circmean` gives the
   mean direction in `[-pi, pi)` and `circstd` the circular standard deviation
   (`scipy.stats.circmean` and `circstd`), each over the group's non-null values in
   input row order, and NaN for a group with none. They read every row under any `pairs`
   rule and are refused with `threshold` and with `transform: "abs"`. To summarize
   angles in degrees, first make a radian column with `derive-columns`
-  (`deg2rad(angle_deg)`).
+  (`deg2rad(angle_deg)`). They make one SciPy call per group and run much slower
+  than `mean` over many small groups.
   `quantile` with `quantiles`, each from 0 to 1, writes a column
   `<column>_quantile_<text>` for each, where the text is the quantile as a percent
   without trailing zeros and with the point written `_` (0.95 gives `95`, 0.995 gives
@@ -659,26 +662,32 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   group's non-null values, `linear` by default, and NaN for a group with none. It reads
   every row under any `pairs` rule. Each of `quantile` and `quantiles` needs the other,
   `quantile_method` other than `linear` needs `quantile`, and no two quantiles may give
-  one text.
+  one text. A `keep_columns` or `subgroup_col` entry named like a column an aggregation
+  writes (`x_mean`) is refused. Every column in `columns`, `keep_columns` and
+  `subgroup_col` must be in the input, and a recipe lacking one is refused when it is
+  planned
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
 - `neighbor-delta-response` writes one row per focal, neighbor and frame, with the
   neighbor's offset in the focal's frame (`neighbor_x` along the heading, `neighbor_y`
   to its left) and the focal's windowed response (`dx`, `dy`, `dt`, `dangle`,
   `dspeed`). `x_col` and `y_col` name the position columns. `reference_cols`
-  (`[vx, vy]`) replaces the heading as the frame's direction with a vector per focal row,
-  and a row whose vector is zero or missing is left out. `response_cols` (`[ax, ay]`, the
-  focal's row) writes `response_par` and `response_perp`, the vector along and across
-  that direction, and leaves out a focal row where either is not finite. `partner_cols`
-  (`[vx, vy]`, read from the neighbor's row in the same frame) writes `partner_par`,
-  `partner_perp` and `partner_norm`, NaN where the neighbor has no value. Each list is
-  two distinct columns. `delta_response: false` skips the windowed delta, so no `dx` to
-  `dspeed` column is written and `time` and the speed column are not read. The window
-  then no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
-  `divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `neighbor_columns` lists
-  numeric columns that each pair row carries for both individuals, `<column>` from the
-  focal's row and `neighbor_<column>` from the neighbor's row in the same frame, float64
-  and NaN where the neighbor has no value. A column whose output name the feature already
-  writes, such as `dist` (`neighbor_dist`), is refused. `time_shuffle` moves the
-  neighbor's `partner_cols` and `neighbor_columns` values with its position.
+  (`[vx, vy]`) replaces the heading as the frame's direction with a vector per focal
+  row, and a row whose vector is zero or missing is left out. `response_cols` (`[ax,
+  ay]`, the focal's row) writes `response_par` and `response_perp`, the vector along and
+  across that direction, and leaves out a focal row where either is not finite.
+  `partner_cols` (`[vx, vy]`, read from the neighbor's row in the same frame) writes
+  `partner_par`, `partner_perp` and `partner_norm`, NaN where the neighbor has no value.
+  Each list is two distinct columns. `delta_response: false` skips the windowed delta,
+  so no `dx` to `dspeed` column is written and `time` and the speed column are not read.
+  The window then no longer limits the rows, and a non-default `diff_numframes`,
+  `wrap_angle`, `divide_dangle_by_frames` or `scale_dangle_by_fps` is refused.
+  `neighbor_columns` lists numeric columns that each pair row carries for both
+  individuals, `<column>` from the focal's row and `neighbor_<column>` from the
+  neighbor's row in the same frame, float64 and NaN where the neighbor has no value. A
+  column whose output name the feature already writes, such as `dist` (`neighbor_dist`),
+  is refused. `time_shuffle` moves the neighbor's `partner_cols` and `neighbor_columns`
+  values with its position
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#what-the-library-holds).
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

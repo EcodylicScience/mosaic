@@ -97,21 +97,22 @@ row per focal and neighbor, and `nn-delta-bins` maps either: where neighbors sit
 
 `neighbor-delta-response` also reads other position columns (`x_col`, `y_col`) and
 takes a vector per focal row as the frame of the offsets in place of the heading:
-`reference_cols` (`[vx, vy]`) sets the direction `neighbor_x` runs along, and a row whose
-vector is zero or missing is left out. `response_cols` (`[ax, ay]`, the focal's own row)
-adds `response_par` and `response_perp`, that vector along and across the direction, and
-leaves out a row where either is not finite. `partner_cols` (`[vx, vy]`, the neighbor's
-row in the same frame) adds `partner_par`, `partner_perp` and `partner_norm`, NaN where
-the neighbor has no value, and under `time_shuffle` it moves with the neighbor's
-position. Each list is two distinct columns. `delta_response: false` skips the windowed
-delta: no `dx` to `dspeed` column is written, `time` and the speed column are not read,
-the window no longer limits the rows, and a non-default `diff_numframes`, `wrap_angle`,
-`divide_dangle_by_frames` or `scale_dangle_by_fps` is refused. `neighbor_columns` lists
-numeric columns that each pair row carries for both individuals: `<column>` from the
-focal's row and `neighbor_<column>` from the neighbor's row in the same frame, float64
-and NaN where the neighbor has no value. A column whose output name the feature already
-writes, such as `dist` (`neighbor_dist`), is refused. Under `time_shuffle` the
-neighbor's values move with its position, with those of `partner_cols`.
+`reference_cols` (`[vx, vy]`) sets the direction `neighbor_x` runs along, and a row
+whose vector is zero or missing is left out. `response_cols` (`[ax, ay]`, the focal's
+own row) adds `response_par` and `response_perp`, that vector along and across the
+direction, and leaves out a row where either is not finite. `partner_cols` (`[vx, vy]`,
+the neighbor's row in the same frame) adds `partner_par`, `partner_perp` and
+`partner_norm`, NaN where the neighbor has no value, and under `time_shuffle` it moves
+with the neighbor's position. Each list is two distinct columns. `delta_response: false`
+skips the windowed delta: no `dx` to `dspeed` column is written, `time` and the speed
+column are not read, the window no longer limits the rows, and a non-default
+`diff_numframes`, `wrap_angle`, `divide_dangle_by_frames` or `scale_dangle_by_fps` is
+refused. `neighbor_columns` lists numeric columns that each pair row carries for both
+individuals: `<column>` from the focal's row and `neighbor_<column>` from the neighbor's
+row in the same frame, float64 and NaN where the neighbor has no value. A column whose
+output name the feature already writes, such as `dist` (`neighbor_dist`), is refused.
+Under `time_shuffle` the neighbor's values move with its position, with those of
+`partner_cols`.
 
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,
@@ -128,23 +129,33 @@ uses.
 shared set of parameters: to one row per frame, per sequence or per individual. Each of
 `columns` is reduced by each of `aggs` into `<column>_<agg>`. An input with an `arena`
 column gives one row per arena, and `subgroup_col` splits the rows by a column such as a
-tag. Give `subgroup_col` a list of columns to split by every combination of their values,
-such as a tag and a phase: the output lists them in the order given, after `arena`, and a
-row with a missing value in any of them is dropped. A list of one column is that column,
-and a repeated column is refused. Over pair rows, `individual-aggregate` reduces every
-row of a focal `id1` to that individual's row. With `threshold`, each column becomes
-whether its value passes `threshold_op` (`>` by default, or `>=`, `<`, `<=`) against it,
-and a missing value stays missing, so `mean`, `count` and `duration` leave it out.
+tag. Give `subgroup_col` a list of columns to split by every combination of their
+values, such as a tag and a phase: the output lists them in the order given, after
+`arena`, and a row with a missing value in any of them is dropped. A list of one column
+is that column, and a repeated column is refused. Every column in `columns`,
+`keep_columns` and `subgroup_col` must be in the input, and a recipe that lacks one is
+refused when it is planned. A `keep_columns` or `subgroup_col` entry named like a column
+an aggregation writes, such as `x_mean`, is refused. Over pair rows,
+`individual-aggregate` reduces every row of a focal `id1` to that individual's row.
+`frame-aggregate` and `sequence-aggregate` take `pairs`, which governs `sum`, `count`
+and, in `sequence-aggregate`, `duration`: `once` reads one row per pair,
+`each_perspective` every ordered pair row. Under `auto`, the default, a recipe's plan
+picks `once` when every column, binned columns included, is declared symmetric by its
+producer, such as `AB_dist`, and neither `filter_expr` nor `subsets` is set. It picks
+every row otherwise. A direct run has no recipe to resolve `auto` and reads every row.
+Set `pairs` to `once` there. With `threshold`, each column becomes whether its value
+passes `threshold_op` (`>` by default, or `>=`, `<`, `<=`) against it, and a missing
+value stays missing, so `mean`, `count` and `duration` leave it out.
 `sequence-aggregate` and `individual-aggregate` also take `duration`, the seconds in
 which a column has a value, or passes the `threshold` comparison, and `share`, the
 fraction of the seconds in which a column holds each of its values, written as
 `<column>_share_<value>`. Both weigh a row by its `time`, so a table that dropped frames
-is measured in the seconds it covers.
-For a summary per window, set `bin_s` on `sequence-aggregate` or `individual-aggregate`:
-each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the recording, and
-the output has one row per entry or individual and bin, with `bin_start` and `bin_end` in
-seconds. A bin that no row starts in is not written, and `duration` and `share` credit a
-row that crosses a bin edge to each bin by the seconds it overlaps.
+is measured in the seconds it covers. For a summary per window, set `bin_s` on
+`sequence-aggregate` or `individual-aggregate`: each row goes to the bin `floor(time /
+bin_s)`, anchored at time 0 of the recording, and the output has one row per entry or
+individual and bin, with `bin_start` and `bin_end` in seconds. A bin that no row starts
+in is not written, and `duration` and `share` credit a row that crosses a bin edge to
+each bin by the seconds it overlaps.
 
 `first_pass`, which needs `threshold`, writes `<column>_first_pass`: the smallest value
 of `order_col` among the rows that pass the comparison, and NaN for a group where no row
@@ -153,37 +164,34 @@ the threshold. Set it to another numeric column, such as a stimulus time or a la
 order the rows by that column, and only with `first_pass` in `aggs`. A row where
 `order_col` is missing is skipped, and every row is read under any `pairs` rule.
 
-`subsets` maps names to filters in the syntax of `filter_expr`, each applied after it, and
-reduces the rows each filter keeps, so several windows or conditions come from one step.
-Subsets may overlap, so a row that two keep counts in both. The output has a text column
-`subset`, after the subgroup columns, holding the name, and `duration` and `share` weigh a
-row by the seconds from before the filters. A subset that keeps no row of an entry has a
-blank row in `sequence-aggregate`, so every entry has a row for each subset, and has no
-row in `frame-aggregate` and `individual-aggregate`. `subset` may not be a kept or
-subgroup column, and an input that has a `subset` column is refused.
+`subsets` maps names to filters in the syntax of `filter_expr`, each applied after it,
+and reduces the rows each filter keeps, so several windows or conditions come from one
+step. Subsets may overlap, so a row that two keep counts in both. The output has a text
+column `subset`, after the subgroup columns, holding the name, and `duration` and
+`share` weigh a row by the seconds from before the filters. A subset that keeps no row
+of an entry has a blank row in `sequence-aggregate`, so every entry has a row for each
+subset, and has no row in `frame-aggregate` and `individual-aggregate`. `subset` may not
+be a kept or subgroup column, and an input that has a `subset` column is refused.
 
-`value_bins` splits the rows by the values of numeric columns. Each entry names a `column`
-and its `edges`: a list of at least two finite numbers that strictly increase, or
-`{"linspace": [start, stop, num]}` or `{"arange": [start, stop, step]}`, read as numpy's
-`linspace` and `arange`, with at most 10000 edges listed or generated, where a number
-may be the text `pi` or `-pi`. So
-`{"linspace": ["-pi", "pi", 20]}` is `np.linspace(-np.pi, np.pi, 20)`. A row goes to the
-bin `searchsorted(edges, x, side="right") - 1`. With `closed_last`, true by default, a
-value on the last edge is in the last bin, as in `numpy.histogram`, and with
-`closed_last: false` the last bin is half open, as in `numpy.digitize`. A row whose value
-is missing, or below the first edge or above the last, is in no bin and is dropped, and
-with several columns a row needs a bin in each. The output has a nullable integer column
-`<column>_bin`, the 0-based bin, for each entry, after `subset` and before `bin_start`.
-The binned column may also be in `columns`, and `duration` and `share` weigh a row by the
-seconds from before the bins drop rows. A bin that no row falls in has no row, unless
-`dense` is true: then every bin is written for each combination of the other keys that
-has a row, with `0` for `sum`, `count` and `duration` and NaN for the other
-aggregations, and `sequence-aggregate` writes the full grid of bins for an entry that
-has no row in any. `<column>_bin` may not be a kept or subgroup column, a kept column
-may not differ between the bins of a group under `dense`, and `dense` needs
-`value_bins`. A bin on `id1` or on a column with another value on each row of a pair
-makes `pairs: auto` read every row, as a filter does, and a bin on a symmetric pair
-column leaves it `once`.
+`value_bins` splits the rows by the values of numeric columns. Each entry names a
+`column` and its `edges`: a list of at least two finite numbers that strictly increase,
+or `{"linspace": [start, stop, num]}` or `{"arange": [start, stop, step]}`, read as
+numpy's `linspace` and `arange`, with at most 10000 edges listed or generated, where a
+number may be the text `pi` or `-pi`. So `{"linspace": ["-pi", "pi", 20]}` is
+`np.linspace(-np.pi, np.pi, 20)`. A row goes to the bin `searchsorted(edges, x,
+side="right") - 1`. With `closed_last`, true by default, a value on the last edge is in
+the last bin, as in `numpy.histogram`, and with `closed_last: false` the last bin is
+half open, as in `numpy.digitize`. A row whose value is missing, or below the first edge
+or above the last, is in no bin and is dropped, and with several columns a row needs a
+bin in each. The output has a nullable integer column `<column>_bin`, the 0-based bin,
+for each entry, after `subset` and before `bin_start`. The binned column may also be in
+`columns`, and `duration` and `share` weigh a row by the seconds from before the bins
+drop rows. A bin that no row falls in has no row, unless `dense` is true: then every bin
+is written for each combination of the other keys that has a row, with `0` for `sum`,
+`count` and `duration` and NaN for the other aggregations, and `sequence-aggregate`
+writes the full grid of bins for an entry that has no row in any. `<column>_bin` may not
+be a kept or subgroup column, a kept column may not differ between the bins of a group
+under `dense`, and `dense` needs `value_bins`.
 
 `circmean` and `circstd` reduce a column of angles in radians: `circmean` writes
 `<column>_circmean`, the mean direction in `[-pi, pi)` (`scipy.stats.circmean` with
@@ -192,7 +200,9 @@ deviation (`scipy.stats.circstd`). Each reads the group's non-null values in the
 of the input rows, so the last bit of a result depends on that order, and gives NaN for
 a group with none. Both read every row under any `pairs` rule, and are refused with
 `threshold` and with `transform: "abs"`. A column in degrees goes through
-`derive-columns` first, for example `deg2rad(angle_deg)`.
+`derive-columns` first, for example `deg2rad(angle_deg)`. Each makes one SciPy call per
+group. Both run much slower than `mean` over many small groups, such as a frame
+aggregate of a long recording.
 
 `quantile` writes one column for each of `quantiles`, each a number from 0 to 1, named
 `<column>_quantile_<text>`, where the text is the quantile as a percent without trailing
@@ -349,8 +359,9 @@ ds.run_feature(
 ```
 
 The output has one row per recording, and per arena when the input has an `arena`
-column. The span is every frame from the first to the last of the table, so a frame
-without a row finds no animal present. `n_ids` is the number of distinct ids,
+column, and a row with a null arena in such an input is refused. The span is every frame
+from the first to the last of the table, so a frame without a row finds no animal
+present. `n_ids` is the number of distinct ids,
 `n_frames` the length of the span and `n_frames_with_rows` the frames that have a row.
 Each rule writes, prefixed with its name, `frames_all` (frames where every id passes),
 `frames_none` (frames where no id passes), and the gaps, the runs of consecutive frames
@@ -373,17 +384,18 @@ table in any track space.
 A feature declares the spaces it computes in. Tracks are in pixels, centimeters or, for
 3D data, world meters (see [what a tracker
 reports](../../concepts/tracks.md#spatial-columns-are-in-one-of-three-spaces)). Most
-features that read `X` and `Y` are planar and refuse a world-frame table;
-`pose-egocentric` and `pair-world` refuse a planar one. The refusal is
+features that read `X` and `Y` are planar and refuse a world-frame table, except
+`body-length` with `dimensions: 3`; `pose-egocentric` and `pair-world` refuse a planar
+one. The refusal is
 `schema_family_mismatch`. It comes before anything runs, from a run and from a recipe
 when it is planned or, for tracks the recipe itself writes, when the step starts.
 Features whose computation does not depend on the space (`keypoint-kinematics` measures
 in the table's own units, meters on a world table) and features that read no spatial
 column (the aggregates) accept every space, as do `derive-columns`, which computes in the
 units of its table, and `track-coverage`, which reads finiteness alone.
-`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at `dimensions: 2` a world-frame table fails
-when the step runs, not when it is planned, and the message names `dimensions: 3`. The
-steps that read only the results of earlier steps (`global-kmeans`, `global-tsne`,
+`pair-posedistance-pca` accepts every space too, and its `dimensions` param decides: at
+`dimensions: 2` a world-frame table fails when the step runs, not when it is planned, and
+the message names `dimensions: 3`. The steps that read only the results of earlier steps (`global-kmeans`, `global-tsne`,
 `arhmm` and `xgboost`, for example) and the two wavelets accept every space as well.
 `feral`, `hidra`, `vame`, `kpms` and the identity models stay planar.
 

@@ -17,17 +17,19 @@ No other run id or output moves.
   ids change with the version: the `0.2-` prefix becomes `0.3-` and the hash stays the
   same, so a run of 0.2 is not reused.
 - `derive-columns` is a new feature that appends columns computed from row arithmetic
-  over its input's columns, such as `speed * 30 / 100`. No existing run id changes.
-- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `first_pass`
-  aggregation and its `order_col` option. Their run ids stay while `first_pass` is not
-  in `aggs` and `order_col` is unset or `time`.
+  over its input's columns, such as `speed * 30 / 100`. It refuses an output name equal
+  to `pi`, `nan` or `inf`. No existing run id changes.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the
+  `first_pass` aggregation and its `order_col` option. Their run ids stay while
+  `first_pass` is not in `aggs` and `order_col` is unset or `time`.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` accept a list of
-  columns in `subgroup_col`. Their run ids stay while `subgroup_col` is unset, one column
-  or a list of one, and only a longer list is a new run.
+  columns in `subgroup_col`. Their run ids stay while `subgroup_col` is unset, one
+  column or a list of one, and only a longer list is a new run.
 - A step that names several columns in a list param, such as `subgroup_col`,
   `keep_columns` or the aggregates' `columns`, now needs every one of them in its
   input, and a recipe whose input lacks one is refused when it is planned. A column
   the input lacked used to pass the plan whenever another listed column was present.
+  The `cols` of `individual-wavelet` and `pair-wavelet` still need only one.
   `scale-to-cm` and `scale-to-bl` check `columns` the same way, and `arhmm`,
   `extract-templates`, `extract-labeled-templates` and `temporal-stack` now check
   theirs at plan time instead of failing each entry. `scale-to-cm` and `scale-to-bl`
@@ -35,20 +37,22 @@ No other run id or output moves.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `subsets`
   option, a mapping of names to filters that adds a `subset` key column after the
   subgroup columns. Their run ids stay while `subsets` is unset.
+- `frame-aggregate` and `sequence-aggregate` read every row under `pairs: auto` when
+  `subsets` is set or a `value_bins` column is not declared symmetric, as they do when
+  `filter_expr` is set.
 - `neighbor-delta-response` gains `x_col`, `y_col`, `delta_response`, `reference_cols`,
   `response_cols` and `partner_cols`: other position columns, a vector per focal row as
   the frame of the offsets, projections of the focal's response and the neighbor's
   vector on it, and a switch that skips the windowed delta. Its run ids stay while they
   are unset, and the step's output is unchanged. A plan's message for a missing delta
   column now says it is written when `delta_response` is set.
-- `neighbor-delta-response` gains `neighbor_columns`, other columns written for the focal
-  as `<column>` and for the neighbor as `neighbor_<column>`. Its run ids stay while the
-  list is empty, and the step's output is unchanged.
+- `neighbor-delta-response` gains `neighbor_columns`, other columns written for the
+  focal as `<column>` and for the neighbor as `neighbor_<column>`. Its run ids stay
+  while the list is empty, and the step's output is unchanged.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain `value_bins`,
   bins on the values of numeric columns that add a `<column>_bin` key column after
   `subset`, and `dense`, which writes every bin. Their run ids stay while `value_bins`
-  is unset and `dense` is false. `pairs: auto` reads every row when a binned column is
-  not declared symmetric.
+  is unset and `dense` is false. An `edges` list or generator is capped at 10000 edges.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `circmean`
   and `circstd` aggregations for angles in radians. Their run ids stay while neither is
   in `aggs`.
@@ -61,8 +65,8 @@ No other run id or output moves.
   `keep_columns` or `subgroup_col` entry named like a column an aggregation writes
   (`x_mean`, `x_quantile_50`), which the aggregation used to overwrite without a word.
 - `track-coverage` is a new feature that counts, per entry and arena, the frames where
-  animals are present under rules over columns, and the gaps between them. No existing
-  run id changes.
+  animals are present under rules over columns, and the gaps between them. It refuses a
+  null arena. No existing run id changes.
 - `collective-motion-metrics` gains `hull_perimeter`, which writes the perimeter of the
   convex hull of each group's finite positions in id order under every `area_method`.
   Its run ids stay while `hull_perimeter` is false.
@@ -77,11 +81,12 @@ No other run id or output moves.
   `arena_center_angle` and `arena_center_angle_step`, and its `rois` may be empty when
   `center_angle` is set. Its run ids stay while `center_angle` is false and
   `angle_center` is unset, and an existing recipe's output is unchanged.
-- `movement-smooth` gains `rolling_edges`, whose `zero_padded` value computes the rolling
-  mean as `np.convolve(x, np.ones(window) / window, mode="same")` in float64 without
-  importing `movement`. Its run ids stay while `rolling_edges` is `min_periods`, and the
-  output of the `rolling` and `savgol` paths and of `movement-filter-interpolate` is
-  unchanged.
+- `movement-smooth` gains `rolling_edges`, whose `zero_padded` value computes the
+  rolling mean as `np.convolve(x, np.ones(window) / window, mode="same")` in float64
+  without importing `movement`. With that value it refuses `fps` and a `polyorder` or
+  `savgol_mode` off its default. Its run ids stay while `rolling_edges` is
+  `min_periods`, and the output of the `rolling` and `savgol` paths and of
+  `movement-filter-interpolate` is unchanged.
 
 ## Unreleased: features that read only results compute in every track space
 
