@@ -565,7 +565,13 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   written, and `duration` and `share` split a row that crosses a bin edge by its
   seconds. `frame-aggregate` refuses `bin_s`. Aggregations skip a missing value, so fill
   or cap one that should count in the feature that writes it, as `event-response`'s
-  `recovery_time_s` does for a latency.
+  `recovery_time_s` does for a latency. `first_pass` needs `threshold` and gives, as
+  `<column>_first_pass`, the smallest value of `order_col` (default `time`) among the
+  rows that pass the comparison, such as the time a value first exceeds a level, and NaN
+  for a group where no row passes. Set `order_col` to another numeric column, such as a
+  stimulus time or a lag, to order the rows by it, and only with `first_pass` in `aggs`.
+  A row whose `order_col` is missing is skipped, and every row is read under any `pairs`
+  rule.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

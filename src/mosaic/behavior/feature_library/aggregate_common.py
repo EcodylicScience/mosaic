@@ -26,6 +26,10 @@ holds it.
 ``floor(time / bin_s)``, anchored at time 0 of the recording's axis, and
 ``bin_start`` and ``bin_end`` join the reduction keys (:func:`bin_columns`). A
 row's seconds, for ``duration`` and ``share``, divide among the bins it spans.
+
+``first_pass`` is the smallest value of ``order_col`` among the rows whose value
+passes the ``threshold`` comparison, NaN when none does. It reads every row
+under any ``pairs`` rule and skips a row whose ``order_col`` is null.
 """
 
 from __future__ import annotations
@@ -54,7 +58,16 @@ from mosaic.core.schema import ARENA_COLUMN
 from mosaic.core.timebase import row_seconds
 
 type Aggregation = Literal[
-    "mean", "median", "min", "max", "std", "sum", "count", "duration", "share"
+    "mean",
+    "median",
+    "min",
+    "max",
+    "std",
+    "sum",
+    "count",
+    "duration",
+    "share",
+    "first_pass",
 ]
 
 type ThresholdOp = Literal[">", ">=", "<", "<="]
@@ -84,6 +97,7 @@ AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
         "count": AggregationRule("partials"),
         "duration": AggregationRule("partials"),
         "share": AggregationRule("partials"),
+        "first_pass": AggregationRule("partials"),
     }
 )
 """Every member of :data:`Aggregation` and how its groups combine across entries."""
@@ -99,7 +113,8 @@ _AGGS_DESCRIPTION = (
     "The aggregations applied across the rows that the feature reduces "
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
-    "are mean, median, min, max, std, sum, count, duration and share. A null "
+    "are mean, median, min, max, std, sum, count, duration, share and "
+    "first_pass. A null "
     "value (NaN, None or NA) is skipped for every mode, and count counts "
     "non-null values. With threshold, a null value stays null: it passes no "
     "comparison, so mean skips it, count does not count it and duration does "
@@ -118,7 +133,12 @@ _AGGS_DESCRIPTION = (
     "a value the group lacks gets 0. A value must consist of letters, digits, "
     "underscores and hyphens. share is refused with threshold and with "
     "transform abs. duration and share need a time column, and "
-    "frame-aggregate takes neither."
+    "frame-aggregate takes neither. first_pass is the smallest order_col "
+    "value among the rows whose value passes the comparison threshold_op "
+    "against threshold, after transform, or NaN when no row does: a null "
+    "value passes nothing, infinity passes a comparison it satisfies, and a "
+    "row with a null order_col value is skipped. It reads every row under any "
+    "pairs rule, and is refused without threshold."
 )
 
 _CATEGORIES_DESCRIPTION = (
@@ -168,6 +188,15 @@ _BIN_S_DESCRIPTION = (
     "or bin_end."
 )
 
+_ORDER_COL_DESCRIPTION = (
+    "The column that first_pass orders the rows of a group by: its value is "
+    "the smallest value of this column among the rows that pass the "
+    "threshold, such as the time of the first row above it. The column must "
+    "be numeric, and a row where it is null is skipped. Refused unless "
+    "first_pass is in aggs, except for the default time, and first_pass "
+    "needs a threshold."
+)
+
 _FILTER_EXPR_DESCRIPTION = (
     "A pandas DataFrame.query expression applied before aggregation, for "
     "example to drop flagged frames."
@@ -205,6 +234,8 @@ _PAIRS_DESCRIPTION = (
     "pair once."
 )
 
+_ORDER_COLUMN = "_order"
+
 _TIME_SENTENCE = (
     "duration and share weigh each row by its seconds, read from the time column: "
     "give the step an input with a time column, such as tracks."
@@ -231,6 +262,8 @@ class AggregateParams(Params):
     ``subgroup_col`` splits the rows reduced together, and ``bin_s`` splits
     them again by time bin. ``keep_columns`` are written to the output beside
     the keys. ``categories`` fixes the columns that ``share`` writes.
+    ``first_pass`` gives the smallest ``order_col`` value among the rows that
+    pass ``threshold``.
     :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
     whose groups hold both rows of a pair.
     """
@@ -255,6 +288,7 @@ class AggregateParams(Params):
     categories: Annotated[list[str] | None, Declared(_CATEGORIES_DESCRIPTION)] = Field(
         default=None, min_length=1
     )
+    order_col: Annotated[str, Declared(_ORDER_COL_DESCRIPTION)] = C.time_col
 
     @field_validator(
         "columns", "aggs", "keep_columns", "categories", check_fields=False
@@ -320,6 +354,26 @@ class AggregateParams(Params):
         return self
 
     @model_validator(mode="after")
+    def _refuse_a_first_pass_without_what_it_reads(self) -> Self:
+        """Refuse ``first_pass`` without ``threshold``, and ``order_col`` without it.
+
+        ``first_pass`` is the order value of the first row that passes the
+        comparison, so it needs ``threshold``. ``order_col`` names the column
+        that orders those rows, so a value other than the default needs
+        ``first_pass`` in ``aggs``.
+        """
+        if not has_fields(self, "aggs", "threshold", "order_col"):
+            return self
+        passes = "first_pass" in self.aggs
+        if passes and self.threshold is None:
+            raise ValueError("first_pass needs a threshold, which is not set")
+        if self.order_col != C.time_col and not passes:
+            raise ValueError(
+                f"order_col is {self.order_col!r} but aggs has no first_pass"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _refuse_a_kept_name_the_output_has_already(self) -> Self:
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
@@ -351,11 +405,11 @@ class AggregateParams(Params):
     def identity_dump(self) -> dict[str, object]:
         """The hashed params, less each field that leaves the output as it was.
 
-        ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset and
-        ``threshold_op`` ``>`` write the output a run wrote before the fields
-        existed, so leaving them out keeps every such run's identifier. A kept
-        column or a category adds output columns and enters the hash as any
-        field does.
+        ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset,
+        ``threshold_op`` ``>`` and ``order_col`` ``time`` write the output a run
+        wrote before the fields existed, so leaving them out keeps every such
+        run's identifier. A kept column or a category adds output columns and
+        enters the hash as any field does.
 
         A set ``threshold`` adds ``threshold_missing``: a null value stays null
         under the comparison, where a NaN of a float column once counted as
@@ -372,6 +426,8 @@ class AggregateParams(Params):
             del dumped["bin_s"]
         if self.threshold_op == ">":
             del dumped["threshold_op"]
+        if self.order_col == C.time_col:
+            del dumped["order_col"]
         if self.threshold is not None:
             dumped["threshold_missing"] = "skip"
         return dumped
@@ -826,6 +882,27 @@ def _spread_over_bins(
     return _BinnedSeconds(rows=rows, seconds=credited, index=index)
 
 
+def _order_values(df: pd.DataFrame, order_col: str) -> NDArray[np.float64]:
+    """The values of the ``order_col`` column as floats, NaN for a null.
+
+    Raises:
+        ValueError: The column is missing, is boolean or is not numeric.
+    """
+    if order_col not in df.columns:
+        raise ValueError(
+            f"order_col {order_col!r} is not in the input, which has "
+            f"{sorted(map(str, df.columns))}"
+        )
+    values = df[order_col]
+    if pd.api.types.is_bool_dtype(values.dtype) or not pd.api.types.is_numeric_dtype(
+        values.dtype
+    ):
+        raise ValueError(
+            f"order_col {order_col!r} must be numeric, and it has dtype {values.dtype}"
+        )
+    return _plain_values(values).astype(np.float64)
+
+
 @dataclass(frozen=True, eq=False)
 class PreparedRows:
     """The rows of one table after ``filter_expr``, ``transform`` and ``threshold``.
@@ -839,9 +916,10 @@ class PreparedRows:
         carried: The columns that take a value within each group: the ``first``
             columns, then ``keep_columns``.
         rows: The kept rows, by position, with the group keys, the carried
-            columns, ``perspective`` when the input has it and, as ``_v<i>``,
+            columns, ``perspective`` when the input has it, as ``_v<i>``,
             the values of each of ``params.columns`` after ``transform`` and
-            ``threshold``. Empty when no row survives the filter.
+            ``threshold`` and, with ``first_pass``, ``_order``, the values of
+            ``params.order_col``. Empty when no row survives the filter.
         pieces: The position in ``rows`` of the row each seconds piece comes
             from. A row is one piece unless ``bin_s`` divides its seconds.
         piece_seconds: The seconds of each piece, ``None`` when no aggregation
@@ -889,7 +967,8 @@ def prepare_rows(
         ValueError: As :func:`reduce_column`, for what it reads from ``df``:
             a kept column missing or varying within a group, ``bin_s`` without
             ``time``, ``duration`` or ``share`` without a ``time`` that
-            advances, or ``share`` of a column of an unaccepted kind.
+            advances, ``share`` of a column of an unaccepted kind, or
+            ``first_pass`` with an ``order_col`` that is missing or not numeric.
     """
     kept = tuple(params.keep_columns)
     for column in kept:
@@ -954,6 +1033,8 @@ def prepare_rows(
             column: _share_texts(df[column], column, readable)
             for column in params.columns
         }
+    if "first_pass" in params.aggs:
+        work[_ORDER_COLUMN] = _order_values(df, params.order_col)
     for index, column in enumerate(params.columns):
         values = df[column]
         if params.transform == "abs":
@@ -1131,6 +1212,14 @@ def reduce_prepared(
             if agg == "duration":
                 source = halved_pieces if once else piece_keys
                 result = source.groupby(group_keys, sort=True)[f"_s{index}"].sum()
+            elif agg == "first_pass":
+                passing = work[f"_v{index}"].to_numpy() == 1.0
+                result = (
+                    work[group_keys]
+                    .assign(_first=work[_ORDER_COLUMN].where(passing))
+                    .groupby(group_keys, sort=True)["_first"]
+                    .min()
+                )
             else:
                 source = halved if once and counting else work
                 result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
@@ -1183,6 +1272,12 @@ def reduce_column(
     ``count`` are, is 0 for a group none of whose rows it reads, and is
     ``float64``.
 
+    ``first_pass`` is the smallest ``params.order_col`` value among the group's
+    rows whose value passes the ``threshold`` comparison after ``transform``
+    (a null passes nothing, infinity passes a comparison it satisfies), skipping
+    a row whose ``order_col`` is null. It is NaN for a group where no row
+    passes, ``float64``, and reads every row under any ``pairs`` rule.
+
     ``share`` writes, for each value of a text, categorical, boolean or integer
     column, ``<column>_share_<value>``: the
     seconds of a group's rows whose value is it, over the seconds of the rows
@@ -1225,7 +1320,9 @@ def reduce_column(
             or ``share`` is asked of an input whose ``time`` is missing or does
             not advance, or ``share`` is asked of a column of an unaccepted
             kind, of a value that cannot name a column or that is not among
-            ``categories``, or of a name that another output has.
+            ``categories``, or of a name that another output has, or
+            ``first_pass`` is asked of an ``order_col`` that is missing or not
+            numeric.
     """
     return reduce_prepared(
         prepare_rows(df, params, keys, who=who, first=first), params, pairs=pairs
@@ -1242,9 +1339,10 @@ def blank_reduction(
     ``params.keep_columns`` holds its one value in the group's rows before the
     filter, each of the ``sum``, ``count`` and ``duration`` aggregations is 0
     (seconds for ``duration``), as for a group none of whose rows it reads, and
-    every other aggregation is NaN. ``share`` is NaN in the column of each of
-    ``params.categories``, in their order, and writes no column when that is
-    unset, since the entry has no value to name one. A row whose key is null
+    every other aggregation, ``first_pass`` among them, is NaN. ``share`` is
+    NaN in the column of each of ``params.categories``, in their order, and
+    writes no column when that is unset, since the entry has no value to name
+    one. A row whose key is null
     belongs to no group. With ``params.bin_s`` the row of each group has NaN
     ``bin_start`` and ``bin_end`` after the keys: no row of the entry starts in
     a bin, and the row keeps the entry, its kept labels and the columns that an

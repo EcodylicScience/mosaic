@@ -12,6 +12,7 @@ import pytest
 from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.column_contract import needs_of, param_values
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline, run_pipeline
 from mosaic.core.pipeline.inventory import FeatureRunRef
 from mosaic.core.pipeline.preview import preview_artifact
@@ -1294,6 +1295,72 @@ def test_a_threshold_adds_the_missing_value_rule_to_the_identity_dump() -> None:
     assert "threshold_missing" not in plain.identity_dump()
     assert thresholded.identity_dump()["threshold_missing"] == "skip"
     assert "threshold_op" not in thresholded.identity_dump()
+
+
+# --- first_pass -----------------------------------------------------------------------
+
+
+def _required_columns(feature: SequenceAggregate) -> set[str]:
+    values = param_values(feature.params, type(feature.params).model_fields)
+    return {
+        column for need in needs_of(feature.requires, values) for column in need.columns
+    }
+
+
+def test_first_pass_gives_the_order_value_of_the_first_row_that_passes() -> None:
+    table = _timed_table(
+        [0, 1, 2, 3],
+        [0.0, 0.1, 0.2, 0.3],
+        value=[0.0, 5.0, 5.0, 0.0],
+        stim=[3.0, 2.0, 1.0, 0.0],
+    )
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["first_pass"],
+            "threshold": 1.0,
+            "order_col": "stim",
+        },
+        table,
+    )
+
+    assert out["value_first_pass"].tolist() == [1.0]
+
+
+def test_first_pass_reads_time_when_no_order_column_is_set() -> None:
+    table = _timed_table([0, 1, 2], [0.0, 0.1, 0.2], value=[0.0, 5.0, 5.0])
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["first_pass"], "threshold": 1.0}, table
+    )
+
+    assert out["value_first_pass"].tolist() == [0.1]
+
+
+def test_first_pass_without_a_threshold_is_refused() -> None:
+    with pytest.raises(ValueError, match="first_pass.*threshold"):
+        _ = SequenceAggregate(params={"columns": ["value"], "aggs": ["first_pass"]})
+
+
+def test_an_order_column_other_than_time_needs_first_pass() -> None:
+    with pytest.raises(ValueError, match="order_col.*first_pass"):
+        _ = SequenceAggregate(params={"columns": ["value"], "order_col": "stim"})
+
+
+def test_first_pass_requires_its_order_column_only_for_first_pass() -> None:
+    first_pass = SequenceAggregate(
+        params={
+            "columns": ["value"],
+            "aggs": ["first_pass"],
+            "threshold": 1.0,
+            "order_col": "stim",
+        }
+    )
+    plain = SequenceAggregate(params={"columns": ["value"]})
+
+    assert "stim" in _required_columns(first_pass)
+    assert "stim" not in _required_columns(plain)
 
 
 # --- labels of the tracks table ------------------------------------------------------

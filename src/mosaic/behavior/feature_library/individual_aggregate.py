@@ -119,6 +119,7 @@ class IndividualAggregate:
         When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
         When(Column(C.time_col), (ParamIs("aggs", equals="share"),)),
         When(Column(C.time_col), (ParamIs("bin_s"),)),
+        When(ParamColumn("order_col"), (ParamIs("aggs", equals="first_pass"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(

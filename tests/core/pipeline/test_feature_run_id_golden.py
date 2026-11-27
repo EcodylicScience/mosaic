@@ -1168,6 +1168,40 @@ def test_an_unset_categories_keeps_each_aggregate_run_id(case_id: str) -> None:
     assert listed != golden
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_the_default_order_column_keeps_each_aggregate_run_id(case_id: str) -> None:
+    """Leaving ``order_col`` out and naming ``time`` are the run the golden line pins.
+
+    The option is read only by ``first_pass``, which another run also names in
+    ``aggs``. A first pass over another order column is not the run over time.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    assert case.params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+    first_pass = {**case.params, "aggs": ["first_pass"], "threshold": 1.0}
+
+    absent = _identifier(case)
+    named = _identifier(replace(case, params={**case.params, "order_col": "time"}))
+    over_time = _identifier(replace(case, params=first_pass))
+    named_time = _identifier(replace(case, params={**first_pass, "order_col": "time"}))
+    over_frame = _identifier(replace(case, params={**first_pass, "order_col": "frame"}))
+
+    assert absent == golden
+    assert named == golden
+    assert over_time != golden
+    assert named_time == over_time
+    assert over_frame != over_time
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

@@ -34,8 +34,10 @@ from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     ParamColumn,
+    ParamIs,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
@@ -109,6 +111,7 @@ class FrameAggregate:
         ParamColumn("subgroup_col"),
         ParamColumn("keep_columns"),
         ORDER_COLUMN,
+        When(ParamColumn("order_col"), (ParamIs("aggs", equals="first_pass"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(

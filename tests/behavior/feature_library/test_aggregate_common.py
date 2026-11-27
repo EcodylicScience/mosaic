@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import get_args
 
+import operator
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,6 +15,8 @@ from mosaic.behavior.feature_library.aggregate_common import (
     AGGREGATIONS,
     Aggregation,
     AggregateParams,
+    ThresholdOp,
+    blank_reduction,
     combine_prepared,
     prepare_rows,
     reduce_column,
@@ -83,6 +88,7 @@ def test_the_table_assigns_each_aggregation_its_combination() -> None:
         "max",
         "duration",
         "share",
+        "first_pass",
     }
     assert values == {"median"}
 
@@ -217,3 +223,296 @@ def test_parts_whose_share_column_differs_in_kind_are_refused() -> None:
     parts = [prepare_rows(table, params, KEYS, who=WHO) for table in (first, second)]
     with pytest.raises(ValueError, match="state"):
         _ = combine_prepared(parts)
+
+
+# --- first_pass -----------------------------------------------------------------------
+
+_COMPARES: dict[ThresholdOp, Callable[[float, float], bool]] = {
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+}
+
+
+def _first_pass_params(
+    op: ThresholdOp = ">", threshold: float = 1.0, **fields: object
+) -> AggregateParams:
+    return AggregateParams.model_validate(
+        {
+            "columns": ["value"],
+            "aggs": ["first_pass"],
+            "threshold": threshold,
+            "threshold_op": op,
+            **fields,
+        }
+    )
+
+
+def _first_crossing(
+    order: list[float], values: list[float], op: ThresholdOp, threshold: float
+) -> float:
+    """The first order value, in order, whose value passes: the inline reference.
+
+    A null order value is skipped and a NaN value passes nothing.
+    """
+    rows = sorted((o, v) for o, v in zip(order, values, strict=True) if not np.isnan(o))
+    for o, v in rows:
+        if not np.isnan(v) and _COMPARES[op](v, threshold):
+            return o
+    return float("nan")
+
+
+def _timed(values: list[float], order: list[float], group: str = "A") -> pd.DataFrame:
+    """One individual's rows, with the order column ``stim`` beside the time."""
+    count = len(values)
+    return pd.DataFrame(
+        {
+            "group": group,
+            "sequence": "S",
+            "id": 0,
+            "frame": np.arange(count),
+            "time": np.arange(count) / 10,
+            "stim": order,
+            "value": values,
+        }
+    )
+
+
+def _first_pass(
+    table: pd.DataFrame, params: AggregateParams, keys: list[str] = KEYS
+) -> pd.DataFrame:
+    return reduce_column(table, params, keys, who=WHO, pairs="each_perspective")
+
+
+def test_an_infinite_value_passes_and_a_nan_does_not() -> None:
+    table = _timed([np.nan, np.inf, 0.5, 2.0], [1.0, 2.0, 3.0, 4.0])
+
+    out = _first_pass(table, _first_pass_params(order_col="stim"))
+
+    np.testing.assert_array_equal(out["value_first_pass"], [2.0])
+
+
+def test_a_negative_infinity_passes_a_less_than_comparison() -> None:
+    table = _timed([np.nan, -np.inf, 5.0], [1.0, 2.0, 3.0])
+
+    out = _first_pass(table, _first_pass_params("<", order_col="stim"))
+
+    np.testing.assert_array_equal(out["value_first_pass"], [2.0])
+
+
+def test_a_group_where_no_row_passes_is_nan_in_float64() -> None:
+    table = pd.concat(
+        [_timed([0.0, 0.5], [1.0, 2.0], "A"), _timed([3.0, 0.5], [7.0, 8.0], "B")]
+    )
+
+    out = _first_pass(table, _first_pass_params(order_col="stim"))
+
+    assert out["value_first_pass"].dtype == np.float64
+    np.testing.assert_array_equal(out["value_first_pass"], [np.nan, 7.0])
+
+
+def test_rows_in_any_order_give_the_smallest_order_value_that_passes() -> None:
+    table = _timed([5.0, 5.0, 0.0, 5.0], [4.0, 2.0, 1.0, 2.0])
+
+    out = _first_pass(table, _first_pass_params(order_col="stim"))
+
+    # The two passing rows tie at 2.0, and the row of order 1.0 fails.
+    np.testing.assert_array_equal(out["value_first_pass"], [2.0])
+
+
+def test_a_row_with_a_null_order_value_is_skipped() -> None:
+    table = _timed([5.0, 5.0, 5.0], [np.nan, 3.0, 2.0])
+
+    out = _first_pass(table, _first_pass_params(order_col="stim"))
+
+    np.testing.assert_array_equal(out["value_first_pass"], [2.0])
+    only_null = _timed([5.0], [np.nan])
+    alone = _first_pass(only_null, _first_pass_params(order_col="stim"))
+    np.testing.assert_array_equal(alone["value_first_pass"], [np.nan])
+
+
+def test_a_nullable_integer_order_column_is_read_with_nulls_skipped() -> None:
+    table = _timed([5.0, 5.0, 5.0], [0, 4, 3])
+    table["stim"] = pd.array([None, 4, 3], dtype="Int64")
+
+    out = _first_pass(table, _first_pass_params(order_col="stim"))
+
+    np.testing.assert_array_equal(out["value_first_pass"], [3.0])
+
+
+@pytest.mark.parametrize("op", [">", ">=", "<", "<="])
+def test_each_comparison_matches_the_inline_loop(op: ThresholdOp) -> None:
+    # Values equal to the threshold separate a strict comparison from a loose one.
+    values = [2.0, 3.0, np.nan, 3.0, 4.0, 1.0, np.inf, -np.inf]
+    order = [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+    table = _timed(values, order)
+
+    out = _first_pass(table, _first_pass_params(op, 3.0, order_col="stim"))
+
+    expected = _first_crossing(order, values, op, 3.0)
+    np.testing.assert_array_equal(out["value_first_pass"], [expected])
+
+
+def test_a_transform_applies_before_the_comparison() -> None:
+    table = _timed([-5.0, 0.5, 2.0], [1.0, 2.0, 3.0])
+    params = _first_pass_params(order_col="stim", transform="abs")
+
+    out = _first_pass(table, params)
+
+    np.testing.assert_array_equal(out["value_first_pass"], [1.0])
+
+
+def test_the_filter_drops_rows_before_the_first_pass() -> None:
+    table = _timed([5.0, 5.0, 5.0], [-0.5, 1.0, 2.0])
+    params = _first_pass_params(order_col="stim", filter_expr="stim != -0.5")
+
+    out = _first_pass(table, params)
+
+    np.testing.assert_array_equal(out["value_first_pass"], [1.0])
+
+
+@pytest.mark.parametrize("order_col", ["time", "stim", "frame"])
+@pytest.mark.parametrize("op", [">", "<="])
+def test_the_value_equals_a_loop_over_rows_sorted_by_the_order_column(
+    order_col: str, op: ThresholdOp
+) -> None:
+    generator = np.random.default_rng(11)
+    tables: list[pd.DataFrame] = []
+    for name in "ABCD":
+        count = 30
+        values = generator.normal(size=count)
+        values[generator.random(count) < 0.1] = np.nan
+        order = generator.permutation(count).astype(float)
+        order[generator.random(count) < 0.1] = np.nan
+        tables.append(_timed(values.tolist(), order.tolist(), name))
+    table = pd.concat(tables, ignore_index=True)
+    table["time"] = table.groupby("group").cumcount() / 10
+    params = _first_pass_params(op, 0.3, order_col=order_col)
+
+    out = _first_pass(table, params)
+
+    expected: list[float] = []
+    for name in "ABCD":
+        rows = table[table["group"] == name]
+        expected.append(
+            _first_crossing(rows[order_col].tolist(), rows["value"].tolist(), op, 0.3)
+        )
+    assert out["group"].tolist() == list("ABCD")
+    np.testing.assert_array_equal(out["value_first_pass"], expected)
+
+
+def test_each_bin_takes_the_first_pass_of_its_own_rows() -> None:
+    generator = np.random.default_rng(5)
+    values = generator.normal(size=40)
+    order = generator.permutation(40).astype(float)
+    table = _timed(values.tolist(), order.tolist())
+    params = _first_pass_params(">", 0.2, order_col="stim", bin_s=1.0)
+
+    out = _first_pass(table, params)
+
+    expected = [
+        _first_crossing(
+            order[start : start + 10].tolist(),
+            values[start : start + 10].tolist(),
+            ">",
+            0.2,
+        )
+        for start in range(0, 40, 10)
+    ]
+    np.testing.assert_array_equal(out["bin_start"], [0.0, 1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(out["value_first_pass"], expected)
+
+
+def test_every_row_is_read_under_any_pairs_rule() -> None:
+    table = pd.DataFrame(
+        {
+            "group": "A",
+            "sequence": "S",
+            "id1": [0, 0, 0, 0],
+            "id2": [1, 1, 1, 1],
+            "perspective": [0, 1, 0, 1],
+            "frame": [0, 0, 1, 1],
+            "time": [0.0, 0.0, 0.1, 0.1],
+            "stim": [4.0, 1.0, 5.0, 2.0],
+            "value": [0.0, 9.0, 0.0, 9.0],
+        }
+    )
+    params = _first_pass_params(order_col="stim")
+
+    for pairs in ("once", "each_perspective"):
+        out = reduce_column(table, params, KEYS, who=WHO, pairs=pairs)
+        np.testing.assert_array_equal(out["value_first_pass"], [1.0])
+
+
+def test_a_pool_of_entries_takes_the_first_pass_of_the_union() -> None:
+    first = _timed([5.0, 0.0], [9.0, 8.0], "A")
+    second = _timed([0.0, 5.0], [1.0, 3.0], "B")
+    params = _first_pass_params(order_col="stim")
+    pool = ["sequence"]
+
+    parts = [prepare_rows(table, params, pool, who=WHO) for table in (first, second)]
+    pooled = reduce_prepared(combine_prepared(parts), params, pairs="each_perspective")
+
+    inline = _first_pass(pd.concat([first, second], ignore_index=True), params, pool)
+    pd.testing.assert_frame_equal(pooled, inline, check_exact=True)
+    np.testing.assert_array_equal(pooled["value_first_pass"], [3.0])
+
+
+def test_a_blank_reduction_writes_nan() -> None:
+    table = _timed([5.0], [1.0])
+
+    out = blank_reduction(table, _first_pass_params(order_col="stim"), KEYS)
+
+    assert out["value_first_pass"].dtype == np.float64
+    np.testing.assert_array_equal(out["value_first_pass"], [np.nan])
+
+
+def test_a_missing_order_column_is_refused_by_name() -> None:
+    table = _timed([5.0], [1.0]).drop(columns=["stim"])
+
+    with pytest.raises(ValueError, match="order_col.*stim"):
+        _ = _first_pass(table, _first_pass_params(order_col="stim"))
+
+
+def test_a_text_order_column_is_refused_by_name() -> None:
+    table = _timed([5.0, 5.0], [1.0, 2.0])
+    table["stim"] = ["a", "b"]
+
+    with pytest.raises(ValueError, match="order_col.*stim"):
+        _ = _first_pass(table, _first_pass_params(order_col="stim"))
+
+
+@pytest.mark.parametrize("dtype", ["bool", "boolean"])
+def test_a_boolean_order_column_is_refused_by_name(dtype: str) -> None:
+    table = _timed([5.0, 5.0], [1.0, 2.0])
+    table["stim"] = pd.Series([True, False], dtype=dtype)
+
+    with pytest.raises(ValueError, match="order_col.*stim"):
+        _ = _first_pass(table, _first_pass_params(order_col="stim"))
+
+
+def test_first_pass_without_a_threshold_is_refused() -> None:
+    with pytest.raises(ValueError, match="first_pass.*threshold"):
+        _ = AggregateParams(columns=["value"], aggs=["first_pass"])
+
+
+def test_an_order_column_other_than_time_without_first_pass_is_refused() -> None:
+    with pytest.raises(ValueError, match="order_col.*first_pass"):
+        _ = AggregateParams(columns=["value"], order_col="stim")
+
+
+def test_the_default_order_column_without_first_pass_is_accepted() -> None:
+    params = AggregateParams(columns=["value"], order_col="time")
+
+    assert params.order_col == "time"
+
+
+def test_the_order_column_leaves_the_identity_dump_while_it_is_time() -> None:
+    plain = _first_pass_params()
+    named = _first_pass_params(order_col="time")
+    moved = _first_pass_params(order_col="stim")
+
+    assert "order_col" not in plain.identity_dump()
+    assert named.identity_dump() == plain.identity_dump()
+    assert moved.identity_dump()["order_col"] == "stim"

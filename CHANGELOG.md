@@ -14,6 +14,9 @@ No run id or output moves.
 
 - `derive-columns` is a new feature that appends columns computed from row arithmetic
   over its input's columns, such as `speed * 30 / 100`. No existing run id changes.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `first_pass`
+  aggregation and its `order_col` option. Their run ids stay while `first_pass` is not
+  in `aggs` and `order_col` is unset or `time`.
 
 ## Unreleased: features that read only results compute in every track space
 

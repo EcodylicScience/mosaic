@@ -95,6 +95,13 @@ the output has one row per entry or individual and bin, with `bin_start` and `bi
 seconds. A bin that no row starts in is not written, and `duration` and `share` credit a
 row that crosses a bin edge to each bin by the seconds it overlaps.
 
+`first_pass`, which needs `threshold`, writes `<column>_first_pass`: the smallest value
+of `order_col` among the rows that pass the comparison, and NaN for a group where no row
+passes. `order_col` is `time` by default, so the result is the time a value first passes
+the threshold. Set it to another numeric column, such as a stimulus time or a lag, to
+order the rows by that column, and only with `first_pass` in `aggs`. A row where
+`order_col` is missing is skipped, and every row is read under any `pairs` rule.
+
 **Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
 the same value on every row of the sequence, whatever the row's id. It reads tracks with
 or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's
