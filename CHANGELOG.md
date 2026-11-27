@@ -77,6 +77,11 @@ No other run id or output moves.
   `arena_center_angle` and `arena_center_angle_step`, and its `rois` may be empty when
   `center_angle` is set. Its run ids stay while `center_angle` is false and
   `angle_center` is unset, and an existing recipe's output is unchanged.
+- `movement-smooth` gains `rolling_edges`, whose `zero_padded` value computes the rolling
+  mean as `np.convolve(x, np.ones(window) / window, mode="same")` in float64 without
+  importing `movement`. Its run ids stay while `rolling_edges` is `min_periods`, and the
+  output of the `rolling` and `savgol` paths and of `movement-filter-interpolate` is
+  unchanged.
 
 ## Unreleased: features that read only results compute in every track space
 

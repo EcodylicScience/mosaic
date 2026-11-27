@@ -1509,6 +1509,27 @@ def test_the_roi_occupancy_angle_options_move_its_run_id_only_when_set(
     assert _identifier(replace(case, params={**case.params, **option})) != golden
 
 
+def test_the_movement_smooth_edges_move_its_run_id_only_when_zero_padded() -> None:
+    """Leaving ``rolling_edges`` out and setting it to its default are the golden run.
+
+    Zero padded, the edges of a series are another computation, so it is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == "movement-smooth/default")
+    golden = read_string_golden(GOLDEN)["movement-smooth/default"]
+    rolling_mean: dict[str, object] = {"method": "rolling", "statistic": "mean"}
+
+    assert _identifier(case) == golden
+    assert _identifier(replace(case, params={"rolling_edges": "min_periods"})) == golden
+    assert _identifier(replace(case, params=rolling_mean)) != golden
+    padded = _identifier(
+        replace(case, params={**rolling_mean, "rolling_edges": "zero_padded"})
+    )
+    assert padded != golden
+    assert padded != _identifier(replace(case, params=rolling_mean))
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

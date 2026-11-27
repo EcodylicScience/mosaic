@@ -10,10 +10,11 @@ keypoint by keypoint. It can add the body center as a ``centroid`` keypoint.
 
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
@@ -36,48 +37,68 @@ MOVEMENT_REQUIRES: Final[tuple[Requirement, ...]] = (
     Column(COLUMNS.frame_col),
     AnyOf((Column(COLUMNS.x_col), POSE_X)),
 )
-"""What :func:`to_movement_dataset` reads: the individual, the frame and a keypoint.
+"""What :func:`movement_arrays` reads: the individual, the frame and a keypoint.
 
 A keypoint is the centroid ``X``/``Y`` or a pose pair. With ``include_centroid``
-false only a pose pair counts, and :func:`to_movement_dataset` raises without one.
+false only a pose pair counts, and :func:`movement_arrays` raises without one.
 """
 
 MOVEMENT_PROVIDES: Final = Provides(passthrough=True)
-"""What :func:`from_movement_dataset` returns: its input, with positions replaced."""
+"""What :func:`write_positions` returns: its input, with positions replaced."""
 
 
-def to_movement_dataset(
-    df: pd.DataFrame,
-    fps: float | None = None,
-    keypoint_names: list[str] | None = None,
-    include_centroid: bool = True,
-) -> tuple[Any, dict[str, Any]]:
-    """Convert a mosaic tracks DataFrame to a movement xarray Dataset.
+class MovementMetadata(TypedDict):
+    """What :func:`write_positions` needs of the arrays it writes back.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Mosaic tracks DataFrame with columns like X, Y, poseX0..N, poseY0..N,
-        id, frame, etc.
-    fps : float, optional
-        Frames per second. If None, the time dimension uses frame numbers.
-    keypoint_names : list[str], optional
-        Names for the pose keypoints. If None, defaults to "keypoint_0", etc.
-    include_centroid : bool
-        Whether to include the centroid (X, Y) as an additional keypoint
-        named "centroid". Default True.
-
-    Returns
-    -------
-    ds : xarray.Dataset
-        movement poses Dataset with dimensions (time, space, keypoints, individuals).
-    metadata : dict
-        Metadata needed by ``from_movement_dataset`` to convert back:
-        ``individual_ids``, ``frame_index``, ``include_centroid``, ``pose_pairs``.
+    Attributes:
+        individual_ids: The ids in the order of the arrays' last axis.
+        frame_index: The frames in the order of the arrays' first axis.
+        include_centroid: Whether keypoint 0 is the ``centroid``.
+        pose_pairs: The ``(poseX, poseY)`` column pairs, after the centroid.
+        has_confidence: Whether any ``poseP`` column is present.
+        conf_cols: The ``poseP`` column of each pose pair, ``None`` where absent.
+        keypoint_names: The names of the keypoints, the centroid first.
     """
-    _ = MOVEMENT.load()
-    from movement.io.load_poses import from_numpy
 
+    individual_ids: list[Any]
+    frame_index: list[Any]
+    include_centroid: bool
+    pose_pairs: list[tuple[str, str]]
+    has_confidence: bool
+    conf_cols: list[str | None]
+    keypoint_names: list[str]
+
+
+def movement_arrays(
+    df: pd.DataFrame,
+    keypoint_names: list[str] | None,
+    include_centroid: bool,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], MovementMetadata]:
+    """Place a mosaic tracks DataFrame on the arrays of a movement dataset.
+
+    This reads no movement library. Each individual is placed on one frame axis,
+    the sorted union of the table's frames, and a frame an individual lacks is NaN.
+    An infinite position is read as NaN.
+
+    Args:
+        df: Mosaic tracks with ``id``, ``frame``, ``X``/``Y`` and ``poseX<k>``,
+            ``poseY<k>`` columns, and ``poseP<k>`` scores where present.
+        keypoint_names: Names for the pose keypoints, one per pose pair. ``None``
+            names them ``keypoint_0``, ``keypoint_1`` and so on.
+        include_centroid: Whether to add ``X``/``Y`` as the keypoint ``centroid``,
+            before the pose keypoints.
+
+    Returns:
+        The position array of shape ``(frames, 2, keypoints, individuals)``, the
+        confidence array of shape ``(frames, keypoints, individuals)``, and the
+        metadata :func:`write_positions` reads. Both arrays are float64. A
+        confidence is the ``poseP`` column where there is one, and otherwise 1
+        where the point's position is finite and NaN where it is not.
+
+    Raises:
+        ValueError: If ``keypoint_names`` does not have one entry per pose pair, or
+            there is no keypoint at all.
+    """
     id_col = COLUMNS.id_col
     frame_col = COLUMNS.frame_col
     x_col = COLUMNS.x_col
@@ -88,7 +109,7 @@ def to_movement_dataset(
     n_pose_kp = len(pose_pairs)
 
     # Detect confidence columns (poseP0, poseP1, ...)
-    conf_cols = []
+    conf_cols: list[str | None] = []
     for i in range(n_pose_kp):
         pcol = f"poseP{i}"
         if pcol in df.columns:
@@ -162,10 +183,9 @@ def to_movement_dataset(
             position[fidxs, 1, ki, ind_idx] = sub[ycol].to_numpy(dtype=float)
 
             # Confidence
-            if has_confidence and conf_cols[kp_i] is not None:
-                confidence[fidxs, ki, ind_idx] = sub[conf_cols[kp_i]].to_numpy(
-                    dtype=float
-                )
+            conf_col = conf_cols[kp_i]
+            if has_confidence and conf_col is not None:
+                confidence[fidxs, ki, ind_idx] = sub[conf_col].to_numpy(dtype=float)
             else:
                 # Default confidence = 1.0 where position is valid
                 px = position[fidxs, 0, ki, ind_idx]
@@ -173,57 +193,44 @@ def to_movement_dataset(
                 valid = np.isfinite(px) & np.isfinite(py)
                 confidence[fidxs, ki, ind_idx] = np.where(valid, 1.0, np.nan)
 
-    # Ensure no inf values reach the movement library
+    # An infinite position is a missing one
     position = np.where(np.isinf(position), np.nan, position)
 
-    # --- Build movement Dataset ---
-    ds = from_numpy(
-        position_array=position.astype(np.float32),
-        confidence_array=confidence.astype(np.float32),
-        individual_names=[str(i) for i in individual_ids],
-        keypoint_names=kp_names,
-        fps=fps,
-        source_software="mosaic",
-    )
-
-    metadata = {
+    metadata: MovementMetadata = {
         "individual_ids": individual_ids,
         "frame_index": frames,
         "include_centroid": has_centroid,
         "pose_pairs": pose_pairs,
         "has_confidence": has_confidence,
         "conf_cols": conf_cols,
+        "keypoint_names": kp_names,
     }
-    return ds, metadata
+    return position, confidence, metadata
 
 
-def from_movement_dataset(
-    ds: Any,
+def write_positions(
     original_df: pd.DataFrame,
-    metadata: dict[str, Any],
-    update_confidence: bool = False,
+    position: NDArray[np.floating[Any]],
+    metadata: MovementMetadata,
+    confidence: NDArray[np.floating[Any]] | None = None,
 ) -> pd.DataFrame:
-    """Merge a movement xarray Dataset back into a mosaic DataFrame.
+    """Write position arrays back into a mosaic DataFrame.
 
-    Overwrites X/Y and poseX/poseY columns in a copy of ``original_df``
-    with the (smoothed/filtered) values from the Dataset.
+    This reads no movement library. Each row takes the value at its own frame and
+    individual, so rows in any order, and an individual that lacks a frame, are
+    written where they belong.
 
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        movement Dataset with ``position`` and ``confidence`` data variables.
-    original_df : pd.DataFrame
-        The original mosaic DataFrame to merge into.
-    metadata : dict
-        Metadata returned by ``to_movement_dataset``.
-    update_confidence : bool
-        Whether to also overwrite poseP columns from the Dataset's
-        confidence values. Default False.
+    Args:
+        original_df: The mosaic DataFrame the arrays came from.
+        position: The positions, of shape ``(frames, 2, keypoints, individuals)``
+            in the layout :func:`movement_arrays` returned.
+        metadata: The metadata :func:`movement_arrays` returned.
+        confidence: The scores, of shape ``(frames, keypoints, individuals)``. Given,
+            they overwrite the ``poseP`` columns that ``metadata["conf_cols"]``
+            names. Unset, those columns are as they were.
 
-    Returns
-    -------
-    pd.DataFrame
-        Copy of ``original_df`` with position columns replaced.
+    Returns:
+        A copy of ``original_df`` with the position columns replaced.
     """
     id_col = COLUMNS.id_col
     frame_col = COLUMNS.frame_col
@@ -239,10 +246,6 @@ def from_movement_dataset(
     id_to_idx = {v: i for i, v in enumerate(individual_ids)}
     frame_to_idx = {f: i for i, f in enumerate(frame_index)}
 
-    # Extract numpy arrays from xarray
-    pos_arr = ds["position"].values  # (n_frames, 2, n_keypoints, n_individuals)
-    conf_arr = ds["confidence"].values  # (n_frames, n_keypoints, n_individuals)
-
     centroid_offset = 1 if has_centroid else 0
 
     result = original_df.copy()
@@ -255,18 +258,84 @@ def from_movement_dataset(
         # Centroid
         if has_centroid:
             if x_col in result.columns:
-                result.loc[sub_idx, x_col] = pos_arr[fidxs, 0, 0, ind_idx]
+                result.loc[sub_idx, x_col] = position[fidxs, 0, 0, ind_idx]
             if y_col in result.columns:
-                result.loc[sub_idx, y_col] = pos_arr[fidxs, 1, 0, ind_idx]
+                result.loc[sub_idx, y_col] = position[fidxs, 1, 0, ind_idx]
 
         # Pose keypoints
         for kp_i, (xcol, ycol) in enumerate(pose_pairs):
             ki = kp_i + centroid_offset
-            result.loc[sub_idx, xcol] = pos_arr[fidxs, 0, ki, ind_idx]
-            result.loc[sub_idx, ycol] = pos_arr[fidxs, 1, ki, ind_idx]
+            result.loc[sub_idx, xcol] = position[fidxs, 0, ki, ind_idx]
+            result.loc[sub_idx, ycol] = position[fidxs, 1, ki, ind_idx]
 
             # Confidence
-            if update_confidence and conf_cols[kp_i] is not None:
-                result.loc[sub_idx, conf_cols[kp_i]] = conf_arr[fidxs, ki, ind_idx]
+            conf_col = conf_cols[kp_i]
+            if confidence is not None and conf_col is not None:
+                result.loc[sub_idx, conf_col] = confidence[fidxs, ki, ind_idx]
 
     return result
+
+
+def to_movement_dataset(
+    df: pd.DataFrame,
+    fps: float | None = None,
+    keypoint_names: list[str] | None = None,
+    include_centroid: bool = True,
+) -> tuple[Any, MovementMetadata]:
+    """Convert a mosaic tracks DataFrame to a movement xarray Dataset.
+
+    Args:
+        df: Mosaic tracks DataFrame with columns like X, Y, poseX0..N, poseY0..N,
+            id, frame, etc.
+        fps: Frames per second. If None, the time dimension uses frame numbers.
+        keypoint_names: Names for the pose keypoints. If None, defaults to
+            "keypoint_0", etc.
+        include_centroid: Whether to include the centroid (X, Y) as an additional
+            keypoint named "centroid".
+
+    Returns:
+        The movement poses Dataset with dimensions (time, space, keypoints,
+        individuals), built from float32 copies of :func:`movement_arrays`, and the
+        metadata that :func:`from_movement_dataset` converts back with.
+    """
+    _ = MOVEMENT.load()
+    from movement.io.load_poses import from_numpy
+
+    position, confidence, metadata = movement_arrays(
+        df, keypoint_names, include_centroid
+    )
+    ds = from_numpy(
+        position_array=position.astype(np.float32),
+        confidence_array=confidence.astype(np.float32),
+        individual_names=[str(i) for i in metadata["individual_ids"]],
+        keypoint_names=metadata["keypoint_names"],
+        fps=fps,
+        source_software="mosaic",
+    )
+    return ds, metadata
+
+
+def from_movement_dataset(
+    ds: Any,
+    original_df: pd.DataFrame,
+    metadata: MovementMetadata,
+    update_confidence: bool = False,
+) -> pd.DataFrame:
+    """Merge a movement xarray Dataset back into a mosaic DataFrame.
+
+    Overwrites X/Y and poseX/poseY columns in a copy of ``original_df``
+    with the (smoothed/filtered) values from the Dataset.
+
+    Args:
+        ds: Movement Dataset with ``position`` and ``confidence`` data variables.
+        original_df: The original mosaic DataFrame to merge into.
+        metadata: Metadata returned by ``to_movement_dataset``.
+        update_confidence: Whether to also overwrite poseP columns from the
+            Dataset's confidence values.
+
+    Returns:
+        Copy of ``original_df`` with position columns replaced.
+    """
+    position = ds["position"].values  # (n_frames, 2, n_keypoints, n_individuals)
+    confidence = ds["confidence"].values if update_confidence else None
+    return write_positions(original_df, position, metadata, confidence)

@@ -60,6 +60,17 @@ measures a world-frame table (`mosaic_world_v1`) in 3D over `poseX`, `poseY` and
 `poseZ`, and with `source: keypoints` it refuses such a table under the default
 `dimensions: 2`. `dimensions: 3` and `segment_statistic` need `source: keypoints`.
 
+`movement-smooth` smooths positions with the `movement` library's `rolling` or `savgol`
+filter, which round them to float32. `rolling_edges: zero_padded` instead takes the
+rolling mean as `np.convolve(x, np.ones(window) / window, mode="same")` of each
+individual's series of each coordinate, on the table's frames, in float64. The samples
+beyond an end count as 0, so values near an end are pulled toward 0, and a series
+shorter than `window` is NaN throughout. A NaN sample makes NaN every output whose
+window covers it, so fill gaps first with `movement-filter-interpolate`. It needs
+`method: rolling`, `statistic: mean` and an odd `window`, and refuses `min_periods`, an
+`fps`, and a `polyorder` or `savgol_mode` off its default, none of which it reads. The
+step still needs `movement` installed, though it computes without importing it.
+
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
 whichever level you feed them.

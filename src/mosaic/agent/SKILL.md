@@ -573,6 +573,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `poseY` and `poseZ`, and with `source: keypoints` refuses such a table under the
   default `dimensions: 2`. `dimensions: 3` and `segment_statistic` need
   `source: keypoints`.
+- `movement-smooth` with `rolling_edges: zero_padded` takes the rolling mean as
+  `np.convolve(x, np.ones(window) / window, mode="same")` of each individual's series of
+  each coordinate, in float64, with the samples beyond an end counting as 0. It needs
+  `method: rolling`, `statistic: mean` and an odd `window`, and refuses `min_periods`,
+  an `fps`, and a `polyorder` or `savgol_mode` off its default, none of which it reads.
+  A NaN sample makes NaN every output whose window covers it and a series shorter than
+  `window` is NaN throughout, so run `movement-filter-interpolate` first to smooth across
+  gaps. The step is planned only where `movement` is installed.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.
