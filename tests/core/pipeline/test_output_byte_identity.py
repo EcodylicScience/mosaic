@@ -24,6 +24,12 @@ its own copy of the dataset, and compares the three:
   pair rows of ``PairPositionFeatures`` and the individual rows of
   ``SpeedAngvel``, so that each entry's individual rows are widened onto its
   pair rows wherever the entry loads.
+- ``pair-filter``: ``TemporalStackingFeature`` over the pair rows of
+  ``PairPositionFeatures`` with ``pair_filter`` the run of ``NearestNeighbor``,
+  over three individuals per frame, so that the filter drops the pairs between
+  the two individuals that are not each other's neighbor, and a start frame cuts
+  the first sequence of each group, so that the neighbor filter and the bounds
+  both run wherever the entry loads.
 - ``bounds``: ``SpeedAngvel`` with a start frame that cuts the first sequence of
   each group and an end time that cuts the last, so that each filter runs
   wherever the entry loads.
@@ -52,10 +58,12 @@ import pytest
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
 from mosaic.behavior.feature_library.global_scaler import GlobalScaler
 from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
+from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.behavior.feature_library.pair_position import PairPositionFeatures
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.definitions.define import (
     define_feature,
     load_feature_definition,
@@ -63,7 +71,7 @@ from mosaic.core.pipeline.definitions.define import (
 from mosaic.core.pipeline.parallelism import process_capable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
-from mosaic.core.pipeline.types import Feature, Result
+from mosaic.core.pipeline.types import Feature, NNResult, Result
 from mosaic.runlog import reduce_run_log, run_log_dir
 from tests.helpers import (
     MINIMAL_NAME,
@@ -72,6 +80,9 @@ from tests.helpers import (
     assert_ran_in_mode,
     definitions_forgotten,
     make_dataset,
+    neighbor_pairs,
+    ordered_pairs,
+    result_outputs,
     result_run_root,
     run_modes,
 )
@@ -113,6 +124,9 @@ class _Case:
             ``filter_end_time``, each ``None`` where the run sets none.
         widens: Whether each output must carry the columns of both
             individuals of its pair rows.
+        individuals: The individuals of each frame of the fixture.
+        pair_filtered: Whether each output must hold the neighbor pairs of its
+            pair rows and fewer than those.
     """
 
     name: str
@@ -121,19 +135,25 @@ class _Case:
     frame_bounds: tuple[int | None, int | None] | None = None
     time_window: tuple[float | None, float | None] | None = None
     widens: bool = False
+    individuals: int = 2
+    pair_filtered: bool = False
 
 
-def _fixture(base: Path) -> Dataset:
+def _fixture(base: Path, individuals: int) -> Dataset:
     """A dataset at *base* of four sequences in two continuous groups.
 
-    Each sequence holds two individuals per frame and a heading, and each group's
-    sequences follow one another on a frame axis.
+    Each sequence holds *individuals* individuals per frame and a heading, and
+    each group's sequences follow one another on a frame axis.
     """
     ds = make_dataset(base, name="byte-identity", uuid="byte-identity")
     for group, names in _GROUPS.items():
         for position, name in enumerate(names):
             add_track_sequences(
-                ds, (group, name), n_rows=_ROWS, n_ids=2, start_frame=position * _ROWS
+                ds,
+                (group, name),
+                n_rows=_ROWS,
+                n_ids=individuals,
+                start_frame=position * _ROWS,
             )
     for path in sorted(ds.get_root("tracks").glob("*.parquet")):
         table = pd.read_parquet(path)
@@ -188,6 +208,20 @@ def _widening(ds: Dataset) -> Feature:
     )
 
 
+def _pair_filter(ds: Dataset) -> Feature:
+    neighbors = run_feature(ds, NearestNeighbor())
+    pairs = run_feature(ds, PairPositionFeatures())
+    return TemporalStackingFeature(
+        inputs=TemporalStackingFeature.Inputs((pairs,)),
+        params={
+            "half": 2,
+            "skip": 1,
+            "add_pool": False,
+            "pair_filter": NNResult(feature=neighbors.feature, run_id=neighbors.run_id),
+        },
+    )
+
+
 def _definition(ds: Dataset) -> Feature:
     _ = define_feature(ds, MINIMAL_NAME, MINIMAL_SOURCE)
     return load_feature_definition(ds, f"def:{MINIMAL_NAME}")()
@@ -200,6 +234,13 @@ _CASES: Final = (
     _Case("pair", _pair),
     _Case("definition", _definition),
     _Case("widening", _widening, widens=True),
+    _Case(
+        "pair-filter",
+        _pair_filter,
+        frame_bounds=(_CUT_START_FRAME, None),
+        individuals=3,
+        pair_filtered=True,
+    ),
     _Case("overlap", _per_frame, overlap_frames=2),
     # The frames of a sequence are 20 * position .. 20 * position + 19 and the
     # time of a frame is frame / 30. A start frame of 5 cuts frames 0 to 4 from
@@ -314,6 +355,33 @@ def _widened_onto_the_pair_rows(ds: Dataset, result: Result) -> None:
             )
 
 
+def _kept_only_neighbor_pairs(ds: Dataset, result: Result, feature: Feature) -> None:
+    """Assert that each output holds the neighbor pairs of its entry's pair rows.
+
+    The pair rows of an entry are the ones the start frame leaves. The filter
+    must drop some of them, or the case would compare runs that filter nothing.
+    """
+    assert isinstance(feature, TemporalStackingFeature)
+    neighbors = feature.params.pair_filter
+    assert neighbors is not None
+    (pairs,) = feature.inputs.feature_inputs
+    held = result_outputs(ds, pairs)
+    outputs = result_outputs(ds, result)
+    dropped = 0
+    for group, names in _GROUPS.items():
+        for name in names:
+            key = make_entry_key(group, name)
+            assert {"frame", "id1", "id2"} <= set(outputs[key].columns)
+            rows = [
+                pair for pair in ordered_pairs(held[key]) if pair[0] >= _CUT_START_FRAME
+            ]
+            neighbor = set(neighbor_pairs(ds, neighbors, group, name))
+            written = ordered_pairs(outputs[key])
+            assert written == [pair for pair in rows if pair in neighbor], key
+            dropped += len(rows) - len(written)
+    assert dropped > 0
+
+
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.name)
 def test_every_mode_writes_the_same_files_under_one_run_id(
     case: _Case, tmp_path: Path
@@ -327,7 +395,7 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
     bounds, window = case.frame_bounds, case.time_window
     with definitions_forgotten():
         for mode in _MODES:
-            ds = _fixture(tmp_path / f"{mode.name}-{case.name}")
+            ds = _fixture(tmp_path / f"{mode.name}-{case.name}", case.individuals)
             feature = case.build(ds)
             assert process_capable(feature)
             result = run_feature(
@@ -346,6 +414,8 @@ def test_every_mode_writes_the_same_files_under_one_run_id(
                 _own_frames(ds, result)
             if case.widens:
                 _widened_onto_the_pair_rows(ds, result)
+            if case.pair_filtered:
+                _kept_only_neighbor_pairs(ds, result, feature)
             if bounds is not None or window is not None:
                 _kept_only_the_bounds(ds, result, case)
             written[mode.name] = _written(ds, result)

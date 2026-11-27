@@ -126,6 +126,10 @@ What lives where:
   programs and environments of each.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
+- ``pair_inputs`` -- the stub features that write the pair rows and the individual
+  rows of one entry, the ``as-input`` consumer that writes what they merge to, and
+  the checks that runs of them share: a lost entry without pair rows, a corrupt
+  input, and a run that ends without an ``entry_error``.
 - ``spies`` -- a function with its own signature that calls a watcher first, a
   module function that records the paths it receives, and a property that records
   its reads, for the tests that count what a run calls, and
@@ -547,6 +551,21 @@ from tests.helpers.aggregates import (
     without_time,
     without_time_in_mixed,
 )
+from tests.helpers.pair_inputs import (
+    EMPTY_SEQUENCE,
+    EchoFeature,
+    IndividualRowsFeature,
+    Pair,
+    PairRowsFeature,
+    StubFeature,
+    TracksFeature,
+    assert_ended_without_an_entry_error,
+    assert_lost_the_entry_without_pair_rows,
+    corrupt_output,
+    neighbor_pairs,
+    ordered_pairs,
+    run_in_mode,
+)
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.spies import (
     count_property_reads,
@@ -965,6 +984,19 @@ __all__ = [
     "MakeStore",
     "MediaClip",
     "MockDataset",
+    "EMPTY_SEQUENCE",
+    "EchoFeature",
+    "IndividualRowsFeature",
+    "Pair",
+    "PairRowsFeature",
+    "StubFeature",
+    "TracksFeature",
+    "assert_ended_without_an_entry_error",
+    "assert_lost_the_entry_without_pair_rows",
+    "corrupt_output",
+    "neighbor_pairs",
+    "ordered_pairs",
+    "run_in_mode",
     "PathState",
     "UPDATE_GOLDEN_ENV",
     "add_feature_run",
