@@ -46,6 +46,7 @@ from mosaic.core.pipeline.tracks_raw_index import (
     load_tracks_raw_index_frame,
     no_companions,
     read_tracks_raw_index,
+    sequence_rule,
     source_file_filter,
     source_members_from_rows,
     stem_as_sequence,
@@ -1136,10 +1137,16 @@ class TestGroupForPath:
         group_from: str | None = None,
         group_from_path: Callable[[Path], str] | None = None,
         sequence_from_stem: Callable[[str], str] = stem_as_sequence,
+        sequence_path_pattern: str | None = None,
     ) -> str | None:
         return group_for_path(
             Path("/src") / path,
-            sequence_from_stem=sequence_from_stem,
+            sequence_rule=sequence_rule(
+                sequence_from_stem=sequence_from_stem,
+                sequence_path_pattern=sequence_path_pattern,
+                path_root=Path("/src"),
+                source="s",
+            ),
             multi_sequences_per_file=multi,
             group_from=group_from,
             group_re=None if group_re is None else re.compile(group_re),
@@ -1175,8 +1182,120 @@ class TestGroupForPath:
         assert self.decide("s1/x.npy", multi=True, group_from="filename") == "x"
         assert self.decide("s1/x.npy", multi=True) == ""
 
-    def test_a_group_rule_never_misses(self) -> None:
+    def test_a_group_rule_never_misses_a_file_whose_sequence_it_names(self) -> None:
         assert self.decide("x.npy", group_from_path=lambda path: "g") == "g"
+
+    def test_a_path_the_sequence_rule_misses_has_no_group(self) -> None:
+        pattern = r"^[^/]+/(run\d+)/"
+
+        assert self.decide("g1/run1/x.npy", sequence_path_pattern=pattern) == ""
+        assert self.decide("g1/other/x.npy", sequence_path_pattern=pattern) is None
+        assert (
+            self.decide(
+                "g1/other/x.npy",
+                sequence_path_pattern=pattern,
+                group_from_path=lambda path: "g",
+            )
+            is None
+        )
+
+    def test_a_stem_pattern_searches_the_sequence_the_path_pattern_names(
+        self,
+    ) -> None:
+        pattern = r"^[^/]+/(run\d+)/([^/]+)/"
+
+        found = self.decide(
+            "g1/run1/trial/x.npy", sequence_path_pattern=pattern, group_re=r"^(run1)__"
+        )
+
+        assert found == "run1"
+        assert (
+            self.decide(
+                "g1/run2/trial/x.npy",
+                sequence_path_pattern=pattern,
+                group_re=r"^(run1)__",
+            )
+            is None
+        )
+
+
+class TestSequenceRule:
+    """One function of a path names the sequence, from a pattern or from the stem."""
+
+    ROOT = Path("/src")
+
+    def rule(self, pattern: str | None = None) -> Callable[[Path], str | None]:
+        return sequence_rule(
+            sequence_from_stem=lambda stem: stem.removesuffix("_fish0"),
+            sequence_path_pattern=pattern,
+            path_root=self.ROOT,
+            source="s",
+        )
+
+    def test_without_a_pattern_it_is_the_converters_stem_rule(self) -> None:
+        rule = self.rule()
+
+        for name in ("hex_7_fish0.npz", "plain.npy", "a/b/c_fish0.csv"):
+            path = self.ROOT / name
+            assert rule(path) == path.stem.removesuffix("_fish0")
+
+    def test_without_a_pattern_the_stem_rule_is_ignored_by_the_folders(self) -> None:
+        assert self.rule()(self.ROOT / "deep" / "er" / "x.npy") == "x"
+
+    def test_the_capture_groups_join_with_two_underscores_in_order(self) -> None:
+        rule = self.rule(r"^[^/]+/([^/]+)/(day[^/]+)/([^/]+)/segm/t\.mat$")
+
+        found = rule(self.ROOT / "1/batchA/day2/trial7/segm/t.mat")
+
+        assert found == "batchA__day2__trial7"
+
+    def test_a_path_the_pattern_misses_has_no_sequence(self) -> None:
+        assert self.rule(r"^([^/]+)/x\.npy$")(self.ROOT / "a/b/x.npy") is None
+
+    def test_the_pattern_searches_the_path_below_the_root_only(self) -> None:
+        rule = self.rule(r"^([^/]+)/x\.npy$")
+
+        assert rule(self.ROOT / "g1" / "x.npy") == "g1"
+        assert rule(Path("/elsewhere/g1/x.npy")) is None
+
+    @pytest.mark.parametrize(
+        ("pattern", "path"),
+        [(r"(a)?(b)", "b/x.npy"), (r"(x*)", "g/x.npy")],
+        ids=["optional group not taking part", "group matching empty"],
+    )
+    def test_a_capture_that_names_nothing_is_refused_naming_file_source_pattern(
+        self, pattern: str, path: str
+    ) -> None:
+        with pytest.raises(ValueError) as caught:
+            _ = self.rule(pattern)(self.ROOT / path)
+
+        message = str(caught.value)
+        assert str(self.ROOT / path) in message
+        assert "'s'" in message
+        assert pattern in message
+
+    def test_a_pattern_without_a_capture_group_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="capture group"):
+            _ = self.rule(r"x\.npy$")
+
+    def test_a_pattern_that_is_not_a_regular_expression_is_refused_by_name(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError, match="not a regular expression") as caught:
+            _ = self.rule("(unclosed")
+
+        assert "'s'" in str(caught.value)
+        assert "(unclosed" in str(caught.value)
+        assert isinstance(caught.value.__cause__, re.error)
+
+    def test_a_pattern_needs_a_root(self) -> None:
+        with pytest.raises(ValueError, match="group_path_root"):
+            _ = sequence_rule(
+                sequence_from_stem=stem_as_sequence,
+                sequence_path_pattern=r"(a)",
+                path_root=None,
+                source="s",
+            )
 
 
 # --- the companions column -------------------------------------------------

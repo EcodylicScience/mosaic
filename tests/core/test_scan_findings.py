@@ -958,6 +958,354 @@ class TestAFileThePatternMissesIsNotIndexed:
         assert tracks_names(dataset) == {"hex_1.npy"}
 
 
+HINZ_SEQUENCE_PATTERN = r"^[^/]+/([^/]+)/(day[^/]+)/([^/]+)/segm/trajectories\.csv$"
+HINZ_GROUP_PATTERN = r"^([^/]+)/"
+
+
+def write_hinz_layout(root: Path, *trials: str) -> None:
+    """One ``trajectories.csv`` per ``<N>/<batch>/day<d>/<trial>`` of *trials*."""
+    touch(*(root / trial / "segm" / "trajectories.csv" for trial in trials))
+
+
+def named(dataset: Dataset) -> dict[str, tuple[str, str]]:
+    """Each indexed file's ``(group, sequence)``, by its path below the dataset."""
+    return {
+        row["abs_path"]: (row["group"], row["sequence"])
+        for row in dataset.read_tracks_raw_index()
+    }
+
+
+def scan_hinz(
+    dataset: Dataset,
+    root: Path,
+    log: FindingLog,
+    *,
+    sequence_path_pattern: str | None = HINZ_SEQUENCE_PATTERN,
+    group_pattern: str | None = None,
+    group_path_pattern: str | None = HINZ_GROUP_PATTERN,
+) -> Path:
+    return dataset.index_tracks_raw(
+        [root],
+        patterns=["*.csv"],
+        src_format="calms21_npy",
+        sequence_path_pattern=sequence_path_pattern,
+        group_pattern=group_pattern,
+        group_path_pattern=group_path_pattern,
+        group_path_root=root,
+        findings=log,
+    )
+
+
+class TestASequenceIsNamedFromThePath:
+    def test_the_capture_groups_name_the_sequence_and_the_first_folder_the_group(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(
+            root, "1/batchA/day1/t1", "1/batchB/day1/t1", "2/batchA/day2/t7"
+        )
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(dataset, root, log)
+
+        assert sorted(named(dataset).values()) == [
+            ("1", "batchA__day1__t1"),
+            ("1", "batchB__day1__t1"),
+            ("2", "batchA__day2__t7"),
+        ]
+        assert log.findings == []
+
+    def test_a_pattern_missing_some_files_reports_the_count_and_a_sample(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(root, "1/batchA/day1/t1", "1/batchA/day1/t2")
+        stray = root / "1" / "batchA" / "notes" / "trajectories.csv"
+        touch(stray)
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(dataset, root, log)
+
+        (finding,) = log.findings
+        assert (finding.kind, finding.source, finding.problem) == (
+            "tracks",
+            "hinz",
+            "sequence_path_pattern_missed",
+        )
+        assert finding.count == 1
+        assert finding.sample == (str(stray),)
+        assert finding.pattern == HINZ_SEQUENCE_PATTERN
+        assert "so 1 file is not indexed" in finding.message
+        assert finding.message in capsys.readouterr().err
+        assert len(named(dataset)) == 2
+
+    def test_a_sample_names_five_of_seven_misses(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(root, "1/batchA/day1/t1")
+        touch(*(root / "1" / "x" / f"m{i}" / "trajectories.csv" for i in range(7)))
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(dataset, root, log)
+
+        (finding,) = log.findings
+        assert finding.count == 7
+        assert len(finding.sample) == 5
+
+    def test_a_pattern_missing_every_file_is_the_only_finding(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / "a.csv", root / "b.csv")
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(dataset, root, log)
+
+        (finding,) = log.findings
+        assert finding.problem == "sequence_path_pattern_unmatched"
+        assert finding.pattern == HINZ_SEQUENCE_PATTERN
+        assert "none of the 2" in finding.message
+        assert named(dataset) == {}
+
+    def test_a_stem_group_pattern_searches_the_sequence_the_path_names(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(
+            root, "1/batchA/day1/t1", "1/batchA/day1/t2", "2/batchB/day1/t3"
+        )
+        stray = root / "1" / "batchA" / "notes" / "trajectories.csv"
+        touch(stray)
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(
+            dataset,
+            root,
+            log,
+            group_pattern=r"^(batchA)__",
+            group_path_pattern=None,
+        )
+
+        assert sorted(named(dataset).values()) == [
+            ("batchA", "batchA__day1__t1"),
+            ("batchA", "batchA__day1__t2"),
+        ]
+        sequence_miss, group_miss = log.findings
+        assert sequence_miss.problem == "sequence_path_pattern_missed"
+        assert sequence_miss.count == 1
+        assert group_miss.problem == "group_pattern_missed"
+        assert group_miss.count == 1
+        assert group_miss.sample == (
+            str(root / "2/batchB/day1/t3/segm/trajectories.csv"),
+        )
+        assert "matched 2 of 3" in group_miss.message
+
+    def test_a_group_pattern_that_misses_every_named_file_is_unmatched(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(root, "1/batchA/day1/t1")
+        touch(root / "1" / "notes" / "trajectories.csv")
+        log = FindingLog("tracks", "hinz")
+
+        _ = scan_hinz(
+            dataset, root, log, group_pattern=r"^(zzz)", group_path_pattern=None
+        )
+
+        assert [finding.problem for finding in log.findings] == [
+            "sequence_path_pattern_missed",
+            "group_pattern_unmatched",
+        ]
+        assert "none of the 1" in log.findings[1].message
+
+    def test_a_labels_scan_applies_the_pattern(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "labels"
+        write_hinz_layout(root, "1/batchA/day1/t1")
+        touch(root / "1" / "loose.csv")
+        log = FindingLog("labels", "ann")
+
+        _ = dataset.index_labels_raw(
+            [root],
+            patterns=["*.csv"],
+            sequence_path_pattern=HINZ_SEQUENCE_PATTERN,
+            group_path_pattern=HINZ_GROUP_PATTERN,
+            group_path_root=root,
+            findings=log,
+        )
+
+        index = dataset.get_root("labels_raw") / "index.csv"
+        assert [
+            (row["group"], row["sequence"]) for row in read_tracks_raw_index(index)
+        ] == [("1", "batchA__day1__t1")]
+        (finding,) = log.findings
+        assert (finding.kind, finding.problem, finding.count) == (
+            "labels",
+            "sequence_path_pattern_missed",
+            1,
+        )
+
+    def test_a_capture_that_is_not_an_entry_name_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_hinz_layout(root, "1/batchA/day1/t1")
+
+        with pytest.raises(
+            ValueError, match="sequence may not contain a forward slash"
+        ):
+            _ = scan_hinz(
+                dataset,
+                root,
+                FindingLog("tracks", "hinz"),
+                sequence_path_pattern=r"^([^/]+/[^/]+)/",
+            )
+
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+
+class TestACaptureThatNamesNothingIsRefused:
+    @pytest.mark.parametrize(
+        ("pattern", "folder"),
+        [(r"(a)?(b)", "b"), (r"(x*)", "g")],
+        ids=["optional group not taking part", "group matching empty"],
+    )
+    def test_the_refusal_names_the_file_the_source_and_the_pattern_before_a_write(
+        self, tmp_path: Path, pattern: str, folder: str
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / folder / "t.csv")
+
+        with pytest.raises(ValueError) as caught:
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.csv"],
+                src_format="calms21_npy",
+                sequence_path_pattern=pattern,
+                group_path_root=root,
+                findings=FindingLog("tracks", "hinz"),
+            )
+
+        message = str(caught.value)
+        assert str(root / folder / "t.csv") in message
+        assert "'hinz'" in message
+        assert pattern in message
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_a_pattern_without_a_capture_group_is_refused_before_a_write(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / "t.csv")
+
+        with pytest.raises(ValueError, match="capture group"):
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.csv"],
+                src_format="calms21_npy",
+                sequence_path_pattern=r"t\.csv$",
+                group_path_root=root,
+            )
+
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+
+class TestTheSequencePatternIsRefusedBesideARuleItCannotServe:
+    def test_it_is_refused_beside_multi_sequences_per_file(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / "a" / "t.csv")
+
+        with pytest.raises(ValueError, match="multi_sequences_per_file") as caught:
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.csv"],
+                src_format="calms21_npy",
+                multi_sequences_per_file=True,
+                group_from="parent",
+                sequence_path_pattern=r"^([^/]+)/",
+                group_path_root=root,
+                findings=FindingLog("tracks", "multi"),
+            )
+
+        assert "'multi'" in str(caught.value)
+        assert r"^([^/]+)/" in str(caught.value)
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_a_pattern_that_is_not_a_regular_expression_is_refused_before_a_write(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / "a" / "t.csv")
+
+        with pytest.raises(ValueError, match="not a regular expression") as caught:
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.csv"],
+                src_format="calms21_npy",
+                sequence_path_pattern="(unclosed",
+                group_path_root=root,
+                findings=FindingLog("tracks", "broken"),
+            )
+
+        assert "'broken'" in str(caught.value)
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_it_is_refused_without_a_root_to_search_below(self, tmp_path: Path) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        touch(root / "a" / "t.csv")
+
+        with pytest.raises(ValueError, match="group_path_root") as caught:
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.csv"],
+                src_format="calms21_npy",
+                sequence_path_pattern=r"^([^/]+)/",
+                findings=FindingLog("tracks", "rootless"),
+            )
+
+        assert "'rootless'" in str(caught.value)
+        assert r"^([^/]+)/" in str(caught.value)
+
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+    def test_it_is_refused_beside_a_format_that_merges_files_per_sequence(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        root = tmp_path / "raw"
+        write_trex_npz(root / "g" / "hex_7_fish0.npz")
+
+        with pytest.raises(ValueError, match="trex_npz") as caught:
+            _ = dataset.index_tracks_raw(
+                [root],
+                patterns=["*.npz"],
+                src_format="trex_npz",
+                sequence_path_pattern=r"^([^/]+)/",
+                group_path_root=root,
+                findings=FindingLog("tracks", "trex"),
+            )
+
+        message = str(caught.value)
+        assert "'trex'" in message
+        assert r"^([^/]+)/" in message
+        assert "several files" in message
+        assert str(root) in message
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+
 class TestACountIsOptional:
     def test_a_finding_without_a_count_dumps_null_and_an_empty_sample(self) -> None:
         finding = ScanFinding(

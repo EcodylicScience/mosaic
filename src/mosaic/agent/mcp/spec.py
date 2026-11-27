@@ -1382,9 +1382,14 @@ class ManageDatasetInput(ToolInput):
     group_path_pattern: str | None = Field(
         default=None,
         description=(
-            "add_source, tracks or labels: regex whose first group, searched in "
-            "the file path below the source, is the group. Excludes "
-            "group_pattern and group_from."
+            "add_source, tracks or labels: path regex; first group is the group."
+        ),
+    )
+    sequence_path_pattern: str | None = Field(
+        default=None,
+        description=(
+            "add_source, tracks or labels: regex on the path below the source; "
+            "its groups name the sequence."
         ),
     )
     divide_frames: int | None = Field(

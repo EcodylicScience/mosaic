@@ -1144,6 +1144,87 @@ class TestSourcesOverOneFolder:
         assert raw_index_bytes(dataset, kind) == before
 
 
+class TestASequenceNamedFromThePath:
+    """A source that declares ``sequence_path_pattern`` names sequences by folder."""
+
+    def test_a_declared_source_names_sequences_from_several_folders(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "raw"
+        touch_files(
+            base / "1" / "batchA" / "day1" / "t1" / "trajectories.csv",
+            base / "1" / "batchB" / "day1" / "t1" / "trajectories.csv",
+            base / "2" / "batchA" / "day2" / "t7" / "trajectories.csv",
+        )
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="hinz",
+                path=str(base),
+                patterns=("*.csv",),
+                src_format="calms21_npy",
+                sequence_path_pattern=r"^[^/]+/([^/]+)/(day[^/]+)/([^/]+)/",
+                group_path_pattern=r"^([^/]+)/",
+            )
+        )
+
+        _ = dataset.scan_tracks()
+
+        named = sorted(
+            (str(row["group"]), str(row["sequence"]))
+            for row in dataset.read_tracks_raw_index()
+        )
+        assert named == [
+            ("1", "batchA__day1__t1"),
+            ("1", "batchB__day1__t1"),
+            ("2", "batchA__day2__t7"),
+        ]
+
+    def test_a_declared_labels_source_names_sequences_from_the_path(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "labels"
+        touch_files(base / "a" / "x" / "ann.csv", base / "b" / "y" / "ann.csv")
+        dataset.add_scan_source(
+            LabelsScanSource(
+                id="ann",
+                path=str(base),
+                patterns=("*.csv",),
+                sequence_path_pattern=r"^([^/]+)/([^/]+)/",
+            )
+        )
+
+        _ = dataset.scan_labels()
+
+        assert sorted(str(row["sequence"]) for row in raw_rows(dataset, "labels")) == [
+            "a__x",
+            "b__y",
+        ]
+
+    def test_a_declared_source_over_a_merging_format_is_refused_naming_it(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path)
+        base = tmp_path / "raw"
+        touch_files(base / "g" / "hex_7_fish0.npz")
+        dataset.add_scan_source(
+            TracksScanSource(
+                id="trex-by-path",
+                path=str(base),
+                patterns=("*.npz",),
+                src_format="trex_npz",
+                sequence_path_pattern=r"^([^/]+)/",
+            )
+        )
+
+        with pytest.raises(ValueError, match="'trex-by-path'") as caught:
+            _ = dataset.scan_tracks()
+
+        assert "trex_npz" in str(caught.value)
+        assert not (dataset.get_root("tracks_raw") / "index.csv").exists()
+
+
 class TestTheStructuralRefusalStays:
     """Media sources and label series over one folder are refused whatever they hold."""
 

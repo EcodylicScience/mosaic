@@ -156,6 +156,7 @@ def source_fields_of(args: ManageDatasetInput, path: Path) -> SourceFields:
         group_from=args.group_from,
         group_pattern=args.group_pattern,
         group_path_pattern=args.group_path_pattern,
+        sequence_path_pattern=args.sequence_path_pattern,
         divide_frames=args.divide_frames,
         recording_identity=args.recording_by,
         recording_name=args.recording_name,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -200,3 +201,65 @@ def test_a_path_pattern_does_not_apply_to_media_or_a_series(
 ) -> None:
     with pytest.raises(SourceFieldsInvalid, match="group_path_pattern"):
         _ = scan_source_from_fields(fields)
+
+
+@pytest.mark.parametrize("kind", ["tracks", "labels"])
+def test_a_sequence_path_pattern_reaches_a_tracks_and_a_labels_source(
+    kind: Literal["tracks", "labels"],
+) -> None:
+    source = scan_source_from_fields(
+        SourceFields(kind=kind, path="/d", sequence_path_pattern=r"^([^/]+)/(day\d)/")
+    )
+
+    assert isinstance(source, (TracksScanSource, LabelsScanSource))
+    assert source.sequence_path_pattern == r"^([^/]+)/(day\d)/"
+
+
+def test_a_sequence_path_pattern_does_not_apply_to_media() -> None:
+    with pytest.raises(SourceFieldsInvalid, match="sequence_path_pattern"):
+        _ = scan_source_from_fields(
+            SourceFields(kind="media", path="/v", sequence_path_pattern="(a)/")
+        )
+
+
+def test_a_sequence_path_pattern_is_refused_beside_a_series() -> None:
+    with pytest.raises(SourceFieldsInvalid, match="series.*sequence_path_pattern"):
+        _ = scan_source_from_fields(
+            SourceFields(
+                kind="labels",
+                path="/l",
+                series="keypoints",
+                sequence_path_pattern="(a)/",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("fields", "fragment"),
+    [
+        (
+            SourceFields(
+                kind="tracks",
+                path="/d",
+                multi_sequences_per_file=True,
+                sequence_path_pattern="^([^/]+)/",
+            ),
+            "multi_sequences_per_file",
+        ),
+        (
+            SourceFields(kind="tracks", path="/d", sequence_path_pattern="^day"),
+            "no capture group",
+        ),
+        (
+            SourceFields(kind="tracks", path="/d", sequence_path_pattern="(unclosed"),
+            "not a regular expression",
+        ),
+    ],
+)
+def test_a_sequence_path_pattern_that_names_no_sequence_is_refused(
+    fields: SourceFields, fragment: str
+) -> None:
+    with pytest.raises(SourceFieldsInvalid, match=fragment) as caught:
+        _ = scan_source_from_fields(fields)
+
+    assert "sequence_path_pattern" in str(caught.value)

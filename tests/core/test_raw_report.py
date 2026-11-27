@@ -365,6 +365,112 @@ class TestPatternMisses:
 
         assert miss.paths == [str(folder / "plain.npy")]
 
+    def test_a_source_with_only_a_sequence_path_pattern_lists_its_misses(
+        self, root: Path
+    ) -> None:
+        ds = _dataset(root)
+        folder = root / "raw"
+        _ = _write(folder / "a" / "x.npy", b"a")
+        _ = _write(folder / "b" / "y.npy", b"b")
+        _ = _write(folder / "stray.npy", b"s")
+        _tracks_source(ds, "s", folder, sequence_path_pattern=r"^([^/]+)/")
+        _ = ds.scan_tracks()
+
+        report = raw_report(ds)
+
+        assert report.pattern_misses == [
+            PatternMiss(
+                kind="tracks",
+                source="s",
+                pattern=r"^([^/]+)/",
+                count=1,
+                paths=[str(folder / "stray.npy")],
+            )
+        ]
+        assert sorted(str(row["sequence"]) for row in ds.read_tracks_raw_index()) == [
+            "a",
+            "b",
+        ]
+
+    def test_a_sequence_miss_is_not_counted_against_the_group_pattern(
+        self, root: Path
+    ) -> None:
+        """The group pattern searches the sequence the path pattern named."""
+        ds = _dataset(root)
+        folder = root / "raw"
+        _ = _write(folder / "a" / "x.npy", b"a")
+        _ = _write(folder / "b" / "y.npy", b"b")
+        _ = _write(folder / "stray.npy", b"s")
+        _tracks_source(
+            ds,
+            "s",
+            folder,
+            sequence_path_pattern=r"^([^/]+)/",
+            group_pattern=r"^(a)$",
+        )
+        _ = ds.scan_tracks()
+
+        report = raw_report(ds)
+
+        assert report.pattern_misses == [
+            PatternMiss(
+                kind="tracks",
+                source="s",
+                pattern=r"^([^/]+)/",
+                count=1,
+                paths=[str(folder / "stray.npy")],
+            ),
+            PatternMiss(
+                kind="tracks",
+                source="s",
+                pattern=r"^(a)$",
+                count=1,
+                paths=[str(folder / "b" / "y.npy")],
+            ),
+        ]
+        assert report.pattern_miss_sources == 2
+        assert [
+            (str(row["group"]), str(row["sequence"]))
+            for row in ds.read_tracks_raw_index()
+        ] == [("a", "a")]
+
+    def test_more_misses_than_the_sample_gives_a_cut_list_beside_the_whole_count(
+        self, root: Path
+    ) -> None:
+        """Six sources, each missing both of its patterns, make twelve misses."""
+        ds = _dataset(root)
+        for number in range(RAW_REPORT_SAMPLE // 2 + 1):
+            folder = root / f"raw{number:02d}"
+            _ = _write(folder / "a" / "x.npy", b"a")
+            _ = _write(folder / "b" / "y.npy", b"b")
+            _ = _write(folder / "stray.npy", b"s")
+            _tracks_source(
+                ds,
+                f"s{number:02d}",
+                folder,
+                sequence_path_pattern=r"^([^/]+)/",
+                group_pattern=r"^(a)$",
+            )
+        _ = ds.scan_tracks()
+
+        report = raw_report(ds)
+
+        assert len(report.pattern_misses) == RAW_REPORT_SAMPLE
+        assert report.pattern_miss_sources == 2 * (RAW_REPORT_SAMPLE // 2 + 1)
+
+    def test_a_capture_that_names_nothing_is_a_miss_and_not_an_error(
+        self, root: Path
+    ) -> None:
+        ds = _dataset(root)
+        folder = root / "raw"
+        _ = _write(folder / "a" / "x.npy", b"a")
+        _tracks_source(ds, "s", folder, sequence_path_pattern=r"^(x*)")
+
+        [miss] = raw_report(ds).pattern_misses
+
+        assert miss.pattern == r"^(x*)"
+        assert miss.paths == [str(folder / "a" / "x.npy")]
+
 
 class TestFrameAxis:
     def test_each_disagreeing_table_is_listed_with_its_variant_and_producer(

@@ -33,7 +33,7 @@ __all__ = [
 ]
 
 MISSED_SAMPLE = 5
-"""How many of a source's skipped paths a ``group_pattern_missed`` finding names."""
+"""How many of a source's skipped paths a ``..._missed`` finding names."""
 
 FindingKind = Literal["media", "tracks", "labels"]
 """The raw root a source feeds, as ``mosaic.core.manifest.SourceKind`` spells it."""
@@ -45,6 +45,8 @@ ScanProblem = Literal[
     "group_pattern_unmatched",
     "group_path_pattern_unmatched",
     "group_pattern_missed",
+    "sequence_path_pattern_unmatched",
+    "sequence_path_pattern_missed",
     "row_unmatched",
 ]
 """Why a source's files were dropped, or a row it imports names no entry.
@@ -56,7 +58,13 @@ resource fork. ``group_pattern_missed``: the source declares a group pattern tha
 some of its files miss, and a missed file is skipped, not indexed.
 ``group_pattern_unmatched`` and ``group_path_pattern_unmatched``: the pattern
 missed every file, so no file is indexed, and the source reports no
-``group_pattern_missed``. ``row_unmatched``: a row of a CSV the dataset imports
+``group_pattern_missed``. ``sequence_path_pattern_missed``: the source declares a
+sequence path pattern that some of its files miss, and a missed file is skipped,
+not indexed. ``sequence_path_pattern_unmatched``: the pattern missed every file,
+so no file is indexed, and the source reports no
+``sequence_path_pattern_missed``; a group pattern is then asked of no file. A
+group pattern is judged over the files the sequence pattern named.
+``row_unmatched``: a row of a CSV the dataset imports
 names no entry.
 """
 

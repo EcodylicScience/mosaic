@@ -42,6 +42,7 @@ from pydantic import (
     PositiveInt,
     SerializerFunctionWrapHandler,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_serializer,
     model_validator,
@@ -74,6 +75,7 @@ __all__ = [
     "MANIFEST_MARKER_KEYS",
     "MANIFEST_VERSION",
     "NOTES_MAX_CHARS",
+    "SEQUENCE_PATH_MANIFEST_VERSION",
     "SPLIT_ROLES",
     "TAGS_MAX_COUNT",
     "TAG_DESCRIPTION_MAX_LENGTH",
@@ -119,7 +121,7 @@ __all__ = [
 ]
 
 
-MANIFEST_VERSION: Final = 6
+MANIFEST_VERSION: Final = 7
 """The newest manifest format this code reads and writes.
 
 Bumped only for a change that older code would misread. Reading tolerates any
@@ -148,7 +150,15 @@ Code older than ``links`` would preserve the key, resolve nothing through it,
 and compute into its own tree what a link holds. Only a dataset that declares a
 link writes 6. A manifest below 6 reads its ``libraries`` as links that provide
 models (:func:`migrate_to_current`).
+
+7 added ``sequence_path_pattern`` to a tracks or labels source. Sources forbid
+unknown keys, so older code would meet one as a schema error naming a field.
+Only a dataset with a source that declares it writes 7
+(:func:`written_manifest_version`).
 """
+
+SEQUENCE_PATH_MANIFEST_VERSION: Final = 7
+"""The version that a dataset with a source naming sequences by path writes."""
 
 LINKS_MANIFEST_VERSION: Final = 6
 """The version that a dataset declaring a link writes."""
@@ -620,6 +630,10 @@ class RawScanSource(ScanSource):
         group_path_pattern: Regex searched in the file's path relative to
             *path*, with ``/`` separators, whose first capture group is the
             group. It reaches a folder, which the stem does not.
+        sequence_path_pattern: Regex searched in the file's path relative to
+            *path*, with ``/`` separators, whose capture groups, joined by
+            ``__`` in order, name the sequence in place of the converter's rule
+            for the stem. Outside multi-sequence files only.
         md5: Checksum each file. On by default because the composition hash is
             over these checksums, and a re-index re-hashes only what changed.
     """
@@ -631,22 +645,25 @@ class RawScanSource(ScanSource):
     group_from: GroupFrom | None = None
     group_pattern: str | None = None
     group_path_pattern: str | None = None
+    sequence_path_pattern: str | None = None
     md5: bool = True
 
-    @field_validator("group_path_pattern")
+    @field_validator("group_path_pattern", "sequence_path_pattern")
     @classmethod
-    def _path_pattern_is_a_regex_with_a_group(cls, value: str | None) -> str | None:
+    def _path_pattern_is_a_regex_with_a_group(
+        cls, value: str | None, info: ValidationInfo
+    ) -> str | None:
         if value is None:
             return None
         try:
             compiled = re.compile(value)
         except re.error as error:
-            msg = f"group_path_pattern {value!r} is not a regular expression: {error}"
+            msg = f"{info.field_name} {value!r} is not a regular expression: {error}"
             raise ValueError(msg) from error
         if compiled.groups < 1:
             msg = (
-                f"group_path_pattern {value!r} has no capture group; "
-                "the group is its first parenthesized part"
+                f"{info.field_name} {value!r} has no capture group; "
+                "it names its result from the parenthesized parts"
             )
             raise ValueError(msg)
         return value
@@ -688,6 +705,13 @@ class RawScanSource(ScanSource):
                 "group_pattern outside it, so exactly one can take effect"
             )
             raise ValueError(msg)
+        if self.sequence_path_pattern is not None and self.multi_sequences_per_file:
+            msg = (
+                f"source {self.id!r} declares both sequence_path_pattern and "
+                "multi_sequences_per_file; a file of several sequences has no "
+                "sequence to name from its path"
+            )
+            raise ValueError(msg)
         if self.group_from is not None and not self.multi_sequences_per_file:
             msg = (
                 f"source {self.id!r} declares group_from without "
@@ -715,6 +739,7 @@ _PER_SEQUENCE_FIELDS: Final = frozenset(
         "group_from",
         "group_pattern",
         "group_path_pattern",
+        "sequence_path_pattern",
         "md5",
     }
 )
@@ -1571,6 +1596,8 @@ def _source_payload(source: AnyScanSource) -> dict[str, JsonValue]:
             payload["group_pattern"] = source.group_pattern
         if source.group_path_pattern is not None:
             payload["group_path_pattern"] = source.group_path_pattern
+        if source.sequence_path_pattern is not None:
+            payload["sequence_path_pattern"] = source.sequence_path_pattern
         payload["md5"] = source.md5
     if source.added_at:
         payload["added_at"] = source.added_at
@@ -1617,7 +1644,9 @@ def _link_payload(link: DatasetLink) -> dict[str, JsonValue]:
 def written_manifest_version(manifest: DatasetManifest) -> int:
     """Return the version that *manifest* is written at.
 
-    It is :data:`LINKS_MANIFEST_VERSION` when the manifest declares a link,
+    It is :data:`SEQUENCE_PATH_MANIFEST_VERSION` when a tracks or labels source
+    declares a ``sequence_path_pattern``, ahead of the others,
+    :data:`LINKS_MANIFEST_VERSION` when the manifest declares a link,
     :data:`GROUP_PATH_MANIFEST_VERSION` when a tracks or labels source declares a
     ``group_path_pattern``, :data:`DIVISION_MANIFEST_VERSION` when a media source
     declares a division, and otherwise the manifest's own version:
@@ -1633,8 +1662,15 @@ def written_manifest_version(manifest: DatasetManifest) -> int:
         for kind in ("tracks", "labels")
         for source in manifest.sources.of_kind(kind)
     )
+    path_sequenced = any(
+        isinstance(source, RawScanSource) and source.sequence_path_pattern is not None
+        for kind in ("tracks", "labels")
+        for source in manifest.sources.of_kind(kind)
+    )
     needed = (
-        LINKS_MANIFEST_VERSION
+        SEQUENCE_PATH_MANIFEST_VERSION
+        if path_sequenced
+        else LINKS_MANIFEST_VERSION
         if manifest.links
         else GROUP_PATH_MANIFEST_VERSION
         if path_grouped

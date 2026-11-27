@@ -106,6 +106,10 @@ def test_the_contract_declares_an_arena_layout_without_importing_the_arena_model
     )
 
 
+SCHEMA_HEADROOM_BYTES = 40
+"""What the next field's description may use before the cap has to move."""
+
+
 def test_manage_dataset_input_schema_stays_under_the_budget() -> None:
     (manage_dataset,) = (spec for spec in TOOLS if spec.name == "manage_dataset")
     schema = manage_dataset.input_schema()
@@ -114,6 +118,7 @@ def test_manage_dataset_input_schema_stays_under_the_budget() -> None:
 
     assert "define_feature" in json.dumps(schema)
     assert size < MAX_SCHEMA_BYTES, size
+    assert MAX_SCHEMA_BYTES - size >= SCHEMA_HEADROOM_BYTES, size
 
 
 def test_building_a_local_backend_loads_neither_an_sdk_nor_the_analysis_stack() -> None:

@@ -1141,6 +1141,30 @@ def test_a_path_pattern_groups_a_source_declared_through_the_tool(
     ]
 
 
+def test_a_sequence_path_pattern_names_the_sequences_of_a_tool_declared_source(
+    backend: LocalBackend,
+) -> None:
+    created = _created(backend)
+    uuid = created.dataset
+    _ = _sourced(
+        backend,
+        uuid,
+        multi_sequences_per_file=False,
+        group_from=None,
+        sequence_path_pattern=r"^([^.]+)\.npy$",
+    )
+
+    scanned = _call(backend, DatasetChange, action="scan", dataset=uuid)
+
+    assert scanned.scanned == {"tracks": 2}
+    assert scanned.findings == ()
+    held = open_dataset(Path(created.manifest))
+    assert sorted(row["sequence"] for row in held.read_tracks_raw_index()) == [
+        "test",
+        "train",
+    ]
+
+
 def test_a_dataset_root_that_does_not_exist_yet_holds_none_and_takes_the_first(
     tmp_path: Path,
 ) -> None:

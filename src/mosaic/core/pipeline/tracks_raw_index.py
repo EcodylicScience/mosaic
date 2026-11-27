@@ -693,10 +693,103 @@ def stem_as_sequence(stem: str) -> str:
     return stem
 
 
+SequenceRule = Callable[[Path], str | None]
+"""A function of a file's path that names its sequence, or ``None`` when it names none."""
+
+
+class SequenceCaptureError(ValueError):
+    """A ``sequence_path_pattern`` matched a path with a capture that names nothing.
+
+    A group that did not take part in the match, or that matched the empty
+    string, would name a blank sequence. The report of the raw files catches this
+    class and no other, so a file the scan would refuse is listed as a miss.
+    """
+
+
+def source_label(source: str) -> str:
+    """How a refusal names a scan's source: its id, or that there is none."""
+    return f"source {source!r}" if source else "a scan of no declared source"
+
+
+def sequence_rule(
+    *,
+    sequence_from_stem: Callable[[str], str],
+    sequence_path_pattern: str | None,
+    path_root: Path | None,
+    source: str,
+) -> SequenceRule:
+    """The one rule that names a file's sequence, from a path pattern or from its stem.
+
+    With *sequence_path_pattern*, the rule searches the path of a file below
+    *path_root*, with ``/`` separators, and joins the pattern's capture groups
+    with ``__`` in order. A path the pattern does not match has no sequence
+    (``None``). Without it, the rule is *sequence_from_stem* of the file's stem,
+    and never misses. The scan and the raw report build their rule here, so they
+    name one sequence.
+
+    Args:
+        sequence_from_stem: The converter's rule for a stem, used without a
+            pattern.
+        sequence_path_pattern: A regular expression with at least one capture
+            group, or ``None``.
+        path_root: The folder the pattern is searched below. Required with a
+            pattern.
+        source: The id of the source scanned, for the messages of a refusal, or
+            ``""`` for a scan of no declared source.
+
+    Raises:
+        ValueError: A pattern is given without *path_root* or without a capture
+            group, or is not a regular expression.
+        SequenceCaptureError: From the rule, when the pattern matches a path but
+            a capture group did not take part or matched the empty string. The
+            message names the file, the source and the pattern.
+    """
+    if sequence_path_pattern is None:
+        return lambda path: sequence_from_stem(path.stem)
+    if path_root is None:
+        msg = (
+            f"sequence_path_pattern {sequence_path_pattern!r} of "
+            f"{source_label(source)} needs group_path_root, the folder it is "
+            "searched below"
+        )
+        raise ValueError(msg)
+    try:
+        compiled = re.compile(sequence_path_pattern)
+    except re.error as error:
+        msg = (
+            f"sequence_path_pattern {sequence_path_pattern!r} of "
+            f"{source_label(source)} is not a regular expression: {error}"
+        )
+        raise ValueError(msg) from error
+    if compiled.groups < 1:
+        msg = (
+            f"sequence_path_pattern {sequence_path_pattern!r} of "
+            f"{source_label(source)} has no capture group, so it names no sequence"
+        )
+        raise ValueError(msg)
+
+    def name_from_path(path: Path) -> str | None:
+        found = compiled.search(_path_below(path_root, path))
+        if found is None:
+            return None
+        captures = found.groups()
+        if any(not capture for capture in captures):
+            msg = (
+                f"sequence_path_pattern {sequence_path_pattern!r} of "
+                f"{source_label(source)} matches {path} but a capture group "
+                f"names nothing (captures {captures!r}: one did not take part in "
+                "the match or matched the empty string), so it names no sequence"
+            )
+            raise SequenceCaptureError(msg)
+        return "__".join(capture for capture in captures if capture)
+
+    return name_from_path
+
+
 def group_for_path(
     path: Path,
     *,
-    sequence_from_stem: Callable[[str], str],
+    sequence_rule: SequenceRule,
     multi_sequences_per_file: bool,
     group_from: str | None,
     group_re: re.Pattern[str] | None,
@@ -707,19 +800,24 @@ def group_for_path(
     """The group a scan gives *path*, or ``None`` when its declared pattern misses it.
 
     A scan indexes a file whose group is a string and skips one whose group is
-    ``None``. At most one rule applies, in this order:
+    ``None``. A file whose sequence *sequence_rule* does not name has no group
+    and is skipped, whatever else is declared; a file of a
+    *multi_sequences_per_file* source has no sequence to name, and the rule is
+    not asked. Otherwise at most one rule applies, in this order:
 
     * *group_from_path*, when given, names the group and never misses.
     * *path_re*, when given, searches the path of *path* below *path_root*.
     * Under *multi_sequences_per_file*, the group is the file's stem or its
       parent folder's name per *group_from*, or empty, and *group_re* does not
       apply.
-    * *group_re*, when given, searches the sequence that *sequence_from_stem*
-      names for the stem.
+    * *group_re*, when given, searches the sequence that *sequence_rule* names.
     * Otherwise the group is empty.
 
     A declared pattern that finds nothing is a miss.
     """
+    sequence = "" if multi_sequences_per_file else sequence_rule(path)
+    if sequence is None:
+        return None
     if group_from_path is not None:
         return str(group_from_path(path))
     if path_re is not None and path_root is not None:
@@ -732,7 +830,7 @@ def group_for_path(
             return path.parent.name
         return ""
     if group_re is not None:
-        found = group_re.search(sequence_from_stem(path.stem))
+        found = group_re.search(sequence)
         return None if found is None else found.group(1) or ""
     return ""
 

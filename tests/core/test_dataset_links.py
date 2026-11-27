@@ -22,7 +22,7 @@ from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset, LinkMismatchError
 from mosaic.core.manifest import (
-    MANIFEST_VERSION,
+    LINKS_MANIFEST_VERSION,
     DatasetLink,
     MediaScanSource,
     read_manifest,
@@ -797,7 +797,7 @@ def test_a_link_is_written_at_the_version_older_readers_refuse(
     text = project.manifest_path.read_text()
     assert "links:" in text
     assert "libraries:" not in text
-    assert f"manifest_version: {MANIFEST_VERSION}" in text
+    assert f"manifest_version: {LINKS_MANIFEST_VERSION}" in text
 
 
 def test_a_files_source_no_longer_kills_manifest_edits(tmp_path: Path) -> None:

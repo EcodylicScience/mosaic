@@ -196,6 +196,7 @@ from .scan_findings import (
     MISSED_SAMPLE,
     FindingLog,
     ScanFinding,
+    ScanProblem,
     merged as merged_findings,
     missing_path_finding,
 )
@@ -353,7 +354,9 @@ from .pipeline.tracks_raw_index import (
     no_companions,
     read_tracks_raw_index as _read_tracks_raw_index,
     refuse_malformed_companions,
+    sequence_rule,
     source_file_filter,
+    source_label,
     source_members_from_rows,
     stem_as_sequence,
     walked_files,
@@ -506,6 +509,45 @@ class _RawScanPlan:
 
     rows: list[TracksRawIndexRow]
     claim: ScanClaim
+
+
+def _report_pattern_misses(
+    log: FindingLog,
+    missed: list[Path],
+    *,
+    total: int,
+    name: str,
+    pattern: str | None,
+    where: str,
+    hint: str,
+    missed_problem: ScanProblem,
+    unmatched_problem: ScanProblem,
+) -> None:
+    """Report one pattern's misses among *total* files: all of them, or some.
+
+    *name* is the pattern's field, *where* what it was searched in and *hint* an
+    addition to the message of a pattern that missed every file.
+    """
+    if len(missed) == total:
+        log.report(
+            unmatched_problem,
+            f"{name} {pattern!r} matched none of the {total} {where}{hint}, "
+            "so no file is indexed",
+            pattern=pattern,
+        )
+        return
+    sample = missed[:MISSED_SAMPLE]
+    listed = ", ".join(str(path) for path in sample)
+    more = len(missed) - len(sample)
+    log.report(
+        missed_problem,
+        f"{name} {pattern!r} matched {total - len(missed)} of {total} {where}, "
+        f"so {len(missed)} {'file is' if len(missed) == 1 else 'files are'} "
+        f"not indexed: {listed}" + (f" and {more} more" if more else ""),
+        pattern=pattern,
+        count=len(missed),
+        sample=sample,
+    )
 
 
 def _require_checksum_workers(workers: int) -> None:
@@ -4550,6 +4592,7 @@ class Dataset:
                 group_pattern=source.group_pattern,
                 group_path_pattern=source.group_path_pattern,
                 group_path_root=self.resolve_source_path(source),
+                sequence_path_pattern=source.sequence_path_pattern,
                 exclude_patterns=list(source.exclude_patterns),
                 compute_md5=source.md5,
                 claim=self._rescan_claim(source, others),
@@ -9947,6 +9990,7 @@ class Dataset:
         prune_unsourced: bool = False,
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
+        sequence_path_pattern: Optional[str] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
         checksum_workers: int = 1,
@@ -9998,6 +10042,17 @@ class Dataset:
         group_path_root : Path | None
             The directory the path pattern's paths are relative to. Required with
             ``group_path_pattern``; a scan of a source passes the source's path.
+        sequence_path_pattern : str | None
+            Regex searched in each file's path relative to *group_path_root*,
+            with ``/`` separators, that names the file's sequence in place of the
+            converter's rule for its stem. Its capture groups, joined by ``__`` in
+            order, are the sequence. A file the pattern misses is reported and not
+            indexed, and a match with a capture group that did not take part or is
+            empty is refused. ``group_pattern`` then searches the sequence the path
+            names. Refused beside ``multi_sequences_per_file``, without
+            *group_path_root*, and beside a format whose converter merges several
+            files into one sequence, because the stem rule of such a format names
+            the sequence of several files.
         findings : FindingLog | None
             Where to report what the scan drops or cannot place. Without one the
             findings are printed on stderr and not kept.
@@ -10065,6 +10120,7 @@ class Dataset:
             prune_unsourced=prune_unsourced,
             group_path_pattern=group_path_pattern,
             group_path_root=group_path_root,
+            sequence_path_pattern=sequence_path_pattern,
             findings=findings,
             other_sources=other_sources,
             checksum_workers=checksum_workers,
@@ -10092,6 +10148,7 @@ class Dataset:
         prune_unsourced: bool = False,
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
+        sequence_path_pattern: Optional[str] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
         checksum_workers: int = 1,
@@ -10154,6 +10211,7 @@ class Dataset:
             claim=claim,
             group_path_pattern=group_path_pattern,
             group_path_root=group_path_root,
+            sequence_path_pattern=sequence_path_pattern,
             findings=findings,
             other_sources=other_sources,
         )
@@ -10185,6 +10243,7 @@ class Dataset:
         claim: ScanClaim | None = None,
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
+        sequence_path_pattern: Optional[str] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
     ) -> _RawScanPlan:
@@ -10192,10 +10251,19 @@ class Dataset:
 
         Each row has its group, sequence, size, modification time and the
         companions its converter lists, each companion with its size and
-        modification time. No row has a checksum. Files the grouping rule misses
-        are reported to *findings* and left out. The plan's claim is *claim*, or
-        the claim over the searched directories, widened by the files the walk
-        found and the ones it skipped, as the media scan widens its own.
+        modification time. No row has a checksum. Files the sequence rule or the
+        grouping rule misses are reported to *findings* and left out. The plan's
+        claim is *claim*, or the claim over the searched directories, widened by
+        the files the walk found and the ones it skipped, as the media scan
+        widens its own.
+
+        Raises:
+            ValueError: *sequence_path_pattern* is not a regular expression, has
+                no capture group, is declared beside ``multi_sequences_per_file``
+                or over a format whose converter merges several files per
+                sequence, is declared without *group_path_root*, or matches a
+                file with a capture group that names nothing. Nothing is
+                written.
         """
         rows: list[TracksRawIndexRow] = []
         # Materialized once: `search_dirs` is an Iterable read both here and by
@@ -10221,13 +10289,41 @@ class Dataset:
             )
         if group_path_pattern and group_path_root is None:
             raise ValueError("group_path_pattern needs group_path_root")
-        group_re = re.compile(group_pattern) if group_pattern else None
-        path_re = re.compile(group_path_pattern) if group_path_pattern else None
-        path_root = None if group_path_root is None else user_path(group_path_root)
         log = (
             findings
             if findings is not None
             else FindingLog("tracks" if target_root == "tracks_raw" else "labels", "")
+        )
+        if sequence_path_pattern and multi_sequences_per_file:
+            msg = (
+                f"sequence_path_pattern {sequence_path_pattern!r} of "
+                f"{source_label(log.source)} cannot be declared beside "
+                "multi_sequences_per_file: a file of several sequences has no "
+                "sequence to name from its path"
+            )
+            raise ValueError(msg)
+        if (
+            sequence_path_pattern
+            and target_root == "tracks_raw"
+            and _format_merges_per_sequence(src_format)
+        ):
+            msg = (
+                f"sequence_path_pattern {sequence_path_pattern!r} of "
+                f"{source_label(log.source)} cannot name the sequences of "
+                f"{src_format!r} files under "
+                f"{', '.join(str(path) for path in search)}: "
+                "its converter merges several files into one sequence, and the "
+                "stem rule that names that sequence is not a function of one path"
+            )
+            raise ValueError(msg)
+        group_re = re.compile(group_pattern) if group_pattern else None
+        path_re = re.compile(group_path_pattern) if group_path_pattern else None
+        path_root = None if group_path_root is None else user_path(group_path_root)
+        name_sequence = sequence_rule(
+            sequence_from_stem=sequence_from_stem,
+            sequence_path_pattern=sequence_path_pattern,
+            path_root=path_root,
+            source=log.source,
         )
         skipped_listed: list[Path] = []
         files = iter_track_files(
@@ -10246,11 +10342,17 @@ class Dataset:
                 path=listed,
             )
 
-        missed: list[Path] = []
+        sequence_missed: list[Path] = []
+        group_missed: list[Path] = []
         for p, st in files:
+            # A multi-sequence file leaves the sequence blank: its group names it.
+            seq = "" if multi_sequences_per_file else name_sequence(p)
+            if seq is None:
+                sequence_missed.append(p)
+                continue
             grp = group_for_path(
                 p,
-                sequence_from_stem=sequence_from_stem,
+                sequence_rule=name_sequence,
                 multi_sequences_per_file=multi_sequences_per_file,
                 group_from=group_from,
                 group_re=group_re,
@@ -10259,10 +10361,8 @@ class Dataset:
                 group_from_path=group_from_path,
             )
             if grp is None:
-                missed.append(p)
+                group_missed.append(p)
                 continue
-            # A multi-sequence file leaves the sequence blank: its group names it.
-            seq = "" if multi_sequences_per_file else sequence_from_stem(p.stem)
             rows.append(
                 build_tracks_raw_row(
                     path=p,
@@ -10279,11 +10379,14 @@ class Dataset:
                 )
             )
 
+        missed = [*sequence_missed, *group_missed]
         if missed:
             self._report_missed_files(
                 log,
-                missed,
+                sequence_missed=sequence_missed,
+                group_missed=group_missed,
                 total=len(files),
+                sequence_path_pattern=sequence_path_pattern,
                 group_pattern=group_pattern,
                 group_path_pattern=group_path_pattern,
                 path_root=path_root,
@@ -10420,51 +10523,68 @@ class Dataset:
     @staticmethod
     def _report_missed_files(
         log: FindingLog,
-        missed: list[Path],
         *,
+        sequence_missed: list[Path],
+        group_missed: list[Path],
         total: int,
+        sequence_path_pattern: str | None,
         group_pattern: str | None,
         group_path_pattern: str | None,
         path_root: Path | None,
     ) -> None:
-        """Report the files a scan skipped because its group pattern missed them.
+        """Report the files a scan skipped because a declared pattern missed them.
 
-        A pattern that missed every file is reported as that, and only that: the
-        source indexes no file, and each file listed would say the same.
+        The sequence path pattern is reported first, over all *total* files. The
+        group pattern is judged over the files the sequence rule named, so a file
+        the sequence pattern missed is counted once, against that pattern. A
+        pattern that missed every file it was asked about is reported as that, and
+        only that: the source indexes no file, and each file listed would say the
+        same.
         """
-        if group_path_pattern is not None:
-            name, pattern = "group_path_pattern", group_path_pattern
-            where = f"file paths below {path_root}"
-        else:
-            name, pattern = "group_pattern", group_pattern
-            where = "file stems"
-        if len(missed) == total:
-            hint = (
-                ""
-                if group_path_pattern is not None
-                else " (it searches the file stem, not the folders; "
-                "group_path_pattern searches the path below the source)"
+        if sequence_missed and sequence_path_pattern is not None:
+            _report_pattern_misses(
+                log,
+                sequence_missed,
+                total=total,
+                name="sequence_path_pattern",
+                pattern=sequence_path_pattern,
+                where=f"file paths below {path_root}",
+                hint="",
+                missed_problem="sequence_path_pattern_missed",
+                unmatched_problem="sequence_path_pattern_unmatched",
             )
-            log.report(
-                "group_path_pattern_unmatched"
-                if group_path_pattern is not None
-                else "group_pattern_unmatched",
-                f"{name} {pattern!r} matched none of the {total} {where}{hint}, "
-                "so no file is indexed",
-                pattern=pattern,
+        if not group_missed:
+            return
+        named = total - len(sequence_missed)
+        if group_path_pattern is not None:
+            _report_pattern_misses(
+                log,
+                group_missed,
+                total=named,
+                name="group_path_pattern",
+                pattern=group_path_pattern,
+                where=f"file paths below {path_root}",
+                hint="",
+                missed_problem="group_pattern_missed",
+                unmatched_problem="group_path_pattern_unmatched",
             )
             return
-        sample = missed[:MISSED_SAMPLE]
-        listed = ", ".join(str(path) for path in sample)
-        more = len(missed) - len(sample)
-        log.report(
-            "group_pattern_missed",
-            f"{name} {pattern!r} matched {total - len(missed)} of {total} {where}, "
-            f"so {len(missed)} {'file is' if len(missed) == 1 else 'files are'} "
-            f"not indexed: {listed}" + (f" and {more} more" if more else ""),
-            pattern=pattern,
-            count=len(missed),
-            sample=sample,
+        by_stem = sequence_path_pattern is None
+        _report_pattern_misses(
+            log,
+            group_missed,
+            total=named,
+            name="group_pattern",
+            pattern=group_pattern,
+            where="file stems" if by_stem else "sequences",
+            hint=(
+                " (it searches the file stem, not the folders; "
+                "group_path_pattern searches the path below the source)"
+                if by_stem
+                else ""
+            ),
+            missed_problem="group_pattern_missed",
+            unmatched_problem="group_pattern_unmatched",
         )
 
     def index_label_series(
@@ -10566,6 +10686,7 @@ class Dataset:
         prune_unsourced: bool = False,
         group_path_pattern: Optional[str] = None,
         group_path_root: Optional[Path] = None,
+        sequence_path_pattern: Optional[str] = None,
         findings: FindingLog | None = None,
         other_sources: Callable[[], ScanClaim] | None = None,
         checksum_workers: int = 1,
@@ -10594,6 +10715,9 @@ class Dataset:
 
         ``group_from_path`` is the same seam it is there -- a grouping that is a
         rule rather than a substring -- and carries the same contract.
+
+        ``sequence_path_pattern`` names a file's sequence from its path as it does
+        there, in place of its stem.
 
         ``checksum_workers`` is the threads that read files for their checksums, a
         throughput setting in no manifest field and no identifier: the rows and
@@ -10627,6 +10751,7 @@ class Dataset:
             prune_unsourced=prune_unsourced,
             group_path_pattern=group_path_pattern,
             group_path_root=group_path_root,
+            sequence_path_pattern=sequence_path_pattern,
             findings=findings,
             other_sources=other_sources,
             checksum_workers=checksum_workers,

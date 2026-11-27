@@ -2,9 +2,10 @@
 
 :func:`raw_report` answers six questions that are otherwise a script over the
 raw files: which files are copies of one another, which were never hashed,
-which files a group pattern leaves out, which tracks tables disagree with their
-media about the frame axis, which are far longer or shorter than their group's
-others, and which entries a method read with uneven time steps.
+which files a sequence or group pattern leaves out, which tracks tables
+disagree with their media about the frame axis, which are far longer or shorter
+than their group's others, and which entries a method read with uneven time
+steps.
 
 It is a read. It opens the raw indexes, the tracks index and the run-logs, and
 lists the directories of the declared tracks and labels sources by file name.
@@ -97,14 +98,22 @@ class UnhashedRaw(StrictModel):
 
 
 class PatternMiss(StrictModel):
-    """The files that a source's group pattern does not match.
+    """The files a source's pattern names no sequence or group for.
 
-    A scan skips such a file, so no index row records it.
+    A source reports one miss per pattern that misses: its
+    ``sequence_path_pattern``, its ``group_path_pattern``, or its
+    ``group_pattern``. A scan skips such a file, so no index row records
+    it.
 
     Attributes:
         kind: The kind of the source.
         source: The source's id.
-        pattern: The declared ``group_path_pattern``, else ``group_pattern``.
+        pattern: The pattern that missed, one of ``sequence_path_pattern``,
+            ``group_path_pattern`` and ``group_pattern``. Its files are
+            those it names no sequence or group for: no match, or, for the
+            sequence pattern, a capture that names nothing, which a scan
+            refuses. A file the sequence pattern misses is not counted
+            against the group pattern.
         count: How many files the pattern misses.
         paths: Up to ``RAW_REPORT_SAMPLE`` of them, in path order.
     """
@@ -201,10 +210,12 @@ class RawReport(StrictModel):
             tracks and labels indexes, largest first.
         duplicate_sets: How many sets there are.
         unhashed: Per kind, the rows with a blank checksum.
-        pattern_misses: Per source with a group pattern, the files it misses.
-            A tracks source whose ``src_format`` has no registered converter
-            is not checked, because its stem rule is unknown.
-        pattern_miss_sources: How many sources miss a file.
+        pattern_misses: Per pattern of a source that declares a sequence path
+            pattern or a group pattern, the files it misses. A tracks source
+            whose ``src_format`` has no registered converter is not checked,
+            because its stem rule is unknown.
+        pattern_miss_sources: How many source patterns miss a file. A source
+            whose sequence and group patterns both miss counts twice.
         frame_axis: The tracks tables whose frame counts disagree with their
             media.
         frame_axis_tables: How many tables disagree.
@@ -402,12 +413,20 @@ def _sequence_rule(kind: RawKind, src_format: str) -> Callable[[str], str] | Non
 def _source_findings(ds: Dataset) -> tuple[list[PatternMiss], list[MissingSource]]:
     """The files each pattern misses and the sources with no path.
 
-    Each source is judged by the rule a scan applies (``group_for_path``) to
-    the files a scan would walk. A source whose path is missing is reported and
-    not walked, and so is a source whose format has no registered converter,
-    which cannot say how its files name a sequence.
+    Each source is judged by the rules a scan applies (``sequence_rule`` and
+    ``group_for_path``) to the files a scan would walk. A file whose sequence
+    path pattern names no sequence is a miss of that pattern, and so is one
+    whose capture names nothing, which a scan refuses. The report raises
+    neither. A source whose path is missing is reported and not walked, and
+    so is a source whose format has no registered converter, which cannot say
+    how its files name a sequence.
     """
-    from mosaic.core.pipeline.tracks_raw_index import group_for_path, walked_paths
+    from mosaic.core.pipeline.tracks_raw_index import (
+        SequenceCaptureError,
+        group_for_path,
+        sequence_rule,
+        walked_paths,
+    )
 
     misses: list[PatternMiss] = []
     missing: list[MissingSource] = []
@@ -420,10 +439,18 @@ def _source_findings(ds: Dataset) -> tuple[list[PatternMiss], list[MissingSource
                     MissingSource(kind=kind, source=source.id, path=str(base))
                 )
                 continue
-            pattern = source.group_path_pattern or source.group_pattern
-            rule = _sequence_rule(kind, source.src_format)
-            if pattern is None or rule is None:
+            group_declared = source.group_path_pattern or source.group_pattern
+            stem_rule = _sequence_rule(kind, source.src_format)
+            if (
+                source.sequence_path_pattern is None and group_declared is None
+            ) or stem_rule is None:
                 continue
+            name_sequence = sequence_rule(
+                sequence_from_stem=stem_rule,
+                sequence_path_pattern=source.sequence_path_pattern,
+                path_root=base,
+                source=source.id,
+            )
             group_re = (
                 re.compile(source.group_pattern) if source.group_pattern else None
             )
@@ -435,36 +462,49 @@ def _source_findings(ds: Dataset) -> tuple[list[PatternMiss], list[MissingSource
             search = (
                 [base / entry for entry in source.files] if source.files else [base]
             )
-            missed = sorted(
-                str(path)
-                for path in walked_paths(
-                    search,
-                    source.patterns,
-                    recursive=source.recursive,
-                    exclude_patterns=source.exclude_patterns,
-                )
-                if group_for_path(
-                    path,
-                    sequence_from_stem=rule,
-                    multi_sequences_per_file=source.multi_sequences_per_file,
-                    group_from=source.group_from,
-                    group_re=group_re,
-                    path_re=path_re,
-                    path_root=base,
-                    group_from_path=None,
-                )
-                is None
-            )
-            if missed:
-                misses.append(
-                    PatternMiss(
-                        kind=kind,
-                        source=source.id,
-                        pattern=pattern,
-                        count=len(missed),
-                        paths=missed[:RAW_REPORT_SAMPLE],
+            sequence_missed: list[str] = []
+            group_missed: list[str] = []
+            for path in walked_paths(
+                search,
+                source.patterns,
+                recursive=source.recursive,
+                exclude_patterns=source.exclude_patterns,
+            ):
+                try:
+                    named = name_sequence(path)
+                except SequenceCaptureError:
+                    named = None
+                if named is None:
+                    sequence_missed.append(str(path))
+                elif (
+                    group_for_path(
+                        path,
+                        sequence_rule=name_sequence,
+                        multi_sequences_per_file=source.multi_sequences_per_file,
+                        group_from=source.group_from,
+                        group_re=group_re,
+                        path_re=path_re,
+                        path_root=base,
+                        group_from_path=None,
                     )
-                )
+                    is None
+                ):
+                    group_missed.append(str(path))
+            for pattern, missed in (
+                (source.sequence_path_pattern, sequence_missed),
+                (group_declared, group_missed),
+            ):
+                if pattern is not None and missed:
+                    missed.sort()
+                    misses.append(
+                        PatternMiss(
+                            kind=kind,
+                            source=source.id,
+                            pattern=pattern,
+                            count=len(missed),
+                            paths=missed[:RAW_REPORT_SAMPLE],
+                        )
+                    )
     misses.sort(key=lambda miss: (_KIND_ORDER[miss.kind], miss.source))
     missing.sort(key=lambda gone: (_KIND_ORDER[gone.kind], gone.source))
     return misses, missing

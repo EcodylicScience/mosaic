@@ -85,7 +85,8 @@ importing `mosaic.tracking` registers neither.
 
 - `manifest.py` defines the format as pydantic models. A read migrates an older version
   in memory and writes nothing, and a newer version raises `ManifestVersionError`. The
-  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 6 only
+  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 7 only
+  when a tracks or labels source declares a `sequence_path_pattern`, at 6 only
   when it declares a link (`links`), at 5 only when a tracks or labels source declares a
   `group_path_pattern`, and at 4 only when a media source declares a `division` or a
   write raised it for division rows (`written_manifest_version`), and every other at
@@ -220,9 +221,14 @@ importing `mosaic.tracking` registers neither.
   returns `None` for a miss, and `_index_raw` skips it and reports one
   `group_pattern_missed` finding per source with a `count` and up to `MISSED_SAMPLE`
   paths. A pattern that misses every file reports `group_pattern_unmatched` or
-  `group_path_pattern_unmatched` alone. A source with `group_from`, or an indexer given
-  `group_from_path`, misses nothing. A rescan drops the raw row of a file an earlier
-  scan indexed with an empty group, and leaves its converted table.
+  `group_path_pattern_unmatched` alone. A file's sequence comes from one
+  `SequenceRule` (`sequence_rule`), the converter's stem rule or a
+  `sequence_path_pattern` searched in the path below the source; a file it misses is
+  reported as `sequence_path_pattern_missed` (or `..._unmatched`) and has no group, and
+  a group pattern is judged over the files the sequence rule named. A source with
+  `group_from`, or an indexer given `group_from_path`, misses nothing. A rescan drops
+  the raw row of a file an earlier scan indexed with an empty group, and leaves its
+  converted table.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

@@ -22,8 +22,10 @@ from mosaic.core.manifest import (
     MANAGED_BY_KEY,
     DIVISION_MANIFEST_VERSION,
     GROUP_PATH_MANIFEST_VERSION,
+    LINKS_MANIFEST_VERSION,
     MANIFEST_VERSION,
     NOTES_MAX_CHARS,
+    SEQUENCE_PATH_MANIFEST_VERSION,
     TAGS_MAX_COUNT,
     UNDIVIDED_MANIFEST_VERSION,
     DatasetLink,
@@ -971,6 +973,114 @@ class TestDivision:
             )
 
 
+class TestSequencePath:
+    """A source that names its sequences from the path, and version 7."""
+
+    def test_a_source_with_the_field_writes_version_7_and_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        source = TracksScanSource(
+            id="d", path="/data/d", sequence_path_pattern=r"^([^/]+)/(day[^/]+)/"
+        )
+        write_manifest(path, DatasetManifest(sources=ScanSources(tracks=(source,))))
+        written = yaml.safe_load(path.read_text())
+        assert written["manifest_version"] == SEQUENCE_PATH_MANIFEST_VERSION == 7
+        assert (
+            written["sources"]["tracks"][0]["sequence_path_pattern"]
+            == r"^([^/]+)/(day[^/]+)/"
+        )
+        back = read_manifest(path)
+        assert back.sources.tracks == (source,)
+        assert back.manifest_version == 7
+
+    def test_a_labels_source_with_the_field_writes_version_7(self) -> None:
+        source = LabelsScanSource(id="l", path="/l", sequence_path_pattern=r"^([^/]+)/")
+        manifest = DatasetManifest(sources=ScanSources(labels=(source,)))
+        assert manifest_payload(manifest)["manifest_version"] == 7
+
+    def test_a_source_without_the_field_stays_below_version_7(self) -> None:
+        source = TracksScanSource(id="d", path="/data/d", group_path_pattern="^(a)/")
+        payload = manifest_payload(
+            DatasetManifest(sources=ScanSources(tracks=(source,)))
+        )
+        assert payload["manifest_version"] == 5
+        assert "sequence_path_pattern" not in yaml.safe_dump(payload)
+
+    def test_a_link_without_the_field_still_writes_version_6(self) -> None:
+        manifest = DatasetManifest(
+            links=(DatasetLink(id="src", path="../source"),),
+            sources=ScanSources(tracks=(TracksScanSource(id="t", path="/t"),)),
+        )
+        assert manifest_payload(manifest)["manifest_version"] == 6
+
+    def test_a_link_beside_a_source_with_the_field_writes_version_7(self) -> None:
+        manifest = DatasetManifest(
+            links=(DatasetLink(id="src", path="../source"),),
+            sources=ScanSources(
+                tracks=(
+                    TracksScanSource(
+                        id="t", path="/t", sequence_path_pattern=r"^([^/]+)/"
+                    ),
+                )
+            ),
+        )
+        assert manifest_payload(manifest)["manifest_version"] == 7
+
+    def test_version_7_under_version_6_code_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mosaic.core.manifest as manifest_module
+
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 7\nname: d\n", encoding="utf-8")
+        monkeypatch.setattr(manifest_module, "MANIFEST_VERSION", 6)
+        with pytest.raises(ManifestVersionError, match="declares version 7"):
+            _ = read_manifest(path)
+
+    def test_a_version_6_manifest_reads(self, tmp_path: Path) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            "manifest_version: 6\nname: d\nlinks:\n- id: src\n  path: ../s\n",
+            encoding="utf-8",
+        )
+        manifest = read_manifest(path)
+        assert manifest.manifest_version == 6
+        assert manifest.migrated_from is None
+
+    @pytest.mark.parametrize(
+        ("source", "fragment"),
+        [
+            ({"sequence_path_pattern": "(unclosed"}, "not a regular expression"),
+            ({"sequence_path_pattern": "^day"}, "no capture group"),
+            (
+                {
+                    "sequence_path_pattern": "^([^/]+)/",
+                    "multi_sequences_per_file": True,
+                },
+                "multi_sequences_per_file",
+            ),
+        ],
+    )
+    def test_a_pattern_that_names_no_sequence_is_refused_naming_the_field(
+        self, source: dict[str, object], fragment: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=fragment) as caught:
+            _ = TracksScanSource.model_validate({"id": "s", "path": "/s", **source})
+        assert "sequence_path_pattern" in str(caught.value)
+
+    def test_a_series_source_refuses_it(self) -> None:
+        with pytest.raises(ValidationError, match="sequence_path_pattern"):
+            _ = LabelsScanSource.model_validate(
+                {
+                    "id": "s",
+                    "path": "/s",
+                    "series": "keypoints",
+                    "sequence_path_pattern": "^([^/]+)/",
+                }
+            )
+
+
 V5_LIBRARIES_MANIFEST = """\
 manifest_version: 5
 name: project
@@ -1015,7 +1125,7 @@ class TestLinks:
         write_manifest(path, read_manifest(path))
 
         written = yaml.safe_load(path.read_text())
-        assert written["manifest_version"] == MANIFEST_VERSION == 6
+        assert written["manifest_version"] == LINKS_MANIFEST_VERSION == 6
         assert "libraries" not in written
         assert written["links"] == [
             {
@@ -1100,9 +1210,9 @@ class TestLinks:
 
         assert manifest_payload(manifest)["manifest_version"] == 6
 
-    def test_version_7_is_refused(self) -> None:
-        with pytest.raises(ManifestVersionError, match="declares version 7"):
-            _ = migrate_to_current({"manifest_version": 7})
+    def test_version_8_is_refused(self) -> None:
+        with pytest.raises(ManifestVersionError, match="declares version 8"):
+            _ = migrate_to_current({"manifest_version": 8})
 
     def test_two_links_may_not_share_an_id(self) -> None:
         with pytest.raises(ValidationError, match="share the id 'src'"):

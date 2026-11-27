@@ -48,8 +48,8 @@ SourceKindArg = Literal["media", "tracks", "labels"]
 
 _FIELD_FLAGS = re.compile(
     r"(?<![\w-])(?<!a )(multi_sequences_per_file|exclude_patterns|group_path_pattern"
-    r"|group_pattern|group_from|match_mode|src_format|extensions|patterns|layout"
-    r"|series|divide_frames|recording_name)(?![\w-])"
+    r"|sequence_path_pattern|group_pattern|group_from|match_mode|src_format"
+    r"|extensions|patterns|layout|series|divide_frames|recording_name)(?![\w-])"
 )
 """A source field named in a refusal, to spell as the flag that sets it.
 
@@ -224,6 +224,19 @@ def add_source(
             ),
         ),
     ] = None,
+    sequence_path_pattern: Annotated[
+        str | None,
+        typer.Option(
+            "--sequence-path-pattern",
+            help=(
+                "Tracks/labels only: regex searched in the file's path relative "
+                "to the source, with '/' separators; its capture groups, joined "
+                "by '__', name the sequence in place of the file stem. Refused "
+                "with --multi-sequences-per-file and for formats that merge "
+                "files per sequence."
+            ),
+        ),
+    ] = None,
     md5: Annotated[
         bool,
         typer.Option(
@@ -312,6 +325,7 @@ def add_source(
         group_from=group_from,
         group_pattern=group_pattern,
         group_path_pattern=group_path_pattern,
+        sequence_path_pattern=sequence_path_pattern,
         md5=md5,
         series=series,
         divide_frames=divide_frames,

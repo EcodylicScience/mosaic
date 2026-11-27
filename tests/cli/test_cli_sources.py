@@ -330,11 +330,54 @@ class TestGroupPathPattern:
         assert "--group-pattern" in result.output
         assert "--group-path-pattern" in result.output
 
+    def test_a_sequence_path_pattern_names_the_sequences_by_flag(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        root = tmp_path / "release"
+        for folder in ("batchA/day1", "batchB/day2"):
+            path = root / folder
+            path.mkdir(parents=True)
+            _ = (path / "x.npy").write_bytes(b"\x00")
+        added = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(root), "--id", "d", "--patterns", "*.npy",
+             "--src-format", "calms21_npy",
+             "--sequence-path-pattern", "^([^/]+)/([^/]+)/"],
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+        assert "manifest_version: 7" in manifest.read_text()
+
+        scanned = runner.invoke(app, ["scan", "-m", str(manifest)])
+        assert scanned.exit_code == 0, scanned.output
+
+        rows = Dataset(manifest_path=manifest).load().read_tracks_raw_index()
+        assert sorted(row["sequence"] for row in rows) == [
+            "batchA__day1",
+            "batchB__day2",
+        ]
+
+    def test_a_sequence_path_pattern_is_refused_beside_multi_sequence_files_by_flag(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(tmp_path), "--multi-sequences-per-file",
+             "--sequence-path-pattern", "^([^/]+)/"],
+        )  # fmt: skip
+        assert result.exit_code != 0
+        assert "--sequence-path-pattern" in result.output
+        assert "--multi-sequences-per-file" in result.output
+
     def test_the_help_says_where_each_pattern_looks(self) -> None:
         result = runner.invoke(app, ["sources", "add", "--help"])
         flat = " ".join(result.output.replace("│", " ").split())
         assert "file stem" in flat
         assert "relative to the source" in flat
+        assert "joined by '__'" in flat
 
 
 class TestDeclaringAMissingPath:

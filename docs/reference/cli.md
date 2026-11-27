@@ -1946,6 +1946,7 @@ $ mosaic sources add [OPTIONS]
 * `--group-from <str>`: 'filename' or 'parent'. Multi-sequence files only.
 * `--group-pattern <str>`: Tracks/labels only: regex searched in the file stem, as the converter names the sequence (not the folders); its first capture group is the group. For a folder, use --group-path-pattern.
 * `--group-path-pattern <str>`: Tracks/labels only: regex searched in the file's path relative to the source, with '/' separators; its first capture group is the group. Excludes --group-pattern and --group-from.
+* `--sequence-path-pattern <str>`: Tracks/labels only: regex searched in the file's path relative to the source, with '/' separators; its capture groups, joined by '__', name the sequence in place of the file stem. Refused with --multi-sequences-per-file and for formats that merge files per sequence.
 * `--md5 / --no-md5`: Checksum each file. On by default: the composition hash is over these.  [default: md5]
 * `--series <str>`: Labels only: claim revisions of this versioned label series (e.g. 'keypoints') instead of uploaded label files. Usually with --file, naming exactly the revisions wanted.
 * `--divide-frames <int>`: Media only: divide each imgstore recording into sequences of this many frames, a whole multiple of the store's chunksize.
