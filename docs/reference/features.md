@@ -436,8 +436,9 @@ Detect pairwise interaction segments from trajectory data.
 | `frame_padding` | `integer` | `10` |  | Padding added before and after each detected segment. [frames] |
 | `morphological_structure_size` | `integer` | `25` |  | Length of the structuring element used to close and open the per-frame interaction mask before segment extraction. 0 disables morphological filtering. [frames] |
 | `px_scale` | `number` | `1.0` |  | Scale factor applied to shift_dist and max_dist, for videos recorded at a different pixel resolution. |
-| `use_pixel_coords` | `boolean` | `true` |  | Use pixel-coordinate columns for the distance calculation. With pose_head_index set, uses that pose keypoint. Otherwise uses x_pixels/y_pixels where present, falling back to X/Y. False always uses X/Y. |
-| `pose_head_index` | `integer` \| `None` | `null` |  | Pose keypoint index used as the position for the distance calculation, together with use_pixel_coords. Unset, x_pixels/y_pixels or X/Y is used instead. |
+| `use_pixel_coords` | `boolean` | `true` |  | Use pixel-coordinate columns for the distance calculation. With pose_head_index set, reads that pose keypoint (poseX<i>/poseY<i>). Otherwise reads x_pixels/y_pixels where the table has them and X/Y where it does not, without a message, so a table that lacks the pixel columns is measured on X/Y. False always reads X/Y. Ignored while position_columns is set, and refused as False beside it. |
+| `pose_head_index` | `integer` \| `None` | `null` |  | Pose keypoint index used as the position for the distance calculation, together with use_pixel_coords: reads poseX<i> and poseY<i>. Unset, x_pixels/y_pixels or X/Y is read instead. Refused beside position_columns. |
+| `position_columns` | tuple of (`string`, `string`) \| `None` | `null` |  | The two columns, x then y, that give each individual's position for the distance calculation, as ['X#head', 'Y#head'] for the head point that a TRex track keeps beside its body centroid in X/Y. Both columns are read as named: a table that lacks either is refused, with no fallback to X/Y. Unset, the columns follow use_pixel_coords and pose_head_index. Refused beside pose_head_index or use_pixel_coords set False. |
 
 ### `pair-keypoints`
 

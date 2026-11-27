@@ -69,6 +69,7 @@
   "pair-egocentric/default": "0.3-19773dda7b",
   "pair-facing/default": "0.3-fc3a017269",
   "pair-interaction-filter/default": "0.3-0dd4b4ee95",
+  "pair-interaction-filter/position-columns": "0.3-e265268dc1",
   "pair-keypoints/heading": "0.3-1875422df6",
   "pair-keypoints/inter-distances": "0.3-bdc199ac90",
   "pair-posedistance-pca/default": "0.4-c217c7a3fd",

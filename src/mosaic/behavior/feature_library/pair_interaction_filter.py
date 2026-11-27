@@ -16,10 +16,11 @@ All thresholds are parameterized and should be tuned per application.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Final, final
+from typing import Annotated, ClassVar, Final, Self, final, override
 
 import numpy as np
 import pandas as pd
+from pydantic import model_validator
 from scipy.ndimage import binary_closing, binary_opening
 
 from mosaic.core.individuals import id_arenas, individual_pairs
@@ -30,6 +31,7 @@ from mosaic.core.pipeline.column_contract import (
     POSE_Y,
     AnyOf,
     Column,
+    ParamColumn,
     ParamIs,
     Provides,
     Requirement,
@@ -187,15 +189,28 @@ _PX_SCALE_DESCRIPTION = (
 
 _USE_PIXEL_COORDS_DESCRIPTION = (
     "Use pixel-coordinate columns for the distance calculation. With "
-    "pose_head_index set, uses that pose keypoint. Otherwise uses "
-    "x_pixels/y_pixels where present, falling back to X/Y. False always "
-    "uses X/Y."
+    "pose_head_index set, reads that pose keypoint (poseX<i>/poseY<i>). "
+    "Otherwise reads x_pixels/y_pixels where the table has them and X/Y "
+    "where it does not, without a message, so a table that lacks the pixel "
+    "columns is measured on X/Y. False always reads X/Y. Ignored while "
+    "position_columns is set, and refused as False beside it."
 )
 
 _POSE_HEAD_INDEX_DESCRIPTION = (
     "Pose keypoint index used as the position for the distance "
-    "calculation, together with use_pixel_coords. Unset, "
-    "x_pixels/y_pixels or X/Y is used instead."
+    "calculation, together with use_pixel_coords: reads poseX<i> and "
+    "poseY<i>. Unset, x_pixels/y_pixels or X/Y is read instead. Refused "
+    "beside position_columns."
+)
+
+_POSITION_COLUMNS_DESCRIPTION = (
+    "The two columns, x then y, that give each individual's position for "
+    "the distance calculation, as ['X#head', 'Y#head'] for the head point "
+    "that a TRex track keeps beside its body centroid in X/Y. Both columns "
+    "are read as named: a table that lacks either is refused, with no "
+    "fallback to X/Y. Unset, the columns follow use_pixel_coords and "
+    "pose_head_index. Refused beside pose_head_index or use_pixel_coords "
+    "set False."
 )
 
 
@@ -204,6 +219,9 @@ _HEAD_X: Final = Template(POSE_X.prefix + "{pose_head_index}")
 
 _HEAD_Y: Final = Template(POSE_Y.prefix + "{pose_head_index}")
 """The y column of the keypoint that ``pose_head_index`` names."""
+
+
+_NAME: Final = "pair-interaction-filter"
 
 
 @final
@@ -215,6 +233,15 @@ class PairInteractionFilter:
     distance and (optionally) angular criteria, applies morphological
     filtering, and extracts continuous interaction segments that meet a
     minimum duration.
+
+    The position that the distance check reads is, in the order of the checks:
+      - ``position_columns``: exactly the two columns it names, x then y, for
+        example ``X#head``/``Y#head`` for the head point of a TRex track. A table
+        that lacks either is refused.
+      - ``use_pixel_coords`` with ``pose_head_index``: ``poseX<i>``/``poseY<i>``.
+      - ``use_pixel_coords`` alone: ``x_pixels``/``y_pixels`` where the table has
+        them, else ``X``/``Y`` without a message.
+      - ``use_pixel_coords=False``: ``X``/``Y``.
 
     Output columns (two rows per frame per interaction segment, one per ordered
     pair, keyed by ``(frame, id1, id2, perspective)``):
@@ -235,7 +262,7 @@ class PairInteractionFilter:
     """
 
     category = "per-frame"
-    name = "pair-interaction-filter"
+    name = _NAME
     version = "0.3"
     parallelizable = True
     scope_dependent = False
@@ -244,12 +271,14 @@ class PairInteractionFilter:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
     follows_ids: bool = True
-    # The position columns follow use_pixel_coords and pose_head_index: the head
-    # keypoint, x_pixels/y_pixels where present and else X/Y, or X/Y.
+    # The position columns are the pair that position_columns names. Unset, they follow
+    # use_pixel_coords and pose_head_index: the head keypoint, x_pixels/y_pixels
+    # where present and else X/Y, or X/Y.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.orientation_col),
         ORDER_COLUMN,
+        ParamColumn("position_columns"),
         *(
             When(position, (ParamIs("use_pixel_coords"), ParamIs("pose_head_index")))
             for position in (_HEAD_X, _HEAD_Y)
@@ -260,6 +289,7 @@ class PairInteractionFilter:
                 (
                     ParamIs("use_pixel_coords"),
                     ParamIs("pose_head_index", negated=True),
+                    ParamIs("position_columns", negated=True),
                 ),
             )
             for pixels, center in (("x_pixels", C.x_col), ("y_pixels", C.y_col))
@@ -317,6 +347,47 @@ class PairInteractionFilter:
         pose_head_index: Annotated[
             int | None, Declared(_POSE_HEAD_INDEX_DESCRIPTION, keypoint="index")
         ] = None
+        position_columns: Annotated[
+            tuple[str, str] | None, Declared(_POSITION_COLUMNS_DESCRIPTION)
+        ] = None
+
+        @model_validator(mode="after")
+        def _check_position_columns(self) -> Self:
+            """Refuse a named pair that another position setting contradicts."""
+            if self.position_columns is None:
+                return self
+            x_name, y_name = self.position_columns
+            if not x_name or not y_name:
+                raise ValueError(
+                    f"{_NAME}: position_columns names an empty column. Name the "
+                    "x column and then the y column."
+                )
+            if x_name == y_name:
+                raise ValueError(
+                    f"{_NAME}: position_columns names {x_name!r} twice. Name the "
+                    "x column and then a different y column."
+                )
+            if self.pose_head_index is not None:
+                raise ValueError(
+                    f"{_NAME}: position_columns names the position columns, which "
+                    "pose_head_index would also choose. Set one of them."
+                )
+            if not self.use_pixel_coords:
+                raise ValueError(
+                    f"{_NAME}: position_columns names the position columns, which "
+                    "use_pixel_coords=False would set to X/Y. Leave use_pixel_coords "
+                    "unset."
+                )
+            return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, with ``position_columns`` left out while it is unset.
+
+            A run that names no columns has the identity it had before the field
+            existed.
+            """
+            return self.drop_at_default(super().identity_dump(), ("position_columns",))
 
     def __init__(
         self,
@@ -356,12 +427,14 @@ class PairInteractionFilter:
         max_dist = p.max_dist * p.px_scale
 
         # Determine which columns to use for position
-        if p.use_pixel_coords and p.pose_head_index is not None:
+        if p.position_columns is not None:
+            x_col, y_col = p.position_columns
+        elif p.use_pixel_coords and p.pose_head_index is not None:
             x_col = f"{POSE_X.prefix}{p.pose_head_index}"
             y_col = f"{POSE_Y.prefix}{p.pose_head_index}"
             ensure_columns(df, [x_col, y_col])
         elif p.use_pixel_coords:
-            # Try pixel columns, fall back to X/Y
+            # Pixel columns where the table has them, X/Y where it does not.
             x_col = "x_pixels" if "x_pixels" in df.columns else C.x_col
             y_col = "y_pixels" if "y_pixels" in df.columns else C.y_col
         else:

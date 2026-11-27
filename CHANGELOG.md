@@ -8,6 +8,19 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: position columns of the pair interaction filter
+
+No run id moves. `pair-interaction-filter` gains `position_columns`, the two
+columns, x then y, that its distance check reads, as `["X#head", "Y#head"]` for the
+head point a TRex track keeps beside its body centroid in `X`/`Y`. A table that
+lacks either column is refused, with no fallback to `X`/`Y`. The field is refused
+beside `pose_head_index` or `use_pixel_coords: false`. While it is unset it is left
+out of the run's identity, so every existing run of the feature keeps its
+identifier and its version `0.3`; a run that sets it has an identifier of its own.
+The description of `use_pixel_coords` now states what an unset `pose_head_index`
+reads: `x_pixels`/`y_pixels` where the table has them, and `X`/`Y` where it does not,
+without a message. That behavior is unchanged.
+
 ## Unreleased: scan provenance and sequence names
 
 No run id moves. `tracks_raw/index.csv` gains a trailing `companions` column,

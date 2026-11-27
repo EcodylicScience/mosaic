@@ -214,6 +214,11 @@ CASES: tuple[Case, ...] = (
         params={"method": "motionmapper", "omega0": 5.0},
     ),
     Case(
+        case_id="pair-interaction-filter/position-columns",
+        feature="pair-interaction-filter",
+        params={"position_columns": ["X#head", "Y#head"]},
+    ),
+    Case(
         case_id="keypoint-kinematics/heading",
         feature="keypoint-kinematics",
         params={"heading": [3, 6]},
