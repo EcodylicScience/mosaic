@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 import pandas as pd
 
+from ..entry import Entry
 from ..helpers import text_cell
 from ..scope import Scope
 from ._utils import atomic_write, now_iso
@@ -754,6 +755,69 @@ class IndexCSV(Generic[RowT]):
         Raises:
             ValueError: A name in *values* is not a column of the index.
         """
+
+        def write(df: pd.DataFrame, in_run: "pd.Series[bool]") -> int:
+            for column, cell in values.items():
+                df.loc[in_run, column] = cell
+            return int(in_run.sum())
+
+        return self._rewrite_run_cells(run_id, set(values), write)
+
+    def update_entry_cells(
+        self, run_id: str, values_by_entry: Mapping[Entry, Mapping[str, str]]
+    ) -> int:
+        """Set the named cells of the rows of *run_id* that name each entry.
+
+        The per-entry sibling of :meth:`update_cells`, for a fact that holds of
+        some of a run's entries and not others. One locked read-modify-write
+        covers every entry, so a pass that marks several of them writes the file
+        once, and the rows of other entries stay byte-identical.
+
+        Args:
+            run_id: The run whose rows are rewritten.
+            values_by_entry: For each ``(group, sequence)`` entry, column name to
+                the new cell. An entry that holds no row of the run is skipped.
+
+        Returns:
+            The number of rows rewritten. The file is written only when at least
+            one matches.
+
+        Raises:
+            ValueError: A name in *values_by_entry* is not a column of the index.
+        """
+        columns = {column for cells in values_by_entry.values() for column in cells}
+
+        def write(df: pd.DataFrame, in_run: "pd.Series[bool]") -> int:
+            written = 0
+            for entry, cells in values_by_entry.items():
+                group, sequence = entry
+                rows = (
+                    in_run
+                    & (df["group"].astype(str) == group)
+                    & (df["sequence"].astype(str) == sequence)
+                )
+                for column, cell in cells.items():
+                    df.loc[rows, column] = cell
+                written += int(rows.sum())
+            return written
+
+        return self._rewrite_run_cells(run_id, columns, write)
+
+    def _rewrite_run_cells(
+        self,
+        run_id: str,
+        columns: set[str],
+        write: Callable[[pd.DataFrame, "pd.Series[bool]"], int],
+    ) -> int:
+        """Run *write* over the rows of *run_id*, under the lock, and save the file.
+
+        The shared body of :meth:`update_cells` and :meth:`update_entry_cells`.
+        *write* edits the frame in place for the rows its mask selects and returns
+        how many rows it rewrote. The file is written only when that is not zero.
+
+        Raises:
+            ValueError: A name in *columns* is not a column of the index.
+        """
         self._assert_run_index()
         if not self.path.exists():
             return 0
@@ -763,16 +827,13 @@ class IndexCSV(Generic[RowT]):
                 return 0
             if self.adopt is not None:
                 df = self.adopt(df)
-            unknown = sorted(set(values) - {str(column) for column in df.columns})
+            unknown = sorted(columns - {str(column) for column in df.columns})
             if unknown:
                 msg = f"{self.path} has no column {', '.join(unknown)}"
                 raise ValueError(msg)
-            mask = df["run_id"] == run_id
-            matched = int(mask.sum())
+            matched = write(df, df["run_id"] == run_id)
             if matched == 0:
                 return 0
-            for column, cell in values.items():
-                df.loc[mask, column] = cell
             atomic_write(self.path, lambda p: df.to_csv(p, index=False))
             return matched
 

@@ -65,6 +65,9 @@ What lives where:
   for the tests of a fit whose entries change, one that fits a mean, for the
   tests of a fit that a linked dataset holds, and a classifier that records the
   labels it reads.
+- ``summary_joins`` -- a step over two runs that both hold ``arena``, and its rows
+  as a merge before the summary-key join recorded them, for the tests of what
+  ``mosaic reconcile`` marks and the inventory notes.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP, DeepLabCut, Tracktor, s-DANNCE and zebrafish 3D workflow exports,
   a synthetic track file and a dataset indexing several of them, a window file, a
@@ -671,6 +674,15 @@ from tests.helpers.stand_in_features import (
     ScopedFittingFeature,
     labels_classifier_registered,
 )
+from tests.helpers.summary_joins import (
+    JOIN_STEPS,
+    JoinAlpha,
+    JoinBeta,
+    JoinConsumer,
+    JoinDownstream,
+    old_merged_run,
+    summary_cells,
+)
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.state_writes import (
     load_results_after_each_failed_write,
@@ -901,6 +913,13 @@ __all__ = [
     "LABELS_CLASSIFIER_STEP",
     "LabelsClassifier",
     "labels_classifier_registered",
+    "JOIN_STEPS",
+    "JoinAlpha",
+    "JoinBeta",
+    "JoinConsumer",
+    "JoinDownstream",
+    "old_merged_run",
+    "summary_cells",
     "GOLDEN_DIR",
     "ImportedName",
     "KEYPOINTS_PAYLOAD",

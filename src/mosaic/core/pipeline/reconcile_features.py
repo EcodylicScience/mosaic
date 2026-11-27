@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING, TypeGuard
 
 from pydantic import ValidationError
 
+from mosaic.core.entry import Entry
 from mosaic.core.filter_bounds import TimeWindow
+from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline._utils import (
     LabelRevisionTerm,
     ResolvedScope,
@@ -44,9 +46,11 @@ from mosaic.core.pipeline.inventory.params import (
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     read_identity_scheme,
+    summary_join_unmarked,
     write_identity_scheme,
 )
 from mosaic.core.pipeline.index import (
+    LEGACY_SUMMARY_JOIN,
     feature_index,
     feature_index_path,
     feature_run_root,
@@ -61,8 +65,18 @@ from mosaic.core.pipeline.reconcile import (
     backup_index,
     register_identity_reconciler,
 )
-from mosaic.core.pipeline.run import build_run_params_payload, compute_run_id
+from mosaic.core.pipeline.loading import (
+    CROSS_JOIN_FEATURES,
+    entry_summary_join,
+    expands_individuals,
+)
+from mosaic.core.pipeline.run import (
+    build_run_params_payload,
+    compute_run_id,
+    input_manifest,
+)
 from mosaic.core.pipeline.types import Result
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -313,7 +327,34 @@ class FeatureReconciler:
         *,
         apply: bool,
     ) -> None:
+        # Before the classification, which points the rebuilt feature at its
+        # upstreams' new addresses, and before any move is recorded. A dry run
+        # reads the inputs where they sit.
+        try:
+            marks = self._summary_marks(read, state, apply=apply)
+        except Exception as exc:  # noqa: BLE001 - a run whose inputs cannot be read must not abort the sweep
+            self._block_unreadable(read, state, builder, exc, apply=apply)
+            return
         verdict, new_run_id, reason = self._classify(read, state)
+        if (
+            verdict == "identity_shift_relocatable"
+            and feature_run_root(self._ds, read.storage_name, new_run_id).exists()
+        ):
+            # Decided here, where the move is recorded, so that a run that cannot
+            # move is blocked like any other and no run reads an address that has
+            # no directory. A dry run reports the same.
+            reason = (
+                f"cannot re-address {read.run_id} -> {new_run_id}; "
+                "target directory already exists"
+            )
+            builder.error(f"features/{read.storage_name}: {reason}")
+            verdict = "identity_shift_recompute"
+        if marks:
+            action = "marked" if apply else "would mark"
+            reason = (
+                f"{reason}; {action} {len(marks)} entry(ies) merged before "
+                "summary keys joined"
+            )
         finding = ReconcileFinding(
             key="features",
             verdict=verdict,
@@ -334,7 +375,122 @@ class FeatureReconciler:
         if not apply:
             builder.add(finding)
             return
+        if marks:
+            self._write_summary_marks(read, marks, builder)
         builder.add(self._apply(read, finding, builder))
+
+    def _block_unreadable(
+        self,
+        read: _RunRead,
+        state: ReconcileState,
+        builder: PassBuilder,
+        error: Exception,
+        *,
+        apply: bool,
+    ) -> None:
+        """Report a run whose recorded inputs cannot be read, and block it.
+
+        Its rows cannot be marked and no honest recompute is possible, so the run
+        stays at its address with its marker, and the next pass reads it again.
+        It is blocked in the pass state, so a run that reads it is reported as
+        recompute instead of being re-addressed onto an id that will not exist. A
+        dry run and an applied run report the same.
+        """
+        message = f"cannot read the summary keys its inputs join on: {error}"
+        builder.error(f"features/{read.storage_name}/{read.run_id}: {message}")
+        state.record_blocked("features", read.run_id)
+        finding = ReconcileFinding(
+            key="features",
+            verdict="unresolvable_pre_provenance",
+            old_address=read.run_id,
+            new_address=read.run_id,
+            index_path=read.index_path,
+            run_root=str(read.run_root),
+            reason=message,
+        )
+        builder.add(finding.with_action("reported") if apply else finding)
+
+    def _summary_marks(
+        self, read: _RunRead, state: ReconcileState, *, apply: bool
+    ) -> dict[Entry, str]:
+        """The ``legacy:`` cell that each row merged before summary keys joined gets.
+
+        Selects a run whose feature rebuilt, that reads more than one input, whose
+        marker :func:`summary_join_unmarked` accepts and whose inputs
+        ``may_share_summary_key`` finds able to hold a summary key. For each of its
+        rows that records a blank cell, it reads the footers of the entry's input
+        files once and computes the keys the current rule joins. A row whose
+        current cell is blank, which the old rule merged the same way, is left out,
+        and so is a row already marked.
+
+        The inputs are read where they sit now. Under *apply* an upstream run
+        that moved this pass is read at its new address.
+
+        Returns:
+            Each entry to mark, with the cell its row gets, never the current
+            cell: that would make the row look current and serve old-rule output.
+        """
+        feature = read.feature
+        if (
+            feature is None
+            or len(feature.inputs.root) < 2
+            or not summary_join_unmarked(read.scheme)
+        ):
+            return {}
+        from mosaic.core.pipeline.graph.columns import may_share_summary_key
+
+        with definition_scope(self._ds, load=False):
+            if not may_share_summary_key(feature):
+                return {}
+        recorded = self._recorded_summary_cells(read)
+        blank = sorted(entry for entry, cell in recorded.items() if not cell)
+        if not blank:
+            return {}
+        tracks = set(read.tracks_old)
+        if apply:
+            _remap_feature_refs(feature, state)
+            tracks = {state.resolved("tracks", variant) for variant in tracks}
+        manifest, _ = input_manifest(
+            self._ds,
+            feature,
+            Scope(entries=blank),
+            tracks_run_id=next(iter(tracks)) if len(tracks) == 1 else None,
+        )
+        marks: dict[Entry, str] = {}
+        for item in manifest.values():
+            keys = entry_summary_join(
+                item.file_specs,
+                cross_join=feature.name in CROSS_JOIN_FEATURES,
+                expands_individuals=expands_individuals(feature),
+            )
+            if keys:
+                marks[(item.group, item.sequence)] = f"{LEGACY_SUMMARY_JOIN}{keys}"
+        return marks
+
+    def _recorded_summary_cells(self, read: _RunRead) -> dict[Entry, str]:
+        """The ``consumed_summary_join`` each row of the run records, blank when absent."""
+        frame = feature_index(read.index_path).read(run_id=read.run_id)
+        if "consumed_summary_join" not in frame.columns:
+            frame = frame.assign(consumed_summary_join="")
+        return {
+            (str(group), str(sequence)): text_cell(cell)
+            for group, sequence, cell in zip(
+                frame["group"],
+                frame["sequence"],
+                frame["consumed_summary_join"],
+                strict=True,
+            )
+        }
+
+    def _write_summary_marks(
+        self, read: _RunRead, marks: dict[Entry, str], builder: PassBuilder
+    ) -> None:
+        """Write the marks into the run's rows, before any write of its marker."""
+        builder.backed_up(backup_index(read.index_path))
+        _ = feature_index(read.index_path).update_entry_cells(
+            read.run_id,
+            {entry: {"consumed_summary_join": cell} for entry, cell in marks.items()},
+        )
 
     def _classify(
         self, read: _RunRead, state: ReconcileState
@@ -518,12 +674,6 @@ class FeatureReconciler:
     ) -> ReconcileFinding:
         ds = self._ds
         new_run_root = feature_run_root(ds, read.storage_name, finding.new_address)
-        if new_run_root.exists():
-            builder.error(
-                f"features/{read.storage_name}: cannot re-address {read.run_id} "
-                f"-> {finding.new_address}; target directory already exists"
-            )
-            return finding.with_action("none")
         builder.backed_up(backup_index(read.index_path))
         # Directory move first, index rewrite second. The move is deliberately
         # not under the index lock: it is filesystem work of unbounded duration

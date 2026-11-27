@@ -17,12 +17,19 @@ import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core import dataset as dataset_module
+from mosaic.core.pipeline import identity_scheme as identity_scheme_module
+from mosaic.core.pipeline import loading
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.manifest import DatasetLink
 from mosaic.core.pipeline.graph import Recipe, run_pipeline
-from mosaic.core.pipeline.index import FitDrift, feature_run_root
+from mosaic.core.pipeline.index import (
+    FitDrift,
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+)
 from mosaic.core.pipeline.inventory import (
     Coverage,
     FeatureRunRef,
@@ -69,6 +76,7 @@ from tests.helpers import (
     add_tracks_variant,
     kmeans_fit,
     make_dataset,
+    old_merged_run,
     model_reference,
     move_tracks,
     raw_source,
@@ -1403,3 +1411,82 @@ def test_a_fit_run_the_copy_holds_names_the_refit_measured_over_the_copy(
     )
     assert record.status == "complete-but-drifted"
     assert _record_of(source, fit).refit is None
+
+
+def test_a_row_recorded_as_an_earlier_merge_is_drift_and_reads_no_input_footer(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _run(scenario_dataset)
+    ref = FeatureRunRef(name=STORAGE, run_id=run_id)
+    before = inventory(scenario_dataset, kinds=["feature"]).record(ref)
+    assert before is not None
+    assert before.status == "complete"
+    _ = feature_index(feature_index_path(scenario_dataset, STORAGE)).update_cells(
+        run_id, {"consumed_summary_join": "legacy:arena"}
+    )
+    footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+    run_root = feature_run_root(scenario_dataset, STORAGE, run_id)
+
+    found = inventory(scenario_dataset, kinds=["feature"]).record(ref)
+
+    assert found is not None
+    assert found.status == "complete-but-drifted"
+    assert found.drift == (("", "seq_a"), ("", "seq_b"))
+    assert [path for path in footers if not path.is_relative_to(run_root)] == []
+
+
+# --- Rows merged before summary keys joined -----------------------------------
+
+
+@pytest.fixture
+def scheme_seven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The release that joins summary keys, with the runs of the test minted before it."""
+    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
+
+
+def test_a_multi_input_run_with_an_old_marker_is_noted_as_reconcile_pending(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, _ = old_merged_run(scenario_dataset, unjoined="seq_b")
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+    unnoted = _record_of(scenario_dataset, result)
+    parsed_before = set(parsed)
+    parsed.clear()
+    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
+    loaded = record_path_calls(monkeypatch, loading, "read_footer")
+
+    record = _record_of(scenario_dataset, result)
+    parsed_after = set(parsed)
+
+    assert "reconcile_pending" not in unnoted.extra
+    assert record.extra["reconcile_pending"] == frozenset({"seq_a", "seq_b"})
+    assert _wire_of(scenario_dataset, result).notes == {"reconcile_pending": 2}
+    assert record.status == "complete"
+    assert loaded == [], "the note read the footer of an input"
+    assert parsed_after == parsed_before, "the note parsed another footer"
+
+
+def test_a_single_input_run_with_an_old_marker_is_not_noted_as_pending(
+    scenario_dataset: Dataset, scheme_seven: None
+) -> None:
+    del scheme_seven
+    run_id = _run(scenario_dataset)
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.identity_scheme == "6"
+    assert "reconcile_pending" not in record.extra
+
+
+def test_a_multi_input_run_is_noted_as_nothing_before_the_scheme_that_joins_summary_keys(
+    scenario_dataset: Dataset,
+) -> None:
+    result, _ = old_merged_run(scenario_dataset, unjoined="seq_b")
+
+    record = _record_of(scenario_dataset, result)
+
+    assert "reconcile_pending" not in record.extra
+    assert _wire_of(scenario_dataset, result).notes == {}

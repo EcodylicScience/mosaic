@@ -39,7 +39,13 @@ from mosaic.core.recording import OrderFacts
 from mosaic.core.scope import Scope
 
 
-from tests.helpers import MockDataset, add_track_sequences, make_dataset, track_table
+from tests.helpers import (
+    MockDataset,
+    add_track_sequences,
+    make_dataset,
+    record_path_calls,
+    track_table,
+)
 
 
 def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:
@@ -965,54 +971,97 @@ def test_an_entry_that_loses_its_rows_goes_to_on_rows_missing_and_iteration_goes
 
 
 def test_an_input_part_of_two_blank_halves_and_no_state_is_blank() -> None:
-    assert input_part("", "", "") == ""
+    assert input_part("", "", "", "") == ""
 
 
 def test_an_input_part_without_a_state_is_its_two_halves() -> None:
-    assert input_part("own", "inherited", "") == "own/inherited"
-    assert input_part("own", "", "") == "own/"
-    assert input_part("", "inherited", "") == "/inherited"
+    assert input_part("own", "inherited", "", "") == "own/inherited"
+    assert input_part("own", "", "", "") == "own/"
+    assert input_part("", "inherited", "", "") == "/inherited"
 
 
 def test_an_input_part_with_a_state_leads_with_it() -> None:
-    assert input_part("own", "inherited", "model=d1") == "model=d1|own/inherited"
-    assert input_part("", "", "d1") == "d1|/"
+    assert input_part("own", "inherited", "model=d1", "") == "model=d1|own/inherited"
+    assert input_part("", "", "d1", "") == "d1|/"
+
+
+def test_an_input_part_with_a_join_leads_with_the_keys() -> None:
+    assert input_part("own", "inherited", "", "arena") == "join=arena;own/inherited"
+    assert input_part("", "", "", "bin_end,bin_start") == "join=bin_end,bin_start;/"
+
+
+def test_an_input_part_of_a_join_alone_is_not_blank() -> None:
+    assert input_part("", "", "", "arena") == "join=arena;/"
+
+
+def test_an_input_part_with_a_join_and_a_state_leads_with_the_join() -> None:
+    part = input_part("own", "inherited", "model=d1", "arena")
+
+    assert part == "join=arena;model=d1|own/inherited"
+
+
+def test_an_input_part_with_a_blank_join_is_the_part_without_one() -> None:
+    assert input_part("own", "inherited", "model=d1", "") == "model=d1|own/inherited"
+    assert input_part("", "", "", "") == ""
+
+
+def test_a_part_with_a_join_in_a_nested_part_keeps_the_prefix_of_each_level() -> None:
+    inner = input_part("a", "", "", "arena")
+    outer = input_part("b", inner, "", "bin_end,bin_start")
+
+    assert inner == "join=arena;a/"
+    assert outer == "join=bin_end,bin_start;b/join=arena;a/"
+    assert outer != input_part("b", inner, "", "")
+    assert input_part("b", inner, "", "") != input_part("b", "a/", "", "arena")
 
 
 def test_parts_that_differ_in_where_the_state_begins_differ() -> None:
-    inherited_state = input_part("a", "b|c/d", "")
-    own_state = input_part("b", "c/d", "a")
+    inherited_state = input_part("a", "b|c/d", "", "")
+    own_state = input_part("b", "c/d", "a", "")
 
     assert inherited_state == "a/b|c/d"
     assert own_state == "a|b/c/d"
     assert inherited_state != own_state
-    assert input_part("a", "b/s", "") != input_part("a", "b", "s")
+    assert input_part("a", "b/s", "", "") != input_part("a", "b", "s", "")
+
+
+def test_parts_that_differ_in_where_the_join_begins_differ() -> None:
+    inherited_join = input_part("a", "join=k;b/", "", "")
+    own_join = input_part("a", "b/", "", "k")
+
+    assert inherited_join == "a/join=k;b/"
+    assert own_join == "join=k;a/b/"
+    assert inherited_join != own_join
 
 
 def test_every_input_part_over_a_small_alphabet_is_its_own_spelling() -> None:
-    """No two ``(own, inherited, state)`` triples give one part, at two depths."""
+    """No two ``(own, inherited, state, join)`` tuples give one part, at two depths."""
     halves = ("", "a", "b")
     states = ("", "s", "t")
+    joins = ("", "k", "k,l")
     inherited = {""}
     for _ in range(2):
         inherited |= {
-            input_part(own, deeper, state)
+            input_part(own, deeper, state, join)
             for own in halves
             for deeper in inherited
             for state in states
+            for join in joins
         }
-    spelled: dict[str, tuple[str, str, str]] = {}
+    spelled: dict[str, tuple[str, str, str, str]] = {}
     for own in halves:
         for deeper in sorted(inherited):
             for state in states:
-                part = input_part(own, deeper, state)
-                if not (own or deeper or state):
-                    continue
-                assert spelled.setdefault(part, (own, deeper, state)) == (
-                    own,
-                    deeper,
-                    state,
-                )
+                for join in joins:
+                    part = input_part(own, deeper, state, join)
+                    if not (own or deeper or state or join):
+                        continue
+                    assert spelled.setdefault(part, (own, deeper, state, join)) == (
+                        own,
+                        deeper,
+                        state,
+                        join,
+                    )
 
 
 def test_build_manifest_and_the_current_cells_give_equal_input_parts(
@@ -1031,7 +1080,7 @@ def test_build_manifest_and_the_current_cells_give_equal_input_parts(
         consumed_model_state="model=d1",
     )
     _, scope = build_manifest(ds, Inputs((Result(feature="up", run_id=upstream),)))
-    expected = input_part("own", "inherited", "model=d1")
+    expected = input_part("own", "inherited", "model=d1", "")
     assert scope.input_root_compositions == {entry: expected for entry in pairs}
     run_params = RunParams.model_validate(
         {"_inputs": [{"feature": "up", "run_id": upstream}]}
@@ -1042,8 +1091,91 @@ def test_build_manifest_and_the_current_cells_give_equal_input_parts(
         ds,
         "stateless",
         pairs,
-        consumed_input_composition=input_part("own", "inherited", ""),
+        consumed_input_composition=input_part("own", "inherited", "", ""),
     )
 
     assert drifted_entries(ds, "served", served, run_params) == ()
     assert drifted_entries(ds, "stateless", stateless, run_params) == tuple(pairs)
+
+
+def test_an_upstream_row_that_joined_a_summary_key_leads_its_part_with_it(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    pairs = [("g1", "s1"), ("g1", "s2")]
+    upstream = _setup_feature(
+        ds,
+        "up",
+        pairs,
+        consumed_roots="media_raw",
+        consumed_composition="own",
+        consumed_input_composition="inherited",
+        consumed_summary_join="arena",
+    )
+    _, scope = build_manifest(ds, Inputs((Result(feature="up", run_id=upstream),)))
+    expected = input_part("own", "inherited", "", "arena")
+    assert scope.input_root_compositions == {entry: expected for entry in pairs}
+    assert expected == "join=arena;own/inherited"
+    run_params = RunParams.model_validate(
+        {"_inputs": [{"feature": "up", "run_id": upstream}]}
+    )
+
+    served = _setup_feature(ds, "served", pairs, consumed_input_composition=expected)
+    before = _setup_feature(
+        ds,
+        "before",
+        pairs,
+        consumed_input_composition=input_part("own", "inherited", "", ""),
+    )
+
+    assert drifted_entries(ds, "served", served, run_params) == ()
+    assert drifted_entries(ds, "before", before, run_params) == tuple(pairs)
+
+
+# --- a row that records an earlier merge ------------------------------------------
+
+
+def _footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    from mosaic.core.pipeline import parquet_reader
+
+    return record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+
+def _reading(upstream: str) -> RunParams:
+    return RunParams.model_validate(
+        {"_inputs": [{"feature": "up", "run_id": upstream}]}
+    )
+
+
+def test_a_row_recorded_as_an_earlier_merge_reads_as_drifted_without_a_footer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    pairs = [("g1", "s1"), ("g1", "s2"), ("g1", "s3")]
+    upstream = _setup_feature(ds, "up", pairs)
+    run_params = _reading(upstream)
+    marked = _setup_feature(ds, "marked", pairs, consumed_summary_join="legacy:arena")
+    joined = _setup_feature(ds, "joined", pairs, consumed_summary_join="arena")
+    blank = _setup_feature(ds, "blank", pairs)
+    reads = _footer_reads(monkeypatch)
+
+    assert drifted_entries(ds, "marked", marked, run_params) == tuple(pairs)
+    assert drifted_entries(ds, "joined", joined, run_params) == ()
+    assert drifted_entries(ds, "blank", blank, run_params) == ()
+    assert reads == []
+
+
+def test_only_the_rows_recorded_as_an_earlier_merge_read_as_drifted(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    pairs = [("g1", "s1"), ("g1", "s2")]
+    upstream = _setup_feature(ds, "up", pairs)
+    run_params = _reading(upstream)
+    run_id = _setup_feature(ds, "mixed", pairs)
+    path = ds.get_root("features") / "mixed" / "index.csv"
+    stored = pd.read_csv(path, dtype=str, keep_default_na=False)
+    stored.loc[stored["sequence"] == "s2", "consumed_summary_join"] = "legacy:arena"
+    stored.to_csv(path, index=False)
+
+    assert drifted_entries(ds, "mixed", run_id, run_params) == (("g1", "s2"),)

@@ -125,7 +125,8 @@ class ResolvedInput:
         root_compositions: Per entry, this input's part of the downstream's
             ``consumed_input_composition`` (:func:`input_part` of each
             upstream row's ``consumed_composition``,
-            ``consumed_input_composition`` and ``consumed_model_state``), for
+            ``consumed_input_composition``, ``consumed_model_state`` and
+            ``consumed_summary_join``), for
             the feature resolver only.
         run_id: The upstream run a feature input resolved to, ``""`` for the
             tracks resolver and for a run that is not there.
@@ -1174,6 +1175,7 @@ def _resolve_feature(
             text_cell(row.get("consumed_composition")),
             text_cell(row.get("consumed_input_composition")),
             text_cell(row.get("consumed_model_state")),
+            text_cell(row.get("consumed_summary_join")),
         )
 
     if missing_all and not all_entries:

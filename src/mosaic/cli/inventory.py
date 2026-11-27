@@ -282,7 +282,7 @@ def _statuses(names: list[str] | None) -> list[ArtifactStatus] | None:
 
 
 def _print_notes(wire: InventoryWire) -> None:
-    """Print the frame-axis notes, the unavailable kinds and the scan's errors."""
+    """Print the per-run notes, the unavailable kinds and the scan's errors."""
     for artifact in wire.artifacts:
         # A frame-axis finding describes a table that is otherwise complete, so
         # it is a note beside the table and leaves the status as it is.
@@ -301,6 +301,13 @@ def _print_notes(wire: InventoryWire) -> None:
                 "short by no more than their tool is known to leave unread at the "
                 "end of a file, which a count cannot confirm; see mosaic "
                 "measure-tracks",
+                err=True,
+            )
+        pending = artifact.notes.get("reconcile_pending", 0)
+        if pending:
+            typer.echo(
+                f"note: {pending} entry(ies) of {artifact.run_id} were merged before "
+                "summary keys joined; run mosaic reconcile --apply",
                 err=True,
             )
     for missing in wire.unavailable_kinds:

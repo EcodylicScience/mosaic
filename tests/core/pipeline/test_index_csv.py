@@ -1045,6 +1045,89 @@ class TestUpdateCells:
         assert ",0123," in text and ",0.10," in text
 
 
+class TestUpdateEntryCells:
+    """Rewriting named cells of the rows of some entries of one run."""
+
+    def _entries(self, tmp_path: Path) -> IndexCSV[FeatureIndexRow]:
+        idx = feature_index(tmp_path / "index.csv")
+        idx.append(
+            [
+                _feature_row(tmp_path, run_id="0.1-r1", group="g", sequence="a"),
+                _feature_row(tmp_path, run_id="0.1-r1", group="g", sequence="b"),
+                _feature_row(tmp_path, run_id="0.1-r2", group="g", sequence="a"),
+            ]
+        )
+        return idx
+
+    def test_it_rewrites_the_cells_of_the_named_entries_of_one_run(
+        self, tmp_path: Path
+    ) -> None:
+        idx = self._entries(tmp_path)
+        lines_before = idx.path.read_text().splitlines()
+
+        matched = idx.update_entry_cells(
+            "0.1-r1",
+            {
+                ("g", "a"): {"consumed_summary_join": "legacy:arena"},
+                ("g", "b"): {"consumed_neighbors": "second"},
+            },
+        )
+
+        rows = idx.read().set_index(["run_id", "sequence"])
+        assert matched == 2
+        assert rows.loc[("0.1-r1", "a"), "consumed_summary_join"] == "legacy:arena"
+        assert rows.loc[("0.1-r1", "a"), "consumed_neighbors"] == ""
+        assert rows.loc[("0.1-r1", "b"), "consumed_neighbors"] == "second"
+        assert rows.loc[("0.1-r1", "b"), "consumed_summary_join"] == ""
+        lines_after = idx.path.read_text().splitlines()
+        assert lines_after[3] == lines_before[3], "another run's row is untouched"
+
+    def test_an_entry_the_run_holds_no_row_of_is_skipped(self, tmp_path: Path) -> None:
+        idx = self._entries(tmp_path)
+        before = idx.path.read_bytes()
+
+        matched = idx.update_entry_cells(
+            "0.1-r1", {("g", "missing"): {"consumed_summary_join": "x"}}
+        )
+
+        assert matched == 0
+        assert idx.path.read_bytes() == before
+
+    def test_an_unknown_column_is_refused_and_nothing_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        idx = self._entries(tmp_path)
+        before = idx.path.read_bytes()
+
+        with pytest.raises(ValueError, match="no_such_column"):
+            _ = idx.update_entry_cells("0.1-r1", {("g", "a"): {"no_such_column": "x"}})
+
+        assert idx.path.read_bytes() == before
+
+    def test_it_writes_the_file_once_under_the_index_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        idx = self._entries(tmp_path)
+        held: list[bool] = []
+        real_write = index_csv_module.atomic_write
+
+        def probing_write(path: Path, writer: Callable[[Path], None]) -> None:
+            held.append(index_locked_out(idx.path))
+            real_write(path, writer)
+
+        monkeypatch.setattr(index_csv_module, "atomic_write", probing_write)
+
+        _ = idx.update_entry_cells(
+            "0.1-r1",
+            {
+                ("g", "a"): {"consumed_summary_join": "x"},
+                ("g", "b"): {"consumed_summary_join": "y"},
+            },
+        )
+
+        assert held == [True]
+
+
 # --- the file of a finished row ---------------------------------------------
 
 FINISHED_RUN = "select-frames.0.1-0123456789"

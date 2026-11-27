@@ -357,7 +357,8 @@ class ArtifactWire(StrictModel):
         started_at: When it started, ISO 8601 UTC, ``""`` when unrecorded.
         finished_at: When it finished, ``""`` when unrecorded.
         notes: The size of each per-kind key set, such as
-            ``frame_axis_mismatch`` on a tracks variant.
+            ``frame_axis_mismatch`` on a tracks variant and ``reconcile_pending``
+            on a multi-input feature run merged before summary keys joined.
         ref: The address that names this artifact alone, for a listing's
             ``ref``: its kind and the parts of its key, joined by ``/``.
         detail: The artifact in depth, when the listing asked for one ``ref``.

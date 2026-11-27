@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
@@ -21,6 +22,9 @@ import pytest
 from pydantic import Field
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import identity_scheme as identity_scheme_module
+from mosaic.core.pipeline import parquet_reader
+from mosaic.core.pipeline import reconcile_features as reconcile_features_module
 from mosaic.core.pipeline._utils import LabelRevisionTerm, ResolvedScope
 from mosaic.core.pipeline.appearance import appearance_path, read_appearance
 from mosaic.core.pipeline.identity_scheme import (
@@ -35,6 +39,8 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline import reconcile as reconcile_module
+from mosaic.core.pipeline.reconcile import backup_index
 from mosaic.core.pipeline.reconcile_variants import TracksReconciler, relocated_cell
 from mosaic.core.pipeline.run import compute_run_id, run_feature
 from mosaic.core.pipeline.tracks_identity import (
@@ -50,6 +56,7 @@ from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
+    Result,
     TrackInput,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
@@ -58,11 +65,19 @@ from mosaic.core.scope import Scope
 
 from tests.helpers import (
     CONVERTED_ENTRIES,
+    JOIN_STEPS,
+    JoinConsumer,
+    JoinDownstream,
     add_feature_run,
     add_labels,
     add_tracks_variant,
     converted_source,
     copy_of,
+    old_merged_run,
+    record_path_calls,
+    result_run_root,
+    registered_features,
+    summary_cells,
 )
 
 
@@ -1002,3 +1017,343 @@ def test_a_foreign_path_in_a_reconcilable_index_still_skips_the_pruning(
     stderr = capsys.readouterr().err
     assert "rewrite_index_paths" in stderr
     assert "1 index hold" in stderr
+
+
+# --- Rows merged before summary keys joined -----------------------------------
+
+
+@pytest.fixture
+def summary_join_steps() -> Iterator[None]:
+    with registered_features(*JOIN_STEPS):
+        yield
+
+
+@pytest.fixture
+def scheme_seven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The release that joins summary keys, with the runs of this test minted before it."""
+    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
+    monkeypatch.setattr(reconcile_features_module, "FEATURE_IDENTITY_SCHEME", "7")
+
+
+def _no_summary_key(feature: object) -> bool:
+    _ = feature
+    return False
+
+
+def _consumer_finding(report: object, run_id: str) -> object:
+    """The finding of the run *run_id* in a features pass."""
+    assert hasattr(report, "findings")
+    found = [f for f in getattr(report, "findings") if f.old_address == run_id]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_reconcile_marks_the_rows_the_new_rule_merges_differently(
+    scenario_dataset: Dataset, summary_join_steps: None, scheme_seven: None
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+    assert result.run_id is not None
+    assert read_identity_scheme(result_run_root(ds, result)) == "6"
+
+    _ = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "legacy:arena", "seq_b": ""}
+    assert read_identity_scheme(result_run_root(ds, result)) == "7"
+
+
+def test_the_dry_run_counts_the_rows_it_would_mark_and_writes_nothing(
+    scenario_dataset: Dataset, summary_join_steps: None, scheme_seven: None
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+    assert result.run_id is not None
+    index = feature_index_path(ds, result.feature)
+    before = index.read_bytes()
+
+    report = ds.reconcile(only=("features",))
+
+    finding = _consumer_finding(report, result.run_id)
+    assert "would mark 1 entry(ies)" in getattr(finding, "reason")
+    assert index.read_bytes() == before
+    assert read_identity_scheme(result_run_root(ds, result)) == "6"
+    assert not list(index.parent.glob("*.backup"))
+
+
+def test_the_next_run_recomputes_the_marked_entries_alone(
+    scenario_dataset: Dataset, summary_join_steps: None, scheme_seven: None
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, inputs = old_merged_run(ds, unjoined="seq_b")
+    _ = ds.reconcile(apply=True, only=("features",))
+    consumer = JoinConsumer(inputs)
+
+    again = run_feature(ds, consumer)
+
+    assert again.run_id == result.run_id
+    assert consumer.apply_calls == 1
+    assert summary_cells(ds, again) == {"seq_a": "arena", "seq_b": ""}
+
+
+def test_a_row_already_marked_keeps_its_mark(
+    scenario_dataset: Dataset, summary_join_steps: None, scheme_seven: None
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+    assert result.run_id is not None
+    _ = feature_index(feature_index_path(ds, result.feature)).update_entry_cells(
+        result.run_id, {("", "seq_a"): {"consumed_summary_join": "legacy:bin_end"}}
+    )
+
+    _ = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "legacy:bin_end", "seq_b": ""}
+
+
+def test_a_run_whose_declarations_admit_no_shared_summary_key_is_not_read(
+    scenario_dataset: Dataset,
+    summary_join_steps: None,
+    scheme_seven: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mosaic.core.pipeline.graph import columns as graph_columns
+
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+    monkeypatch.setattr(graph_columns, "may_share_summary_key", _no_summary_key)
+    footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    _ = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "", "seq_b": ""}
+    assert read_identity_scheme(result_run_root(ds, result)) == "7"
+    assert [path for path in footers if path.name.startswith("seq_")] == []
+
+
+def test_a_crash_after_the_marks_and_before_the_marker_leaves_the_run_selected(
+    scenario_dataset: Dataset,
+    summary_join_steps: None,
+    scheme_seven: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+    root = result_run_root(ds, result)
+    real = reconcile_features_module.write_identity_scheme
+
+    def dies_on_the_consumer(run_root: Path, scheme: str) -> None:
+        if run_root == root:
+            msg = "killed before the marker"
+            raise RuntimeError(msg)
+        real(run_root, scheme)
+
+    with monkeypatch.context() as crashing:
+        crashing.setattr(
+            reconcile_features_module, "write_identity_scheme", dies_on_the_consumer
+        )
+        with pytest.raises(RuntimeError, match="killed before the marker"):
+            _ = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "legacy:arena", "seq_b": ""}
+    assert read_identity_scheme(root) == "6"
+
+    _ = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "legacy:arena", "seq_b": ""}
+    assert read_identity_scheme(root) == "7"
+
+
+def test_without_the_scheme_reconcile_marks_nothing(
+    scenario_dataset: Dataset, summary_join_steps: None
+) -> None:
+    del summary_join_steps
+    ds = scenario_dataset
+    result, _ = old_merged_run(ds, unjoined="seq_b")
+
+    report = ds.reconcile(apply=True, only=("features",))
+
+    assert summary_cells(ds, result) == {"seq_a": "", "seq_b": ""}
+    assert read_identity_scheme(result_run_root(ds, result)) == "6"
+    assert all(f.verdict == "ok" for f in report.findings)
+
+
+class _UnreadableInputs(RuntimeError):
+    """An input of the run is gone, as ``build_manifest`` reports it."""
+
+
+def _manifest_of_a_missing_input(*args: object, **kwargs: object) -> object:
+    _ = args, kwargs
+    raise _UnreadableInputs("an upstream run was deleted by hand")
+
+
+def _chain_over_a_shifted_variant(
+    ds: Dataset,
+) -> tuple[Result, JoinConsumer.Inputs, Result]:
+    """Runs of the join steps over a variant that sits at a wrong digest.
+
+    Every run moves with the variant, so each is relocatable. Returns the run of
+    the consumer, its inputs (the runs of alpha and beta) and the run that reads
+    the consumer.
+    """
+    true_id = tracks_run_id(
+        _TRACKS_OP, _TRACKS_VERSION, convert_variant_payload(_TRACKS_PARAMS)
+    )
+    prefix, digest = true_id.rsplit("-", 1)
+    shifted = f"{prefix}-{('1' if digest[-1] == '0' else '0')}{digest[1:]}"
+    _ = _make_tracks_variant(ds, run_id=shifted)
+    _set_variant_scheme(ds.get_root("tracks") / shifted, "1")
+    consumer, inputs = old_merged_run(ds, unjoined="seq_b")
+    reader = run_feature(ds, JoinDownstream(JoinDownstream.Inputs((consumer,))))
+    return consumer, inputs, reader
+
+
+def _feature_verdicts(report: object) -> dict[str, str]:
+    """The verdict of each feature run in *report*, by the address it had."""
+    assert hasattr(report, "findings")
+    return {
+        finding.old_address: finding.verdict
+        for finding in getattr(report, "findings")
+        if finding.key == "features"
+    }
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+def test_a_run_whose_inputs_cannot_be_read_is_blocked_with_the_runs_that_read_it(
+    scenario_dataset: Dataset,
+    summary_join_steps: None,
+    scheme_seven: None,
+    monkeypatch: pytest.MonkeyPatch,
+    apply: bool,
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    consumer, _, reader = _chain_over_a_shifted_variant(ds)
+    monkeypatch.setattr(
+        reconcile_features_module, "input_manifest", _manifest_of_a_missing_input
+    )
+
+    report = ds.reconcile(apply=apply, only=("tracks", "features"))
+
+    verdicts = _feature_verdicts(report)
+    assert consumer.run_id is not None and reader.run_id is not None
+    assert verdicts[consumer.run_id] == "unresolvable_pre_provenance"
+    assert verdicts[reader.run_id] == "identity_shift_recompute"
+    assert any("deleted by hand" in error for error in report.errors)
+    assert result_run_root(ds, consumer).exists()
+    assert result_run_root(ds, reader).exists()
+
+
+def _named_runs_that_are_missing(ds: Dataset, run_root: Path) -> list[str]:
+    """The upstream runs that the ``params.json`` of *run_root* names and no directory holds."""
+    recorded = json.loads((run_root / "params.json").read_text())
+    named = [
+        (str(item["feature"]), str(item["run_id"]))
+        for item in recorded["_resolved"]
+        if item.get("feature") and item.get("run_id")
+    ]
+    return [
+        run_id
+        for feature, run_id in named
+        if not feature_run_root(ds, feature, run_id).exists()
+    ]
+
+
+def _tracks_variants_named_and_missing(ds: Dataset, run_root: Path) -> list[str]:
+    """The tracks variants that the ``params.json`` of *run_root* names and no index row holds."""
+    recorded = json.loads((run_root / "params.json").read_text())
+    named = [
+        str(item["run_id"])
+        for item in recorded["_resolved"]
+        if item.get("where") == "inputs[tracks]" and item.get("run_id")
+    ]
+    held = {
+        str(run_id) for run_id in tracks_index(tracks_index_path(ds)).read()["run_id"]
+    }
+    return [variant for variant in named if variant not in held]
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+def test_a_variant_whose_new_address_is_taken_is_blocked_with_the_runs_that_read_it(
+    scenario_dataset: Dataset, registered_feature: type[Feature], apply: bool
+) -> None:
+    del registered_feature
+    ds = scenario_dataset
+    true_id = tracks_run_id(
+        _TRACKS_OP, _TRACKS_VERSION, convert_variant_payload(_TRACKS_PARAMS)
+    )
+    prefix, digest = true_id.rsplit("-", 1)
+    shifted = f"{prefix}-{('1' if digest[-1] == '0' else '0')}{digest[1:]}"
+    _ = _make_tracks_variant(ds, run_id=shifted)
+    _set_variant_scheme(ds.get_root("tracks") / shifted, "1")
+    run_id = run_feature(ds, _ReconcileFeature()).run_id
+    assert run_id is not None
+    (ds.get_root("tracks") / true_id).mkdir()
+
+    report = ds.reconcile(apply=apply, only=("tracks", "features"))
+
+    verdicts = {f.old_address: f.verdict for f in report.findings}
+    assert verdicts[shifted] == "identity_shift_recompute"
+    assert verdicts[run_id] == "identity_shift_recompute"
+    assert any("target directory already exists" in e for e in report.errors)
+    assert (ds.get_root("tracks") / shifted).is_dir()
+    assert _tracks_variants_named_and_missing(ds, _run_root(ds, run_id)) == []
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+def test_a_run_whose_new_address_is_taken_is_blocked_with_the_runs_that_read_it(
+    scenario_dataset: Dataset,
+    summary_join_steps: None,
+    scheme_seven: None,
+    apply: bool,
+) -> None:
+    del summary_join_steps, scheme_seven
+    ds = scenario_dataset
+    consumer, inputs, reader = _chain_over_a_shifted_variant(ds)
+    alpha = inputs.root[0]
+    assert isinstance(alpha, Result) and alpha.run_id is not None
+    preview = ds.reconcile(only=("tracks", "features"))
+    [moved] = [f for f in preview.findings if f.old_address == alpha.run_id]
+    assert moved.verdict == "identity_shift_relocatable"
+    feature_run_root(ds, alpha.feature, moved.new_address).mkdir()
+
+    report = ds.reconcile(apply=apply, only=("tracks", "features"))
+
+    verdicts = _feature_verdicts(report)
+    assert consumer.run_id is not None and reader.run_id is not None
+    assert verdicts[alpha.run_id] == "identity_shift_recompute"
+    assert verdicts[consumer.run_id] == "identity_shift_recompute"
+    assert verdicts[reader.run_id] == "identity_shift_recompute"
+    for result in (alpha, consumer, reader):
+        assert result_run_root(ds, result).exists()
+    for result in (consumer, reader):
+        assert _named_runs_that_are_missing(ds, result_run_root(ds, result)) == []
+
+
+class _NoonClock:
+    """A clock that reads the same second every time."""
+
+    @staticmethod
+    def now(tz: timezone) -> datetime:
+        return datetime(2026, 11, 27, 12, 0, 0, tzinfo=tz)
+
+
+def test_a_backup_made_in_the_same_second_keeps_the_one_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reconcile_module, "datetime", _NoonClock)
+    index = tmp_path / "index.csv"
+    _ = index.write_text("before")
+    first = backup_index(index)
+    _ = index.write_text("after")
+
+    second = backup_index(index)
+
+    assert first != second
+    assert first.read_text() == "before"
+    assert second.read_text() == "after"

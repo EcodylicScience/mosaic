@@ -117,6 +117,35 @@ resolved reference replacing a literal, a different digest width. Never for a
 feature's own ``version``, which ``run_id`` already carries.
 """
 
+SUMMARY_JOIN_SCHEME: Final = "7"
+"""The scheme whose release joins the summary keys that two inputs share.
+
+A run marked below it merged such inputs under the earlier rule, which kept a
+shared ``arena``, ``bin_start`` or ``bin_end`` as two columns. ``mosaic reconcile``
+marks the rows of such a run and the inventory notes it as pending, once the
+toolkit's :data:`FEATURE_IDENTITY_SCHEME` reaches this one.
+"""
+
+
+def _scheme_number(scheme: str) -> int:
+    """The number of a scheme, ``0`` for a blank or unreadable one."""
+    return int(scheme) if scheme.isdigit() else 0
+
+
+def summary_join_unmarked(marker: str) -> bool:
+    """Whether a run marked *marker* may hold rows merged before summary keys joined.
+
+    True when the toolkit's :data:`FEATURE_IDENTITY_SCHEME` has reached
+    :data:`SUMMARY_JOIN_SCHEME` and *marker* is below it, a blank one counting as
+    ``0``. Before that release nothing is old, and every marker a run writes
+    would read as pending.
+    """
+    joined = _scheme_number(SUMMARY_JOIN_SCHEME)
+    return _scheme_number(FEATURE_IDENTITY_SCHEME) >= joined and (
+        _scheme_number(marker) < joined
+    )
+
+
 # Recorded alongside the scheme so a later repair pass can read what produced a
 # directory without having to know what scheme "1" meant at the time.
 _ALGORITHM: Final = "sha1"

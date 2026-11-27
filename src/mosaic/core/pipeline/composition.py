@@ -320,29 +320,39 @@ def composition_drift(
     )
 
 
-def input_part(own: str, inherited: str, state: str) -> str:
+def input_part(own: str, inherited: str, state: str, summary_join: str) -> str:
     """One feature input's part of a downstream's ``consumed_input_composition``.
 
     The part is ``f"{own}/{inherited}"``: *own* is the upstream row's
     ``consumed_composition``, the composition of the roots it declares, and
     *inherited* its ``consumed_input_composition``, which carries what the
-    upstream's own feature inputs recorded. A part with both halves and *state*
-    blank is ``""``. A non-blank *state*, the upstream row's
+    upstream's own feature inputs recorded. A part with both halves, *state*
+    and *summary_join* blank is ``""``. A non-blank *state*, the upstream row's
     ``consumed_model_state``, leads the part as ``f"{state}|{own}/{inherited}"``.
     A fit written again therefore moves the part of every row that reads it.
+    A non-blank *summary_join*, the upstream row's ``consumed_summary_join``,
+    leads the part and its state as
+    ``f"join={summary_join};{state}|{own}/{inherited}"``, and the part is then
+    never blank. An upstream entry merged under another rule therefore moves
+    the part of every row that reads it, and a blank join adds nothing.
 
-    The spelling is injective. *own* and *state* hold neither ``/`` nor ``|``.
-    A part whose text before its first ``/`` holds a ``|`` carries a state, and
-    one whose text before its first ``/`` holds none does not, whatever ``/``,
-    ``+`` or ``|`` *inherited* holds from deeper parts.
+    The spelling is injective. *own*, *state* and *summary_join* hold none of
+    ``/``, ``|`` and ``;``: they are digests, ``root=digest`` and
+    ``field=digest`` pairs joined with ``,``, and key names joined with ``,``. A
+    part's text before its first ``/`` is therefore its own prefix, whatever
+    ``/``, ``+``, ``|`` or ``;`` *inherited* holds from deeper parts. That
+    prefix carries a join exactly when it starts with ``join=``, which ends at
+    its first ``;``, and a state exactly when the rest of it holds a ``|``.
 
     Args:
         own: The upstream row's ``consumed_composition``.
         inherited: The upstream row's ``consumed_input_composition``.
         state: The upstream row's ``consumed_model_state``.
+        summary_join: The upstream row's ``consumed_summary_join``.
     """
-    body = f"{own}/{inherited}" if own or inherited or state else ""
-    return f"{state}|{body}" if state else body
+    body = f"{own}/{inherited}" if own or inherited or state or summary_join else ""
+    stated = f"{state}|{body}" if state else body
+    return f"join={summary_join};{stated}" if summary_join else stated
 
 
 def join_input_cells(per_input: Sequence[Mapping[Entry, str]]) -> dict[Entry, str]:

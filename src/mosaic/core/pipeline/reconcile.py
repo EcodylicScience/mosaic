@@ -407,9 +407,22 @@ def backup_index(index_path: Path) -> Path:
     re-address rewrites run-id and path cells, so the copy is the only record of
     the index in its pre-move shape. The ``.backup`` suffix is not an index or
     media extension, so a backup is never picked up by a later scan.
+
+    The name is unique: a backup that a second call makes in the same second takes
+    a numbered suffix and leaves the first as it is, so the earliest copy of an
+    index that several writes of one pass touch is kept.
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = index_path.with_name(f"{index_path.name}.{stamp}.backup")
+    attempt = 0
+    while True:
+        suffix = stamp if attempt == 0 else f"{stamp}-{attempt}"
+        backup = index_path.with_name(f"{index_path.name}.{suffix}.backup")
+        try:
+            backup.touch(exist_ok=False)
+        except FileExistsError:
+            attempt += 1
+            continue
+        break
     _ = shutil.copy2(index_path, backup)
     return backup
 

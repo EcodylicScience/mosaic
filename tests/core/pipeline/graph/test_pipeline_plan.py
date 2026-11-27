@@ -72,7 +72,12 @@ from mosaic.core.pipeline.fit_scope import read_fit_scope
 from mosaic.core.pipeline.graph.resolve import build_feature
 from mosaic.core.pipeline.graph.plan import ConversionAdds, GrowthNote
 from mosaic.core.pipeline.inventory.cache import InventoryCache
-from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline import parquet_reader
+from mosaic.core.pipeline.index import (
+    feature_index,
+    feature_index_path,
+    feature_run_root,
+)
 from mosaic.core.pipeline.inventory.wire import RefitWire
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
@@ -108,6 +113,7 @@ from tests.helpers import (
     finish_media_variant,
     install_fake_trex,
     make_dataset,
+    record_path_calls,
     write_trex_npz,
     run_speed,
     scope_over,
@@ -731,6 +737,32 @@ def test_drift_outside_the_target_leaves_the_step_complete(tmp_path: Path) -> No
     assert speed.is_complete
     assert plan.is_complete
     assert speed.spec.entries.is_unset
+
+
+def test_a_row_recorded_as_an_earlier_merge_is_drift_work_for_its_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``legacy:`` cell is drift of every entry it marks, read from the index alone."""
+    dataset = make_dataset(tmp_path / "converted")
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(SPEED_RECIPE)
+    _ = run_pipeline(dataset, recipe)
+    footers = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+    speed = plan_pipeline(dataset, recipe).step("speed")
+    unmarked = sorted(footers)
+    assert speed.status == "complete"
+    assert speed.run_id is not None
+    _ = feature_index(feature_index_path(dataset, speed.storage_name)).update_cells(
+        speed.run_id, {"consumed_summary_join": "legacy:arena"}
+    )
+    footers.clear()
+
+    marked = plan_pipeline(dataset, recipe).step("speed")
+
+    assert marked.status == "complete-but-drifted"
+    assert marked.drift == (("", "seq_a"), ("", "seq_b"))
+    assert marked.drift_work == (("", "seq_a"), ("", "seq_b"))
+    assert sorted(footers) == unmarked
 
 
 def test_a_scope_dependent_step_is_asked_for_all_of_its_scope(

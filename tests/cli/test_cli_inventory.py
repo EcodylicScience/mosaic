@@ -6,11 +6,13 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import identity_scheme as identity_scheme_module
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.inventory import ARTIFACT_KINDS, InventoryWire
 from mosaic.core.selections import save_selection
@@ -19,6 +21,7 @@ from tests.helpers import (
     invoke_ok,
     kmeans_fit,
     make_dataset,
+    old_merged_run,
     reconvert_entry,
     run_step,
 )
@@ -311,3 +314,27 @@ def test_an_unknown_status_is_refused(scenario_dataset: Dataset) -> None:
 
     assert result.exit_code != 0
     assert "unknown status" in result.output
+
+
+def test_a_run_merged_before_summary_keys_joined_is_noted_as_reconcile_pending(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(identity_scheme_module, "FEATURE_IDENTITY_SCHEME", "7")
+    result, _ = old_merged_run(scenario_dataset, unjoined="seq_b")
+
+    listed = runner.invoke(
+        app,
+        [
+            "inventory",
+            "--kind",
+            "feature",
+            "--manifest",
+            str(scenario_dataset.manifest_path),
+        ],
+    )
+
+    assert listed.exit_code == 0
+    assert (
+        f"note: 2 entry(ies) of {result.run_id} were merged before summary keys "
+        "joined; run mosaic reconcile --apply"
+    ) in listed.output

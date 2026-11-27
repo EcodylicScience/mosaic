@@ -362,7 +362,7 @@ def _fit_input_record(
     )
 
 
-def _input_manifest(
+def input_manifest(
     ds: Dataset,
     feature: Feature,
     selector: Scope,
@@ -2944,7 +2944,7 @@ def _run_feature_impl(
     fit_states_now = _current_fit_states(ds, feature)
     _refuse_inputs_without_columns(ds, feature)
 
-    manifest, resolved = _input_manifest(
+    manifest, resolved = input_manifest(
         ds, feature, selector, tracks_run_id=tracks_run_id
     )
 
@@ -3424,7 +3424,7 @@ def _run_feature_impl(
                     fit_manifest, fit_filters = manifest, filter_factory
                     training = reported_fit_entries(feature) if fit_again else None
                     if training is not None:
-                        fit_manifest, fit_resolved = _input_manifest(
+                        fit_manifest, fit_resolved = input_manifest(
                             ds,
                             feature,
                             Scope(entries=list(training)),

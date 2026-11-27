@@ -248,6 +248,16 @@ class _VariantReconciler:
         verdict, address, reason = _classify_variant(
             site.run_id, new_run_id, sidecar.identity_scheme, self.current_scheme
         )
+        if verdict == "identity_shift_relocatable" and (site.parent / address).exists():
+            # Decided here, where the move is recorded, so that a variant that
+            # cannot move is blocked like any other and no run reads an address
+            # that has no directory. A dry run reports the same.
+            reason = (
+                f"cannot re-address {site.run_id} -> {address}; "
+                "target directory already exists"
+            )
+            builder.error(f"{self.key}: {reason}")
+            verdict = "identity_shift_recompute"
         if verdict == "identity_shift_relocatable":
             state.record_move(self.key, site.run_id, address)
         elif verdict in ("identity_shift_recompute", "unresolvable_pre_provenance"):
@@ -316,12 +326,6 @@ class _VariantReconciler:
         ds = self._ds
         old_root = site.variant_root.resolve()
         new_root = site.parent / finding.new_address
-        if new_root.exists():
-            builder.error(
-                f"{self.key}: cannot re-address {site.run_id} -> "
-                f"{finding.new_address}; target directory already exists"
-            )
-            return finding.with_action("none")
         builder.backed_up(backup_index(site.index_path))
         # Directory move first, index rewrite second: an atomic index write renames
         # a new inode over the path, so the row rewrite must be the only write held

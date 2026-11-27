@@ -142,9 +142,10 @@ class ResolvedScope:
     input read: each input's part joined with ``+`` in input order, ``""`` when
     every part is blank. A feature input's part is its upstream row's
     ``consumed_composition`` and ``consumed_input_composition`` as
-    ``own/inherited``, led by its ``consumed_model_state`` as
-    ``state|own/inherited`` when that is not blank, and a ``tracks`` input's part
-    is blank. ``None`` when no input is a feature. Never hashed."""
+    ``own/inherited``, led by ``join=<keys>;`` (its ``consumed_summary_join``) and
+    then ``state|`` (its ``consumed_model_state``) when each is not blank:
+    ``join=<keys>;state|own/inherited``. A ``tracks`` input's part is blank.
+    ``None`` when no input is a feature. Never hashed."""
     feature_inputs: tuple[tuple[str, str], ...] = ()
     """The ``(storage, run_id)`` of each feature input, in input order. Never
     hashed."""

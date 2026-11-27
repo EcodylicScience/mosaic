@@ -193,11 +193,13 @@ class FeatureIndexRow(RunIndexRowBase):
     consumed_tracks_composition: str = ""
     # What a run's feature inputs recorded: per input in input order, joined with
     # ``+``, the upstream row's ``consumed_composition`` and
-    # ``consumed_input_composition`` as ``own/inherited``, led by its
-    # ``consumed_model_state`` as ``state|own/inherited`` when that is not blank
-    # (``input_part`` in ``composition.py``). A ``tracks`` input's part is blank,
-    # and so is the cell of a run whose every part is blank. Kept apart from
-    # ``consumed_composition``, which holds this run's own declared roots.
+    # ``consumed_input_composition`` as ``own/inherited``, led by ``join=<keys>;``
+    # (its ``consumed_summary_join``) and then ``state|`` (its
+    # ``consumed_model_state``) when each is not blank:
+    # ``join=<keys>;state|own/inherited`` (``input_part`` in ``composition.py``).
+    # A ``tracks`` input's part is blank, and so is the cell of a run whose every
+    # part is blank. Kept apart from ``consumed_composition``, which holds this
+    # run's own declared roots.
     consumed_input_composition: str = ""
     # The neighbors an overlapped run read for this entry, each by entry key with
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
@@ -866,8 +868,15 @@ def drifted_entries(
     - its upstreams' roots and fit states: the row's
       ``consumed_input_composition`` against its feature inputs' parts
       (:func:`~.composition.input_part` of each upstream row's declared roots,
-      inputs cell and ``consumed_model_state``), joined the same way, which
-      recomputes an entry after a fit its upstream read was fitted again;
+      inputs cell, ``consumed_model_state`` and ``consumed_summary_join``),
+      joined the same way, which
+      recomputes an entry after a fit its upstream read was fitted again, and
+      after its upstream entry was merged under another rule;
+    - its merge: a row whose ``consumed_summary_join`` is
+      :data:`LEGACY_SUMMARY_JOIN` followed by keys, which ``mosaic reconcile``
+      writes on a row that an earlier rule merged differently. It differs from
+      every cell a run writes, and it is read from the row alone, with no input
+      footer;
     - its fits: the row's ``consumed_model_state`` against the cell of
       :func:`fit_state_cell` over the digest each fit reference of the run
       records now (:meth:`DriftReads.fit_state`), and the run's own digest
@@ -940,12 +949,14 @@ def drifted_entries(
         roots, was = recorded_roots.get(entry, (declared, ""))
         cells = cells_now[entry]
         channels = [(was, cells.roots) if roots else ("", "")]
+        earlier_merge = False
         if run_params is not None:
             read = recorded_reads.get(entry, RecordedTracksReads())
             channels.append((read.composition, cells.tracks))
             channels.append((read.inputs, cells.inputs))
             channels.append((read.model_state, fits_now))
-        if any(
+            earlier_merge = read.summary_join.startswith(LEGACY_SUMMARY_JOIN)
+        if earlier_merge or any(
             cached_entry_disposition(recorded, current) == "recompute"
             for recorded, current in channels
         ):
@@ -1087,6 +1098,7 @@ def _current_input_cells(
                     upstream_roots.get(entry, ((), ""))[1],
                     read.inputs,
                     read.model_state,
+                    read.summary_join,
                 )
                 for entry, read in upstream_reads.items()
             }

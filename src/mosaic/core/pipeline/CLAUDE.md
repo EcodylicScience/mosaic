@@ -222,9 +222,10 @@ are in `graph/CLAUDE.md`.
 - A run with a feature input also compares `consumed_input_composition`
   (`ResolvedScope.input_root_compositions`): its upstreams' declared-root
   compositions and fit states, each upstream row's `consumed_composition` and
-  `consumed_input_composition` as `own/inherited`, led by its
-  `consumed_model_state` as `state|own/inherited` when that is not blank
-  (`input_part`, `composition.py`), joined in input order by `join_input_cells`.
+  `consumed_input_composition` as `own/inherited`, led by `join=<keys>;` (its
+  `consumed_summary_join`) and then `state|` (its `consumed_model_state`) when each is
+  not blank: `join=<keys>;state|own/inherited` (`input_part`, `composition.py`),
+  joined in input order by `join_input_cells`.
   An entry recomputes after its upstream entry recomputes for a moved declared
   root or a fit written again, at any depth of a chain. Both sides blank is
   absence, served without a warning. The blind tracks warning covers a
@@ -298,11 +299,13 @@ are in `graph/CLAUDE.md`.
   through `fit_state_root`. A digest is blank under an unreachable link, for an
   unreadable `fit_scope.json`, and for a pattern that matches more than one file of the
   fit's root (`AmbiguousArtifactFile`), since a status read does not raise. One known
-  side is drift, and the plan names every entry `run_feature` recomputes. A run whose
-  fit drifted (`fit_drift`) reports every entry of its rows as drifted, because a refit
-  recomputes every entry it is asked for. The inventory status, a plan's drift work and
-  `Pipeline.run` then treat the run as due without a second rule. The neighbors cell
-  stays `run_feature`'s (`TestDriftedEntries` in
+  side is drift, and the plan names every entry `run_feature` recomputes. A row whose
+  `consumed_summary_join` starts with `legacy:` (`LEGACY_SUMMARY_JOIN`) is drift of its
+  entry, read from the row with no footer. A run whose fit drifted (`fit_drift`)
+  reports every entry of its rows as drifted, because a refit recomputes every entry it
+  is asked for. The inventory status, a plan's drift work and `Pipeline.run` then treat
+  the run as due without a second rule. The neighbors cell stays `run_feature`'s
+  (`TestDriftedEntries` in
   `tests/core/pipeline/test_tracks_source_staleness.py`). An entry the inputs no longer
   resolve, such as one dropped from the tracks index, is not drift: every input holds it
   for a run that intersects its inputs, and any input for a stacked run, as

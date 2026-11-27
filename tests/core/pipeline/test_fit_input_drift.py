@@ -173,13 +173,13 @@ def test_a_feature_input_records_the_state_of_the_fit_its_upstream_read(
 
     first, second, _ = _below(tracked, chain, capsys)
 
-    part = input_part("", "", digest)
+    part = input_part("", "", digest, "")
     assert part == f"{digest}|/"
     assert index_cells(tracked, first, "consumed_input_composition") == {
         "seq_a": part,
         "seq_b": part,
     }
-    deeper = input_part("", part, "")
+    deeper = input_part("", part, "", "")
     assert index_cells(tracked, second, "consumed_input_composition") == {
         "seq_a": deeper,
         "seq_b": deeper,
@@ -217,7 +217,7 @@ def test_a_fit_written_again_recomputes_every_row_below_it_in_turn(
     err = capsys.readouterr().err
     assert refusals(err, _BelowThat.name).keys() == set(SEQUENCES)
     assert drifted(tracked, second) == ()
-    part = input_part("", "", digest)
+    part = input_part("", "", digest, "")
     assert index_cells(tracked, first, "consumed_input_composition") == {
         "seq_a": part,
         "seq_b": part,

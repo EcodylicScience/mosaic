@@ -21,7 +21,10 @@ from typing import TYPE_CHECKING
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.dataset_indexes import feature_storages, label_kinds
-from mosaic.core.pipeline.identity_scheme import read_identity_scheme
+from mosaic.core.pipeline.identity_scheme import (
+    read_identity_scheme,
+    summary_join_unmarked,
+)
 from mosaic.core.pipeline.index import (
     DriftReads,
     FitDrift,
@@ -457,6 +460,23 @@ def _drifted_fit(
     return drift if drift is not None and drift.drifted else None
 
 
+def _reconcile_pending(
+    params: RunParams | None, scheme: str, rows: frozenset[Entry]
+) -> dict[str, frozenset[str]]:
+    """``extra["reconcile_pending"]``, the rows of a run merged before summary keys joined.
+
+    A run of more than one input whose marker predates the release that joins
+    summary keys may hold such rows. The answer comes from the marker and the
+    recorded ``_inputs`` alone, since reading an input footer or a declaration
+    would load the feature library, which the inventory does not import. It
+    therefore over-reports a run whose inputs cannot share a summary key, until
+    ``mosaic reconcile`` raises its marker. Empty for any other run.
+    """
+    if params is None or len(params.inputs) < 2 or not summary_join_unmarked(scheme):
+        return {}
+    return {"reconcile_pending": frozenset(make_entry_key(*entry) for entry in rows)}
+
+
 def _feature_runs(
     ds: Dataset,
     reader: IndexReader,
@@ -485,6 +505,7 @@ def _feature_runs(
             )
             started, finished_at, finished = finish_state(run_rows)
             refit = _drifted_fit(ds, name, run_id, read.params, drift_reads)
+            scheme = read_identity_scheme(run_root)
             drift = drifted_entries(
                 ds,
                 name,
@@ -509,12 +530,13 @@ def _feature_runs(
                     orphan_files=files - rows,
                     drift=drift,
                     refit=refit,
-                    identity_scheme=read_identity_scheme(run_root),
+                    identity_scheme=scheme,
                     started_at=started,
                     finished_at=finished_at,
                     upstreams=tuple(
                         sorted(read.params.consumed_run_ids()) if read.params else ()
                     ),
+                    extra=_reconcile_pending(read.params, scheme, rows),
                 )
             )
     return records

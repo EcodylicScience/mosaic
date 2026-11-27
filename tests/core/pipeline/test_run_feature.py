@@ -49,6 +49,7 @@ from tests.helpers import (
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
+    drifted,
     make_dataset,
     result_run_root,
     set_tracks_cell,
@@ -1773,6 +1774,88 @@ def test_a_row_recorded_with_other_keys_recomputes(tmp_path: Path) -> None:
 
     assert consumer.apply_calls == 2
     assert _summary_cells(ds, second) == {"s1": "arena", "s2": "arena"}
+
+
+class _ReadsTotal(_JoinsTwo):
+    """Reads the output of the consumer of two inputs, and doubles its total."""
+
+    name = "test-reads-total"
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"frame": df["frame"], "id": df["id"], "double": df["total"] * 2}
+        )
+
+
+def _reading_total(upstream: Result) -> _ReadsTotal:
+    return _ReadsTotal(_JoinsTwo.Inputs((upstream,)))
+
+
+def _input_cells(ds: Dataset, result: Result) -> dict[str, str]:
+    index = feature_index(feature_index_path(ds, result.feature)).read(
+        run_id=result.run_id
+    )
+    return dict(
+        zip(index["sequence"], index["consumed_input_composition"], strict=True)
+    )
+
+
+def test_a_downstream_entry_recomputes_once_after_its_upstream_joins_under_the_new_rule(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    upstream = run_feature(ds, _joining(ds, arena=True))
+    downstream = run_feature(ds, _reading_total(upstream))
+    assert _input_cells(ds, downstream) == {
+        "s1": "join=arena;/",
+        "s2": "join=arena;/",
+    }
+    assert downstream.run_id is not None
+    _blank_the_cells(ds, upstream)
+    _ = feature_index(feature_index_path(ds, downstream.feature)).update_cells(
+        downstream.run_id, {"consumed_input_composition": ""}
+    )
+    assert drifted(ds, downstream) == ()
+    _ = capsys.readouterr()
+
+    _ = run_feature(ds, _joining(ds, arena=True))
+
+    assert _summary_cells(ds, upstream) == {"s1": "arena", "s2": "arena"}
+    assert drifted(ds, downstream) == (("g", "s1"), ("g", "s2"))
+
+    recomputing = _reading_total(upstream)
+    second = run_feature(ds, recomputing)
+
+    assert second.run_id == downstream.run_id
+    assert recomputing.apply_calls == 2
+    assert _input_cells(ds, second) == {"s1": "join=arena;/", "s2": "join=arena;/"}
+    assert drifted(ds, downstream) == ()
+
+    serving = _reading_total(upstream)
+    third = run_feature(ds, serving)
+
+    assert third.run_id == downstream.run_id
+    assert serving.apply_calls == 0
+
+
+def test_a_joined_run_marked_as_an_earlier_merge_reads_as_drifted_without_a_footer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    consumer = _joining(ds, arena=True)
+    result = run_feature(ds, consumer)
+    assert drifted(ds, result) == ()
+    assert result.run_id is not None
+    _ = feature_index(feature_index_path(ds, result.feature)).update_cells(
+        result.run_id, {"consumed_summary_join": "legacy:arena"}
+    )
+    counter = _FooterCount(monkeypatch)
+    counter.watch(ds, (result, *consumer.inputs.feature_inputs))
+
+    entries = drifted(ds, result)
+
+    assert entries == (("g", "s1"), ("g", "s2"))
+    assert counter.parsed == []
 
 
 class _FooterCount:
