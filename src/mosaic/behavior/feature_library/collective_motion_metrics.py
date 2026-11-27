@@ -13,9 +13,9 @@ same order parameters to a neighborhood around each focal individual.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Annotated, ClassVar, Self, final
+from typing import Annotated, ClassVar, Self, final, override
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,7 @@ from .collective_math import (
     classify_state,
     cross2,
     hull_area,
+    hull_perimeter,
     polarization,
     principal_axes,
     resolve_heading_source,
@@ -130,6 +131,14 @@ _EXCLUDE_COLS_DESCRIPTION = (
     "hull. A name absent from the input is skipped rather than raising."
 )
 
+_HULL_PERIMETER_DESCRIPTION = (
+    "Write hull_perimeter, the perimeter of the convex hull of each group's "
+    "finite positions, whatever area_method says. The points keep the order "
+    "of their ids, which Qhull's last bit depends on, and repeated positions "
+    "stay. NaN below three distinct positions. It does not follow "
+    "min_individuals: it is written whenever three distinct positions exist."
+)
+
 # Every column this feature emits, for the subgroup_col collision check. A
 # subgroup column sharing a name with an output would give the assembled frame
 # two identically-labeled columns.
@@ -156,13 +165,16 @@ EMITTED_COLUMNS: frozenset[str] = frozenset(
         "area",
         "density",
         "alpha_n_triangles",
+        "hull_perimeter",
         "mean_speed",
         "heading_source",
     }
 )
 
-# The two emitted columns that a params value decides.
-_CONDITIONAL_COLUMNS: frozenset[str] = frozenset({"alpha_n_triangles", "mean_speed"})
+# The emitted columns that a params value decides.
+_CONDITIONAL_COLUMNS: frozenset[str] = frozenset(
+    {"alpha_n_triangles", "hull_perimeter", "mean_speed"}
+)
 
 
 @final
@@ -214,6 +226,9 @@ class CollectiveMotionMetrics:
       - ``principal_axis_angle``: major-axis orientation in (-pi/2, pi/2]
       - ``area``, ``density`` = ``n_ids / area``, and ``alpha_n_triangles`` under
         ``area_method="alpha_shape"``
+      - ``hull_perimeter`` when ``hull_perimeter`` is set: the perimeter of the
+        convex hull of the finite positions in id order, under every
+        ``area_method``, NaN below three distinct positions
       - ``mean_speed`` when ``speed_col`` is set
 
     Provenance
@@ -331,6 +346,7 @@ class CollectiveMotionMetrics:
         conditional=(
             Conditional(ParamColumn("subgroup_col"), when_param="subgroup_col"),
             Conditional(Column("mean_speed"), when_param="speed_col"),
+            Conditional(Column("hull_perimeter"), when_param="hull_perimeter"),
             Conditional(Column("alpha_n_triangles")),
             *kept(C.frame_col, C.time_col, C.seq_col, C.group_col),
         ),
@@ -366,6 +382,7 @@ class CollectiveMotionMetrics:
         exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
             default_factory=list
         )
+        hull_perimeter: Annotated[bool, Declared(_HULL_PERIMETER_DESCRIPTION)] = False
 
         @model_validator(mode="after")
         def _check(self) -> Self:
@@ -392,6 +409,18 @@ class CollectiveMotionMetrics:
                     )
                     raise ValueError(msg)
             return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, less ``hull_perimeter`` while it is false.
+
+            A run that leaves it unset writes the output of the version before
+            the option existed, so it keeps its identifier.
+            """
+            dumped = super().identity_dump()
+            if not dumped.get("hull_perimeter", False):
+                dumped.pop("hull_perimeter", None)
+            return dumped
 
     def __init__(
         self,
@@ -424,6 +453,19 @@ class CollectiveMotionMetrics:
 
     # --- Apply ---
 
+    @staticmethod
+    def _finite_points(work: pd.DataFrame, keys: list[str]) -> Iterator[np.ndarray]:
+        """Each key's finite positions in row order, in sorted key order.
+
+        ``work`` is sorted by id then order, so a key's rows are its ids in id
+        order. A key without a finite position yields an empty array.
+        """
+        for _, g in work.groupby(keys, sort=True):
+            pts = np.column_stack(
+                (g["_x"].to_numpy(dtype=float), g["_y"].to_numpy(dtype=float))
+            )
+            yield pts[np.isfinite(pts).all(axis=1)]
+
     def _areas(
         self, work: pd.DataFrame, keys: list[str], n_rows: int
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -433,11 +475,7 @@ class CollectiveMotionMetrics:
         n_tri = np.zeros(n_rows, dtype=np.int64)
         if p.area_method == "none":
             return area, n_tri
-        for pos, (_, g) in enumerate(work.groupby(keys, sort=True)):
-            pts = np.column_stack(
-                (g["_x"].to_numpy(dtype=float), g["_y"].to_numpy(dtype=float))
-            )
-            pts = pts[np.isfinite(pts).all(axis=1)]
+        for pos, pts in enumerate(self._finite_points(work, keys)):
             if pts.shape[0] == 0:
                 continue
             pts = np.unique(pts, axis=0)
@@ -449,6 +487,15 @@ class CollectiveMotionMetrics:
             else:
                 area[pos] = hull_area(pts)
         return area, n_tri
+
+    def _hull_perimeters(
+        self, work: pd.DataFrame, keys: list[str], n_rows: int
+    ) -> np.ndarray:
+        """Per-key hull perimeter of the finite points in id order, in key order."""
+        perimeter = np.full(n_rows, np.nan, dtype=float)
+        for pos, pts in enumerate(self._finite_points(work, keys)):
+            perimeter[pos] = hull_perimeter(pts)
+        return perimeter
 
     def _without_tracklets(self, agg: pd.DataFrame) -> np.ndarray:
         """Per output row, whether its entry's tracks carry no tracklets."""
@@ -778,6 +825,8 @@ class CollectiveMotionMetrics:
         out["density"] = density
         if p.area_method == "alpha_shape":
             out["alpha_n_triangles"] = np.where(weak, 0, n_tri)
+        if p.hull_perimeter:
+            out["hull_perimeter"] = self._hull_perimeters(work, keys, m)
         if p.speed_col is not None:
             out["mean_speed"] = agg["mean_speed"].to_numpy()
         out["heading_source"] = resolved

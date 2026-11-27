@@ -552,6 +552,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   frames that have rows. Follow it with `derive-columns` for a percentage, such as
   `xy_frames_none / n_frames * 100`. It reads ids that name one animal over time, and
   runs in any track space.
+- `collective-motion-metrics` writes `hull_perimeter` when its `hull_perimeter` param is
+  true: the perimeter of the convex hull of each frame's (or subgroup's) finite
+  positions, whatever `area_method` says, `none` included. It is NaN below three
+  distinct positions and for collinear points. Unlike `area` and `density`, it does not
+  follow `min_individuals`: it is written whenever three distinct positions exist. The
+  hull takes the points in the order of their ids with repeated positions kept, so its
+  last digit can differ from a perimeter computed over the sorted distinct positions,
+  the points `area` uses.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.

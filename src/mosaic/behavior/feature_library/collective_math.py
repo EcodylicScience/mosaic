@@ -288,6 +288,23 @@ def hull_area(pts: FloatArray) -> float:
         return float("nan")
 
 
+def hull_perimeter(pts: FloatArray) -> float:
+    """Convex-hull perimeter of 2-D points in the order given; NaN when degenerate.
+
+    *pts* must be finite, and keeps its order and its repeated rows, because
+    Qhull's last bit depends on the order of its input. Returns
+    ``ConvexHull.area``, which for 2-D input is the perimeter. NaN when the rows
+    hold fewer than three distinct positions, or when Qhull raises
+    ``QhullError`` or ``ValueError``.
+    """
+    if np.unique(pts, axis=0).shape[0] < 3:
+        return float("nan")
+    try:
+        return float(ConvexHull(pts).area)
+    except (QhullError, ValueError):
+        return float("nan")
+
+
 def alpha_shape_area(pts: FloatArray, alpha: float) -> tuple[float, int]:
     """Alpha-shape area of 2-D points and the triangle count, as ``(area, n)``.
 

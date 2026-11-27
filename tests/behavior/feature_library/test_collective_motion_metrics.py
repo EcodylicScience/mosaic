@@ -13,10 +13,13 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.spatial import ConvexHull
 
 from mosaic.behavior.feature_library.collective_motion_metrics import (
+    EMITTED_COLUMNS,
     CollectiveMotionMetrics,
 )
+from mosaic.core.pipeline.column_contract import Column
 
 CORNERS: list[tuple[float, float]] = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
 
@@ -732,3 +735,174 @@ def test_without_tracklets_each_subgroup_differences_its_own_centroid() -> None:
     assert _cell(out, (1, 0), "centroid_heading") == pytest.approx(0.0)
     assert _cell(out, (1, 1), "centroid_speed") == pytest.approx(2.0)
     assert _cell(out, (1, 1), "centroid_heading") == pytest.approx(np.pi / 2)
+
+
+# --- hull perimeter ---------------------------------------------------------
+
+
+def _cloud(
+    points: list[tuple[float, float]], first_id: int = 0, event: int | None = None
+) -> pd.DataFrame:
+    """One frame with id ``first_id + i`` at ``points[i]``, rows in reverse order."""
+    df = pd.DataFrame(
+        {
+            "frame": 0,
+            "time": 0.0,
+            "id": np.arange(first_id, first_id + len(points)),
+            "X": [px for px, _ in points],
+            "Y": [py for _, py in points],
+            "sequence": "S1",
+            "group": "G",
+        }
+    )
+    if event is not None:
+        df["event"] = event
+    return df.iloc[::-1].reset_index(drop=True)
+
+
+def _qhull_perimeter(points: list[tuple[float, float]]) -> float:
+    """``ConvexHull(...).area`` of *points*, taken in the order given."""
+    return float(ConvexHull(np.asarray(points, dtype=float)).area)
+
+
+# Five points whose Qhull perimeter has another last bit once ``np.unique`` sorts
+# them: the ids' order gives 23.187604150397693 and the sorted order
+# 23.18760415039769.
+ORDER_SENSITIVE: list[tuple[float, float]] = [
+    (4.0, 2.7),
+    (3.7, 5.4),
+    (6.9, 5.6),
+    (1.1, 8.2),
+    (9.2, 1.0),
+]
+
+
+def _scatter(n: int = 7) -> list[tuple[float, float]]:
+    values = np.random.default_rng(3).uniform(0.0, 50.0, size=(n, 2))
+    return [(float(px), float(py)) for px, py in values]
+
+
+def test_the_hull_perimeter_is_not_written_unless_asked() -> None:
+    df = _cloud(_scatter())
+    assert "hull_perimeter" not in _apply(df).columns
+    assert "hull_perimeter" not in _apply(df, hull_perimeter=False).columns
+    assert "hull_perimeter" in _apply(df, hull_perimeter=True).columns
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"area_method": "none"},
+        {"area_method": "alpha_shape", "alpha": 1000.0},
+    ],
+    ids=["convex_hull", "none", "alpha_shape"],
+)
+def test_the_hull_perimeter_is_qhulls_area_of_the_points_in_id_order(
+    extra: dict[str, object],
+) -> None:
+    points = _scatter()
+    out = _apply(_cloud(points), hull_perimeter=True, **extra)
+    assert out["hull_perimeter"].dtype == np.float64
+    np.testing.assert_array_equal(
+        out["hull_perimeter"].to_numpy(), [_qhull_perimeter(points)]
+    )
+
+
+def test_the_hull_perimeter_keeps_the_order_that_np_unique_changes() -> None:
+    expected = _qhull_perimeter(ORDER_SENSITIVE)
+    assert expected == 23.187604150397693
+    unique = np.unique(np.asarray(ORDER_SENSITIVE), axis=0)
+    assert float(ConvexHull(unique).area) != expected
+
+    out = _apply(_cloud(ORDER_SENSITIVE), hull_perimeter=True)
+    np.testing.assert_array_equal(out["hull_perimeter"].to_numpy(), [expected])
+
+
+def test_the_hull_perimeter_leaves_area_and_density_as_they_were() -> None:
+    df = _cloud(ORDER_SENSITIVE)
+    base = _apply(df)
+    out = _apply(df, hull_perimeter=True)
+    pd.testing.assert_frame_equal(
+        out.drop(columns="hull_perimeter"), base, check_exact=True
+    )
+
+
+def test_collinear_points_have_no_hull_perimeter() -> None:
+    points = [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (5.0, 5.0)]
+    out = _apply(_cloud(points), hull_perimeter=True)
+    assert np.isnan(out["hull_perimeter"].iloc[0])
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        [(0.0, 0.0), (3.0, 4.0)],
+        [(1.0, 1.0), (1.0, 1.0), (1.0, 1.0), (4.0, 5.0)],
+        [(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)],
+    ],
+    ids=["two-points", "two-distinct-positions", "one-distinct-position"],
+)
+def test_fewer_than_three_distinct_positions_have_no_hull_perimeter(
+    points: list[tuple[float, float]],
+) -> None:
+    out = _apply(_cloud(points), hull_perimeter=True, min_individuals=1)
+    assert np.isnan(out["hull_perimeter"].iloc[0])
+
+
+def test_a_duplicated_position_stays_in_the_points_handed_to_qhull() -> None:
+    points = [(0.0, 0.0), (4.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 0.0)]
+    out = _apply(_cloud(points), hull_perimeter=True)
+    np.testing.assert_array_equal(
+        out["hull_perimeter"].to_numpy(), [_qhull_perimeter(points)]
+    )
+
+
+def test_a_non_finite_position_is_left_out_of_the_hull_perimeter() -> None:
+    points = [(0.0, 0.0), (4.0, 0.0), (np.nan, 2.0), (4.0, 3.0), (0.0, 3.0)]
+    out = _apply(_cloud(points), hull_perimeter=True)
+    finite = [point for point in points if np.isfinite(point[0])]
+    np.testing.assert_array_equal(
+        out["hull_perimeter"].to_numpy(), [_qhull_perimeter(finite)]
+    )
+
+
+def test_each_subgroup_has_the_perimeter_of_its_own_points_in_id_order() -> None:
+    first = ORDER_SENSITIVE
+    second = [(30.0 + px, 30.0 + py) for px, py in _scatter(6)]
+    df = pd.concat(
+        [
+            _cloud(first, first_id=0, event=0),
+            _cloud(second, first_id=5, event=1),
+        ],
+        ignore_index=True,
+    )
+    out = _apply(df, subgroup_col="event", hull_perimeter=True)
+    assert out["event"].tolist() == [0, 1]
+    np.testing.assert_array_equal(
+        out["hull_perimeter"].to_numpy(),
+        [_qhull_perimeter(first), _qhull_perimeter(second)],
+    )
+
+
+def test_a_subgroup_of_two_has_no_hull_perimeter_beside_one_of_five() -> None:
+    pair = [(30.0, 30.0), (40.0, 41.0)]
+    df = pd.concat(
+        [_cloud(ORDER_SENSITIVE, event=0), _cloud(pair, first_id=5, event=1)],
+        ignore_index=True,
+    )
+    out = _apply(df, subgroup_col="event", hull_perimeter=True, min_individuals=1)
+    np.testing.assert_array_equal(
+        out["hull_perimeter"].to_numpy(),
+        [_qhull_perimeter(ORDER_SENSITIVE), np.nan],
+    )
+
+
+def test_the_hull_perimeter_is_a_declared_output() -> None:
+    assert "hull_perimeter" in EMITTED_COLUMNS
+    with pytest.raises(ValueError, match="collides"):
+        CollectiveMotionMetrics(params={"subgroup_col": "hull_perimeter"})
+    conditional = {
+        c.when_param: c for c in CollectiveMotionMetrics.provides.conditional
+    }
+    assert conditional["hull_perimeter"].column == Column("hull_perimeter")

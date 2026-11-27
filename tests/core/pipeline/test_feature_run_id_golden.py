@@ -1415,6 +1415,39 @@ def test_the_new_params_of_neighbor_delta_response_move_its_run_id_only_when_set
     assert len(set(moved.values())) == len(moved)
 
 
+def test_an_unset_hull_perimeter_keeps_the_run_id_of_collective_motion_metrics() -> (
+    None
+):
+    """Leaving ``hull_perimeter`` out and setting it false are the golden run.
+
+    Set, it adds an output column, so it is another run, with or without a
+    subgroup column.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    golden_ids = read_string_golden(GOLDEN)
+
+    for case_id in (
+        "collective-motion-metrics/default",
+        "collective-motion-metrics/subgroups-alpha",
+    ):
+        case = next(case for case in CASES if case.case_id == case_id)
+        params = case.params or {}
+        golden = golden_ids[case_id]
+
+        def with_params(hull_perimeter: bool, case: Case = case) -> str:
+            return _identifier(
+                replace(
+                    case,
+                    params={**(case.params or {}), "hull_perimeter": hull_perimeter},
+                )
+            )
+
+        assert _identifier(case) == golden, params
+        assert with_params(False) == golden, params
+        assert with_params(True) != golden, params
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

@@ -842,6 +842,7 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 | `speed_col` | `string` \| `None` | `null` |  | The per-individual speed column averaged into mean_speed. Worth setting under subgroup_col, where frame-aggregate cannot express a per-subgroup mean. Unset, mean_speed is not emitted. |
 | `filter_expr` | `string` \| `None` | `null` |  | A DataFrame.query expression applied first, before every other computation. The way to drop event == -1, the pooled non-event pseudo-group from ffgroups: that sentinel is an integer, which exclude_cols cannot express. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Boolean columns whose truthy rows are dropped after filter_expr and before every other computation. One bad position moves the centroid, and with it every radial vector, the covariance and the hull. A name absent from the input is skipped rather than raising. |
+| `hull_perimeter` | `boolean` | `false` |  | Write hull_perimeter, the perimeter of the convex hull of each group's finite positions, whatever area_method says. The points keep the order of their ids, which Qhull's last bit depends on, and repeated positions stay. NaN below three distinct positions. It does not follow min_individuals: it is written whenever three distinct positions exist. |
 
 ### `evaluate-labels`
 

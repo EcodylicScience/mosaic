@@ -95,6 +95,14 @@ neighbor's values move with its position, with those of `partner_cols`.
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
+Set `hull_perimeter` on `collective-motion-metrics` to add the column `hull_perimeter`,
+the perimeter of the convex hull of each frame's (or subgroup's) finite positions. It is
+written under every `area_method`, `none` included, and is NaN below three distinct
+positions or for collinear points. Unlike `area` and `density`, it does not follow
+`min_individuals`: it is written whenever three distinct positions exist. The hull takes
+the points in the order of their ids, repeated positions included, so its last digit can
+differ from a perimeter computed over the sorted distinct positions, the points `area`
+uses.
 `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` reduce columns with a
 shared set of parameters: to one row per frame, per sequence or per individual. Each of
 `columns` is reduced by each of `aggs` into `<column>_<agg>`. An input with an `arena`

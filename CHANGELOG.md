@@ -59,6 +59,9 @@ No run id or output moves.
 - `track-coverage` is a new feature that counts, per entry and arena, the frames where
   animals are present under rules over columns, and the gaps between them. No existing
   run id changes.
+- `collective-motion-metrics` gains `hull_perimeter`, which writes the perimeter of the
+  convex hull of each group's finite positions in id order under every `area_method`.
+  Its run ids stay while `hull_perimeter` is false.
 
 ## Unreleased: features that read only results compute in every track space
 
