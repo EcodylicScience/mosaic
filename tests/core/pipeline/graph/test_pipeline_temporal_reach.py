@@ -227,6 +227,7 @@ def test_a_speed_reads_back_one_step_and_its_smoothing_window() -> None:
 def test_a_wavelet_reach_is_unknown_because_the_data_may_set_the_frame_rate() -> None:
     assert _reach("pair-wavelet") is None
     assert _reach("pair-wavelet", f_min=0.4) is None
+    assert _reach("pair-wavelet", method="motionmapper", omega0=5.0) is None
 
 
 def test_the_tcn_reach_is_its_receptive_field_less_the_frame() -> None:

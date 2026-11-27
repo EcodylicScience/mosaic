@@ -23,6 +23,11 @@ and the log amplitude is
 which gives a unit sinusoid at any band frequency one value. It runs in float64
 throughout, and its output is float64.
 
+**Methods.** ``method`` chooses between them. ``pywt``, the default, is the
+transform above. ``motionmapper`` is the second transform. :func:`wavelet_spectra`,
+:func:`wavelet_dtype` and :func:`wavelet_attrs` are the one place the choice is
+made, and both wavelet features call them and no transform function directly.
+
 ``who`` in the functions below is the name of the feature that opens each error
 message.
 """
@@ -32,21 +37,22 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal, Self, override
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import pywt
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from mosaic.core.params import Declared, Params
+from mosaic.core.params import Declared, Params, has_fields
 
 from .helpers import feature_columns
 
 __all__ = [
     "MorletBand",
     "WaveletBand",
+    "WaveletMethod",
     "WaveletParams",
     "log_power",
     "morlet_band",
@@ -54,7 +60,9 @@ __all__ = [
     "wavelet_attrs",
     "wavelet_band",
     "wavelet_columns",
+    "wavelet_dtype",
     "wavelet_input_columns",
+    "wavelet_spectra",
 ]
 
 _F_MIN_DESCRIPTION = "Minimum frequency of the CWT frequency band."
@@ -65,9 +73,29 @@ _N_FREQ_DESCRIPTION = (
     "Number of frequency bins, dyadically spaced between f_min and f_max."
 )
 
-_WAVELET_DESCRIPTION = "Name of the PyWavelets continuous wavelet used for the CWT."
+_METHOD_DESCRIPTION = (
+    "The transform. pywt is the PyWavelets wavelet named by wavelet, with its "
+    "float32 log power. motionmapper is the Morlet wavelet of Berman et al. "
+    "2014 with omega0, its normalized amplitude by zero-padded FFT convolution, "
+    "and the float64 log amplitude."
+)
 
-_LOG_FLOOR_DESCRIPTION = "Minimum value the log-power spectrogram is clamped to."
+_OMEGA0_DESCRIPTION = (
+    "Central angular frequency of the Morlet wavelet. Required with method "
+    "motionmapper and only then. Berman et al. 2014 use 5."
+)
+
+_DEFAULT_WAVELET = "cmor1.5-1.0"
+
+_WAVELET_DESCRIPTION = (
+    "Name of the PyWavelets continuous wavelet used for the CWT. It applies "
+    "under method pywt only."
+)
+
+_LOG_FLOOR_DESCRIPTION = (
+    "Minimum value the log-power spectrogram is clamped to, or the log "
+    "amplitude under method motionmapper."
+)
 
 _PC_PREFIX_DESCRIPTION = (
     "Column-name prefix used to auto-detect principal-component input "
@@ -80,6 +108,7 @@ _COLS_DESCRIPTION = (
     "column when none match."
 )
 
+type WaveletMethod = Literal["pywt", "motionmapper"]
 type Float32Array = npt.NDArray[np.float32]
 type Float64Array = npt.NDArray[np.float64]
 
@@ -90,10 +119,55 @@ class WaveletParams(Params):
     f_min: Annotated[float, Field(gt=0), Declared(_F_MIN_DESCRIPTION, unit="Hz")] = 0.2
     f_max: Annotated[float, Field(gt=0), Declared(_F_MAX_DESCRIPTION, unit="Hz")] = 5.0
     n_freq: Annotated[int, Field(gt=0), Declared(_N_FREQ_DESCRIPTION)] = 25
-    wavelet: Annotated[str, Declared(_WAVELET_DESCRIPTION)] = "cmor1.5-1.0"
+    wavelet: Annotated[str, Declared(_WAVELET_DESCRIPTION)] = _DEFAULT_WAVELET
     log_floor: Annotated[float, Declared(_LOG_FLOOR_DESCRIPTION)] = -3.0
     pc_prefix: Annotated[str, Declared(_PC_PREFIX_DESCRIPTION)] = "PC"
     cols: Annotated[list[str] | None, Declared(_COLS_DESCRIPTION)] = None
+    method: Annotated[WaveletMethod, Declared(_METHOD_DESCRIPTION)] = "pywt"
+    omega0: Annotated[
+        Annotated[float, Field(gt=0)] | None, Declared(_OMEGA0_DESCRIPTION)
+    ] = None
+
+    @model_validator(mode="after")
+    def _method_fits_its_params(self) -> Self:
+        if has_fields(self, "method", "omega0"):
+            if self.method == "motionmapper" and self.omega0 is None:
+                msg = (
+                    "omega0 is required with method: motionmapper; "
+                    "Berman et al. 2014 use 5"
+                )
+                raise ValueError(msg)
+            if self.method == "pywt" and self.omega0 is not None:
+                msg = "omega0 applies only with method: motionmapper"
+                raise ValueError(msg)
+        if (
+            has_fields(self, "method", "wavelet")
+            and self.method == "motionmapper"
+            and self.wavelet != _DEFAULT_WAVELET
+        ):
+            msg = (
+                "wavelet names a PyWavelets wavelet, and method: motionmapper "
+                "uses the Morlet wavelet of omega0"
+            )
+            raise ValueError(msg)
+        return self
+
+    @override
+    def identity_dump(self) -> dict[str, object]:
+        """The hashed params, less what leaves the result as it was.
+
+        ``method`` is left out while it is ``pywt``, ``omega0`` while it is unset,
+        and ``wavelet`` under ``motionmapper``, which does not read it. A run that
+        sets none of them keeps the identity of a params set without them.
+        """
+        dumped = super().identity_dump()
+        if getattr(self, "method", "pywt") == "pywt":
+            _ = dumped.pop("method", None)
+        if getattr(self, "omega0", None) is None:
+            _ = dumped.pop("omega0", None)
+        if getattr(self, "method", "pywt") == "motionmapper":
+            _ = dumped.pop("wavelet", None)
+        return dumped
 
 
 @dataclass(frozen=True)
@@ -167,27 +241,86 @@ def morlet_band(f_min: float, f_max: float, n_freq: int, omega0: float) -> Morle
 
 
 def wavelet_attrs(
-    band: WaveletBand, params: WaveletParams, fps: float, in_cols: list[str]
+    params: WaveletParams, fps: float, in_cols: list[str]
 ) -> dict[str, object]:
     """The attributes a wavelet feature attaches to its output frame.
 
     Args:
-        band: The frequencies and scales of the transform.
         params: The feature's wavelet params.
-        fps: The frame rate the band was built at.
+        fps: The frame rate of the input.
         in_cols: The input columns, in the order transformed.
 
     Returns:
-        The band, wavelet, frame rate and input columns, keyed by name.
+        The band, wavelet, frame rate and input columns, keyed by name. Under
+        ``motionmapper`` the wavelet is ``"morlet"``, the scales are in seconds,
+        and ``method`` and ``omega0`` follow the input columns.
     """
+    head: dict[str, object]
+    tail: dict[str, object] = {}
+    if params.method == "motionmapper":
+        band = _morlet_band_of(params)
+        head = {
+            "frequencies_hz": band.frequencies.tolist(),
+            "scales": band.scales.tolist(),
+            "wavelet": "morlet",
+        }
+        tail = {"method": params.method, "omega0": band.omega0}
+    else:
+        pywt_band = _pywt_band_of(params, fps)
+        head = {
+            "frequencies_hz": pywt_band.frequencies.tolist(),
+            "scales": pywt_band.scales.tolist(),
+            "wavelet": str(params.wavelet),
+        }
     return {
-        "frequencies_hz": band.frequencies.tolist(),
-        "scales": band.scales.tolist(),
-        "wavelet": str(params.wavelet),
+        **head,
         "fps": float(fps),
         "pc_cols": [c for c in in_cols if c.startswith(params.pc_prefix)],
         "input_columns": list(map(str, in_cols)),
+        **tail,
     }
+
+
+def wavelet_dtype(params: WaveletParams) -> type[np.float32] | type[np.float64]:
+    """The dtype of the spectra: float32 under ``pywt``, float64 under ``motionmapper``."""
+    return np.float64 if params.method == "motionmapper" else np.float32
+
+
+def wavelet_spectra(
+    signal: Float64Array, params: WaveletParams, fps: float
+) -> Float32Array | Float64Array:
+    """Return the log spectra of each column of *signal* under ``params.method``.
+
+    Args:
+        signal: The series, one column each, shape ``(n_time, n_columns)``.
+        params: The feature's wavelet params.
+        fps: The frame rate in frames per second.
+
+    Returns:
+        Array of shape ``(n_time, n_columns * n_freq)`` of dtype
+        :func:`wavelet_dtype`, columns as :func:`wavelet_columns` names them.
+
+    Raises:
+        ValueError: If *signal* has no rows, under either method.
+    """
+    if params.method == "motionmapper":
+        return morlet_log_amplitude(
+            signal, _morlet_band_of(params), fps, params.log_floor
+        )
+    return log_power(
+        signal, _pywt_band_of(params, fps), params.wavelet, fps, params.log_floor
+    )
+
+
+def _pywt_band_of(params: WaveletParams, fps: float) -> WaveletBand:
+    return wavelet_band(params.wavelet, params.f_min, params.f_max, params.n_freq, fps)
+
+
+def _morlet_band_of(params: WaveletParams) -> MorletBand:
+    if params.omega0 is None:
+        msg = "method: motionmapper needs omega0"
+        raise ValueError(msg)
+    return morlet_band(params.f_min, params.f_max, params.n_freq, params.omega0)
 
 
 def log_power(
@@ -254,8 +387,15 @@ def morlet_log_amplitude(
         Float64 array of shape ``(n_time, n_columns * n_freq)``. The columns run
         input column major, then ascending frequency, as :func:`wavelet_columns`
         names them.
+
+    Raises:
+        ValueError: If *signal* has no rows, as ``pywt.cwt`` refuses an empty
+            series.
     """
     n_time = int(signal.shape[0])
+    if n_time == 0:
+        msg = "the series is empty"
+        raise ValueError(msg)
     n_columns = int(signal.shape[1])
     n_freq = len(band.scales)
     omega0 = band.omega0

@@ -204,6 +204,16 @@ CASES: tuple[Case, ...] = (
         params={"n_freq": 20},
     ),
     Case(
+        case_id="pair-wavelet/method-motionmapper",
+        feature="pair-wavelet",
+        params={"method": "motionmapper", "omega0": 5.0},
+    ),
+    Case(
+        case_id="individual-wavelet/method-motionmapper",
+        feature="individual-wavelet",
+        params={"method": "motionmapper", "omega0": 5.0},
+    ),
+    Case(
         case_id="keypoint-kinematics/heading",
         feature="keypoint-kinematics",
         params={"heading": [3, 6]},
@@ -1135,6 +1145,52 @@ def test_two_dimensions_keep_the_pair_posedistance_pca_run_id() -> None:
     assert absent == golden
     assert planar == golden
     assert spatial != golden
+
+
+@pytest.mark.parametrize("slug", ["pair-wavelet", "individual-wavelet"])
+def test_the_pywt_method_keeps_each_wavelet_run_id(slug: str) -> None:
+    """Leaving ``method`` and ``omega0`` out and setting them to their defaults is the golden run.
+
+    The Morlet method of Berman et al. is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == f"{slug}/default")
+    golden = read_string_golden(GOLDEN)[case.case_id]
+    params = case.params or {}
+
+    absent = _identifier(case)
+    pywt = _identifier(replace(case, params={**params, "method": "pywt"}))
+    unset = _identifier(
+        replace(case, params={**params, "method": "pywt", "omega0": None})
+    )
+    morlet = _identifier(
+        replace(case, params={**params, "method": "motionmapper", "omega0": 5.0})
+    )
+
+    assert absent == golden
+    assert pywt == golden
+    assert unset == golden
+    assert morlet != golden
+
+
+@pytest.mark.parametrize("slug", ["pair-wavelet", "individual-wavelet"])
+def test_the_motionmapper_run_id_moves_with_omega0_and_not_with_the_default_wavelet(
+    slug: str,
+) -> None:
+    """``omega0`` is part of the run, and the default ``wavelet`` beside it is not."""
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == f"{slug}/method-motionmapper")
+    golden = read_string_golden(GOLDEN)[case.case_id]
+    params = case.params or {}
+
+    explicit = _identifier(replace(case, params={**params, "wavelet": "cmor1.5-1.0"}))
+    other = _identifier(replace(case, params={**params, "omega0": 6.0}))
+
+    assert _identifier(case) == golden
+    assert explicit == golden
+    assert other != golden
 
 
 @pytest.mark.parametrize(

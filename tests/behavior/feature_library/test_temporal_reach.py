@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 
@@ -43,17 +44,30 @@ AT = 400
 BUMP = 1000.0
 
 
-def _farthest_change(
-    apply: Callable[[pd.DataFrame], pd.DataFrame], frames: pd.DataFrame, column: str
-) -> int:
-    """How far from frame ``AT`` the output changes when that frame's input moves."""
+def _changed_rows(
+    apply: Callable[[pd.DataFrame], pd.DataFrame],
+    frames: pd.DataFrame,
+    column: str,
+    threshold: float = 0.0,
+) -> npt.NDArray[np.intp]:
+    """The output rows that move by more than *threshold* when frame ``AT`` moves."""
     moved = frames.copy()
     values = moved[column].to_numpy(dtype=float).copy()
     values[AT] += BUMP
     moved[column] = values
     before = apply(frames).reset_index(drop=True).select_dtypes("number").to_numpy()
     after = apply(moved).reset_index(drop=True).select_dtypes("number").to_numpy()
-    changed = np.flatnonzero((np.abs(after - before) > 0).any(axis=1))
+    return np.flatnonzero((np.abs(after - before) > threshold).any(axis=1))
+
+
+def _farthest_change(
+    apply: Callable[[pd.DataFrame], pd.DataFrame],
+    frames: pd.DataFrame,
+    column: str,
+    threshold: float = 0.0,
+) -> int:
+    """How far from frame ``AT`` the output changes when that frame's input moves."""
+    changed = _changed_rows(apply, frames, column, threshold)
     return int(np.abs(changed - AT).max()) if len(changed) else 0
 
 
@@ -330,6 +344,107 @@ def test_an_individual_wavelet_declares_no_reach_as_a_pair_wavelet_does() -> Non
     assert at_30 == 120
     assert at_60 > at_30
     assert wavelet.temporal_reach(wavelet.params) is None
+
+
+MOTIONMAPPER_BAND: dict[str, object] = {
+    "f_min": 2.0,
+    "f_max": 5.0,
+    "n_freq": 4,
+    "method": "motionmapper",
+    "omega0": 5.0,
+    "log_floor": -np.inf,
+}
+MOTIONMAPPER_FLOOR = 1e-9
+
+
+def _pair_series(fps: float) -> pd.DataFrame:
+    rng = np.random.default_rng(2)
+    return pd.DataFrame(
+        {
+            "frame": np.arange(N),
+            "time": np.arange(N) / fps,
+            "perspective": 0,
+            "id1": 0,
+            "id2": 1,
+            "group": "g",
+            "sequence": "s",
+            "PC0": rng.normal(size=N),
+            "PC1": rng.normal(size=N),
+        }
+    )
+
+
+def _individual_series(fps: float) -> pd.DataFrame:
+    rng = np.random.default_rng(2)
+    return pd.DataFrame(
+        {
+            "frame": np.arange(N),
+            "time": np.arange(N) / fps,
+            "id": 0,
+            "group": "g",
+            "sequence": "s",
+            "speed": rng.normal(size=N),
+        }
+    )
+
+
+def _assert_motionmapper_reach(
+    apply: Callable[[pd.DataFrame], pd.DataFrame],
+    declared: int | None,
+    at_30: pd.DataFrame,
+    at_60: pd.DataFrame,
+    column: str,
+) -> None:
+    """The reach is unknown, the support is eight scales, and every row moves a little.
+
+    ``temporal_reach`` takes the params only, and the support in samples follows
+    the frame rate of the data. One FFT spans the whole series, so a moved
+    frame changes every row, down to rounding.
+    """
+    assert declared is None
+    for frames in (at_30, at_60):
+        changed = _changed_rows(apply, frames, column)
+        assert changed[0] == 0
+        assert changed[-1] == N - 1
+    reach_30 = _farthest_change(apply, at_30, column, MOTIONMAPPER_FLOOR)
+    reach_60 = _farthest_change(apply, at_60, column, MOTIONMAPPER_FLOOR)
+    assert reach_30 < reach_60 < min(AT, N - 1 - AT)
+    scale = (5.0 + np.sqrt(27.0)) / (4.0 * np.pi * 2.0)
+    for reach, fps in ((reach_30, 30.0), (reach_60, 60.0)):
+        samples = int(np.ceil(scale * fps))
+        assert 6 * samples <= reach <= 9 * samples
+
+
+def test_a_motionmapper_pair_wavelet_declares_no_reach_and_reads_eight_scales() -> None:
+    wavelet = PairWavelet(
+        PairWavelet.Inputs((Result(feature="pair-posedistance-pca"),)),
+        params=MOTIONMAPPER_BAND,
+    )
+
+    _assert_motionmapper_reach(
+        wavelet.apply,
+        wavelet.temporal_reach(wavelet.params),
+        _pair_series(30.0),
+        _pair_series(60.0),
+        "PC0",
+    )
+
+
+def test_a_motionmapper_individual_wavelet_declares_no_reach_and_reads_eight_scales() -> (
+    None
+):
+    wavelet = IndividualWavelet(
+        IndividualWavelet.Inputs((Result(feature="keypoint-kinematics"),)),
+        params=MOTIONMAPPER_BAND,
+    )
+
+    _assert_motionmapper_reach(
+        wavelet.apply,
+        wavelet.temporal_reach(wavelet.params),
+        _individual_series(30.0),
+        _individual_series(60.0),
+        "speed",
+    )
 
 
 def test_a_tcn_reaches_half_its_receptive_field() -> None:

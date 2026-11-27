@@ -7,6 +7,7 @@ frame reads as NaN, and a coefficient is NaN where its wavelet support covers on
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from mosaic.behavior.feature_library.individual_wavelet import IndividualWavelet
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.wavelet import (
     log_power,
+    morlet_band,
     wavelet_band,
     wavelet_columns,
 )
@@ -41,6 +43,11 @@ IDENTITY_COLUMNS = ["frame", "time", "id", "sequence", "group"]
 # blanks a run of rows and the ends of the track stay finite.
 NARROW_BAND: dict[str, object] = {"f_min": 2.0, "f_max": 10.0, "n_freq": 5}
 N_LONG = 400
+
+METHODS = [
+    pytest.param({}, id="pywt"),
+    pytest.param({"method": "motionmapper", "omega0": 5.0}, id="motionmapper"),
+]
 
 
 def _feature(params: dict[str, object] | None = None) -> IndividualWavelet:
@@ -128,12 +135,15 @@ def test_every_column_equals_the_log_power_of_its_series_apart_from_the_other_in
     assert not np.array_equal(first, second)
 
 
-def test_a_nan_blanks_a_run_of_rows_that_narrows_as_the_frequency_rises() -> None:
+@pytest.mark.parametrize("method", METHODS)
+def test_a_nan_blanks_a_run_of_rows_that_narrows_as_the_frequency_rises(
+    method: dict[str, object],
+) -> None:
     table = _tracks(N_LONG)
     nan_frame = N_LONG // 2
     table.loc[(table["id"] == 0) & (table["frame"] == nan_frame), "a"] = np.nan
 
-    out = _feature(NARROW_BAND).apply(table)
+    out = _feature({**NARROW_BAND, **method}).apply(table)
 
     first = _individual(out, 0)
     widths: list[int] = []
@@ -147,20 +157,27 @@ def test_a_nan_blanks_a_run_of_rows_that_narrows_as_the_frequency_rises() -> Non
         assert not first[f"W_b_f{fi}"].isna().any()
     assert widths == sorted(widths, reverse=True)
     assert widths[0] > widths[-1]
+    if method:
+        scales = morlet_band(2.0, 10.0, 5, 5.0).scales
+        assert widths == [2 * math.ceil(8 * s * FPS) + 1 for s in scales]
     second = _individual(out, 1)
     assert not second[_w_columns(second)].isna().any().any()
 
 
-def test_a_removed_frame_reads_as_a_nan_in_every_column_and_leaves_no_row() -> None:
+@pytest.mark.parametrize("method", METHODS)
+def test_a_removed_frame_reads_as_a_nan_in_every_column_and_leaves_no_row(
+    method: dict[str, object],
+) -> None:
     table = _tracks(N_LONG)
     gap_frame = N_LONG // 2
     at_gap = (table["id"] == 0) & (table["frame"] == gap_frame)
     with_nan = table.copy()
     with_nan.loc[at_gap, ["a", "b"]] = np.nan
     without_row = table[~at_gap].reset_index(drop=True)
+    params = {**NARROW_BAND, **method}
 
-    expected = _feature(NARROW_BAND).apply(with_nan)
-    out = _feature(NARROW_BAND).apply(without_row)
+    expected = _feature(params).apply(with_nan)
+    out = _feature(params).apply(without_row)
 
     assert len(out) == len(table) - 1
     first = _individual(out, 0)
@@ -174,20 +191,25 @@ def test_a_removed_frame_reads_as_a_nan_in_every_column_and_leaves_no_row() -> N
     assert first[_w_columns(first)].isna().any().any()
 
 
-def test_a_track_without_gaps_equals_pair_wavelet_on_the_same_series() -> None:
+@pytest.mark.parametrize("method", METHODS)
+def test_a_track_without_gaps_equals_pair_wavelet_on_the_same_series(
+    method: dict[str, object],
+) -> None:
     table = _tracks()
     one = table[table["id"] == 0].sort_values("frame").reset_index(drop=True)
     pairs = one.drop(columns=["id"]).assign(perspective=0, id1=0, id2=1)
+    params = {"cols": ["a", "b"], **method}
 
-    out = _feature({"cols": ["a", "b"]}).apply(table)
+    out = _feature(params).apply(table)
     reference = PairWavelet(
         PairWavelet.Inputs((Result(feature="pair-posedistance-pca"),)),
-        params={"cols": ["a", "b"]},
+        params=params,
     ).apply(pairs)
 
     mine = _individual(out, 0)
     assert _w_columns(mine) == _w_columns(reference)
     for column in _w_columns(reference):
+        assert mine[column].dtype == reference[column].dtype
         np.testing.assert_array_equal(
             mine[column].to_numpy(), reference[column].to_numpy(), err_msg=column
         )
@@ -292,11 +314,34 @@ def test_a_pair_table_is_refused_for_its_missing_id_column() -> None:
         _feature().apply(pairs)
 
 
-def test_an_empty_table_returns_a_frame_naming_the_order_column_and_id() -> None:
-    out = _feature().apply(_tracks().iloc[:0])
+@pytest.mark.parametrize("method", METHODS)
+def test_an_empty_table_returns_a_frame_naming_the_order_column_and_id(
+    method: dict[str, object],
+) -> None:
+    out = _feature(method).apply(_tracks().iloc[:0])
 
     assert out.empty
     assert list(out.columns) == ["frame", "id"]
+
+
+def test_a_worker_rebuilds_a_motionmapper_feature_from_the_full_params_dump() -> None:
+    params = IndividualWavelet.Params(method="motionmapper", omega0=5.0)
+
+    rebuilt = IndividualWavelet(
+        IndividualWavelet.Inputs((Result(feature="keypoint-kinematics"),)),
+        params.model_dump(),
+    )
+
+    assert rebuilt.params.identity_dump() == params.identity_dump()
+
+
+def test_motionmapper_output_is_float64_with_its_attributes() -> None:
+    out = _feature({"method": "motionmapper", "omega0": 5.0}).apply(_tracks())
+
+    assert all(out[c].dtype == np.float64 for c in _w_columns(out))
+    assert out.attrs["method"] == "motionmapper"
+    assert out.attrs["wavelet"] == "morlet"
+    assert out.attrs["omega0"] == 5.0
 
 
 def test_cols_takes_precedence_over_the_pc_prefix_columns() -> None:

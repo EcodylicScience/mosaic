@@ -20,6 +20,7 @@ import pytest
 import pywt
 
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
+from mosaic.behavior.feature_library.wavelet import morlet_band, morlet_log_amplitude
 from mosaic.core.pipeline.column_contract import (
     MissingInputColumns,
     check_input_columns,
@@ -167,6 +168,94 @@ def test_every_column_equals_the_float32_reference_bit_for_bit(band: Band) -> No
     expected = _reference(table, ["PC0", "PC1"], fps=FPS, band=band)
     assert len(out) == len(expected) == len(PAIRS) * len(PERSPECTIVES) * N_FRAMES
     _assert_bit_for_bit(out, expected)
+
+
+MOTIONMAPPER: dict[str, object] = {
+    "method": "motionmapper",
+    "omega0": 5.0,
+    "log_floor": -5.0,
+}
+
+
+def test_motionmapper_gives_the_float64_log_amplitude_of_each_series_bit_for_bit() -> (
+    None
+):
+    table = _pairs(fps=FPS)
+    band = morlet_band(0.2, 5.0, 25, 5.0)
+
+    out = _feature(MOTIONMAPPER).apply(table)
+
+    ordered = table.sort_values(["id1", "id2", "perspective", "frame"])
+    expected = pd.concat(
+        [
+            pd.DataFrame(
+                morlet_log_amplitude(
+                    series[["PC0", "PC1"]].to_numpy(dtype=float), band, FPS, -5.0
+                ),
+                columns=[f"W_{c}_f{fi}" for c in ("PC0", "PC1") for fi in range(25)],
+            )
+            for _, series in ordered.groupby(["id1", "id2", "perspective"])
+        ],
+        ignore_index=True,
+    )
+    assert len(out) == len(expected) == len(PAIRS) * len(PERSPECTIVES) * N_FRAMES
+    assert list(expected.columns) == [c for c in out.columns if c.startswith("W_")]
+    for column in expected.columns:
+        assert out[column].dtype == np.float64
+        np.testing.assert_array_equal(
+            out[column].to_numpy(), expected[column].to_numpy(), err_msg=column
+        )
+
+
+def test_motionmapper_keeps_the_column_order_and_attaches_its_attributes() -> None:
+    table = _pairs(fps=FPS)
+
+    out = _feature(MOTIONMAPPER).apply(table)
+
+    expected_w = [f"W_{col}_f{fi}" for col in ("PC0", "PC1") for fi in range(25)]
+    assert list(out.columns) == expected_w + IDENTITY_COLUMNS
+    band = morlet_band(0.2, 5.0, 25, 5.0)
+    assert list(out.attrs) == [
+        "frequencies_hz",
+        "scales",
+        "wavelet",
+        "fps",
+        "pc_cols",
+        "input_columns",
+        "method",
+        "omega0",
+    ]
+    assert out.attrs["frequencies_hz"] == band.frequencies.tolist()
+    assert out.attrs["scales"] == band.scales.tolist()
+    assert out.attrs["wavelet"] == "morlet"
+    assert out.attrs["fps"] == FPS
+    assert out.attrs["pc_cols"] == ["PC0", "PC1"]
+    assert out.attrs["input_columns"] == ["PC0", "PC1"]
+    assert out.attrs["method"] == "motionmapper"
+    assert out.attrs["omega0"] == 5.0
+
+
+def test_a_wavelet_name_beside_motionmapper_is_refused_unless_it_is_the_default() -> (
+    None
+):
+    with pytest.raises(ValueError, match="wavelet names a PyWavelets wavelet"):
+        _ = _feature({**MOTIONMAPPER, "wavelet": "cmor2.5-1.0"})
+
+    plain = _feature(MOTIONMAPPER)
+    explicit = _feature({**MOTIONMAPPER, "wavelet": "cmor1.5-1.0"})
+
+    assert explicit.params.identity_dump() == plain.params.identity_dump()
+
+
+def test_a_worker_rebuilds_a_motionmapper_feature_from_the_full_params_dump() -> None:
+    params = PairWavelet.Params(method="motionmapper", omega0=5.0)
+
+    rebuilt = PairWavelet(
+        PairWavelet.Inputs((Result(feature="pair-posedistance-pca"),)),
+        params.model_dump(),
+    )
+
+    assert rebuilt.params.identity_dump() == params.identity_dump()
 
 
 def test_the_floor_clamps_and_the_unclamped_values_pass_through() -> None:

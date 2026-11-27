@@ -40,11 +40,10 @@ from .helpers import ensure_columns
 from .registry import register_feature
 from .wavelet import (
     WaveletParams,
-    log_power,
     wavelet_attrs,
-    wavelet_band,
     wavelet_columns,
     wavelet_input_columns,
+    wavelet_spectra,
 )
 
 _WHO = "[pair-wavelet]"
@@ -69,7 +68,8 @@ class PairWavelet:
       - frame (or time if that was the order col)
       - perspective
       - id1, id2 when the input has both
-      - W_{col}_f{fi} (log-power, clamped, for each component x frequency)
+      - W_{col}_f{fi} (log-power or log amplitude, clamped, for each component
+        x frequency)
       and (optionally) passthrough group/sequence if present in df.
 
     Stateless (no fitting). The frame rate is measured from the ``time`` column
@@ -86,12 +86,25 @@ class PairWavelet:
     filled. A NaN in a series makes every coefficient whose wavelet support
     covers it NaN.
 
+    **Method.** ``method`` chooses the transform. ``pywt``, the default, is the
+    PyWavelets transform above, with float32 output. ``motionmapper`` is the
+    Morlet wavelet of Berman et al. (2014) with central angular frequency
+    ``omega0``, which that method requires and the other refuses: each column
+    gives the natural log of its normalized amplitude, computed by convolving the
+    zero-padded series with the wavelet in the Fourier domain, clamped from below
+    at ``log_floor``, in float64. A NaN, or a frame the table lacks, blanks the
+    rows within 8 scales of it in the columns it touches, and no others. A
+    ``wavelet`` other than its default is refused under ``motionmapper``.
+
     Differences from Berman et al. (2014):
 
+    - The default transform is the PyWavelets log power, and ``motionmapper`` is
+      the transform of the original.
     - The band defaults to 0.2 to 5 Hz, where the original used 1 to 50 Hz.
     - The spectrogram at each time point is not normalized to sum to one. The
-      columns are the clamped log power, and a ``global-scaler`` downstream
-      standardizes each column across the templates instead.
+      columns are the clamped log power, or the log amplitude under
+      ``motionmapper``, and a ``global-scaler`` downstream standardizes each
+      column across the templates instead.
 
     **Track spaces.** The transform reads the columns it is given as series and
     interprets no coordinate, so it computes in every track space. Over
@@ -149,11 +162,15 @@ class PairWavelet:
     def temporal_reach(params: PairWavelet.Params) -> int | None:
         """Return ``None``: the reach depends on a frame rate the data sets.
 
-        One row reads half the longest wavelet, ``scale * (upper_bound -
-        lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
-        frame rate over ``f_min`` times the central frequency. The frame rate is
-        measured from the input's ``time`` column, and a table at 60 frames per
-        second reads twice the samples of one at 30, so no params bound the reach.
+        Under ``pywt`` one row reads half the longest wavelet, ``scale *
+        (upper_bound - lower_bound) / 2`` samples at the scale of ``f_min``, and
+        the scale is the frame rate over ``f_min`` times the central frequency.
+        Under ``motionmapper`` the support is ``8 s fps`` samples at the scale of
+        ``f_min``, ``s = (omega0 + sqrt(2 + omega0^2)) / (4 pi f_min)`` seconds,
+        and every row also depends within rounding on the whole series, through
+        one FFT over the padded series. The frame rate is measured from the
+        input's ``time`` column, and a table at 60 frames per second reads twice
+        the samples of one at 30, so no params bound the reach.
         """
         return None
 
@@ -178,8 +195,7 @@ class PairWavelet:
         in_cols = wavelet_input_columns(df, p, _WHO)
         ensure_columns(df, ["perspective"])
 
-        band = wavelet_band(p.wavelet, p.f_min, p.f_max, p.n_freq, fps)
-        colnames = wavelet_columns(in_cols, len(band.scales))
+        colnames = wavelet_columns(in_cols, p.n_freq)
         has_pair_ids = "id1" in df.columns and "id2" in df.columns
         group_keys = ["id1", "id2", "perspective"] if has_pair_ids else ["perspective"]
 
@@ -188,7 +204,7 @@ class PairWavelet:
             g = g.sort_values(order_col)
             persp = int(g["perspective"].iloc[0])
             signal = g[in_cols].to_numpy(dtype=float)  # (T, k)
-            flat = log_power(signal, band, p.wavelet, fps, p.log_floor)
+            flat = wavelet_spectra(signal, p, fps)
             block = pd.DataFrame(flat, columns=colnames)
             block[order_col] = g[order_col].to_numpy()
             if C.time_col in g.columns:
@@ -216,5 +232,5 @@ class PairWavelet:
         sort_keys += ["perspective", order_col]
         out = out.sort_values(sort_keys).reset_index(drop=True)
 
-        out.attrs.update(wavelet_attrs(band, p, fps, in_cols))
+        out.attrs.update(wavelet_attrs(p, fps, in_cols))
         return out

@@ -7,21 +7,26 @@ import warnings
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from mosaic.behavior.feature_library.wavelet import (
     WaveletParams,
+    log_power,
     morlet_band,
     morlet_log_amplitude,
     wavelet_attrs,
     wavelet_band,
+    wavelet_dtype,
+    wavelet_spectra,
 )
+from tests.helpers import narrowed_params
 
 
 def test_the_attributes_describe_the_band_the_wavelet_and_the_inputs() -> None:
     params = WaveletParams(pc_prefix="PC")
     band = wavelet_band(params.wavelet, params.f_min, params.f_max, params.n_freq, 30.0)
 
-    attrs = wavelet_attrs(band, params, 30.0, ["PC0", "speed", "PC1"])
+    attrs = wavelet_attrs(params, 30.0, ["PC0", "speed", "PC1"])
 
     assert list(attrs) == [
         "frequencies_hz",
@@ -37,6 +42,167 @@ def test_the_attributes_describe_the_band_the_wavelet_and_the_inputs() -> None:
     assert attrs["fps"] == 30.0
     assert attrs["pc_cols"] == ["PC0", "PC1"]
     assert attrs["input_columns"] == ["PC0", "speed", "PC1"]
+
+
+def test_the_motionmapper_attributes_hold_the_morlet_band_and_name_the_method() -> None:
+    params = WaveletParams(method="motionmapper", omega0=5.0, pc_prefix="PC")
+    band = morlet_band(params.f_min, params.f_max, params.n_freq, 5.0)
+
+    attrs = wavelet_attrs(params, 30.0, ["PC0", "speed", "PC1"])
+
+    assert list(attrs) == [
+        "frequencies_hz",
+        "scales",
+        "wavelet",
+        "fps",
+        "pc_cols",
+        "input_columns",
+        "method",
+        "omega0",
+    ]
+    assert attrs["frequencies_hz"] == band.frequencies.tolist()
+    assert attrs["scales"] == band.scales.tolist()
+    assert attrs["wavelet"] == "morlet"
+    assert attrs["fps"] == 30.0
+    assert attrs["pc_cols"] == ["PC0", "PC1"]
+    assert attrs["input_columns"] == ["PC0", "speed", "PC1"]
+    assert attrs["method"] == "motionmapper"
+    assert attrs["omega0"] == 5.0
+
+
+# The method and omega0 params.
+
+
+@pytest.mark.parametrize("params", [WaveletParams(), WaveletParams(method="pywt")])
+def test_the_pywt_method_dumps_without_method_and_omega0(params: WaveletParams) -> None:
+    dumped = params.identity_dump()
+
+    assert "method" not in dumped
+    assert "omega0" not in dumped
+    full = WaveletParams().model_dump()
+    assert dumped == {k: v for k, v in full.items() if k not in ("method", "omega0")}
+
+
+def test_the_motionmapper_method_dumps_method_and_omega0_and_no_wavelet() -> None:
+    dumped = WaveletParams(method="motionmapper", omega0=5.0).identity_dump()
+
+    assert dumped["method"] == "motionmapper"
+    assert dumped["omega0"] == 5.0
+    assert "wavelet" not in dumped
+    assert dumped["f_min"] == 0.2
+
+
+def test_the_default_wavelet_beside_motionmapper_is_accepted_and_left_out_of_identity() -> (
+    None
+):
+    plain = WaveletParams(method="motionmapper", omega0=5.0)
+    explicit = WaveletParams(method="motionmapper", omega0=5.0, wavelet="cmor1.5-1.0")
+
+    assert explicit.identity_dump() == plain.identity_dump()
+
+
+def test_a_full_model_dump_rebuilds_a_motionmapper_params() -> None:
+    plain = WaveletParams(method="motionmapper", omega0=5.0)
+
+    rebuilt = WaveletParams(**plain.model_dump())
+
+    assert rebuilt.identity_dump() == plain.identity_dump()
+
+
+def test_motionmapper_without_omega0_is_refused_naming_omega0_and_berman() -> None:
+    with pytest.raises(ValueError, match=r"omega0.*motionmapper.*5"):
+        _ = WaveletParams(method="motionmapper")
+
+
+def test_omega0_under_pywt_is_refused_naming_the_method() -> None:
+    with pytest.raises(ValueError, match=r"omega0.*method: motionmapper"):
+        _ = WaveletParams(omega0=5.0)
+
+
+def test_another_wavelet_beside_motionmapper_is_refused() -> None:
+    with pytest.raises(
+        ValueError, match=r"wavelet names a PyWavelets wavelet.*Morlet.*omega0"
+    ):
+        _ = WaveletParams(method="motionmapper", omega0=5.0, wavelet="cmor2.5-1.0")
+
+
+def test_an_omega0_of_zero_is_refused() -> None:
+    with pytest.raises(ValidationError, match="greater than 0"):
+        _ = WaveletParams(method="motionmapper", omega0=0.0)
+
+
+@pytest.mark.parametrize(
+    ("without", "payload", "dumped"),
+    [
+        ("omega0", {"method": "motionmapper"}, {"method": "motionmapper"}),
+        ("method", {"omega0": 5.0}, {"omega0": 5.0}),
+        ("wavelet", {"method": "motionmapper", "omega0": 5.0}, {"omega0": 5.0}),
+    ],
+)
+def test_a_narrowed_model_validates_without_a_verdict_and_dumps_an_identity(
+    without: str, payload: dict[str, object], dumped: dict[str, object]
+) -> None:
+    narrowed = narrowed_params(WaveletParams, {without})
+
+    identity = narrowed.model_validate(payload).identity_dump()
+
+    assert without not in identity
+    assert {k: identity[k] for k in dumped} == dumped
+
+
+def test_a_narrowed_model_dumps_as_the_full_model_does() -> None:
+    narrowed = narrowed_params(WaveletParams, {"method", "omega0"}).model_validate({})
+
+    assert narrowed.identity_dump() == WaveletParams().identity_dump()
+
+
+# The dispatch.
+
+
+def test_the_pywt_method_dispatches_to_the_float32_log_power() -> None:
+    params = WaveletParams(f_min=1.0, f_max=4.0, n_freq=3, log_floor=-2.0)
+    signal = np.random.default_rng(1).standard_normal((200, 2))
+    band = wavelet_band(params.wavelet, 1.0, 4.0, 3, 30.0)
+
+    out = wavelet_spectra(signal, params, 30.0)
+
+    np.testing.assert_array_equal(
+        out, log_power(signal, band, params.wavelet, 30.0, -2.0)
+    )
+    assert out.dtype == np.float32
+    assert wavelet_dtype(params) == np.float32
+
+
+def test_the_motionmapper_method_dispatches_to_the_float64_log_amplitude() -> None:
+    params = WaveletParams(
+        method="motionmapper",
+        omega0=5.0,
+        f_min=1.0,
+        f_max=4.0,
+        n_freq=3,
+        log_floor=-2.0,
+    )
+    signal = np.random.default_rng(1).standard_normal((200, 2))
+
+    out = wavelet_spectra(signal, params, 30.0)
+
+    np.testing.assert_array_equal(
+        out, morlet_log_amplitude(signal, morlet_band(1.0, 4.0, 3, 5.0), 30.0, -2.0)
+    )
+    assert out.dtype == np.float64
+    assert wavelet_dtype(params) == np.float64
+
+
+@pytest.mark.parametrize(
+    "params",
+    [WaveletParams(), WaveletParams(method="motionmapper", omega0=5.0)],
+    ids=["pywt", "motionmapper"],
+)
+def test_an_empty_series_is_refused_the_same_way_under_both_methods(
+    params: WaveletParams,
+) -> None:
+    with pytest.raises(ValueError, match="empty"):
+        _ = wavelet_spectra(np.empty((0, 2)), params, 30.0)
 
 
 # The Morlet log-amplitude transform.

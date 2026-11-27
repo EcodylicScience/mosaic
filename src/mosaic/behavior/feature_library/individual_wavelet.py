@@ -43,11 +43,11 @@ from .helpers import ensure_columns
 from .registry import register_feature
 from .wavelet import (
     WaveletParams,
-    log_power,
     wavelet_attrs,
-    wavelet_band,
     wavelet_columns,
+    wavelet_dtype,
     wavelet_input_columns,
+    wavelet_spectra,
 )
 
 _NAME = "individual-wavelet"
@@ -73,7 +73,8 @@ class IndividualWavelet:
     order column, with columns:
       - frame (or time if that was the order col)
       - id
-      - W_{col}_f{fi} (log-power, clamped, for each column x frequency)
+      - W_{col}_f{fi} (log-power or log amplitude, clamped, for each column x
+        frequency)
       and (optionally) the group and sequence of each input row.
 
     Stateless (no fitting). The frame rate is measured from the ``time`` column
@@ -81,6 +82,17 @@ class IndividualWavelet:
     because the transform reads its rows as evenly spaced. Frequencies are
     geometrically spaced in [f_min, f_max] (equal steps in log2 frequency). The transform and its
     parameters are those of ``pair-wavelet``.
+
+    **Method.** ``method`` chooses the transform. ``pywt``, the default, is the
+    PyWavelets transform above, with float32 output. ``motionmapper`` is the
+    Morlet wavelet of Berman et al. (2014) with central angular frequency
+    ``omega0``, which that method requires and the other refuses: each column
+    gives the natural log of its normalized amplitude, computed by convolving the
+    zero-padded series with the wavelet in the Fourier domain, clamped from below
+    at ``log_floor``, in float64. Under it a NaN, or a frame the table lacks,
+    blanks the rows within 8 scales of it in the columns it touches, and no
+    others, so each blank run is ``2 * ceil(8 * s * fps) + 1`` rows long. A
+    ``wavelet`` other than its default is refused under ``motionmapper``.
 
     **Gaps.** With a ``frame`` column, each individual's rows are placed on the
     contiguous frames from its first to its last, the frames it lacks reading as
@@ -149,11 +161,15 @@ class IndividualWavelet:
     def temporal_reach(params: IndividualWavelet.Params) -> int | None:
         """Return ``None``: the reach depends on a frame rate the data sets.
 
-        One row reads half the longest wavelet, ``scale * (upper_bound -
-        lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
-        frame rate over ``f_min`` times the central frequency. The frame rate is
-        measured from the input's ``time`` column, and a table at 60 frames per
-        second reads twice the samples of one at 30, so no params bound the reach.
+        Under ``pywt`` one row reads half the longest wavelet, ``scale *
+        (upper_bound - lower_bound) / 2`` samples at the scale of ``f_min``, and
+        the scale is the frame rate over ``f_min`` times the central frequency.
+        Under ``motionmapper`` the support is ``8 s fps`` samples at the scale of
+        ``f_min``, ``s = (omega0 + sqrt(2 + omega0^2)) / (4 pi f_min)`` seconds,
+        and every row also depends within rounding on the whole series, through
+        one FFT over the padded series. The frame rate is measured from the
+        input's ``time`` column, and a table at 60 frames per second reads twice
+        the samples of one at 30, so no params bound the reach.
         """
         return None
 
@@ -179,7 +195,6 @@ class IndividualWavelet:
         ensure_columns(df, [C.id_col])
         fps = uniform_grid_rate(df, self.name)
         in_cols = wavelet_input_columns(df, p, _WHO)
-        band = wavelet_band(p.wavelet, p.f_min, p.f_max, p.n_freq, fps)
 
         if order_col == C.frame_col:
             # The group and sequence of a row are left out of the axis, so that an
@@ -197,17 +212,15 @@ class IndividualWavelet:
             frames = None
 
         signal = df[in_cols].to_numpy(dtype=float)[order]
-        values = np.empty((len(df), len(in_cols) * len(band.scales)), dtype=np.float32)
+        values = np.empty((len(df), len(in_cols) * p.n_freq), dtype=wavelet_dtype(p))
         for start, end in zip(starts, ends):
             if frames is None:
-                values[start:end] = log_power(
-                    signal[start:end], band, p.wavelet, fps, p.log_floor
-                )
+                values[start:end] = wavelet_spectra(signal[start:end], p, fps)
                 continue
             at = frames[start:end] - frames[start]
             placed = np.full((int(at[-1]) + 1, len(in_cols)), np.nan)
             placed[at] = signal[start:end]
-            values[start:end] = log_power(placed, band, p.wavelet, fps, p.log_floor)[at]
+            values[start:end] = wavelet_spectra(placed, p, fps)[at]
 
         keep = [
             c
@@ -216,13 +229,11 @@ class IndividualWavelet:
             )
             if c in df.columns
         ]
-        spectra = pd.DataFrame(
-            values, columns=wavelet_columns(in_cols, len(band.scales))
-        )
+        spectra = pd.DataFrame(values, columns=wavelet_columns(in_cols, p.n_freq))
         identity = df[keep].iloc[order].reset_index(drop=True)
         out = pd.concat([spectra, identity], axis=1)
 
-        out.attrs.update(wavelet_attrs(band, p, fps, in_cols))
+        out.attrs.update(wavelet_attrs(p, fps, in_cols))
         return out
 
 

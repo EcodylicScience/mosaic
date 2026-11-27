@@ -176,10 +176,12 @@ CWT spectrograms of numeric columns of each individual. The columns are those ``
 | `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
 | `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
 | `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
-| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. |
-| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to. |
+| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. It applies under method pywt only. |
+| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to, or the log amplitude under method motionmapper. |
 | `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
 | `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
+| `method` | `"pywt"` \| `"motionmapper"` | `"pywt"` |  | The transform. pywt is the PyWavelets wavelet named by wavelet, with its float32 log power. motionmapper is the Morlet wavelet of Berman et al. 2014 with omega0, its normalized amplitude by zero-padded FFT convolution, and the float64 log amplitude. |
+| `omega0` | `number` \| `None` | `null` |  | Central angular frequency of the Morlet wavelet. Required with method motionmapper and only then. Berman et al. 2014 use 5. |
 
 ### `keypoint-kinematics`
 
@@ -547,10 +549,12 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
 | `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
 | `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
 | `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
-| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. |
-| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to. |
+| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. It applies under method pywt only. |
+| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to, or the log amplitude under method motionmapper. |
 | `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
 | `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
+| `method` | `"pywt"` \| `"motionmapper"` | `"pywt"` |  | The transform. pywt is the PyWavelets wavelet named by wavelet, with its float32 log power. motionmapper is the Morlet wavelet of Berman et al. 2014 with omega0, its normalized amplitude by zero-padded FFT convolution, and the float64 log amplitude. |
+| `omega0` | `number` \| `None` | `null` |  | Central angular frequency of the Morlet wavelet. Required with method motionmapper and only then. Berman et al. 2014 use 5. |
 
 ### `pair-world`
 
