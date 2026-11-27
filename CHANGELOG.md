@@ -73,6 +73,10 @@ No other run id or output moves.
   `dimensions: 2` fails its entry naming `dimensions: 3`. `dimensions: 3` and
   `segment_statistic` are refused with `source: column`, which reads no keypoints. Its
   run ids stay while the options are unset.
+- `roi-occupancy` gains `center_angle` and `angle_center`, which add the columns
+  `arena_center_angle` and `arena_center_angle_step`, and its `rois` may be empty when
+  `center_angle` is set. Its run ids stay while `center_angle` is false and
+  `angle_center` is unset, and an existing recipe's output is unchanged.
 
 ## Unreleased: features that read only results compute in every track space
 

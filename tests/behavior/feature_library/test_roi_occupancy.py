@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 from pydantic import ValidationError
@@ -19,6 +20,7 @@ from mosaic.core.arenas import Arena, ArenaLayout, Rect
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.graph.reach import UNKNOWN, feature_reach
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.track_space import TrackSpaceRefused
 from mosaic.core.pipeline.types import Result
@@ -1072,3 +1074,343 @@ def test_share_over_roi_gives_the_time_fraction_in_each_region(tmp_path: Path) -
         "seq_a": pytest.approx([3 * FRAME_SECONDS]),
         "seq_b": pytest.approx([5 * FRAME_SECONDS]),
     }
+
+
+# --- angle about a point ----------------------------------------------------------
+
+ANGLE = "arena_center_angle"
+STEP = "arena_center_angle_step"
+ANGLE_CENTER = (10.0, 20.0)
+"""The point the angles are taken about when a test sets ``angle_center``."""
+
+
+def _angle_params(**extra: object) -> dict[str, object]:
+    return {"center_angle": True, "angle_center": list(ANGLE_CENTER), **extra}
+
+
+def _frames(
+    ids: Sequence[int],
+    frames: Sequence[int],
+    positions: Sequence[Position],
+    *,
+    sequence: str = "S1",
+) -> pd.DataFrame:
+    """Rows of one entry in the given order, one per (id, frame, position)."""
+    return pd.DataFrame(
+        {
+            "frame": np.asarray(frames, dtype=np.int64),
+            "time": np.asarray(frames, dtype=np.float64) / 30.0,
+            "id": np.asarray(ids, dtype=np.int64),
+            "group": "G",
+            "sequence": sequence,
+            "X": [x for x, _ in positions],
+            "Y": [y for _, y in positions],
+        }
+    )
+
+
+def _around(angles: Sequence[float], radius: float = 5.0) -> list[Position]:
+    """Positions at *angles* radians and *radius* from ``ANGLE_CENTER``."""
+    return [
+        (ANGLE_CENTER[0] + radius * math.cos(a), ANGLE_CENTER[1] + radius * math.sin(a))
+        for a in angles
+    ]
+
+
+def _expected_angle(table: pd.DataFrame) -> npt.NDArray[np.float64]:
+    x = table["X"].to_numpy(dtype=np.float64)
+    y = table["Y"].to_numpy(dtype=np.float64)
+    return np.arctan2(y - ANGLE_CENTER[1], x - ANGLE_CENTER[0])
+
+
+def _apply_angles(table: pd.DataFrame, **extra: object) -> pd.DataFrame:
+    return RoiOccupancy(params=_angle_params(**extra)).apply(table)
+
+
+class TestAngleAboutAPoint:
+    def test_the_angle_is_the_arctan2_about_the_set_center(self) -> None:
+        table = _frames(
+            [0] * 4, range(4), [(30.0, 20.0), (10.0, 50.0), (-5.0, 20.0), (10.0, -9.0)]
+        )
+
+        out = _apply_angles(table)
+
+        assert out[ANGLE].dtype == np.float64
+        np.testing.assert_array_equal(out[ANGLE].to_numpy(), _expected_angle(table))
+
+    def test_the_set_center_needs_no_layout_and_reads_no_root(self) -> None:
+        feature = RoiOccupancy(params=_angle_params())
+
+        assert feature.consumed_roots == ()
+        out = feature.apply(_frames([0, 0], [0, 1], [(1.0, 2.0), (3.0, 4.0)]))
+        assert list(out.columns) == [
+            "frame",
+            "time",
+            "id",
+            "group",
+            "sequence",
+            ANGLE,
+            STEP,
+        ]
+
+    def test_no_region_writes_no_region_column(self) -> None:
+        out = _apply_angles(_frames([0], [0], [(1.0, 2.0)]))
+
+        assert not [
+            name
+            for name in out.columns
+            if name.startswith(("in_", "dist_")) or name == "roi"
+        ]
+
+    def test_regions_and_the_angle_are_written_together(self) -> None:
+        out = _apply_angles(
+            _frames([0], [0], [(1.0, 2.0)]), rois=[DISC.model_dump(mode="json")]
+        )
+
+        assert {"in_disc", "dist_disc", "roi", ANGLE, STEP} <= set(out.columns)
+
+    def test_a_step_across_the_cut_is_wrapped_into_pi_either_way(self) -> None:
+        angles = [3.0, -3.0, 3.1, 3.1, -3.1, 3.0]
+        table = _frames([0] * 6, range(6), _around(angles))
+
+        out = _apply_angles(table)
+
+        theta = _expected_angle(table)
+        raw = theta[1:] - theta[:-1]
+        expected = np.where(
+            raw > np.pi, raw - 2 * np.pi, np.where(raw < -np.pi, raw + 2 * np.pi, raw)
+        )
+        step = out[STEP].to_numpy()
+        assert np.isnan(step[0])
+        np.testing.assert_array_equal(step[1:], expected)
+        assert (np.abs(step[1:]) <= np.pi).all()
+        assert step[1] > 0 and step[2] < 0 and step[4] > 0 and step[5] < 0
+
+    def test_a_step_inside_the_range_is_the_raw_difference_bit_for_bit(self) -> None:
+        angles = [0.1, 0.30000000000000004, -1.0, 1.9, 1.5]
+        table = _frames([0] * 5, range(5), _around(angles))
+
+        out = _apply_angles(table)
+
+        theta = _expected_angle(table)
+        step = out[STEP].to_numpy()
+        np.testing.assert_array_equal(step[1:], theta[1:] - theta[:-1])
+
+    def test_the_first_row_of_each_id_and_a_row_after_a_gap_are_nan(self) -> None:
+        # Rows are shuffled: the previous frame is looked up per id, not by position.
+        ids = [1, 0, 0, 1, 0, 1, 0, 1]
+        frames = [2, 0, 1, 0, 2, 1, 4, 5]
+        positions = _around([0.2, 0.4, 0.9, -0.3, 1.5, 0.0, 1.0, 1.2])
+        table = _frames(ids, frames, positions)
+
+        out = _apply_angles(table)
+
+        theta = _expected_angle(table)
+        expected = np.full(len(table), np.nan)
+        for row, (animal, frame) in enumerate(zip(ids, frames, strict=True)):
+            before = [
+                k
+                for k, (i, f) in enumerate(zip(ids, frames, strict=True))
+                if i == animal and f == frame - 1
+            ]
+            if before:
+                expected[row] = theta[row] - theta[before[0]]
+        np.testing.assert_array_equal(out[STEP].to_numpy(), expected)
+        assert np.isnan(expected).sum() == 4
+        np.testing.assert_array_equal(out[ANGLE].to_numpy(), theta)
+
+    def test_a_nan_position_gives_a_nan_angle_and_a_nan_step_either_side(self) -> None:
+        positions = [*_around([0.1, 0.2]), (math.nan, math.nan), *_around([0.5, 0.7])]
+        table = _frames([0] * 5, range(5), positions)
+
+        out = _apply_angles(table)
+
+        theta = _expected_angle(table)
+        np.testing.assert_array_equal(out[ANGLE].to_numpy(), theta)
+        step = out[STEP].to_numpy()
+        assert np.isnan(step[[0, 2, 3]]).all()
+        assert step[1] == theta[1] - theta[0]
+        assert step[4] == theta[4] - theta[3]
+
+    @pytest.mark.parametrize(
+        "answer", [False, True, None], ids=["no", "yes", "unknown"]
+    )
+    def test_a_tracklet_free_entry_has_nan_steps_and_keeps_its_angles(
+        self, answer: bool | None
+    ) -> None:
+        free = _frames([0] * 3, range(3), _around([0.1, 0.4, 0.9]))
+        other = _frames([0] * 3, range(3), _around([0.1, 0.4, 0.9]), sequence="S2")
+        feature = RoiOccupancy(params=_angle_params())
+        feature.set_tracklets({("G", "S1"): answer, ("G", "S2"): True})
+
+        out = feature.apply(free)
+        kept = feature.apply(other)
+
+        theta = _expected_angle(free)
+        np.testing.assert_array_equal(out[ANGLE].to_numpy(), theta)
+        if answer is False:
+            assert np.isnan(out[STEP].to_numpy()).all()
+        else:
+            np.testing.assert_array_equal(
+                out[STEP].to_numpy()[1:], theta[1:] - theta[:-1]
+            )
+        np.testing.assert_array_equal(kept[STEP].to_numpy()[1:], theta[1:] - theta[:-1])
+
+    def test_the_boundary_center_of_the_arena_is_the_default_center(
+        self, tmp_path: Path
+    ) -> None:
+        entry: Entry = ("", "seq_a")
+        positions = [(250.0, 150.0), (200.0, 100.0), (150.0, 150.0), (200.0, 200.0)]
+        ds = _roi_dataset(
+            tmp_path,
+            {entry: _single(_circle_arena("tank", 200.0, 150.0, 100.0))},
+            [_table(entry, positions)],
+        )
+
+        _, outputs = _run(ds, {"center_angle": True})
+
+        out = outputs["seq_a"]
+        x = np.array([p[0] for p in positions])
+        y = np.array([p[1] for p in positions])
+        np.testing.assert_array_equal(
+            out[ANGLE].to_numpy(), np.arctan2(y - 150.0, x - 200.0)
+        )
+        assert not [name for name in out.columns if name.startswith(("in_", "dist_"))]
+
+    def test_a_set_center_overrides_the_arena_center(self, tmp_path: Path) -> None:
+        entry: Entry = ("", "seq_a")
+        positions = [(250.0, 150.0), (200.0, 100.0)]
+        ds = _roi_dataset(
+            tmp_path,
+            {entry: _single(_circle_arena("tank", 200.0, 150.0, 100.0))},
+            [_table(entry, positions)],
+        )
+
+        _, outputs = _run(ds, {"center_angle": True, "angle_center": [100.0, 100.0]})
+
+        x = np.array([p[0] for p in positions])
+        y = np.array([p[1] for p in positions])
+        np.testing.assert_array_equal(
+            outputs["seq_a"][ANGLE].to_numpy(), np.arctan2(y - 100.0, x - 100.0)
+        )
+
+    def test_an_estimated_boundary_gives_its_fitted_center(
+        self, tmp_path: Path
+    ) -> None:
+        entry: Entry = ("", "seq_a")
+        positions = _filled_circle(200.0, 150.0, 100.0)
+        ds = _roi_dataset(tmp_path, {}, [_table(entry, positions)])
+
+        _, outputs = _run(ds, {"center_angle": True, "boundary": "estimate"})
+
+        out = outputs["seq_a"]
+        x = np.array([p[0] for p in positions])
+        y = np.array([p[1] for p in positions])
+        expected = np.arctan2(
+            y - out["boundary_cy"].to_numpy(), x - out["boundary_cx"].to_numpy()
+        )
+        np.testing.assert_array_equal(out[ANGLE].to_numpy(), expected)
+
+    def test_a_row_of_no_arena_has_a_nan_angle(self, tmp_path: Path) -> None:
+        entry: Entry = ("", "seq_a")
+        positions = [(250.0, 150.0), (200.0, 100.0)]
+        ds = _roi_dataset(
+            tmp_path,
+            {entry: _single(_circle_arena("tank", 200.0, 150.0, 100.0))},
+            [_table(entry, positions, arenas=["tank", None])],
+        )
+
+        _, outputs = _run(ds, {"center_angle": True})
+
+        angle = outputs["seq_a"][ANGLE].to_numpy()
+        assert angle[0] == np.arctan2(0.0, 50.0)
+        assert np.isnan(angle[1])
+
+
+class TestAngleParams:
+    def test_rois_default_to_empty_with_an_angle(self) -> None:
+        params = RoiOccupancy.Params.model_validate({"center_angle": True})
+
+        assert params.rois == []
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {},
+            {"rois": []},
+            {"center_angle": False},
+            {"rois": [], "center_angle": False},
+        ],
+        ids=["absent", "empty", "angle-off", "empty-angle-off"],
+    )
+    def test_no_region_is_refused_without_the_angle(
+        self, override: dict[str, object]
+    ) -> None:
+        with pytest.raises(ValidationError, match="center_angle"):
+            _ = RoiOccupancy.Params.model_validate(override)
+
+    def test_a_center_without_the_angle_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="angle_center"):
+            _ = RoiOccupancy.Params.model_validate(
+                {"rois": ["disc"], "angle_center": [1.0, 2.0]}
+            )
+
+    @pytest.mark.parametrize("center", [[1.0], [1.0, 2.0, 3.0]], ids=["one", "three"])
+    def test_a_center_is_two_numbers(self, center: list[float]) -> None:
+        with pytest.raises(ValidationError):
+            _ = RoiOccupancy.Params.model_validate(
+                {"center_angle": True, "angle_center": center}
+            )
+
+    def test_a_priority_over_no_region_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="priority"):
+            _ = RoiOccupancy.Params.model_validate(
+                {"center_angle": True, "priority": []}
+            )
+
+    def test_the_options_leave_the_identity_while_unset(self) -> None:
+        base = RoiOccupancy.Params.model_validate({"rois": ["disc"]}).identity_dump()
+        off = RoiOccupancy.Params.model_validate(
+            {"rois": ["disc"], "center_angle": False, "angle_center": None}
+        ).identity_dump()
+        on = RoiOccupancy.Params.model_validate(
+            {"rois": ["disc"], "center_angle": True}
+        ).identity_dump()
+        centered = RoiOccupancy.Params.model_validate(
+            {"rois": ["disc"], "center_angle": True, "angle_center": [1.0, 2.0]}
+        ).identity_dump()
+
+        assert "center_angle" not in base and "angle_center" not in base
+        assert off == base
+        assert on != base and centered != on
+
+
+class TestAngleDeclarations:
+    def test_the_arena_center_reads_the_arenas_root(self) -> None:
+        feature = RoiOccupancy(params={"center_angle": True})
+
+        assert feature.consumed_roots == ("arenas",)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{"angle_center": [1.0, 2.0]}, {"boundary": "estimate"}],
+        ids=["set-center", "estimate"],
+    )
+    def test_a_set_or_fitted_center_reads_no_root(
+        self, extra: dict[str, object]
+    ) -> None:
+        feature = RoiOccupancy(params={"center_angle": True, **extra})
+
+        assert feature.consumed_roots == ()
+
+    def test_the_angle_alone_reads_one_frame_back(self) -> None:
+        assert feature_reach(RoiOccupancy(params={"center_angle": True})) == 1
+        assert feature_reach(RoiOccupancy(params=_angle_params())) == 1
+
+    def test_an_estimated_boundary_leaves_the_reach_unbounded(self) -> None:
+        feature = RoiOccupancy(params={"center_angle": True, "boundary": "estimate"})
+
+        assert feature_reach(feature) == UNKNOWN
+
+    def test_the_class_does_not_follow_ids(self) -> None:
+        assert RoiOccupancy.follows_ids is False

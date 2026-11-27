@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 from mosaic.behavior.feature_library.derive_columns import DeriveColumns
 from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
 from mosaic.behavior.feature_library.individual_aggregate import IndividualAggregate
+from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
 from mosaic.behavior.feature_library.neighbor_delta_response import (
     NeighborDeltaResponse,
 )
@@ -42,6 +43,8 @@ from mosaic.core.pipeline.column_contract import (
     Payload,
     Prefix,
     Provides,
+    contract_fields,
+    declared_requires,
     param_values,
 )
 from mosaic.core.pipeline.graph import (
@@ -2000,6 +2003,79 @@ def _regions_then_aggregate(
             ]
         }
     )
+
+
+def _roi_step(params: dict[str, JsonValue]) -> Recipe:
+    return read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "regions",
+                    "type": "feature",
+                    "feature": "roi-occupancy",
+                    "inputs": [TRACKS_INPUT],
+                    "params": params,
+                }
+            ]
+        }
+    )
+
+
+def test_the_angle_without_regions_guarantees_its_columns_and_no_region_family() -> (
+    None
+):
+    recipe = _roi_step({"center_angle": True})
+
+    assert check_recipe(recipe) == ()
+    columns = resolved_columns(recipe)["regions"]
+
+    assert {"frame", "id", "arena_center_angle", "arena_center_angle_step"} <= (
+        columns.guaranteed
+    )
+    assert not columns.admits("in_disc")
+    assert not columns.admits("dist_disc")
+    assert not columns.admits("roi")
+
+
+def test_regions_without_the_angle_guarantee_their_families_and_no_angle() -> None:
+    recipe = _roi_step({"rois": [_REGION.model_dump(mode="json")]})
+
+    columns = resolved_columns(recipe)["regions"]
+
+    assert {"in_", "dist_"} <= columns.guaranteed_prefixes
+    assert "roi" in columns.guaranteed
+    assert not columns.admits("arena_center_angle")
+    assert not columns.admits("arena_center_angle_step")
+
+
+def test_regions_with_the_angle_guarantee_both() -> None:
+    recipe = _roi_step(
+        {"rois": [_REGION.model_dump(mode="json")], "center_angle": True}
+    )
+
+    columns = resolved_columns(recipe)["regions"]
+
+    assert {"in_", "dist_"} <= columns.guaranteed_prefixes
+    assert {
+        "roi",
+        "arena_center_angle",
+        "arena_center_angle_step",
+    } <= columns.guaranteed
+
+
+def test_the_angle_needs_the_frame_and_id_columns_and_regions_alone_do_not() -> None:
+    requires = declared_requires(RoiOccupancy)
+    assert requires is not None
+
+    def labels(params: dict[str, object]) -> set[str]:
+        feature = RoiOccupancy(params=params)
+        values = param_values(feature.params, contract_fields(requires, None))
+        return {need.label for need in needs_of(requires, values)}
+
+    regions: dict[str, object] = {"rois": [_REGION.model_dump(mode="json")]}
+
+    assert {"'frame'", "'id'"} <= labels({**regions, "center_angle": True})
+    assert not {"'frame'", "'id'"} & labels(regions)
 
 
 def test_a_share_with_categories_guarantees_each_listed_column() -> None:

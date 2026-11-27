@@ -497,6 +497,17 @@ def test_a_region_occupancy_reads_only_its_own_frame_under_the_arena_boundary() 
     assert feature_reach(feature) == 0
 
 
+def test_the_angle_step_reads_the_previous_frame_and_declares_one() -> None:
+    feature = RoiOccupancy(
+        params={"center_angle": True, "angle_center": [0.0, 0.0], "rois": [DISC]}
+    )
+
+    measured = _farthest_change(feature.apply, _track(), "X")
+
+    assert measured == 1
+    assert feature_reach(feature) == 1
+
+
 def test_an_estimated_boundary_reads_every_frame_and_declares_no_reach() -> None:
     feature = RoiOccupancy(params={"rois": [DISC], "boundary": "estimate"})
 

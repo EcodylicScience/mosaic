@@ -1482,6 +1482,33 @@ def test_the_body_length_options_move_its_run_id_only_when_set(
     assert _identifier(replace(case, params=option)) != golden
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"center_angle": True},
+        {"center_angle": True, "angle_center": [320.0, 240.0]},
+    ],
+    ids=["center-angle", "angle-center"],
+)
+def test_the_roi_occupancy_angle_options_move_its_run_id_only_when_set(
+    option: dict[str, object],
+) -> None:
+    """Leaving the angle options out or at their defaults is the golden run.
+
+    Set, they add output columns, so each is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == "roi-occupancy/inline-disc")
+    assert case.params is not None
+    golden = read_string_golden(GOLDEN)["roi-occupancy/inline-disc"]
+    defaults: dict[str, object] = {"center_angle": False, "angle_center": None}
+
+    assert _identifier(case) == golden
+    assert _identifier(replace(case, params={**case.params, **defaults})) == golden
+    assert _identifier(replace(case, params={**case.params, **option})) != golden
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

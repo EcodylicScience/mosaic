@@ -335,7 +335,11 @@ A dataset is a directory with `dataset.yaml` and named roots
   `scale-to-cm` result: scale the `dist_*` columns afterwards. Without a declared
   boundary, `boundary="estimate"` fits one to the positions. The time in a region is
   `sequence-aggregate` with `duration` of `in_<roi>` and `threshold: 0.5`, and the
-  share of the time in each region is `sequence-aggregate` with `share` over `roi`:
+  share of the time in each region is `sequence-aggregate` with `share` over `roi`.
+  `center_angle` adds `arena_center_angle` about the boundary's center, or about
+  `angle_center` in pixels, and `arena_center_angle_step`, the change since the
+  id's previous frame, NaN on its first row and after a gap. `rois` may then be left
+  out, and no region column is written:
   https://ecodylicscience.github.io/mosaic/guides/analysis/features/#time-in-regions.
 - Classifiers: https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.

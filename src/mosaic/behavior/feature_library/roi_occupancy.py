@@ -4,7 +4,9 @@ A region is a shape in source pixels, or a shape placed relative to the boundary
 of the row's arena (:class:`~mosaic.core.regions.Roi`). It is defined inline in
 the params, or stored on the arenas of the entry's layout and named. Each row
 gets, per region, whether its position lies inside and its signed distance to
-the region's edge, and ``roi`` names the first region it lies in.
+the region's edge, and ``roi`` names the first region it lies in. With
+``center_angle`` each row also gets its angle about a center, and its change
+since the previous frame.
 
 Positions and distances are source pixels, the unit of every layout. A table in
 centimeters is refused: read the pixel tracks, then scale the ``dist_*`` columns
@@ -15,7 +17,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal, Self, final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Final,
+    Literal,
+    Self,
+    final,
+    override,
+)
 
 import numpy as np
 import numpy.typing as npt
@@ -23,6 +34,8 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.arenas import Arena, ArenaLayout, region_boundary
+from mosaic.core.entry import Entry
+from mosaic.core.helpers import text_cell
 from mosaic.core.params import Declared, Params, has_fields
 from mosaic.core.pipeline.arena_index import (
     ArenaLookup,
@@ -34,9 +47,11 @@ from mosaic.core.pipeline.column_contract import (
     Column,
     Conditional,
     ParamColumn,
+    ParamIs,
     Prefix,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.storage_names import feature_slug_of
@@ -87,6 +102,8 @@ BoundaryMode = Literal["arena", "estimate"]
 CENTER_DIST: Final = "arena_center_dist"
 RADIUS_NORM: Final = "arena_radius_norm"
 ROI_COLUMN: Final = "roi"
+ANGLE: Final = "arena_center_angle"
+ANGLE_STEP: Final = "arena_center_angle_step"
 FIT_PREFIX: Final = "boundary_"
 FIT_ROWS: Final = "boundary_rows"
 CIRCLE_FIT: Final = ("boundary_cx", "boundary_cy", "boundary_r")
@@ -96,9 +113,10 @@ _SCALING_FEATURES: Final = frozenset({"scale-to-cm", "scale-to-bl"})
 """Producers whose output changes the unit of the tracks it was made from."""
 
 _ROIS_DESCRIPTION = (
-    "The regions of interest, at least one. A name is a region stored on the row's "
-    "arena; an object is a region defined here. Each name is unique, and names "
-    "the in_<name> and dist_<name> columns."
+    "The regions of interest. A name is a region stored on the row's arena; an "
+    "object is a region defined here. Each name is unique, and names the in_<name> "
+    "and dist_<name> columns. Left empty only with center_angle, which then runs "
+    "alone and writes no region column."
 )
 
 _PRIORITY_DESCRIPTION = (
@@ -126,6 +144,22 @@ _CENTER_DISTANCE_DESCRIPTION = (
     "same ray: 0 at the center, 1 on the wall. On a concave polygon a position "
     "past a notch reads above 1; use a circle or rect boundary, or regions, where "
     "that matters."
+)
+
+_CENTER_ANGLE_DESCRIPTION = (
+    "Write arena_center_angle, the angle in radians from the center to the "
+    "position, in [-pi, pi], and arena_center_angle_step, its change since the "
+    "id's row on the previous frame, wrapped into [-pi, pi] only where the "
+    "difference falls outside it. A step is NaN on an id's first row, after a "
+    "missing frame, where either angle is NaN, and on every row of an entry "
+    "whose ids restart each frame."
+)
+
+_ANGLE_CENTER_DESCRIPTION = (
+    "The point in source pixels, as [x, y], that center_angle measures about. "
+    "Unset, the center of the row's arena boundary, or of the fitted boundary "
+    "under boundary estimate. Needs center_angle. When other params read the "
+    "arena layout, a row of no arena is left out and its angle is NaN."
 )
 
 _X_COL_DESCRIPTION = "The column of each row's x position, such as a keypoint's."
@@ -162,6 +196,18 @@ class RoiOccupancy:
     pools every frame and id of the arena, so a sparse trajectory underestimates
     it, and the recorded size shows it.
 
+    With ``center_angle``, ``arena_center_angle`` is ``arctan2(y - cy, x - cx)``
+    about the center of the row's arena boundary, or about ``angle_center``, and
+    ``arena_center_angle_step`` is its change since the id's row on the previous
+    frame. The step is the raw difference where that lies in ``[-pi, pi]``, and
+    has ``2 pi`` subtracted above ``pi`` and added below ``-pi``. It is NaN on an
+    id's first row, on a row whose previous frame has no row of the id, and where
+    either angle is NaN. An entry whose tracks carry no tracklets (read through
+    ``set_tracklets``) has NaN steps, because an id matched across two frames is
+    not one animal. The first step is NaN, not 0, so a mean over the steps counts
+    only the changes that exist. With no ``rois`` the regions' columns are not
+    written.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.roi_occupancy.RoiOccupancy.Params`.
     """
@@ -183,12 +229,20 @@ class RoiOccupancy:
         ParamColumn("y_col"),
         Column(C.group_col),
         Column(C.seq_col),
+        When(Column(C.frame_col), (ParamIs("center_angle"),)),
+        When(Column(C.id_col), (ParamIs("center_angle"),)),
     )
     provides: ClassVar[Provides] = Provides(
-        adds=(Prefix("in_"), Prefix("dist_"), Column(ROI_COLUMN)),
         conditional=(
             *META_KEPT,
             *kept(ARENA_COLUMN),
+            Conditional(Prefix("in_"), when_param="rois"),
+            Conditional(Prefix("dist_"), when_param="rois"),
+            Conditional(Column(ROI_COLUMN), when_param="rois"),
+            Conditional(Column(C.frame_col), when_param="center_angle"),
+            Conditional(Column(C.id_col), when_param="center_angle"),
+            Conditional(Column(ANGLE), when_param="center_angle"),
+            Conditional(Column(ANGLE_STEP), when_param="center_angle"),
             Conditional(Column(CENTER_DIST), when_param="center_distance"),
             Conditional(Column(RADIUS_NORM), when_param="center_distance"),
             Conditional(Prefix(FIT_PREFIX)),
@@ -200,7 +254,7 @@ class RoiOccupancy:
 
     class Params(Params):
         rois: Annotated[list[RoiName | Roi], Declared(_ROIS_DESCRIPTION)] = Field(
-            min_length=1
+            default_factory=list
         )
         priority: Annotated[list[RoiName] | None, Declared(_PRIORITY_DESCRIPTION)] = (
             None
@@ -213,8 +267,55 @@ class RoiOccupancy:
             float, Declared(_ESTIMATE_QUANTILE_DESCRIPTION)
         ] = Field(default=0.0, ge=0.0, lt=0.5)
         center_distance: Annotated[bool, Declared(_CENTER_DISTANCE_DESCRIPTION)] = False
+        center_angle: Annotated[bool, Declared(_CENTER_ANGLE_DESCRIPTION)] = False
+        angle_center: Annotated[
+            tuple[float, float] | None, Declared(_ANGLE_CENTER_DESCRIPTION)
+        ] = None
         x_col: Annotated[str, Declared(_X_COL_DESCRIPTION)] = C.x_col
         y_col: Annotated[str, Declared(_Y_COL_DESCRIPTION)] = C.y_col
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, less each angle option while it is unset.
+
+            A run that leaves them unset writes the output of the version before
+            they existed, so it keeps its identifier.
+            """
+            dumped = super().identity_dump()
+            if not self.center_angle:
+                _ = dumped.pop("center_angle", None)
+            if self.angle_center is None:
+                _ = dumped.pop("angle_center", None)
+            return dumped
+
+        @model_validator(mode="after")
+        def _regions_or_the_angle(self) -> Self:
+            """Refuse params that name no region and no angle, or an unread option."""
+            if not has_fields(self, "rois", "center_angle", "priority"):
+                return self
+            if not self.rois and not self.center_angle:
+                message = (
+                    "rois names no region, which needs center_angle: a run with "
+                    "neither computes nothing"
+                )
+                raise ValueError(message)
+            if not self.rois and self.priority is not None:
+                message = "priority orders the regions of rois, and rois names none"
+                raise ValueError(message)
+            return self
+
+        @model_validator(mode="after")
+        def _angle_center_needs_the_angle(self) -> Self:
+            """Refuse a center that no angle reads."""
+            if not has_fields(self, "center_angle", "angle_center"):
+                return self
+            if self.angle_center is not None and not self.center_angle:
+                message = (
+                    "angle_center applies only with center_angle, and "
+                    "center_angle is false"
+                )
+                raise ValueError(message)
+            return self
 
         @model_validator(mode="after")
         def _unique_names(self) -> Self:
@@ -272,6 +373,11 @@ class RoiOccupancy:
             self.consumed_roots = ()
         self._ds: Dataset | None = None
         self._lookup: ArenaLookup | None = None
+        self._tracklets: dict[Entry, bool | None] = {}
+
+    def set_tracklets(self, by_entry: Mapping[Entry, bool | None]) -> None:
+        """Take each entry's ``carries_tracklets`` answer from the tracks index."""
+        self._tracklets = dict(by_entry)
 
     def bind_dataset(self, ds: Dataset) -> None:
         """Take the dataset's arena lookup, read once per process."""
@@ -282,10 +388,13 @@ class RoiOccupancy:
     def temporal_reach(params: RoiOccupancy.Params) -> int | None:
         """Frames on each side that one row reads.
 
-        A row reads its own position, so 0. An estimated boundary is fit to
-        every frame of the arena, which no number of frames bounds.
+        A row reads its own position, so 0, and the angle's step also reads the
+        previous frame, so 1. An estimated boundary is fit to every frame of
+        the arena, which no number of frames bounds.
         """
-        return None if params.boundary == "estimate" else 0
+        if params.boundary == "estimate":
+            return None
+        return 1 if params.center_angle else 0
 
     def load_state(
         self,
@@ -323,7 +432,23 @@ class RoiOccupancy:
                 columns.fill(rows, x[rows], y[rows], shapes, boundary)
         meta = [name for name in df.columns if name in C.meta_set() | {ARENA_COLUMN}]
         out = df[meta].reset_index(drop=True)
-        return pd.concat([out, columns.frame()], axis=1)
+        return pd.concat([out, columns.frame(self._angle_step(df, columns))], axis=1)
+
+    def _angle_step(self, df: pd.DataFrame, columns: _Columns) -> FloatArray | None:
+        """The angle's step on each row, or ``None`` without ``center_angle``.
+
+        An entry that the tracks index says carries no tracklets has NaN steps.
+        """
+        if not self.params.center_angle:
+            return None
+        group, sequence = df[C.group_col].iloc[0], df[C.seq_col].iloc[0]
+        if self._tracklets.get((text_cell(group), text_cell(sequence))) is False:
+            return np.full(len(df), np.nan)
+        return angle_steps(
+            df[C.frame_col].to_numpy(dtype=np.float64, na_value=np.nan),
+            pd.factorize(df[C.id_col])[0],
+            columns.angle,
+        )
 
     def _shapes(self, boundary: Boundary, arena: Arena | None) -> dict[str, Shape]:
         """Each region's absolute shape in the arena that *boundary* encloses.
@@ -436,9 +561,46 @@ def reads_arena_data(params: RoiOccupancy.Params) -> bool:
         return True
     if params.boundary != "arena":
         return False
+    if params.center_angle and params.angle_center is None:
+        return True
     return params.center_distance or any(
         isinstance(roi, Roi) and roi.placement == "arena" for roi in params.rois
     )
+
+
+def angle_steps(
+    frame: FloatArray, ids: npt.NDArray[np.intp], angle: FloatArray
+) -> FloatArray:
+    """Each row's angle minus the angle of the same id on the previous frame.
+
+    A difference above pi has 2 pi subtracted and one below -pi has 2 pi added,
+    so a difference already in ``[-pi, pi]`` is returned unchanged, bit for bit.
+    A row is NaN where its id has no row on the frame before, whatever the order
+    of the rows, where its id is missing, or where either angle is NaN.
+
+    Args:
+        frame: The frame of each row.
+        ids: One integer code per animal for each row, negative for a missing id.
+        angle: The angle of each row in radians.
+
+    Returns:
+        The steps, one per row.
+    """
+    order = np.lexsort((frame, ids))
+    frames, codes, angles = frame[order], ids[order], angle[order]
+    adjacent = (codes[1:] == codes[:-1]) & (codes[1:] >= 0)
+    follows = adjacent & (frames[1:] - frames[:-1] == 1)
+    difference = angles[1:] - angles[:-1]
+    wrapped = np.where(
+        difference > np.pi,
+        difference - 2 * np.pi,
+        np.where(difference < -np.pi, difference + 2 * np.pi, difference),
+    )
+    steps = np.full(len(order), np.nan)
+    steps[1:] = np.where(follows, wrapped, np.nan)
+    out = np.empty_like(steps)
+    out[order] = steps
+    return out
 
 
 def _refuse_scaled_inputs(inputs: tuple[Result, ...]) -> None:
@@ -488,6 +650,11 @@ class _Columns:
             list(params.priority) if params.priority is not None else names
         )
         self._center: bool = params.center_distance
+        self._angle_about: tuple[float, float] | None = (
+            params.angle_center if params.center_angle else None
+        )
+        self._angled: bool = params.center_angle
+        self.angle: FloatArray = np.full(length, np.nan)
         self._dist: dict[str, FloatArray] = {
             name: np.full(length, np.nan) for name in names
         }
@@ -520,6 +687,13 @@ class _Columns:
             cx, cy = boundary_center(boundary)
             self._center_dist[rows] = np.hypot(x - cx, y - cy)
             self._radius_norm[rows] = radius_norm(boundary, x, y)
+        if self._angled:
+            if self._angle_about is not None:
+                ax, ay = self._angle_about
+            else:
+                assert boundary is not None, "an unset angle center reads a boundary"
+                ax, ay = boundary_center(boundary)
+            self.angle[rows] = np.arctan2(y - ay, x - ax)
 
     def record_fit(
         self, rows: npt.NDArray[np.intp], estimate: BoundaryEstimate
@@ -535,25 +709,34 @@ class _Columns:
             self._fit[name][rows] = value
         self._fit_rows[rows] = estimate.rows
 
-    def frame(self) -> pd.DataFrame:
-        """The columns: ``in_`` and ``dist_`` in region order, ``roi``, the center."""
-        located = ~np.isnan(self._dist[self._names[0]])
-        member = {name: inside(self._dist[name]) for name in self._names}
-        roi = np.full(len(located), NO_REGION_NAME, dtype=object)
-        for name in reversed(self._order):
-            roi[member[name]] = name
-        roi[~located] = None
+    def frame(self, angle_step: FloatArray | None = None) -> pd.DataFrame:
+        """The columns: ``in_`` and ``dist_`` in region order, ``roi``, the rest.
+
+        Args:
+            angle_step: The angle's step on each row, written after the angle,
+                or ``None`` when the angle is not written.
+        """
         columns: dict[str, object] = {}
-        for name in self._names:
-            flags = pd.array(member[name], dtype="boolean")
-            flags[np.isnan(self._dist[name])] = pd.NA
-            columns[f"in_{name}"] = flags
-        for name in self._names:
-            columns[f"dist_{name}"] = self._dist[name]
-        columns[ROI_COLUMN] = pd.array(roi, dtype="string")
+        if self._names:
+            located = ~np.isnan(self._dist[self._names[0]])
+            member = {name: inside(self._dist[name]) for name in self._names}
+            roi = np.full(len(located), NO_REGION_NAME, dtype=object)
+            for name in reversed(self._order):
+                roi[member[name]] = name
+            roi[~located] = None
+            for name in self._names:
+                flags = pd.array(member[name], dtype="boolean")
+                flags[np.isnan(self._dist[name])] = pd.NA
+                columns[f"in_{name}"] = flags
+            for name in self._names:
+                columns[f"dist_{name}"] = self._dist[name]
+            columns[ROI_COLUMN] = pd.array(roi, dtype="string")
         if self._center:
             columns[CENTER_DIST] = self._center_dist
             columns[RADIUS_NORM] = self._radius_norm
+        if angle_step is not None:
+            columns[ANGLE] = self.angle
+            columns[ANGLE_STEP] = angle_step
         for name, values in self._fit.items():
             columns[name] = values
         if self._fit:

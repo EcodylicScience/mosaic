@@ -657,6 +657,19 @@ a fraction of the way to the wall: 0 at the center, 1 on the wall. On a concave 
 the wall is the nearest crossing, so a position beyond a notch reads above 1 although it
 is inside. Use a circle or a rect boundary, or regions, where that matters.
 
+**Angle about a point.** `center_angle=true` adds `arena_center_angle`, the angle in
+radians from the center to the position (`arctan2(y - cy, x - cx)`, in `[-pi, pi]`),
+and `arena_center_angle_step`, its change since the same id's row on the previous
+frame. The center is `angle_center` as `[x, y]` in source pixels, which needs no layout,
+or else the center of the arena's boundary (the fitted one under `boundary="estimate"`).
+A step is the plain difference where that lies in `[-pi, pi]`, and wraps by `2 pi` only
+where it falls outside. It is NaN on an id's first row, after a missing frame, where
+either angle is NaN, and on every row of an entry whose ids restart each frame, because
+an id matched across two frames is not one animal. The first step is NaN rather than 0,
+so a `sequence-aggregate` `mean` with `threshold: 0` divides by the steps that exist.
+`rois` may be left out when `center_angle` is set, and the feature then writes no
+`in_`, `dist_` or `roi` column. It is refused with neither.
+
 **Pixels only.** Positions, regions and distances are source pixels. The feature refuses
 the output of `scale-to-cm` and `scale-to-bl`. Read the pixel tracks, then scale the
 distances: `scale-to-cm` with `columns=["dist_feeder"]` writes `dist_feeder_cm`. A chain

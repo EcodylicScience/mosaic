@@ -589,12 +589,14 @@ Per-frame membership of each region of interest, and the distance to it.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `rois` | list of (`string` \| `Roi`) | _required_ | min items `1` | The regions of interest, at least one. A name is a region stored on the row's arena; an object is a region defined here. Each name is unique, and names the in_<name> and dist_<name> columns. |
+| `rois` | list of (`string` \| `Roi`) | _constructed_ |  | The regions of interest. A name is a region stored on the row's arena; an object is a region defined here. Each name is unique, and names the in_<name> and dist_<name> columns. Left empty only with center_angle, which then runs alone and writes no region column. |
 | `priority` | list of `string` \| `None` | `null` |  | The order in which roi names a row's region when it lies in several. Lists exactly the names of rois. Unset, the order of rois. |
 | `boundary` | `"arena"` \| `"estimate"` | `"arena"` |  | Where an arena's boundary comes from: its layout's boundary, else its region (arena), or a fit to the positions (estimate). |
 | `estimate_shape` | `"circle"` \| `"rect"` | `"circle"` |  | The shape that boundary estimate fits. Left at circle unless boundary is estimate. |
 | `estimate_quantile` | `number` | `0.0` | >= `0.0`, < `0.5` | The share of positions that the estimate trims at each end of each axis, from 0 up to but excluding 0.5. Left at 0 unless boundary is estimate. |
 | `center_distance` | `boolean` | `false` |  | Write arena_center_dist, the distance in pixels from the boundary's center, and arena_radius_norm, that distance as a fraction of the wall's along the same ray: 0 at the center, 1 on the wall. On a concave polygon a position past a notch reads above 1; use a circle or rect boundary, or regions, where that matters. |
+| `center_angle` | `boolean` | `false` |  | Write arena_center_angle, the angle in radians from the center to the position, in [-pi, pi], and arena_center_angle_step, its change since the id's row on the previous frame, wrapped into [-pi, pi] only where the difference falls outside it. A step is NaN on an id's first row, after a missing frame, where either angle is NaN, and on every row of an entry whose ids restart each frame. |
+| `angle_center` | tuple of (`number`, `number`) \| `None` | `null` |  | The point in source pixels, as [x, y], that center_angle measures about. Unset, the center of the row's arena boundary, or of the fitted boundary under boundary estimate. Needs center_angle. When other params read the arena layout, a row of no arena is left out and its angle is NaN. |
 | `x_col` | `string` | `"X"` |  | The column of each row's x position, such as a keypoint's. |
 | `y_col` | `string` | `"Y"` |  | The column of each row's y position, such as a keypoint's. |
 
