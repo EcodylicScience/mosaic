@@ -56,11 +56,11 @@ type ParallelMode = Literal["thread", "process"]
 ``process``
     Each worker is a spawned interpreter that imports the feature stack and reads
     each entry's input itself, or receives a pickled copy of the table for overlap,
-    a widening onto another input's pair rows, a nearest-neighbor pair filter and
-    the cross join. It builds the feature once and applies every entry it is handed
-    with that instance. It uses every core, and memory grows by a whole interpreter
-    and several copies of a table per worker. Choose it for a feature whose per-entry
-    work is a Python loop, which holds the interpreter lock in threads.
+    a nearest-neighbor pair filter and the cross join. It builds the feature once
+    and applies every entry it is handed with that instance. It uses every core, and
+    memory grows by a whole interpreter and several copies of a table per worker.
+    Choose it for a feature whose per-entry work is a Python loop, which holds the
+    interpreter lock in threads.
 """
 
 MAX_WORKERS_CEILING: Final = 32

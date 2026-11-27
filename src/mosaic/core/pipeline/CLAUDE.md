@@ -335,7 +335,8 @@ are in `graph/CLAUDE.md`.
   `CROSS_JOIN_FEATURES`. `run_feature`, `verify.py`, `_load_neighbor` and the
   declarations (`ConsumerDecl.expands_individuals`) all read it, and `merge_naming`
   names the columns for the merge and for validation. An entry whose pair input holds
-  no rows raises `PairRowsMissing`, which the apply loop records as an `entry_error`
+  no rows raises `PairRowsMissing` in its task, or in the parent's load under overlap
+  or a pair filter, and either is recorded as an `entry_error`
   (`tests/core/pipeline/test_widening_join.py`). `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
@@ -434,13 +435,11 @@ are in `graph/CLAUDE.md`.
   load error but `PairRowsMissing`) and a trim or write failure return as an
   `EntryFailure`, and the run raises it. `PairRowsMissing` and any other entry error
   raise in the task and are recorded as an `entry_error`. The task loads its entry's
-  input unless the run asks for overlap, the feature widens individual inputs onto pair
-  rows (`expands_individuals` with more than one input, since a single input has nothing
-  to widen and loads alike without the flag), a pair filter applies or the feature is
-  the cross join. Those shapes load in the parent through `iter_manifest`, which hands
-  the task the table. Both sites call `load_entry_data`. `entry_task.py` names no index
-  module, the run-log or `job` in its own imports
-  (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
+  input, with the load's `expands_individuals`, unless the run asks for overlap, a pair
+  filter applies or the feature is the cross join. Those shapes load in the parent
+  through `iter_manifest`, which hands the task the table. Both sites call
+  `load_entry_data`. `entry_task.py` names no index module, the run-log or `job` in its
+  own imports (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
   `tests/meta/test_entry_task_imports.py`).
 - `apply_seconds` runs from the dispatch, so it contains the load of an entry whose
   worker loads it and, for the entry whose worker built the feature for it, that build,

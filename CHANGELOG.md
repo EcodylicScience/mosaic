@@ -8,6 +8,25 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a feature run's workers read a widening step's input
+
+No run id or output moves. A feature run's workers read the input of a feature
+that widens individual-level inputs onto pair rows, as they read every other
+entry's input, except with overlap, a nearest-neighbor pair filter or the cross
+join, which the run's process still loads. In process mode the widened table no
+longer crosses to the worker, which cuts the bytes sent to each worker per
+entry from the table's size to a description of the load: in the widening
+section of `benchmarks/step-cost/README.md`, from 18,146,565 bytes to 2,429. An
+entry without pair rows is recorded as lost with the same error type and
+message, and the run goes on. In that bench the thread-mode steps before the
+stack ran 12 to 13 s slower, for a cause not yet known.
+
+The `entry_end` measures of a widening entry its worker loads shift as those of
+the other shapes did ("a feature run's workers read each entry's input"). Its
+flight starts at its dispatch, so at most the worker count of entries are in
+flight at once, and its `apply_seconds` contains its load. A process worker's
+peak and growth contain its load.
+
 ## Unreleased: registered features for recurring definitions
 
 No other run id or output moves.

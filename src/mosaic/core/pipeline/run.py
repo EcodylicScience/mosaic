@@ -3579,18 +3579,18 @@ def _run_feature_impl(
         def _apply_entries(entries: Manifest, state: _PhaseState) -> _PhaseOutcome:
             """Apply the feature to *entries* and record each one's index row.
 
-            Entries with a valid output on disk are recorded without loading their
-            input. The rest are computed through a pool built from the settings of
-            *state*, and their measures go to *state*. Each computed entry's task
-            loads its input, unless overlap, a pair filter or the cross join has
-            the run load it, and writes its output, and the run records the row
-            from the task's report. A load of no rows leaves the entry
-            without a row. Each process worker builds the feature from
-            ``worker_build()``. Rows are flushed periodically.
-            When the apply stops early they are flushed, the entries in flight are
-            waited for and their outputs recorded, and they are flushed again. The pool
-            is closed on every exit after it is built, which writes the phase's final
-            report.
+            Entries with a valid output on disk are recorded without loading
+            their input. The rest are computed through a pool built from the
+            settings of *state*, and their measures go to *state*. Each
+            computed entry's task loads its input, unless overlap, a pair
+            filter or the cross join has the run load it, and writes its
+            output, and the run records the row from the task's report. A load
+            of no rows leaves the entry without a row. Each process worker
+            builds the feature from ``worker_build()``. Rows are flushed
+            periodically. When the apply stops early they are flushed, the
+            entries in flight are waited for and their outputs recorded, and
+            they are flushed again. The pool is closed on every exit after it
+            is built, which writes the phase's final report.
             """
             settings = state.settings
             # The growth each process worker measured of the entry it applied, held

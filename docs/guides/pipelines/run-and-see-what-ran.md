@@ -231,11 +231,10 @@ is a cache hit for one with one, and a recipe never carries it. `--parallel-mode
 is the default. Choose `process` for a feature whose per-entry work is a Python loop,
 which holds the interpreter lock in threads. Each worker is a separate interpreter that
 imports the feature libraries, so it uses much more memory. A worker reads each entry's
-input itself, except with overlap, a feature that widens an individual-level input onto
-the pair rows of another input, a nearest-neighbor pair filter or the cross join, whose
-input the run reads and hands to it. A worker that the host stops ends the step with
-`WorkerProcessDied`. Run the request again with fewer workers or in thread mode. The
-entries already written are kept.
+input itself, except with overlap, a nearest-neighbor pair filter or the cross join,
+whose input the run reads and hands to it. A worker that the host stops ends the step
+with `WorkerProcessDied`. Run the request again with fewer workers or in thread mode.
+The entries already written are kept.
 
 Inside a container, memory means the container's limit, not the host's.
 `--min-free-memory-fraction 0.1` makes a run wait for its entries in flight before it
