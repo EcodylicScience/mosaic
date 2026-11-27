@@ -165,6 +165,16 @@ a group with none. Both read every row under any `pairs` rule, and are refused w
 `threshold` and with `transform: "abs"`. A column in degrees goes through
 `derive-columns` first, for example `deg2rad(angle_deg)`.
 
+`quantile` writes one column for each of `quantiles`, each a number from 0 to 1, named
+`<column>_quantile_<text>`, where the text is the quantile as a percent without trailing
+zeros and with the point written `_`: 0.95 gives `95`, 0.995 gives `99_5` and 0.5 gives
+`50`. The value is `numpy.quantile(values, q, method=quantile_method)` over the group's
+non-null values, with `quantile_method` one of numpy's method names (`linear` by
+default), and NaN for a group with none. `hazen` is the method of Octave's `prctile`. It
+reads every row under any `pairs` rule. Each of `quantile` and `quantiles` needs the
+other, `quantile_method` other than `linear` needs `quantile`, and two quantiles that
+give one text are refused.
+
 **Tags.** `sequence-tag-columns` attaches a sequence's tags to each row of its input,
 the same value on every row of the sequence, whatever the row's id. It reads tracks with
 or without tracklets. `fields` names the tags to attach, each one a tag of the dataset's

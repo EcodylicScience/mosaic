@@ -48,6 +48,14 @@ No run id or output moves.
 - `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `circmean`
   and `circstd` aggregations for angles in radians. Their run ids stay while neither is
   in `aggs`.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` gain the `quantile`
+  aggregation, with `quantiles` and `quantile_method`, which write a column
+  `<column>_quantile_<text>` for each quantile. Their run ids stay while `quantiles` is
+  unset and `quantile_method` is `linear`.
+- `frame-aggregate`, `sequence-aggregate` and `individual-aggregate` now refuse a
+  `quantile_method` other than `linear` without `quantile` in `aggs`, and a
+  `keep_columns` or `subgroup_col` entry named like a column an aggregation writes
+  (`x_mean`, `x_quantile_50`), which the aggregation used to overwrite without a word.
 
 ## Unreleased: features that read only results compute in every track space
 

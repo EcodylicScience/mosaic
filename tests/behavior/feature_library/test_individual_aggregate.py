@@ -1279,3 +1279,54 @@ def test_dense_value_bins_write_each_bin_for_each_individual() -> None:
     assert out["value_bin"].tolist() == [0, 1] * 3
     assert out["value_sum"].tolist() == [1.0, 4.0, 2.0, 6.0, 0.0, 11.0]
     assert out["value_mean"].isna().tolist() == [False] * 4 + [True, False]
+
+
+def test_quantiles_of_each_individual_equal_np_quantile_with_the_method() -> None:
+    values = np.random.default_rng(3).normal(size=(4, 3))
+    table = pd.DataFrame(
+        [
+            {
+                "frame": frame,
+                "id": identity,
+                "value": values[frame, identity],
+                "group": "G",
+                "sequence": "S1",
+            }
+            for frame in range(4)
+            for identity in range(3)
+        ]
+    )
+    params: dict[str, object] = {
+        "columns": ["value"],
+        "aggs": ["quantile", "mean"],
+        "quantiles": [0.25, 0.995],
+        "quantile_method": "hazen",
+    }
+
+    out = _apply(params, table)
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "id",
+        "value_quantile_25",
+        "value_quantile_99_5",
+        "value_mean",
+    ]
+    for q, name in ((0.25, "value_quantile_25"), (0.995, "value_quantile_99_5")):
+        expected = [np.quantile(values[:, i], q, method="hazen") for i in range(3)]
+        np.testing.assert_array_equal(out[name], expected)
+
+
+def test_quantiles_over_pair_input_read_every_row_of_a_focal() -> None:
+    table = _pair_table()
+
+    out = _apply(
+        {"columns": ["A_speed"], "aggs": ["quantile"], "quantiles": [0.5]}, table
+    )
+
+    expected = [
+        np.quantile(table.loc[table["id1"] == focal, "A_speed"].to_numpy(), 0.5)
+        for focal in (0, 1, 2)
+    ]
+    np.testing.assert_array_equal(out["A_speed_quantile_50"], expected)

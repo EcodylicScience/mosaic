@@ -18,12 +18,14 @@ from mosaic.behavior.feature_library.aggregate_common import (
     MAX_VALUE_BIN_EDGES,
     Aggregation,
     AggregateParams,
+    QuantileMethod,
     ThresholdOp,
     ValueBins,
     blank_reduction,
     blank_rows,
     combine_prepared,
     prepare_rows,
+    quantile_text,
     reduce_column,
     reduce_prepared,
     split_keys,
@@ -98,7 +100,7 @@ def test_the_table_assigns_each_aggregation_its_combination() -> None:
         "circmean",
         "circstd",
     }
-    assert values == {"median"}
+    assert values == {"median", "quantile"}
 
 
 @pytest.mark.parametrize("keys", [KEYS, ["sequence"]], ids=["apart", "pooled"])
@@ -1892,3 +1894,473 @@ def test_a_blank_reduction_writes_nan_for_each_circular_statistic() -> None:
     for name in ("angle_circmean", "angle_circstd"):
         assert out[name].dtype == np.float64
         assert out[name].isna().all()
+
+
+# --- quantiles ------------------------------------------------------------------------
+
+METHODS: tuple[QuantileMethod, ...] = (
+    "inverted_cdf",
+    "averaged_inverted_cdf",
+    "closest_observation",
+    "interpolated_inverted_cdf",
+    "hazen",
+    "weibull",
+    "linear",
+    "median_unbiased",
+    "normal_unbiased",
+    "lower",
+    "higher",
+    "midpoint",
+    "nearest",
+)
+QUANTILES = [0.0, 0.07, 0.1, 0.5, 0.995, 1.0]
+
+
+def _samples(count: int = 61, seed: int = 21) -> pd.DataFrame:
+    """Two sequences' rows in an interleaved order, with random values."""
+    generator = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": np.where(generator.random(count) < 0.5, "A", "B"),
+            "id": 0,
+            "frame": np.arange(count),
+            "time": np.arange(count) / 10,
+            "value": generator.normal(size=count),
+        }
+    )
+
+
+def _quantile_params(**fields: object) -> AggregateParams:
+    return AggregateParams.model_validate(
+        {"columns": ["value"], "aggs": ["quantile"], "quantiles": QUANTILES, **fields}
+    )
+
+
+def _name(q: float) -> str:
+    return f"value_quantile_{quantile_text(q)}"
+
+
+def test_the_methods_are_the_names_numpy_accepts() -> None:
+    assert set(get_args(QuantileMethod.__value__)) == set(METHODS)
+    for method in METHODS:
+        _ = np.quantile(np.arange(5.0), 0.3, method=method)
+
+
+@pytest.mark.parametrize(
+    ("q", "text"),
+    [
+        (0.5, "50"),
+        (1.0, "100"),
+        (0.1, "10"),
+        (0.995, "99_5"),
+        (0.07, "7"),
+        (0.95, "95"),
+        (0.0, "0"),
+        (-0.0, "0"),
+        (0.25, "25"),
+        (0.001, "0_1"),
+        (1e-05, "0_001"),
+    ],
+)
+def test_the_text_of_a_quantile_is_its_percent_without_trailing_zeros(
+    q: float, text: str
+) -> None:
+    assert quantile_text(q) == text
+
+
+@pytest.mark.parametrize("method", METHODS)
+def test_each_quantile_equals_np_quantile_of_its_group_with_the_method(
+    method: QuantileMethod,
+) -> None:
+    table = _samples()
+    params = _quantile_params(quantile_method=method)
+
+    out = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+    assert out["sequence"].tolist() == ["A", "B"]
+    assert list(out.columns) == [*KEYS, *(_name(q) for q in QUANTILES)]
+    for q in QUANTILES:
+        expected = [
+            np.quantile(
+                table.loc[table["sequence"] == sequence, "value"].to_numpy(),
+                q,
+                method=method,
+            )
+            for sequence in ("A", "B")
+        ]
+        np.testing.assert_array_equal(out[_name(q)], expected)
+        assert out[_name(q)].dtype == np.float64
+
+
+def test_an_unset_method_is_numpys_linear_method() -> None:
+    table = _samples()
+
+    out = reduce_column(
+        table, _quantile_params(), ["group"], who=WHO, pairs="each_perspective"
+    )
+
+    values = table["value"].to_numpy()
+    for q in QUANTILES:
+        np.testing.assert_array_equal(out[_name(q)], [np.quantile(values, q)])
+
+
+def test_quantile_columns_stand_at_the_place_of_the_aggregation() -> None:
+    params = _quantile_params(aggs=["mean", "quantile", "max"], quantiles=[0.95, 0.5])
+
+    out = reduce_column(_samples(), params, KEYS, who=WHO, pairs="each_perspective")
+
+    assert list(out.columns) == [
+        *KEYS,
+        "value_mean",
+        "value_quantile_95",
+        "value_quantile_50",
+        "value_max",
+    ]
+
+
+def test_a_null_value_is_skipped_and_an_all_null_group_is_nan() -> None:
+    table = _samples(count=30, seed=2)
+    table.loc[table["sequence"] == "B", "value"] = np.nan
+    table.loc[table.index[table["sequence"] == "A"][:3], "value"] = np.nan
+
+    out = reduce_column(
+        table, _quantile_params(), KEYS, who=WHO, pairs="each_perspective"
+    )
+
+    kept = table.loc[table["sequence"] == "A", "value"].dropna().to_numpy()
+    for q in QUANTILES:
+        np.testing.assert_array_equal(out[_name(q)], [np.quantile(kept, q), np.nan])
+
+
+def test_an_empty_group_does_not_call_numpy(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*args: object, **kwargs: object) -> float:
+        raise AssertionError("np.quantile was called for an empty group")
+
+    monkeypatch.setattr(np, "quantile", refuse)
+    table = _samples(count=6)
+    table["value"] = pd.array([None] * 6, dtype="Float64")
+
+    out = reduce_column(
+        table, _quantile_params(), ["group"], who=WHO, pairs="each_perspective"
+    )
+
+    for q in QUANTILES:
+        np.testing.assert_array_equal(out[_name(q)], [np.nan])
+
+
+def test_a_nullable_column_gives_the_same_quantiles_as_its_float_values() -> None:
+    table = _samples(count=24, seed=9)
+    nullable = table.assign(value=table["value"].astype("Float64"))
+    params = _quantile_params(quantile_method="hazen")
+
+    plain = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+    out = reduce_column(nullable, params, KEYS, who=WHO, pairs="each_perspective")
+
+    pd.testing.assert_frame_equal(out, plain, check_exact=True)
+
+
+def test_an_integer_column_is_read_as_float64() -> None:
+    table = _samples(count=20, seed=4)
+    table["value"] = (table["value"] * 10).astype("int64")
+
+    out = reduce_column(
+        table, _quantile_params(), ["group"], who=WHO, pairs="each_perspective"
+    )
+
+    values = table["value"].to_numpy(dtype=np.float64)
+    for q in QUANTILES:
+        np.testing.assert_array_equal(out[_name(q)], [np.quantile(values, q)])
+
+
+def test_quantiles_read_every_row_under_any_pairs_rule() -> None:
+    generator = np.random.default_rng(4)
+    values = generator.normal(size=8)
+    table = pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": "S",
+            "id1": 0,
+            "id2": 1,
+            "perspective": np.tile([0, 1], 4),
+            "frame": np.repeat(np.arange(4), 2),
+            "time": np.repeat(np.arange(4), 2) / 10,
+            "value": values,
+        }
+    )
+    params = _quantile_params(aggs=["quantile", "median", "count"])
+
+    for pairs in ("once", "each_perspective"):
+        out = reduce_column(table, params, KEYS, who=WHO, pairs=pairs)
+        for q in QUANTILES:
+            np.testing.assert_array_equal(out[_name(q)], [np.quantile(values, q)])
+        np.testing.assert_array_equal(out["value_median"], [np.median(values)])
+        assert out["value_count"].tolist() == [4 if pairs == "once" else 8]
+
+
+def test_a_pool_of_entries_takes_the_quantiles_of_the_union() -> None:
+    first = _samples(count=20, seed=1).assign(group="A")
+    second = _samples(count=25, seed=2).assign(group="B")
+    params = _quantile_params()
+    pool = ["sequence"]
+
+    parts = [prepare_rows(table, params, pool, who=WHO) for table in (first, second)]
+    pooled = reduce_prepared(combine_prepared(parts), params, pairs="each_perspective")
+
+    union = pd.concat([first, second], ignore_index=True)
+    inline = reduce_column(union, params, pool, who=WHO, pairs="each_perspective")
+    pd.testing.assert_frame_equal(pooled, inline, check_exact=True)
+    for q in QUANTILES:
+        expected = [
+            np.quantile(union.loc[union["sequence"] == sequence, "value"], q)
+            for sequence in ("A", "B")
+        ]
+        np.testing.assert_array_equal(pooled[_name(q)], expected)
+
+
+def test_each_value_bin_takes_the_quantiles_of_its_own_rows() -> None:
+    table = _samples(count=40, seed=8)
+    params = _quantile_params(value_bins=[{"column": "time", "edges": [0.0, 2.0, 4.0]}])
+
+    out = reduce_column(table, params, ["group"], who=WHO, pairs="each_perspective")
+
+    low = table.loc[table["time"] < 2.0, "value"].to_numpy()
+    high = table.loc[
+        (table["time"] >= 2.0) & (table["time"] <= 4.0), "value"
+    ].to_numpy()
+    for q in QUANTILES:
+        np.testing.assert_array_equal(
+            out[_name(q)], [np.quantile(part, q) for part in (low, high)]
+        )
+
+
+def test_overlapping_subsets_each_take_the_quantiles_of_their_own_rows() -> None:
+    table = _samples(count=50, seed=13)
+    params = _quantile_params(subsets={"early": "time < 3.0", "late": "time >= 2.0"})
+
+    out = reduce_column(table, params, ["group"], who=WHO, pairs="each_perspective")
+
+    early = table.loc[table["time"] < 3.0, "value"].to_numpy()
+    late = table.loc[table["time"] >= 2.0, "value"].to_numpy()
+    assert out["subset"].tolist() == ["early", "late"]
+    for q in QUANTILES:
+        np.testing.assert_array_equal(
+            out[_name(q)], [np.quantile(part, q) for part in (early, late)]
+        )
+
+
+def test_a_threshold_gives_the_quantiles_of_the_passing_indicator() -> None:
+    table = _samples(count=30, seed=6)
+    params = _quantile_params(threshold=0.0, quantiles=[0.25, 0.75])
+
+    out = reduce_column(table, params, ["group"], who=WHO, pairs="each_perspective")
+
+    passing = (table["value"].to_numpy() > 0.0).astype(np.float64)
+    for q in (0.25, 0.75):
+        np.testing.assert_array_equal(out[_name(q)], [np.quantile(passing, q)])
+
+
+def test_a_blank_reduction_writes_nan_for_each_quantile() -> None:
+    params = _quantile_params(aggs=["quantile", "count"], quantiles=[0.5, 0.995])
+
+    out = blank_reduction(_samples(count=4), params, KEYS)
+
+    assert list(out.columns) == [
+        *KEYS,
+        "value_quantile_50",
+        "value_quantile_99_5",
+        "value_count",
+    ]
+    for name in ("value_quantile_50", "value_quantile_99_5"):
+        assert out[name].dtype == np.float64
+        assert out[name].isna().all()
+    assert (out["value_count"] == 0.0).all()
+
+
+def test_quantiles_without_the_aggregation_are_refused() -> None:
+    with pytest.raises(ValueError, match="quantiles.*aggs has no quantile"):
+        _ = AggregateParams(columns=["value"], aggs=["mean"], quantiles=[0.5])
+
+
+def test_the_aggregation_without_quantiles_is_refused() -> None:
+    with pytest.raises(ValueError, match="quantile.*quantiles is not set"):
+        _ = AggregateParams(columns=["value"], aggs=["quantile"])
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1, float("nan"), float("inf")])
+def test_a_quantile_outside_zero_to_one_is_refused(bad: float) -> None:
+    with pytest.raises(ValueError, match="quantiles"):
+        _ = _quantile_params(quantiles=[0.5, bad])
+
+
+def test_an_empty_list_of_quantiles_is_refused() -> None:
+    with pytest.raises(ValueError, match="quantiles"):
+        _ = _quantile_params(quantiles=[])
+
+
+@pytest.mark.parametrize("repeated", [[0.5, 0.5], [0.0, -0.0], [0.1, 0.9, 0.1]])
+def test_two_quantiles_with_one_text_are_refused(repeated: list[float]) -> None:
+    with pytest.raises(ValueError, match="quantiles.*same column name"):
+        _ = _quantile_params(quantiles=repeated)
+
+
+def test_a_method_other_than_linear_without_the_aggregation_is_refused() -> None:
+    with pytest.raises(ValueError, match="quantile_method.*aggs has no quantile"):
+        _ = AggregateParams(columns=["value"], aggs=["mean"], quantile_method="hazen")
+
+
+def test_the_linear_method_without_the_aggregation_is_the_default() -> None:
+    params = AggregateParams(columns=["value"], aggs=["mean"], quantile_method="linear")
+
+    assert (
+        params.identity_dump()
+        == AggregateParams(columns=["value"], aggs=["mean"]).identity_dump()
+    )
+
+
+def test_negative_zero_and_zero_are_one_quantile_in_the_identity_dump() -> None:
+    negative = _quantile_params(quantiles=[-0.0, 0.5])
+    positive = _quantile_params(quantiles=[0.0, 0.5])
+
+    assert repr(negative.identity_dump()["quantiles"]) == "[0.0, 0.5]"
+    assert negative.identity_dump() == positive.identity_dump()
+    assert repr(negative.quantiles) == "[0.0, 0.5]"
+
+
+def test_a_group_of_one_or_two_values_takes_the_scalar_quantiles() -> None:
+    table = pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": ["A"] + ["B"] * 2 + ["C"] * 3,
+            "value": [4.0, 1.0, 9.0, 2.0, 2.0, 5.0],
+        }
+    )
+    for method in METHODS:
+        params = _quantile_params(quantile_method=method)
+
+        out = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+        for q in QUANTILES:
+            expected = [
+                np.quantile(
+                    table.loc[table["sequence"] == sequence, "value"].to_numpy(),
+                    q,
+                    method=method,
+                )
+                for sequence in ("A", "B", "C")
+            ]
+            np.testing.assert_array_equal(out[_name(q)], expected)
+
+
+@pytest.mark.parametrize(
+    ("kept", "aggs", "extra"),
+    [
+        ("x_mean", ["mean"], {}),
+        ("x_count", ["mean", "count"], {}),
+        ("x_median", ["median"], {}),
+        ("x_quantile_50", ["quantile"], {"quantiles": [0.5]}),
+        ("x_quantile_99_5", ["quantile"], {"quantiles": [0.1, 0.995]}),
+        ("x_share_up", ["share"], {"categories": ["up", "down"]}),
+    ],
+)
+def test_a_kept_column_named_like_an_aggregate_output_is_refused_by_the_params(
+    kept: str, aggs: list[str], extra: dict[str, object]
+) -> None:
+    fields: dict[str, object] = {
+        "columns": ["x"],
+        "aggs": aggs,
+        "keep_columns": [kept],
+        **extra,
+    }
+
+    with pytest.raises(ValueError, match=f"keep_columns lists {kept}, which"):
+        _ = AggregateParams.model_validate(fields)
+
+
+def test_a_subgroup_column_named_like_an_aggregate_output_is_refused() -> None:
+    with pytest.raises(ValueError, match="subgroup_col lists x_mean, which"):
+        _ = AggregateParams(columns=["x"], aggs=["mean"], subgroup_col="x_mean")
+    with pytest.raises(ValueError, match="subgroup_col lists x_mean, which"):
+        _ = AggregateParams(
+            columns=["x"], aggs=["mean"], subgroup_col=["tag", "x_mean"]
+        )
+
+
+def test_an_entry_that_keeps_no_row_cannot_overwrite_a_kept_column_either() -> None:
+    """The refusal is the params', so no blank row is written over a kept column."""
+    with pytest.raises(ValueError, match="keep_columns lists x_mean"):
+        _ = AggregateParams(
+            columns=["x"],
+            aggs=["mean"],
+            keep_columns=["x_mean"],
+            filter_expr="x > 100",
+        )
+
+
+def test_names_that_no_output_takes_may_be_kept() -> None:
+    params = AggregateParams(
+        columns=["x"],
+        aggs=["quantile", "count"],
+        quantiles=[0.5],
+        keep_columns=["x_quantile_90", "x_mean", "x_share_up", "y_count"],
+    )
+
+    assert params.keep_columns == ["x_quantile_90", "x_mean", "x_share_up", "y_count"]
+
+
+def test_a_kept_column_named_like_a_share_column_of_the_data_is_refused() -> None:
+    table = pd.DataFrame(
+        {
+            "group": "G",
+            "sequence": ["A", "A", "B"],
+            "time": [0.0, 0.1, 0.0],
+            "frame": [0, 1, 0],
+            "x": ["up", "down", "up"],
+            "x_share_up": ["k", "k", "j"],
+        }
+    )
+    params = AggregateParams(columns=["x"], aggs=["share"], keep_columns=["x_share_up"])
+
+    with pytest.raises(ValueError, match="the column 'x_share_up' would be written by"):
+        _ = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+
+def test_an_unknown_method_is_refused() -> None:
+    with pytest.raises(ValueError, match="quantile_method"):
+        _ = _quantile_params(quantile_method="pandas")
+
+
+def test_a_quantile_column_that_a_share_column_also_names_is_refused() -> None:
+    table = _samples(count=8).assign(x="y_quantile_50", x_share_y="a")
+    params = AggregateParams(
+        columns=["x", "x_share_y"],
+        aggs=["share", "quantile"],
+        quantiles=[0.5],
+    )
+
+    with pytest.raises(ValueError, match="x_share_y_quantile_50"):
+        _ = reduce_column(table, params, KEYS, who=WHO, pairs="each_perspective")
+
+
+def test_the_quantile_options_leave_the_identity_dump_while_unset_or_linear() -> None:
+    plain = AggregateParams(columns=["value"], aggs=["quantile"], quantiles=[0.5])
+    linear = AggregateParams(
+        columns=["value"],
+        aggs=["quantile"],
+        quantiles=[0.5],
+        quantile_method="linear",
+    )
+    hazen = AggregateParams(
+        columns=["value"],
+        aggs=["quantile"],
+        quantiles=[0.5],
+        quantile_method="hazen",
+    )
+    unset = AggregateParams(columns=["value"], aggs=["mean"])
+
+    assert "quantiles" not in unset.identity_dump()
+    assert "quantile_method" not in unset.identity_dump()
+    assert plain.identity_dump()["quantiles"] == [0.5]
+    assert "quantile_method" not in plain.identity_dump()
+    assert linear.identity_dump() == plain.identity_dump()
+    assert hazen.identity_dump()["quantile_method"] == "hazen"

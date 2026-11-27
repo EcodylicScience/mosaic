@@ -137,7 +137,11 @@ class FrameAggregate:
             ParamColumn("keep_columns"),
             ParamColumn("value_bins", key="column", suffix=BIN_SUFFIX),
             ParamColumn(
-                "columns", suffixes="aggs", families=("share",), members="categories"
+                "columns",
+                suffixes="aggs",
+                families=("share",),
+                members="categories",
+                open_families=("quantile",),
             ),
         ),
         conditional=(

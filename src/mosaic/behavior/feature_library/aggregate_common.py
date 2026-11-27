@@ -36,6 +36,11 @@ under any ``pairs`` rule and skips a row whose ``order_col`` is null.
 with none. They read every row under any ``pairs`` rule and are refused with
 ``threshold`` and with ``transform: "abs"``.
 
+``quantile`` writes one column for each of ``quantiles``, the
+``np.quantile`` of the group's non-null values under ``quantile_method``
+(:func:`quantile_text` names it), NaN for a group with none. Like ``median`` it
+reads every row under any ``pairs`` rule.
+
 ``subsets`` names filters that each reduce the rows they keep, after
 ``filter_expr``, and ``subset`` joins the reduction keys after the caller's
 keys (:data:`SUBSET`). A subset that keeps no row has no row in
@@ -56,6 +61,7 @@ import operator
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Annotated, Final, Literal, Self, override
 
@@ -87,6 +93,23 @@ type Aggregation = Literal[
     "first_pass",
     "circmean",
     "circstd",
+    "quantile",
+]
+
+type QuantileMethod = Literal[
+    "inverted_cdf",
+    "averaged_inverted_cdf",
+    "closest_observation",
+    "interpolated_inverted_cdf",
+    "hazen",
+    "weibull",
+    "linear",
+    "median_unbiased",
+    "normal_unbiased",
+    "lower",
+    "higher",
+    "midpoint",
+    "nearest",
 ]
 
 type ThresholdOp = Literal[">", ">=", "<", "<="]
@@ -122,6 +145,7 @@ AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
         "first_pass": AggregationRule("partials"),
         "circmean": AggregationRule("partials"),
         "circstd": AggregationRule("partials"),
+        "quantile": AggregationRule("values"),
     }
 )
 """Every member of :data:`Aggregation` and how its groups combine across entries."""
@@ -138,7 +162,7 @@ _AGGS_DESCRIPTION = (
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
     "are mean, median, min, max, std, sum, count, duration, share, "
-    "first_pass, circmean and circstd. A null "
+    "first_pass, circmean, circstd and quantile. A null "
     "value (NaN, None or NA) is skipped for every mode, and count counts "
     "non-null values. With threshold, a null value stays null: it passes no "
     "comparison, so mean skips it, count does not count it and duration does "
@@ -167,7 +191,27 @@ _AGGS_DESCRIPTION = (
     "a value in [-pi, pi), and scipy.stats.circstd(values), each over the "
     "group's non-null values in input row order, or NaN when the group has "
     "none. They read every row under any pairs rule, and are refused with "
-    "threshold and with transform abs."
+    "threshold and with transform abs. quantile writes a column "
+    "`<column>_quantile_<text>` for each of quantiles, in that order, the "
+    "numpy.quantile(values, q, method=quantile_method) of the group's non-null "
+    "values as float64, or NaN when the group has none. The text is q as a "
+    "percent without trailing zeros and with the point written _: 0.95 gives "
+    "95 and 0.995 gives 99_5. It reads every row under any pairs rule, and "
+    "needs quantiles."
+)
+
+_QUANTILES_DESCRIPTION = (
+    "The quantiles that the quantile aggregation writes, each a number from 0 "
+    "to 1, at least one, with no two giving the same column name. Needs "
+    "quantile in aggs, and quantile needs it."
+)
+
+_QUANTILE_METHOD_DESCRIPTION = (
+    "The method of numpy.quantile that the quantile aggregation uses: "
+    "inverted_cdf, averaged_inverted_cdf, closest_observation, "
+    "interpolated_inverted_cdf, hazen, weibull, linear, median_unbiased, "
+    "normal_unbiased, lower, higher, midpoint or nearest. hazen is the method "
+    "of Octave's prctile. Needs quantile in aggs."
 )
 
 _CATEGORIES_DESCRIPTION = (
@@ -536,6 +580,13 @@ class AggregateParams(Params):
         Field(default=None, min_length=1)
     )
     dense: Annotated[bool, Declared(_DENSE_DESCRIPTION)] = False
+    quantiles: Annotated[
+        list[Annotated[float, Field(ge=0, le=1)]] | None,
+        Declared(_QUANTILES_DESCRIPTION),
+    ] = Field(default=None, min_length=1)
+    quantile_method: Annotated[
+        QuantileMethod, Declared(_QUANTILE_METHOD_DESCRIPTION)
+    ] = "linear"
 
     @field_validator(
         "columns", "aggs", "keep_columns", "categories", check_fields=False
@@ -587,6 +638,29 @@ class AggregateParams(Params):
                 )
             if not expression.strip():
                 raise ValueError(f"subsets lists no filter for {name!r}")
+        return value
+
+    @field_validator("quantiles", check_fields=False)
+    @classmethod
+    def _each_quantile_names_its_own_column(
+        cls, value: list[float] | None
+    ) -> list[float] | None:
+        """Refuse two quantiles whose texts are the same, which name one column.
+
+        A negative zero reads as zero, so ``[-0.0]`` and ``[0.0]`` are one run.
+        """
+        if value is None:
+            return None
+        value = [q + 0.0 for q in value]
+        named: dict[str, float] = {}
+        for q in value:
+            text = quantile_text(q)
+            if text in named:
+                raise ValueError(
+                    f"quantiles lists {named[text]} and {q}, which give the same "
+                    f"column name suffix {text!r}"
+                )
+            named[text] = q
         return value
 
     def subgroup_columns(self) -> list[str]:
@@ -653,6 +727,26 @@ class AggregateParams(Params):
                     f"{agg} reduces angles as they are and cannot be combined "
                     "with transform 'abs'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_quantiles_without_the_aggregation_and_the_reverse(self) -> Self:
+        """Refuse the quantile options without ``quantile``, and the reverse.
+
+        ``quantile_method`` other than ``linear`` is such an option, since the
+        method changes no value that another aggregation reads.
+        """
+        if not has_fields(self, "aggs", "quantiles", "quantile_method"):
+            return self
+        listed = "quantile" in self.aggs
+        if self.quantiles is not None and not listed:
+            raise ValueError("quantiles is set but aggs has no quantile")
+        if self.quantile_method != "linear" and not listed:
+            raise ValueError(
+                f"quantile_method is {self.quantile_method!r} but aggs has no quantile"
+            )
+        if listed and self.quantiles is None:
+            raise ValueError("quantile is in aggs but quantiles is not set")
         return self
 
     @model_validator(mode="after")
@@ -741,16 +835,47 @@ class AggregateParams(Params):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _refuse_a_kept_or_subgroup_name_that_an_aggregation_writes(self) -> Self:
+        """Refuse a kept or subgroup column named like a column an aggregation writes.
+
+        The names are those :func:`_static_output_names` lists. A ``share``
+        without ``categories`` writes names that only the data decides, which
+        the reduction checks. A subclass without these fields leaves the
+        verdict to the full model.
+        """
+        if not has_fields(
+            self,
+            "keep_columns",
+            "subgroup_col",
+            "columns",
+            "aggs",
+            "categories",
+            "quantiles",
+        ):
+            return self
+        written = dict(_static_output_names(self))
+        for field, names in (
+            ("keep_columns", self.keep_columns),
+            ("subgroup_col", self.subgroup_columns()),
+        ):
+            for name in names:
+                if name in written:
+                    raise ValueError(
+                        f"{field} lists {name}, which {written[name]} writes"
+                    )
+        return self
+
     @override
     def identity_dump(self) -> dict[str, object]:
         """The hashed params, less each field that leaves the output as it was.
 
         ``keep_columns`` empty, ``categories`` unset, ``bin_s`` unset,
         ``subsets`` unset, ``value_bins`` unset, ``dense`` false, ``threshold_op``
-        ``>`` and ``order_col`` ``time``
-        write the output a run wrote before the fields existed, so leaving them
-        out keeps every such run's identifier. A kept column or a category adds
-        output columns and enters the hash as any field does.
+        ``>``, ``order_col`` ``time``, ``quantiles`` unset and ``quantile_method``
+        ``linear`` write the output a run wrote before the fields existed, so
+        leaving them out keeps every such run's identifier. A kept column or a
+        category adds output columns and enters the hash as any field does.
 
         A set ``threshold`` adds ``threshold_missing``: a null value stays null
         under the comparison, where a NaN of a float column once counted as
@@ -775,6 +900,10 @@ class AggregateParams(Params):
             del dumped["value_bins"]
         if not self.dense:
             del dumped["dense"]
+        if self.quantiles is None:
+            del dumped["quantiles"]
+        if self.quantile_method == "linear":
+            del dumped["quantile_method"]
         if self.threshold is not None:
             dumped["threshold_missing"] = "skip"
         return dumped
@@ -798,6 +927,67 @@ class PairAggregateParams(AggregateParams):
         ``once``.
         """
         return "once" if self.pairs == "once" else "each_perspective"
+
+
+def quantile_text(q: float) -> str:
+    """The text of a quantile in the name of its column.
+
+    The quantile as a percent without trailing zeros, the decimal point written
+    ``_``: 0.95 gives ``95``, 0.995 gives ``99_5``, 0.5 gives ``50`` and 1.0
+    gives ``100``. Negative zero reads as zero.
+
+    Args:
+        q: A quantile from 0 to 1.
+
+    Returns:
+        The text, which holds digits and ``_`` only.
+    """
+    percent = (Decimal(repr(q)) * 100).normalize()
+    if not percent:
+        percent = Decimal(0)
+    return format(percent, "f").replace(".", "_")
+
+
+def _static_output_names(params: AggregateParams) -> list[tuple[str, str]]:
+    """The result columns the params fix without reading data, each with its source.
+
+    Each of ``columns`` gives ``<column>_<agg>`` for each aggregation but
+    ``share`` and ``quantile``, ``<column>_quantile_<text>`` for each of
+    ``quantiles``, and, with ``categories`` set,
+    ``<column>_share_<category>`` for each. A ``share`` without ``categories``
+    names its columns from the data and lists none.
+
+    Args:
+        params: The columns, aggregations, quantiles and categories.
+
+    Returns:
+        ``(name, source)`` pairs in output order, where the source reads as
+        ``quantile of column 'x'``.
+    """
+    named: list[tuple[str, str]] = []
+    for column in params.columns:
+        for agg in params.aggs:
+            if agg == "share":
+                named.extend(
+                    (
+                        f"{column}_share_{category}",
+                        f"share of column {column!r} for the value {category!r}",
+                    )
+                    for category in params.categories or ()
+                )
+            elif agg == "quantile":
+                named.extend(
+                    (_quantile_column(column, q), f"quantile {q} of column {column!r}")
+                    for q in params.quantiles or ()
+                )
+            else:
+                named.append((f"{column}_{agg}", f"{agg} of column {column!r}"))
+    return named
+
+
+def _quantile_column(column: str, q: float) -> str:
+    """The name of the column that holds the quantile *q* of *column*."""
+    return f"{column}_quantile_{quantile_text(q)}"
 
 
 def bin_key(column: str) -> str:
@@ -868,6 +1058,27 @@ def _plain_values(values: pd.Series) -> np.ndarray:
     return values.to_numpy()
 
 
+def _non_null_floats(values: pd.Series) -> NDArray[np.float64]:
+    """The group's values as float64, in row order, without the nulls."""
+    floats = values.to_numpy(dtype=np.float64)
+    return floats[~np.isnan(floats)]
+
+
+def _quantiles_of(
+    values: pd.Series, quantiles: Sequence[float], method: QuantileMethod
+) -> NDArray[np.float64]:
+    """The quantiles *quantiles* of one group's values under *method*.
+
+    Passes the group's non-null values as float64 to ``np.quantile`` once, for
+    every quantile, and gives NaN for each when the group has none, without
+    calling numpy.
+    """
+    floats = _non_null_floats(values)
+    if floats.size == 0:
+        return np.full(len(quantiles), np.nan)
+    return np.asarray(np.quantile(floats, list(quantiles), method=method))
+
+
 def _circular_statistic(agg: Aggregation) -> Callable[[pd.Series], float]:
     """The reduction of one group's angles by ``circmean`` or ``circstd``.
 
@@ -877,8 +1088,7 @@ def _circular_statistic(agg: Aggregation) -> Callable[[pd.Series], float]:
     """
 
     def reduce(values: pd.Series) -> float:
-        angles = values.to_numpy(dtype=np.float64)
-        angles = angles[~np.isnan(angles)]
+        angles = _non_null_floats(values)
         if angles.size == 0:
             return float("nan")
         from scipy import stats
@@ -1101,6 +1311,9 @@ def _refuse_a_repeated_output_name(
 ) -> None:
     """Refuse an output column name that two of the entry's outputs would take.
 
+    Reads the names the params fix (:func:`_static_output_names`) and, without
+    ``categories``, the ``share`` names that the entry's data decides.
+
     Raises:
         ValueError: Two sources write one name. The message names the name and
             both sources.
@@ -1117,16 +1330,15 @@ def _refuse_a_repeated_output_name(
 
     for name in (*keys, *carried):
         claim(name, f"the column {name!r} of the input")
-    for column in params.columns:
-        for agg in params.aggs:
-            if agg == "share":
-                for value in share_names[column]:
-                    claim(
-                        f"{column}_share_{value}",
-                        f"share of column {column!r} for the value {value!r}",
-                    )
-            else:
-                claim(f"{column}_{agg}", f"{agg} of column {column!r}")
+    for name, source in _static_output_names(params):
+        claim(name, source)
+    if params.categories is None:
+        for column in params.columns:
+            for value in share_names.get(column, ()):
+                claim(
+                    f"{column}_share_{value}",
+                    f"share of column {column!r} for the value {value!r}",
+                )
 
 
 def _share_fractions(
@@ -1701,6 +1913,22 @@ def reduce_prepared(
                 for value, fraction in fractions[column].items():
                     reduced[f"{column}_share_{value}"] = fraction
                 continue
+            if agg == "quantile":
+                quantiles = params.quantiles or []
+                grouped = work.groupby(group_keys, sort=True)[f"_v{index}"]
+                found = np.array(
+                    [
+                        _quantiles_of(values, quantiles, params.quantile_method)
+                        for _, values in grouped
+                    ],
+                    dtype=np.float64,
+                ).reshape(-1, len(quantiles))
+                found_index = grouped.size().index
+                for position, q in enumerate(quantiles):
+                    reduced[_quantile_column(column, q)] = pd.Series(
+                        found[:, position], index=found_index
+                    ).reindex(reduced.index)
+                continue
             counting = agg in PAIR_COUNTING_AGGS
             if agg == "duration":
                 source = halved_pieces if once else piece_keys
@@ -1914,6 +2142,9 @@ def blank_reduction(
             if agg == "share":
                 for category in params.categories or ():
                     blank[f"{column}_share_{category}"] = np.nan
+            elif agg == "quantile":
+                for q in params.quantiles or ():
+                    blank[_quantile_column(column, q)] = np.nan
             else:
                 blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
     return blank

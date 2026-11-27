@@ -608,6 +608,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   rule and are refused with `threshold` and with `transform: "abs"`. To summarize
   angles in degrees, first make a radian column with `derive-columns`
   (`deg2rad(angle_deg)`).
+  `quantile` with `quantiles`, each from 0 to 1, writes a column
+  `<column>_quantile_<text>` for each, where the text is the quantile as a percent
+  without trailing zeros and with the point written `_` (0.95 gives `95`, 0.995 gives
+  `99_5`). The value is `numpy.quantile(values, q, method=quantile_method)` over the
+  group's non-null values, `linear` by default, and NaN for a group with none. It reads
+  every row under any `pairs` rule. Each of `quantile` and `quantiles` needs the other,
+  `quantile_method` other than `linear` needs `quantile`, and no two quantiles may give
+  one text.
 - `neighbor-delta-response` writes one row per focal, neighbor and frame, with the
   neighbor's offset in the focal's frame (`neighbor_x` along the heading, `neighbor_y`
   to its left) and the focal's windowed response (`dx`, `dy`, `dt`, `dangle`,

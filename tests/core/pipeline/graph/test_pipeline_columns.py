@@ -2203,6 +2203,60 @@ def test_an_aggregate_writes_the_bin_key_of_each_binned_column_only_when_set() -
     assert binned.guaranteed - unset.guaranteed == {"b_bin", "c_bin"}
 
 
+_QUANTILES: dict[str, JsonValue] = {
+    "columns": ["a", "b"],
+    "aggs": ["mean", "quantile"],
+    "quantiles": [0.5, 0.995],
+    **{"value_bins": _BINNED["value_bins"]},
+}
+
+
+@pytest.mark.parametrize(
+    "declaration", [FrameAggregate, SequenceAggregate, IndividualAggregate]
+)
+def test_an_aggregate_provides_the_closed_columns_and_the_open_quantile_prefixes(
+    declaration: type[FrameAggregate | SequenceAggregate | IndividualAggregate],
+) -> None:
+    def wired(params: dict[str, JsonValue]) -> tuple[tuple[str, ...], list[str]]:
+        provided = provided_wire(declaration.provides, params)
+        (named,) = [
+            names for names in provided.adds if names.params[:2] == ("columns", "aggs")
+        ]
+        assert named.prefixes == ()
+        open_prefixes = [
+            prefix
+            for entry in provided.conditional
+            if not entry.when_param
+            for prefix in entry.names.prefixes
+        ]
+        return named.columns, open_prefixes
+
+    columns, open_prefixes = wired(_QUANTILES)
+    plain, no_prefixes = wired({**_QUANTILES, "aggs": ["mean"], "quantiles": None})
+
+    assert columns == ("a_mean", "b_mean")
+    assert open_prefixes == ["a_quantile_", "b_quantile_"]
+    assert plain == ("a_mean", "b_mean")
+    assert no_prefixes == []
+
+
+def test_an_aggregate_with_quantiles_writes_its_means_and_leaves_the_texts_open() -> (
+    None
+):
+    output = output_columns(SequenceAggregate.provides, ColumnSet(), _QUANTILES)
+
+    assert {"a_mean", "b_mean", "b_bin", "c_bin"} <= output.guaranteed
+    assert {"a_quantile_", "b_quantile_"} <= output.possible_prefixes
+    assert not any(
+        name.startswith(("a_quantile", "b_quantile")) for name in output.guaranteed
+    )
+    assert not output.possible_prefixes & {"c_quantile_"}
+    unset = output_columns(
+        SequenceAggregate.provides, ColumnSet(), {**_QUANTILES, "aggs": ["mean"]}
+    )
+    assert not unset.possible_prefixes
+
+
 def test_a_step_binning_a_column_its_input_lacks_is_refused() -> None:
     step: dict[str, JsonValue] = {
         "id": "agg",

@@ -1320,6 +1320,51 @@ def test_unset_value_bins_keep_each_aggregate_run_id_and_a_set_list_moves_it(
     assert with_params(value_bins=[heading, speed]) != two
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_unset_quantiles_keep_each_aggregate_run_id_and_a_set_list_moves_it(
+    case_id: str,
+) -> None:
+    """``quantiles`` unset and ``quantile_method`` ``linear`` are the golden run.
+
+    The aggregation, a list of quantiles and each method but ``linear`` are other
+    runs, and the order of the list is part of the run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    params = case.params
+    assert params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+
+    def with_params(**fields: object) -> str:
+        return _identifier(replace(case, params={**params, **fields}))
+
+    def with_quantiles(**fields: object) -> str:
+        return with_params(aggs=["mean", "quantile"], **fields)
+
+    assert _identifier(case) == golden
+    assert with_params(quantiles=None) == golden
+    assert with_params(quantile_method="linear") == golden
+    assert with_params(quantiles=None, quantile_method="linear") == golden
+    mean = with_params(aggs=["mean"])
+    assert mean == golden
+    half = with_quantiles(quantiles=[0.5])
+    assert half != golden
+    assert with_quantiles(quantiles=[0.5], quantile_method="linear") == half
+    assert with_quantiles(quantiles=[0.5], quantile_method="hazen") != half
+    assert with_quantiles(quantiles=[0.9]) != half
+    two = with_quantiles(quantiles=[0.5, 0.9])
+    assert two != half
+    assert with_quantiles(quantiles=[0.9, 0.5]) != two
+
+
 def test_the_new_params_of_neighbor_delta_response_move_its_run_id_only_when_set() -> (
     None
 ):
