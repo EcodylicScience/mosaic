@@ -1448,6 +1448,40 @@ def test_an_unset_hull_perimeter_keeps_the_run_id_of_collective_motion_metrics()
         assert with_params(True) != golden, params
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"statistic": "mean"},
+        {"statistic": "percentile", "percentile": 25.0},
+        {"per": "sequence"},
+        {"dimensions": 3},
+        {"segment_statistic": True},
+    ],
+    ids=["statistic", "percentile", "per", "dimensions", "segment-statistic"],
+)
+def test_the_body_length_options_move_its_run_id_only_when_set(
+    option: dict[str, object],
+) -> None:
+    """Leaving each option out and setting it to its default are the golden run.
+
+    Each option at another value changes what is measured, so it is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == "body-length/default")
+    golden = read_string_golden(GOLDEN)["body-length/default"]
+    defaults: dict[str, object] = {
+        "statistic": "median",
+        "per": "id",
+        "dimensions": 2,
+        "segment_statistic": False,
+    }
+
+    assert _identifier(case) == golden
+    assert _identifier(replace(case, params=defaults)) == golden
+    assert _identifier(replace(case, params=option)) != golden
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

@@ -62,6 +62,13 @@ No run id or output moves.
 - `collective-motion-metrics` gains `hull_perimeter`, which writes the perimeter of the
   convex hull of each group's finite positions in id order under every `area_method`.
   Its run ids stay while `hull_perimeter` is false.
+- `body-length` gains `statistic` (`median`, `mean` or `percentile`, with `percentile`),
+  `per` (`id` or `sequence`), `dimensions` (2 or 3) and `segment_statistic`, and now
+  accepts world-frame tables (`mosaic_world_v1`) with `dimensions: 3`, where it
+  measures the chain in 3D. With `source: keypoints`, a world-frame table under
+  `dimensions: 2` fails its entry naming `dimensions: 3`. `dimensions: 3` and
+  `segment_statistic` are refused with `source: column`, which reads no keypoints. Its
+  run ids stay while the options are unset.
 
 ## Unreleased: features that read only results compute in every track space
 

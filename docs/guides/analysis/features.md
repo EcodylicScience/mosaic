@@ -50,6 +50,16 @@ in the world frame, `pose-egocentric` (each keypoint in the animal's own body fr
 from a left-right pair or a front-rear pair of keypoints), and `roi-occupancy` (which
 regions of an arena each position lies in; see [Time in regions](#time-in-regions)).
 
+`body-length` reports the median over each individual's rows of the length along a
+chain of keypoints. `statistic` takes `median`, `mean` or `percentile` (with
+`percentile` from 0 to 100), and `per: sequence` pools every row of the entry, so every
+individual records the same value. Set `segment_statistic` to apply the statistic to
+each segment over the rows where that segment is finite and sum them in chain order,
+which keeps a segment's rows when another keypoint is missing. With `dimensions: 3` it
+measures a world-frame table (`mosaic_world_v1`) in 3D over `poseX`, `poseY` and
+`poseZ`, and with `source: keypoints` it refuses such a table under the default
+`dimensions: 2`. `dimensions: 3` and `segment_statistic` need `source: keypoints`.
+
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
 whichever level you feed them.

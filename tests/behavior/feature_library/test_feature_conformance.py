@@ -511,6 +511,7 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "pair-wavelet": _EVERY_SPACE,
     "derive-columns": _EVERY_SPACE,
     "track-coverage": _EVERY_SPACE,
+    "body-length": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
     "pair-world": frozenset({"world_m"}),
     "pair-posedistance-pca": _EVERY_SPACE,

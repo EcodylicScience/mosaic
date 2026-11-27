@@ -560,6 +560,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   hull takes the points in the order of their ids with repeated positions kept, so its
   last digit can differ from a perimeter computed over the sorted distinct positions,
   the points `area` uses.
+- `body-length` reports the median, over each individual's rows, of the length along a
+  keypoint chain. `statistic` (`median`, `mean`, or `percentile` with `percentile` from
+  0 to 100) changes the statistic, and `per: sequence` pools every row of the entry so
+  that every individual records one value. `segment_statistic` applies the statistic to
+  each segment over the rows where that segment is finite and sums them in chain order.
+  It runs on a world-frame table with `dimensions: 3`, measuring in 3D over `poseX`,
+  `poseY` and `poseZ`, and with `source: keypoints` refuses such a table under the
+  default `dimensions: 2`. `dimensions: 3` and `segment_statistic` need
+  `source: keypoints`.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
   `individual-aggregate` (one row per individual) reduce each of `columns` by each of
   `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.

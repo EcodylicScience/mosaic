@@ -60,9 +60,9 @@ Per-frame attention target with group-membership labeling.
 
 ### `body-length`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength` &middot; Track spaces `image_px`, `plane_cm`
+Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
-Body length of each individual, per frame and as a per-sequence median.
+Body length of each individual, per frame and as a pooled statistic.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -70,6 +70,11 @@ Body length of each individual, per frame and as a per-sequence median.
 | `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The chain of keypoints the length runs along, from the front of the body to the back, each by index or by name. Unset, every keypoint in the table's order. A frame where any keypoint of the chain is missing has no length. Read when source is keypoints. |
 | `keypoint_names` | list of `string` \| `None` | `null` |  | Names for the table's keypoints, in index order, so that keypoints can name them. Must list one name per keypoint the table carries. |
 | `column` | `string` | `"body_length"` | min length `1` | The column holding a length already measured per row, read when source is column. |
+| `statistic` | `"median"` \| `"mean"` \| `"percentile"` | `"median"` |  | The statistic of the lengths that body_length reports. median is np.median, mean is np.mean, and percentile is np.percentile with linear interpolation at the value of percentile. |
+| `percentile` | `number` \| `None` | `null` |  | The percentile, from 0 to 100, that statistic computes. Required with statistic percentile and refused with any other. |
+| `per` | `"id"` \| `"sequence"` | `"id"` |  | The rows one reported value pools. id pools each individual's rows. sequence pools every row of the entry, so every individual records the same value. |
+| `dimensions` | `2` \| `3` | `2` |  | The dimensions each segment is measured in. 2 reads poseX and poseY and refuses a table with a Z axis. 3 reads poseX, poseY and poseZ of every keypoint of the chain and refuses a table without them, as a world-frame table (mosaic_world_v1) carries them. Needs source: keypoints. |
+| `segment_statistic` | `boolean` | `false` |  | Apply statistic to each segment of the chain over the rows where that segment is finite, and report the sum of those statistics in chain order, so a row missing one keypoint still counts for the segments it has. body_length_frame and the rows written stay those with a finite, positive full-chain length. Needs source: keypoints. |
 
 ### `body-scale`
 
