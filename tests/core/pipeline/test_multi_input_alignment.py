@@ -40,6 +40,7 @@ import pytest
 from mosaic.core.pipeline import alignment_verdict, entity_level_of
 from mosaic.core.pipeline.types import LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline.loading import (
+    EntryRowsMissing,
     MultiInputAlignmentError,
     PairRowsMissing,
     _merge_parquet_inputs,
@@ -380,7 +381,9 @@ def test_an_empty_pair_input_beside_individual_rows_is_refused(tmp_path: Path) -
     """Without it the entry would hand individual rows to a pair-level consumer."""
     tables = [_pairs([0]).iloc[0:0], _individuals([(0, 0), (0, 1)])]
 
-    with pytest.raises(PairRowsMissing, match="input 0"):
+    with pytest.raises(PairRowsMissing, match="input 0") as raised:
         _ = load_entry_data(_specs(tmp_path, tables), expands_individuals=True)
+
+    assert isinstance(raised.value, EntryRowsMissing)
 
     assert load_entry_data(_specs(tmp_path, tables)) is not None

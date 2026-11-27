@@ -329,14 +329,14 @@ are in `graph/CLAUDE.md`.
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
   output with no shared identity column is refused. `CROSS_JOIN_FEATURES` is the
   closed escape (`tests/core/pipeline/test_multi_input_alignment.py`).
-- `expands_individuals` (`loading.py`) is the one gate for widening an
-  individual-level input onto the pair rows of a pair-level input 0, as
-  `<col>__id1` and `<col>__id2`: `emits` of `as-input` or `pair`, outside
-  `CROSS_JOIN_FEATURES`. `run_feature`, `verify.py`, `_load_neighbor` and the
-  declarations (`ConsumerDecl.expands_individuals`) all read it, and `merge_naming`
-  names the columns for the merge and for validation. An entry whose pair input holds
-  no rows raises `PairRowsMissing` in its task, or in the parent's load under overlap,
-  and either is recorded as an `entry_error`
+- `expands_individuals` (`loading.py`) is the one gate for widening an individual-level
+  input onto the pair rows of a pair-level input 0, as `<col>__id1` and `<col>__id2`:
+  `emits` of `as-input` or `pair`, outside `CROSS_JOIN_FEATURES`. `run_feature`,
+  `verify.py`, `_load_neighbor` and the declarations (`ConsumerDecl.expands_individuals`)
+  all read it, and `merge_naming` names the columns for the merge and for validation. An
+  entry whose pair input holds no rows raises `PairRowsMissing`, a subclass of
+  `EntryRowsMissing`, in its task, or in the parent's load under overlap, and either is
+  recorded as an `entry_error`
   (`tests/core/pipeline/test_widening_join.py`). `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
@@ -419,32 +419,32 @@ are in `graph/CLAUDE.md`.
   a failure, a skip without a table, and missing pair rows. An exit that does not would
   stall the gate (`tests/core/pipeline/test_run_measures.py`).
 - Each computed entry runs as an `EntryTask` through `run_entry` (`entry_task.py`) in
-  every mode. The task's `source` is the table the parent loaded or an `EntryLoad`,
-  which the worker loads through `load_entry_data` and `entry_bounds_filters` inside a
-  memo that `ParquetFooterMemo.from_records` builds from the parent's `FooterRecord`s,
-  keyed by the path as the load spells it. The worker checks the columns, refuses an
-  arena-blind input, applies, trims and writes the output with `create_parent=False`,
-  and the parent records the row from the report. A load that returns no table reports
-  `written=False`, and the entry leaves the in-flight record without a row. A process
-  worker runs it through `run_entry_in_process` with the feature its `FeatureWorker`
-  holds, which the worker builds at its first task (`_built_feature`) and keeps for the
-  pool's life, and which a build that raised leaves unbuilt, so the worker's next task
-  builds again. The pool's initializer (`start_feature_worker`) builds nothing. The
-  worker reads its base before the load, which for the task that built the feature
-  contains the feature's state, and subtracts only a handed table. An input failure (any
-  load error but `PairRowsMissing`) and a trim or write failure return as an
-  `EntryFailure`, and the run raises it. `PairRowsMissing` and any other entry error
-  raise in the task and are recorded as an `entry_error`. The task loads its entry's
-  input, with the load's `expands_individuals` and `pair_filter`, unless the run asks
-  for overlap or the feature is the cross join. Those shapes load in the parent through
-  `iter_manifest`, which hands the task the table. Both sites call `load_entry_data`. A
-  pair-filtered task builds its entry's nearest-neighbor lookup through `nn_pair_filter`
-  before the load: a pool thread from the run's dataset, and a process worker from the
-  dataset `worker_dataset` opens without its roots (`ensure_roots=False`). The fit's
-  input stream builds it in the parent. A neighbor table that cannot be read is an input
-  failure, which ends the run with its error and no `entry_error`. `entry_task.py` names
-  no index module, the run-log or `job` in its own imports
-  (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
+  every mode. The task's `source` is the table the parent loaded or an `EntryLoad`, which
+  the worker loads through `load_entry_data` and `entry_bounds_filters` inside a memo that
+  `ParquetFooterMemo.from_records` builds from the parent's `FooterRecord`s, keyed by the
+  path as the load spells it. The worker checks the columns, refuses an arena-blind input,
+  applies, trims and writes the output with `create_parent=False`, and the parent records
+  the row from the report. A load that returns no table reports `written=False`, and the
+  entry leaves the in-flight record without a row. A process worker runs it through
+  `run_entry_in_process` with the feature its `FeatureWorker` holds, which the worker
+  builds at its first task (`_built_feature`) and keeps for the pool's life, and which a
+  build that raised leaves unbuilt, so the worker's next task builds again. The pool's
+  initializer (`start_feature_worker`) builds nothing. The worker reads its base before
+  the load, which for the task that built the feature contains the feature's state, and
+  subtracts only a handed table. An input failure (any load error but `EntryRowsMissing`)
+  and a trim or write failure return as an `EntryFailure`, and the run raises it.
+  `EntryRowsMissing`, the one base of an entry that loses the rows its merge needs, and
+  any other entry error raise in the task and are recorded as an `entry_error`. The task
+  loads its entry's input, with the load's `expands_individuals` and `pair_filter`, unless
+  the run asks for overlap or the feature is the cross join. Those shapes load in the
+  parent through `iter_manifest`, which hands the task the table. Both sites call
+  `load_entry_data`. A pair-filtered task builds its entry's nearest-neighbor lookup
+  through `nn_pair_filter` before the load: a pool thread from the run's dataset, and a
+  process worker from the dataset `worker_dataset` opens without its roots
+  (`ensure_roots=False`). The fit's input stream builds it in the parent. A neighbor table
+  that cannot be read is an input failure, which ends the run with its error and no
+  `entry_error`. `entry_task.py` names no index module, the run-log or `job` in its own
+  imports (`tests/core/pipeline/test_entry_task.py`, `test_entry_errors.py`,
   `test_pair_filter_load.py`, `tests/meta/test_entry_task_imports.py`).
 - `apply_seconds` runs from the dispatch, so it contains the load of an entry whose
   worker loads it and, for the entry whose worker built the feature for it, that build,

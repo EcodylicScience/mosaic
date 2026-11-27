@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline.composition import input_part
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
@@ -19,6 +20,7 @@ from mosaic.core.pipeline.index import (
     feature_index,
 )
 from mosaic.core.pipeline.inventory.params import RunParams
+from mosaic.core.pipeline.loading import EntryRowsMissing
 from mosaic.core.pipeline.manifest import (
     ManifestEntry,
     UnrunFeatureInput,
@@ -26,7 +28,13 @@ from mosaic.core.pipeline.manifest import (
     iter_manifest,
     verify_overlap_supported,
 )
-from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
+from mosaic.core.pipeline.types import (
+    Inputs,
+    LoadSpec,
+    ParquetLoadSpec,
+    Result,
+    TrackInputs,
+)
 from mosaic.core.recording import OrderFacts
 from mosaic.core.scope import Scope
 
@@ -910,7 +918,7 @@ def test_a_neighbor_without_pair_rows_gives_no_context(tmp_path: Path) -> None:
             manifest,
             overlap_frames=3,
             expands_individuals=True,
-            on_pairs_missing=lambda key, _exc: missing.append(key),
+            on_rows_missing=lambda key, _exc: missing.append(key),
         )
     )
 
@@ -919,6 +927,38 @@ def test_a_neighbor_without_pair_rows_gives_no_context(tmp_path: Path) -> None:
     _key, df, selector = loaded[0]
     assert not (df["frame"] < selector.first).any()
     assert (df["frame"] > selector.last).any()
+
+
+class _NoRowsForEntry(EntryRowsMissing):
+    """An entry-loss error that is not a pair loss."""
+
+
+def test_an_entry_that_loses_its_rows_goes_to_on_rows_missing_and_iteration_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _pairs_and_individuals_manifest(tmp_path)
+    lost = manifest["g1__s2"].file_specs
+
+    def loading(
+        file_specs: list[tuple[Path, LoadSpec]], *_: object, **__: object
+    ) -> pd.DataFrame | None:
+        if file_specs == lost:
+            msg = "no rows for this entry"
+            raise _NoRowsForEntry(msg)
+        return pd.DataFrame({"frame": [0]})
+
+    monkeypatch.setattr(manifest_module, "load_entry_data", loading)
+    missing: list[tuple[str, Exception]] = []
+
+    loaded = list(
+        iter_manifest(
+            manifest, on_rows_missing=lambda key, exc: missing.append((key, exc))
+        )
+    )
+
+    assert [key for key, _exc in missing] == ["g1__s2"]
+    assert type(missing[0][1]) is _NoRowsForEntry
+    assert [key for key, _ in loaded] == ["g1__s1", "g1__s3"]
 
 
 # --- the part a feature input adds to the inputs cell ----------------------------

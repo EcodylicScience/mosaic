@@ -114,7 +114,7 @@ from .inventory.params import (
 )
 from .loading import (
     CROSS_JOIN_FEATURES,
-    PairRowsMissing,
+    EntryRowsMissing,
     entry_bounds_filters,
     expands_individuals,
     input_projection,
@@ -131,7 +131,7 @@ from .manifest import (
     build_manifest,
     iter_manifest,
     print_progress,
-    skip_pairs_missing,
+    skip_rows_missing,
     tracks_variants_for,
     unrun_feature_input,
     verify_overlap_supported,
@@ -891,7 +891,7 @@ def fit_input_stream(
             filter_factory=filter_factory,
             cross_join=cross_join,
             expands_individuals=widens_individuals,
-            on_pairs_missing=skip_pairs_missing,
+            on_rows_missing=skip_rows_missing,
         ):
             check_input_columns(
                 feature,
@@ -4321,8 +4321,8 @@ def _run_feature_impl(
 
                 return after_apply
 
-            def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
-                """Record an entry whose input 0 holds no pair rows as lost.
+            def _rows_missing(entry_key: str, exc: EntryRowsMissing) -> None:
+                """Record an entry whose input lacks the rows its merge needs as an entry error.
 
                 Only an entry that the run loads itself, under overlap, reaches
                 here. The task raises the error for every other widening entry, a
@@ -4433,7 +4433,7 @@ def _run_feature_impl(
                         progress_label=storage_feature_name,
                         cross_join=cross_join,
                         expands_individuals=widens_individuals,
-                        on_pairs_missing=_pairs_missing,
+                        on_rows_missing=_rows_missing,
                         before_load=_before_load,
                     ):
                         _process_entry(entry_key, df, selector)
@@ -4444,7 +4444,7 @@ def _run_feature_impl(
                         progress_label=storage_feature_name,
                         cross_join=cross_join,
                         expands_individuals=widens_individuals,
-                        on_pairs_missing=_pairs_missing,
+                        on_rows_missing=_rows_missing,
                         before_load=_before_load,
                     ):
                         _process_entry(entry_key, df, None)

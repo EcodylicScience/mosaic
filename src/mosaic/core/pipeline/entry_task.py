@@ -38,7 +38,7 @@ from .column_contract import check_input_columns
 from .entry_pool import EntryFailure, worker_dataset
 from .loading import (
     ColumnProjection,
-    PairRowsMissing,
+    EntryRowsMissing,
     entry_bounds_filters,
     load_entry_data,
     nn_pair_filter,
@@ -127,7 +127,8 @@ class EntryLoad:
         projection: The columns read from each input, ``None`` for every column.
         expands_individuals: Whether the load widens individual-level inputs onto
             the pair rows of input 0 and raises
-            :class:`~mosaic.core.pipeline.loading.PairRowsMissing` when input 0
+            :class:`~mosaic.core.pipeline.loading.PairRowsMissing` (an
+            :class:`~mosaic.core.pipeline.loading.EntryRowsMissing`) when input 0
             holds none.
         pair_filter: The nearest-neighbor filter that the load applies first,
             ``None`` for none.
@@ -277,13 +278,14 @@ def run_entry(
     Returns:
         The report of the output written or of a load of no rows, or the
         failure of the load, the trim or the write, with its error as raised.
-        A load's failure is any error of the load other than missing pair rows:
+        A load's failure is any error of the load other than missing entry rows:
         an unreadable or corrupt input or neighbor table, or a time window over
         rows without ``time``.
 
     Raises:
-        PairRowsMissing: A widening load found no pair rows in input 0 to widen
-            onto.
+        EntryRowsMissing: An input holds no rows for the entry while the merge needs
+            them, as a widening load that finds no pair rows in input 0
+            (:class:`~mosaic.core.pipeline.loading.PairRowsMissing`).
         MissingInputColumns: The input lacks a column the feature requires.
         ArenaBlindFeature: The feature is arena-blind and the input spans arenas.
         Exception: Whatever ``apply`` raises, or the error of a notice that does
@@ -293,7 +295,7 @@ def run_entry(
     if isinstance(task.source, EntryLoad):
         try:
             table = _loaded(task.source)
-        except PairRowsMissing:
+        except EntryRowsMissing:
             raise
         except Exception as error:
             return EntryFailure.capture(task.key, error, portable=False)

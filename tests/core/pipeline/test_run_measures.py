@@ -35,7 +35,7 @@ from mosaic.core.pipeline.memory_watch import MemorySample, MemoryWatch
 from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.column_contract import MissingInputColumns
-from mosaic.core.pipeline.loading import ColumnProjection, PairRowsMissing
+from mosaic.core.pipeline.loading import ColumnProjection, EntryRowsMissing
 from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.admission import (
     EntriesInFlight,
@@ -482,8 +482,8 @@ def _on_seq_b(
     monkeypatch.setattr(entry_task_module, "load_entry_data", load)
 
 
-def _raise_pairs_missing() -> pd.DataFrame | None:
-    raise PairRowsMissing("no pair rows")
+def _raise_rows_missing() -> pd.DataFrame | None:
+    raise EntryRowsMissing("no rows for the entry")
 
 
 def _no_table() -> pd.DataFrame | None:
@@ -491,7 +491,7 @@ def _no_table() -> pd.DataFrame | None:
 
 
 @pytest.mark.parametrize(
-    "answer", [_raise_pairs_missing, _no_table], ids=["pairs-missing", "no-table"]
+    "answer", [_raise_rows_missing, _no_table], ids=["rows-missing", "no-table"]
 )
 def test_an_entry_that_never_reaches_apply_leaves_the_record(
     tmp_path: Path,

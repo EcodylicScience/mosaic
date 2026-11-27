@@ -45,6 +45,7 @@ from mosaic.core.pipeline.entry_task import (
 )
 from mosaic.core.pipeline.loading import (
     ColumnProjection,
+    EntryRowsMissing,
     MultiInputAlignmentError,
     PairRowsMissing,
     load_entry_data,
@@ -498,13 +499,34 @@ def test_an_input_failure_returns_a_failure_and_writes_nothing(
 def test_missing_pair_rows_raise_as_the_entrys_error(
     run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def pairs_missing(*_: object, **__: object) -> NoReturn:
+    def rows_missing(*_: object, **__: object) -> NoReturn:
         msg = "input 0 holds no pair rows"
         raise PairRowsMissing(msg)
 
-    monkeypatch.setattr(entry_task, "load_entry_data", pairs_missing)
+    monkeypatch.setattr(entry_task, "load_entry_data", rows_missing)
 
     with pytest.raises(PairRowsMissing):
+        _ = run_entry(
+            ParallelFeature(), _load_task(run_root, _inputs(tmp_path / "t")), None
+        )
+
+    assert list(run_root.iterdir()) == []
+
+
+class _NoRowsForKey(EntryRowsMissing):
+    """An entry-loss error that is not a pair loss."""
+
+
+def test_any_entry_rows_missing_error_raises_as_the_entrys_error(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def rows_missing(*_: object, **__: object) -> NoReturn:
+        msg = "input 1 holds no rows for this entry"
+        raise _NoRowsForKey(msg)
+
+    monkeypatch.setattr(entry_task, "load_entry_data", rows_missing)
+
+    with pytest.raises(_NoRowsForKey):
         _ = run_entry(
             ParallelFeature(), _load_task(run_root, _inputs(tmp_path / "t")), None
         )

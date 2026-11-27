@@ -103,12 +103,20 @@ class MultiInputAlignmentError(ValueError):
     """Two inputs cannot be aligned without inventing or dropping rows."""
 
 
-class PairRowsMissing(MultiInputAlignmentError):
+class EntryRowsMissing(MultiInputAlignmentError):
+    """An input holds no rows for an entry whose merge needs them.
+
+    Dropping the empty input would change what the merged frame means. The run
+    records the entry as an ``entry_error`` instead of merging the rest.
+    """
+
+
+class PairRowsMissing(EntryRowsMissing):
     """Input 0 of a widening merge holds no pair rows for an entry.
 
     Dropping the empty input would leave the individual rows of a later input
     as the entry's merged frame, under a consumer whose output is keyed by pair
-    rows. ``run_feature`` records the entry as an ``entry_error`` instead.
+    rows.
     """
 
 
@@ -658,17 +666,17 @@ def load_entry_data(
     """
 
     def _load_dfs() -> Iterator[tuple[int, pd.DataFrame]]:
-        pairs_missing = False
+        pair_input_empty = False
         for declared, (path, load_spec) in enumerate(file_specs):
             df = load_parquet_dataframe(path, load_spec, projection=projection)
             if df is None:
-                pairs_missing = pairs_missing or (
+                pair_input_empty = pair_input_empty or (
                     declared == 0
                     and expands_individuals
                     and _holds_pair_rows(path, load_spec)
                 )
                 continue
-            if pairs_missing and entity_level_of(_column_names(df)) == "individual":
+            if pair_input_empty and entity_level_of(_column_names(df)) == "individual":
                 raise PairRowsMissing(
                     f"input 0 holds no pair rows for this entry, so the "
                     f"individual rows of input {declared} have none to widen onto"

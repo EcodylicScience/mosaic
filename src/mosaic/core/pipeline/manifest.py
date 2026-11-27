@@ -34,7 +34,7 @@ from .index import (
     readable_feature_storages,
 )
 from .index_csv import filter_index_rows
-from .loading import ColumnProjection, PairRowsMissing, load_entry_data
+from .loading import ColumnProjection, EntryRowsMissing, load_entry_data
 from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
@@ -1226,8 +1226,8 @@ def _load_neighbor(
 ) -> pd.DataFrame | None:
     """Load a neighbor segment with its own filters applied.
 
-    A neighbor whose input 0 holds no pair rows to widen onto
-    (:class:`~mosaic.core.pipeline.loading.PairRowsMissing`) gives no context,
+    A neighbor with an input that holds no rows its merge needs
+    (:class:`~mosaic.core.pipeline.loading.EntryRowsMissing`) gives no context,
     as an empty neighbor does.
     """
     if file_specs is None:
@@ -1243,7 +1243,7 @@ def _load_neighbor(
             expands_individuals=expands_individuals,
             projection=projection,
         )
-    except PairRowsMissing:
+    except EntryRowsMissing:
         return None
 
 
@@ -1286,8 +1286,8 @@ def print_progress(label: str, done: int, total: int, interval: int = 10) -> Non
         print(f"[{label}] Processed {done}/{total} sequences", file=sys.stderr)
 
 
-def skip_pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
-    """An ``on_pairs_missing`` that skips the entry, for a read beside the apply loop.
+def skip_rows_missing(entry_key: str, exc: EntryRowsMissing) -> None:
+    """An ``on_rows_missing`` that skips the entry, for a read beside the apply loop.
 
     A fit's input stream and a verification read the entries that the apply
     loop reads, and the apply loop records the lost entry.
@@ -1305,7 +1305,7 @@ def iter_manifest(
     progress_interval: int = 10,
     cross_join: bool = False,
     expands_individuals: bool = False,
-    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    on_rows_missing: Callable[[str, EntryRowsMissing], None] | None = None,
     before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame]]: ...
 
@@ -1320,7 +1320,7 @@ def iter_manifest(
     progress_interval: int = 10,
     cross_join: bool = False,
     expands_individuals: bool = False,
-    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    on_rows_missing: Callable[[str, EntryRowsMissing], None] | None = None,
     before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame, CoreSelector]]: ...
 
@@ -1334,7 +1334,7 @@ def iter_manifest(
     progress_interval: int = 10,
     cross_join: bool = False,
     expands_individuals: bool = False,
-    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    on_rows_missing: Callable[[str, EntryRowsMissing], None] | None = None,
     before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, CoreSelector]]:
     """Iterate manifest entries, yielding data per sequence.
@@ -1353,8 +1353,10 @@ def iter_manifest(
     feature that declares it (``loading.CROSS_JOIN_FEATURES``).
     *expands_individuals* passes the widening of individual inputs onto pair
     rows down to the loader, for both the entry and its neighbors
-    (``loading.expands_individuals``). An entry whose input 0 then holds no pair
-    rows is handed to *on_pairs_missing* and skipped, and raises without it.
+    (``loading.expands_individuals``). An entry that loses rows its merge needs
+    (:class:`~mosaic.core.pipeline.loading.EntryRowsMissing`, as when input 0
+    then holds no pair rows) is handed to *on_rows_missing* and skipped, and
+    raises without it.
     *before_load* is called with each entry's key before its table is read.
     """
     n_entries = len(manifest)
@@ -1376,10 +1378,10 @@ def iter_manifest(
                 expands_individuals=expands_individuals,
                 projection=entry.projection,
             )
-        except PairRowsMissing as exc:
-            if on_pairs_missing is None:
+        except EntryRowsMissing as exc:
+            if on_rows_missing is None:
                 raise
-            on_pairs_missing(entry_key, exc)
+            on_rows_missing(entry_key, exc)
             continue
         if df is None:
             continue

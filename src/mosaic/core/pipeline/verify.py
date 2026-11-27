@@ -82,7 +82,7 @@ from .manifest import (
     Manifest,
     build_manifest,
     iter_manifest,
-    skip_pairs_missing,
+    skip_rows_missing,
     verify_overlap_supported,
 )
 from .run import (
@@ -747,7 +747,7 @@ def _entries_of(rebuilt: _Rebuilt) -> Iterator[tuple[tuple[str, str], pd.DataFra
         filter_factory=rebuilt.filter_factory,
         cross_join=rebuilt.cross_join,
         expands_individuals=rebuilt.widens_individuals,
-        on_pairs_missing=skip_pairs_missing,
+        on_rows_missing=skip_rows_missing,
     ):
         yield resolve_sequence_identity(key, entry_map), frame
 
@@ -921,7 +921,7 @@ def _verify_fit(
                 overlap_frames=overlap,
                 cross_join=rebuilt.cross_join,
                 expands_individuals=rebuilt.widens_individuals,
-                on_pairs_missing=skip_pairs_missing,
+                on_rows_missing=skip_rows_missing,
             )
         )
     else:

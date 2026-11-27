@@ -13,7 +13,7 @@ from typing import Final
 
 import pytest
 
-from tests.helpers import SOURCE_ROOT, imports_in, source_tree
+from tests.helpers import SOURCE_ROOT, imports_in, is_third_party_source, source_tree
 
 DECLARING_MODULE: Final = SOURCE_ROOT / "core" / "pipeline" / "types" / "data_config.py"
 BIN_SPELLINGS: Final = frozenset({"bin_start", "bin_end"})
@@ -41,7 +41,9 @@ def _imported_from_aggregate_common(tree: ast.Module) -> list[int]:
 
 def _source_files() -> list[str]:
     return sorted(
-        str(path.relative_to(SOURCE_ROOT)) for path in SOURCE_ROOT.rglob("*.py")
+        str(path.relative_to(SOURCE_ROOT))
+        for path in SOURCE_ROOT.rglob("*.py")
+        if not is_third_party_source(path, SOURCE_ROOT)
     )
 
 
