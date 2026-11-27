@@ -33,8 +33,9 @@ from __future__ import annotations
 import math
 import operator
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Annotated, Literal, Self, override
 
 import numpy as np
@@ -57,6 +58,35 @@ type Aggregation = Literal[
 ]
 
 type ThresholdOp = Literal[">", ">=", "<", "<="]
+
+
+@dataclass(frozen=True)
+class AggregationRule:
+    """How the groups of an aggregation combine across entries.
+
+    Attributes:
+        combines: ``"partials"`` when a pool gets each group's value from
+            per-key partials of its entries, ``"values"`` when it needs every
+            value of the group.
+    """
+
+    combines: Literal["partials", "values"]
+
+
+AGGREGATIONS: Mapping[Aggregation, AggregationRule] = MappingProxyType(
+    {
+        "mean": AggregationRule("partials"),
+        "median": AggregationRule("values"),
+        "min": AggregationRule("partials"),
+        "max": AggregationRule("partials"),
+        "std": AggregationRule("partials"),
+        "sum": AggregationRule("partials"),
+        "count": AggregationRule("partials"),
+        "duration": AggregationRule("partials"),
+        "share": AggregationRule("partials"),
+    }
+)
+"""Every member of :data:`Aggregation` and how its groups combine across entries."""
 
 _COLUMNS_DESCRIPTION = (
     "The names of the columns to aggregate. Each column is reduced by each "
@@ -510,19 +540,20 @@ def _seconds_by_row(df: pd.DataFrame, who: str) -> NDArray[np.float64]:
         raise ValueError(f"{error} {_TIME_SENTENCE}") from error
 
 
-@dataclass(frozen=True)
-class _ShareColumn:
-    """What ``share`` reads of one column, and the columns it writes for it.
+@dataclass(frozen=True, eq=False)
+class _ShareTexts:
+    """What ``share`` reads of one column.
 
     Attributes:
         texts: The text of each row's value, by position, ``None`` for a null.
         readable: Whether each row belongs to a group, by position.
-        names: The values that get a column, in the order of the columns.
+        numeric: Whether the values are integers, which sort by number and not
+            by their text.
     """
 
     texts: NDArray[np.object_]
     readable: NDArray[np.bool_]
-    names: list[str]
+    numeric: bool
 
 
 def _texts_of_values(
@@ -580,25 +611,33 @@ def _texts_of_values(
     return result, numeric
 
 
-def _share_column(
-    values: pd.Series,
-    column: str,
-    readable: NDArray[np.bool_],
-    categories: Sequence[str] | None,
-) -> _ShareColumn:
-    """The texts of one column and the values that ``share`` writes a column for.
+def _share_texts(
+    values: pd.Series, column: str, readable: NDArray[np.bool_]
+) -> _ShareTexts:
+    """The texts of one column that ``share`` reads.
+
+    Raises:
+        ValueError: The column is of an unaccepted kind.
+    """
+    texts, numeric = _texts_of_values(values, column)
+    return _ShareTexts(texts=texts, readable=readable, numeric=numeric)
+
+
+def _share_names(
+    share: _ShareTexts, column: str, categories: Sequence[str] | None
+) -> list[str]:
+    """The values that ``share`` writes a column for, from one column's texts.
 
     The values are those of the rows that belong to a group: ``categories`` in
     their order when set, and otherwise each value that occurs, integers by
     number and other values by code point.
 
     Raises:
-        ValueError: The column is of an unaccepted kind, a value is not made of
-            letters, digits, underscores and hyphens, or a value is not among
-            ``categories``.
+        ValueError: A value is not made of letters, digits, underscores and
+            hyphens, or is not among ``categories``.
     """
-    texts, numeric = _texts_of_values(values, column)
-    read = {str(text) for text in texts[readable & ~pd.isna(texts)]}
+    texts = share.texts
+    read = {str(text) for text in texts[share.readable & ~pd.isna(texts)]}
     unsafe = sorted(text for text in read if not _SAFE_VALUE.fullmatch(text))
     if unsafe:
         raise ValueError(
@@ -607,23 +646,21 @@ def _share_column(
             "and hyphens"
         )
     if categories is None:
-        names = sorted(read, key=int) if numeric else sorted(read)
-    else:
-        outside = sorted(read.difference(categories))
-        if outside:
-            raise ValueError(
-                f"column {column!r} has the value {outside[0]!r}, which is not "
-                f"among the categories {list(categories)}"
-            )
-        names = list(categories)
-    return _ShareColumn(texts=texts, readable=readable, names=names)
+        return sorted(read, key=int) if share.numeric else sorted(read)
+    outside = sorted(read.difference(categories))
+    if outside:
+        raise ValueError(
+            f"column {column!r} has the value {outside[0]!r}, which is not "
+            f"among the categories {list(categories)}"
+        )
+    return list(categories)
 
 
 def _refuse_a_repeated_output_name(
     params: AggregateParams,
     keys: Sequence[str],
     carried: Sequence[str],
-    shares: dict[str, _ShareColumn],
+    share_names: Mapping[str, Sequence[str]],
 ) -> None:
     """Refuse an output column name that two of the entry's outputs would take.
 
@@ -646,7 +683,7 @@ def _refuse_a_repeated_output_name(
     for column in params.columns:
         for agg in params.aggs:
             if agg == "share":
-                for value in shares[column].names:
+                for value in share_names[column]:
                     claim(
                         f"{column}_share_{value}",
                         f"share of column {column!r} for the value {value!r}",
@@ -658,7 +695,8 @@ def _refuse_a_repeated_output_name(
 def _share_fractions(
     work: pd.DataFrame,
     keys: Sequence[str],
-    share: _ShareColumn,
+    share: _ShareTexts,
+    names: Sequence[str],
     seconds: NDArray[np.float64],
     groups: pd.Index,
 ) -> pd.DataFrame:
@@ -667,12 +705,13 @@ def _share_fractions(
     Args:
         work: The rows reduced, holding the keys.
         keys: The columns that group the rows.
-        share: The column's texts and the values that get a column.
+        share: The column's texts.
+        names: The values that get a column, in the order of the columns.
         seconds: The seconds of each row of *work*, by position.
         groups: The groups of the result, in order.
 
     Returns:
-        One column per value of *share*, ``float64`` with one row per group: the
+        One column per value of *names*, ``float64`` with one row per group: the
         seconds of the rows with that value over the seconds of the rows whose
         value is not null, 0 for a value a group lacks and NaN for a group with
         no value.
@@ -682,13 +721,13 @@ def _share_fractions(
         _text=share.texts[present], _seconds=seconds[present]
     )
     if rows.empty:
-        return pd.DataFrame(np.nan, index=groups, columns=share.names)
+        return pd.DataFrame(np.nan, index=groups, columns=list(names))
     total = rows.groupby(list(keys), sort=True)["_seconds"].sum().reindex(groups)
     by_value = (
         rows.groupby([*keys, "_text"], sort=True)["_seconds"]
         .sum()
         .unstack("_text")
-        .reindex(index=groups, columns=share.names)
+        .reindex(index=groups, columns=list(names))
         .fillna(0.0)
     )
     return by_value.div(total, axis=0)
@@ -787,6 +826,325 @@ def _spread_over_bins(
     return _BinnedSeconds(rows=rows, seconds=credited, index=index)
 
 
+@dataclass(frozen=True, eq=False)
+class PreparedRows:
+    """The rows of one table after ``filter_expr``, ``transform`` and ``threshold``.
+
+    :func:`prepare_rows` builds it and :func:`reduce_prepared` groups it, so a
+    pool can prepare each entry and reduce the union (:func:`combine_prepared`).
+
+    Attributes:
+        group_keys: The columns that group the rows: the caller's keys, then
+            ``bin_start`` and ``bin_end`` when ``bin_s`` is set.
+        carried: The columns that take a value within each group: the ``first``
+            columns, then ``keep_columns``.
+        rows: The kept rows, by position, with the group keys, the carried
+            columns, ``perspective`` when the input has it and, as ``_v<i>``,
+            the values of each of ``params.columns`` after ``transform`` and
+            ``threshold``. Empty when no row survives the filter.
+        pieces: The position in ``rows`` of the row each seconds piece comes
+            from. A row is one piece unless ``bin_s`` divides its seconds.
+        piece_seconds: The seconds of each piece, ``None`` when no aggregation
+            reads them.
+        piece_keys: The group keys of each piece, with ``_s<i>``, the seconds
+            of the piece that ``duration`` counts for each column.
+        shares: The texts of each column, for ``share``. Empty without it.
+    """
+
+    group_keys: tuple[str, ...]
+    carried: tuple[str, ...]
+    rows: pd.DataFrame
+    pieces: NDArray[np.intp]
+    piece_seconds: NDArray[np.float64] | None
+    piece_keys: pd.DataFrame
+    shares: Mapping[str, _ShareTexts]
+
+
+def prepare_rows(
+    df: pd.DataFrame,
+    params: AggregateParams,
+    keys: Sequence[str],
+    *,
+    who: str,
+    first: Sequence[str] = (),
+) -> PreparedRows:
+    """Apply the pre-aggregation steps of ``params`` to ``df``.
+
+    Applies ``filter_expr``, ``transform`` and ``threshold``, finds each row's
+    bin and divides its seconds among the bins it spans. :func:`reduce_prepared`
+    reduces the result. The rules are those of :func:`reduce_column`.
+
+    Args:
+        df: The rows to reduce.
+        params: The columns, aggregations and pre-aggregation steps.
+        keys: The columns to group by.
+        who: The feature's name, which opens the message of a time axis that
+            ``duration`` cannot read.
+        first: Columns that take their first value within each group.
+
+    Returns:
+        The prepared rows, with no rows when none survives the filter.
+
+    Raises:
+        ValueError: As :func:`reduce_column`, for what it reads from ``df``:
+            a kept column missing or varying within a group, ``bin_s`` without
+            ``time``, ``duration`` or ``share`` without a ``time`` that
+            advances, or ``share`` of a column of an unaccepted kind.
+    """
+    kept = tuple(params.keep_columns)
+    for column in kept:
+        if column not in df.columns:
+            raise ValueError(f"keep_columns column {column!r} is not in the input")
+    bin_s = params.bin_s
+    if bin_s is not None and C.time_col not in df.columns:
+        raise ValueError(
+            f"{who} bins rows by the {C.time_col!r} column, which the table "
+            f"lacks: it has {sorted(map(str, df.columns))}. {_BIN_TIME_SENTENCE}"
+        )
+    seconds: NDArray[np.float64] | None = None
+    if "duration" in params.aggs or "share" in params.aggs:
+        df = df.reset_index(drop=True)
+        seconds = _seconds_by_row(df, who)
+    if params.filter_expr:
+        df = df.query(params.filter_expr)
+    carried = (*first, *kept)
+    edge_names = (BIN_START, BIN_END) if bin_s is not None else ()
+    group_keys = (*keys, *edge_names)
+    if df.empty:
+        return PreparedRows(
+            group_keys=group_keys,
+            carried=carried,
+            rows=pd.DataFrame(),
+            pieces=np.empty(0, dtype=np.intp),
+            piece_seconds=None,
+            piece_keys=pd.DataFrame(),
+            shares={},
+        )
+    times = np.empty(0, dtype=np.float64)
+    first_bin = np.empty(0, dtype=np.float64)
+    edges: dict[str, NDArray[np.float64]] = {}
+    if bin_s is not None:
+        times = df[C.time_col].to_numpy(dtype=np.float64)
+        first_bin = _bin_index(times, bin_s)
+        edges = _bin_edges(first_bin, bin_s)
+    _refuse_a_varying_column(df.assign(**edges) if edges else df, group_keys, kept)
+
+    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
+    for name, edge in edges.items():
+        work[name] = edge
+    if _PERSPECTIVE_COLUMN in df.columns and _PERSPECTIVE_COLUMN not in work.columns:
+        work[_PERSPECTIVE_COLUMN] = df[_PERSPECTIVE_COLUMN].to_numpy()
+    kept_seconds = seconds[df.index.to_numpy()] if seconds is not None else None
+    # Each piece of a row's seconds, by the row it comes from and the bin it
+    # falls in. Without bins a row is one piece.
+    pieces = np.arange(len(work), dtype=np.intp)
+    piece_seconds = kept_seconds
+    piece_keys = work[list(group_keys)].reset_index(drop=True)
+    if kept_seconds is not None and bin_s is not None:
+        spread = _spread_over_bins(times, kept_seconds, first_bin, bin_s)
+        pieces = spread.rows
+        piece_seconds = spread.seconds
+        piece_keys = work[list(keys)].iloc[pieces].reset_index(drop=True)
+        for name, edge in _bin_edges(spread.index, bin_s).items():
+            piece_keys[name] = edge
+    shares: dict[str, _ShareTexts] = {}
+    if piece_seconds is not None and "share" in params.aggs:
+        readable = work[list(group_keys)].notna().all(axis=1).to_numpy()
+        shares = {
+            column: _share_texts(df[column], column, readable)
+            for column in params.columns
+        }
+    for index, column in enumerate(params.columns):
+        values = df[column]
+        if params.transform == "abs":
+            values = values.abs()
+        if params.threshold is not None:
+            values = _passes_threshold(values, params.threshold, params.threshold_op)
+        work[f"_v{index}"] = _plain_values(values)
+        if piece_seconds is not None and "duration" in params.aggs:
+            counted = (
+                work[f"_v{index}"].to_numpy() == 1.0
+                if params.threshold is not None
+                else values.notna().to_numpy()
+            )
+            piece_keys[f"_s{index}"] = np.where(counted[pieces], piece_seconds, 0.0)
+    return PreparedRows(
+        group_keys=group_keys,
+        carried=carried,
+        rows=work,
+        pieces=pieces,
+        piece_seconds=piece_seconds,
+        piece_keys=piece_keys,
+        shares=shares,
+    )
+
+
+def combine_prepared(parts: Sequence[PreparedRows]) -> PreparedRows:
+    """The union of several tables' prepared rows, to reduce as one.
+
+    Concatenates the rows, the seconds pieces (each part's ``pieces`` offset by
+    the rows before it) and the ``share`` texts, in the order of *parts*. A part
+    with no rows adds nothing.
+
+    Args:
+        parts: The preparations of the tables, made with the same params.
+
+    Returns:
+        The prepared rows of every part.
+
+    Raises:
+        ValueError: *parts* is empty, a part's keys, carried columns or
+            columns differ from the first's, or a ``share`` column holds
+            integers in some parts and other values in others.
+    """
+    if not parts:
+        raise ValueError("cannot combine no parts: give at least one")
+    head = parts[0]
+    for part in parts[1:]:
+        if part.group_keys != head.group_keys:
+            raise ValueError(
+                "cannot combine rows prepared with different keys: "
+                f"{list(head.group_keys)} and {list(part.group_keys)}"
+            )
+        if part.carried != head.carried:
+            raise ValueError(
+                "cannot combine rows prepared with different carried columns: "
+                f"{list(head.carried)} and {list(part.carried)}"
+            )
+    live = [part for part in parts if not part.rows.empty]
+    if not live:
+        return head
+    lead = live[0]
+    for part in live[1:]:
+        if (
+            list(part.rows.columns) != list(lead.rows.columns)
+            or list(part.piece_keys.columns) != list(lead.piece_keys.columns)
+            or list(part.shares) != list(lead.shares)
+            or (part.piece_seconds is None) != (lead.piece_seconds is None)
+        ):
+            raise ValueError(
+                "cannot combine rows prepared with different columns: "
+                f"{list(lead.rows.columns)} and {list(part.rows.columns)}"
+            )
+        for column, share in lead.shares.items():
+            if part.shares[column].numeric != share.numeric:
+                raise ValueError(
+                    f"cannot combine rows prepared with integer values of "
+                    f"column {column!r} in some parts and other values in others"
+                )
+    offsets: list[int] = []
+    total = 0
+    for part in live:
+        offsets.append(total)
+        total += len(part.rows)
+    seconds = [part.piece_seconds for part in live if part.piece_seconds is not None]
+    return PreparedRows(
+        group_keys=head.group_keys,
+        carried=head.carried,
+        rows=pd.concat([part.rows for part in live], ignore_index=True),
+        pieces=np.concatenate(
+            [part.pieces + offset for part, offset in zip(live, offsets, strict=True)]
+        ),
+        piece_seconds=np.concatenate(seconds) if seconds else None,
+        piece_keys=pd.concat([part.piece_keys for part in live], ignore_index=True),
+        shares={
+            column: _ShareTexts(
+                texts=np.concatenate([part.shares[column].texts for part in live]),
+                readable=np.concatenate(
+                    [part.shares[column].readable for part in live]
+                ),
+                numeric=lead.shares[column].numeric,
+            )
+            for column in lead.shares
+        },
+    )
+
+
+def reduce_prepared(
+    prepared: PreparedRows, params: AggregateParams, *, pairs: PairRead
+) -> pd.DataFrame:
+    """Group prepared rows and aggregate each column with each of ``aggs``.
+
+    Derives the ``share`` column names from the prepared texts and
+    ``params.categories``, refuses an output name that two sources write, and
+    reduces as :func:`reduce_column` describes.
+
+    Args:
+        prepared: The rows from :func:`prepare_rows` or :func:`combine_prepared`.
+        params: The params the rows were prepared with.
+        pairs: The rows of a pair table that ``sum``, ``count`` and ``duration``
+            read.
+
+    Returns:
+        The reduced table, empty when no row remains.
+
+    Raises:
+        ValueError: A ``share`` value cannot name a column or is not among
+            ``categories``, or an output name is written twice.
+    """
+    work = prepared.rows
+    if work.empty:
+        return pd.DataFrame()
+    group_keys = list(prepared.group_keys)
+    carried = prepared.carried
+    pieces = prepared.pieces
+    piece_seconds = prepared.piece_seconds
+    piece_keys = prepared.piece_keys
+    reduced = _carried_by_group(work, group_keys, carried)
+    fractions: dict[str, pd.DataFrame] = {}
+    if piece_seconds is not None and "share" in params.aggs:
+        names = {
+            column: _share_names(prepared.shares[column], column, params.categories)
+            for column in params.columns
+        }
+        _refuse_a_repeated_output_name(params, group_keys, carried, names)
+        fractions = {
+            column: _share_fractions(
+                piece_keys,
+                group_keys,
+                _ShareTexts(
+                    texts=share.texts[pieces],
+                    readable=share.readable[pieces],
+                    numeric=share.numeric,
+                ),
+                names[column],
+                piece_seconds,
+                reduced.index,
+            )
+            for column, share in prepared.shares.items()
+        }
+    once = pairs == "once" and _PERSPECTIVE_COLUMN in work.columns
+    perspective_zero = (work[_PERSPECTIVE_COLUMN] == 0).to_numpy() if once else None
+    halved = work[perspective_zero] if perspective_zero is not None else work
+    halved_pieces = (
+        piece_keys[perspective_zero[pieces]]
+        if perspective_zero is not None
+        else piece_keys
+    )
+    for index, column in enumerate(params.columns):
+        for agg in params.aggs:
+            if agg == "share":
+                for value, fraction in fractions[column].items():
+                    reduced[f"{column}_share_{value}"] = fraction
+                continue
+            counting = agg in PAIR_COUNTING_AGGS
+            if agg == "duration":
+                source = halved_pieces if once else piece_keys
+                result = source.groupby(group_keys, sort=True)[f"_s{index}"].sum()
+            else:
+                source = halved if once and counting else work
+                result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
+            # A group whose rows are all of the other perspective sums no row.
+            reduced[f"{column}_{agg}"] = (
+                result.reindex(reduced.index, fill_value=0)
+                if counting
+                else result.reindex(reduced.index)
+            )
+    if reduced.empty:
+        return pd.DataFrame()
+    return reduced.reset_index()
+
+
 def reduce_column(
     df: pd.DataFrame,
     params: AggregateParams,
@@ -869,120 +1227,9 @@ def reduce_column(
             kind, of a value that cannot name a column or that is not among
             ``categories``, or of a name that another output has.
     """
-    kept = tuple(params.keep_columns)
-    for column in kept:
-        if column not in df.columns:
-            raise ValueError(f"keep_columns column {column!r} is not in the input")
-    bin_s = params.bin_s
-    if bin_s is not None and C.time_col not in df.columns:
-        raise ValueError(
-            f"{who} bins rows by the {C.time_col!r} column, which the table "
-            f"lacks: it has {sorted(map(str, df.columns))}. {_BIN_TIME_SENTENCE}"
-        )
-    seconds: NDArray[np.float64] | None = None
-    if "duration" in params.aggs or "share" in params.aggs:
-        df = df.reset_index(drop=True)
-        seconds = _seconds_by_row(df, who)
-    if params.filter_expr:
-        df = df.query(params.filter_expr)
-    if df.empty:
-        return pd.DataFrame()
-    group_keys = list(keys)
-    times = np.empty(0, dtype=np.float64)
-    first_bin = np.empty(0, dtype=np.float64)
-    edges: dict[str, NDArray[np.float64]] = {}
-    if bin_s is not None:
-        times = df[C.time_col].to_numpy(dtype=np.float64)
-        first_bin = _bin_index(times, bin_s)
-        edges = _bin_edges(first_bin, bin_s)
-        group_keys += list(edges)
-    _refuse_a_varying_column(df.assign(**edges) if edges else df, group_keys, kept)
-
-    carried = (*first, *kept)
-    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
-    for name, edge in edges.items():
-        work[name] = edge
-    kept_seconds = seconds[df.index.to_numpy()] if seconds is not None else None
-    # Each piece of a row's seconds, by the row it comes from and the bin it
-    # falls in. Without bins a row is one piece.
-    pieces = np.arange(len(work), dtype=np.intp)
-    piece_seconds = kept_seconds
-    piece_keys = work[group_keys].reset_index(drop=True)
-    if kept_seconds is not None and bin_s is not None:
-        spread = _spread_over_bins(times, kept_seconds, first_bin, bin_s)
-        pieces = spread.rows
-        piece_seconds = spread.seconds
-        piece_keys = work[keys].iloc[pieces].reset_index(drop=True)
-        for name, edge in _bin_edges(spread.index, bin_s).items():
-            piece_keys[name] = edge
-    reduced = _carried_by_group(work, group_keys, carried)
-    fractions: dict[str, pd.DataFrame] = {}
-    if piece_seconds is not None and "share" in params.aggs:
-        readable = work[group_keys].notna().all(axis=1).to_numpy()
-        shares = {
-            column: _share_column(df[column], column, readable, params.categories)
-            for column in params.columns
-        }
-        _refuse_a_repeated_output_name(params, group_keys, carried, shares)
-        fractions = {
-            column: _share_fractions(
-                piece_keys,
-                group_keys,
-                _ShareColumn(
-                    texts=share.texts[pieces],
-                    readable=share.readable[pieces],
-                    names=share.names,
-                ),
-                piece_seconds,
-                reduced.index,
-            )
-            for column, share in shares.items()
-        }
-    for index, column in enumerate(params.columns):
-        values = df[column]
-        if params.transform == "abs":
-            values = values.abs()
-        if params.threshold is not None:
-            values = _passes_threshold(values, params.threshold, params.threshold_op)
-        work[f"_v{index}"] = _plain_values(values)
-        if piece_seconds is not None and "duration" in params.aggs:
-            counted = (
-                work[f"_v{index}"].to_numpy() == 1.0
-                if params.threshold is not None
-                else values.notna().to_numpy()
-            )
-            piece_keys[f"_s{index}"] = np.where(counted[pieces], piece_seconds, 0.0)
-
-    once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
-    perspective_zero = (df[_PERSPECTIVE_COLUMN] == 0).to_numpy() if once else None
-    halved = work[perspective_zero] if perspective_zero is not None else work
-    halved_pieces = (
-        piece_keys[perspective_zero[pieces]]
-        if perspective_zero is not None
-        else piece_keys
+    return reduce_prepared(
+        prepare_rows(df, params, keys, who=who, first=first), params, pairs=pairs
     )
-    for index, column in enumerate(params.columns):
-        for agg in params.aggs:
-            if agg == "share":
-                for value, fraction in fractions[column].items():
-                    reduced[f"{column}_share_{value}"] = fraction
-                continue
-            counting = agg in PAIR_COUNTING_AGGS
-            if agg == "duration":
-                source = halved_pieces if once else piece_keys
-                result = source.groupby(group_keys, sort=True)[f"_s{index}"].sum()
-            else:
-                source = halved if once and counting else work
-                result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
-            # A group whose rows are all of the other perspective sums no row.
-            reduced[f"{column}_{agg}"] = (
-                result.reindex(reduced.index, fill_value=0)
-                if counting
-                else result.reindex(reduced.index)
-            )
-    if reduced.empty:
-        return pd.DataFrame()
-    return reduced.reset_index()
 
 
 def blank_reduction(
