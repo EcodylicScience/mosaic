@@ -67,6 +67,8 @@
   "tracks/convert-variant": "convert-calms21_npy.0.4-3d47f5c74c",
   "tracks/convert-variant-sdannce": "convert-sdannce_mat.0.1-60153d9e04",
   "tracks/convert-variant-sleap_analysis_h5": "convert-sleap_analysis_h5.0.3-3d47f5c74c",
+  "tracks/convert-variant-tracktor_corrected_tsv": "convert-tracktor_corrected_tsv.0.1-56a0218226",
+  "tracks/convert-variant-tracktor_raw_csv": "convert-tracktor_raw_csv.0.1-56a0218226",
   "tracks/convert-variant-zebrafish-3d": "convert-zebrafish_3d_workflow_csv.0.1-e8e58f6b45",
   "tracks/infer-variant": "infer-points.0.1-d2b63193c4",
   "tracks/infer-variant-media": "infer-points.0.1-8321c22b0b",
