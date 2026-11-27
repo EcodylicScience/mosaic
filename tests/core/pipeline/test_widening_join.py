@@ -25,7 +25,7 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import Params
-from mosaic.core.pipeline import parquet_reader
+from mosaic.core.pipeline import entry_task, parquet_reader
 from mosaic.core.pipeline.loading import MultiInputAlignmentError
 from mosaic.core.pipeline.parallelism import ParallelMode
 from mosaic.core.pipeline.run import run_feature
@@ -43,6 +43,7 @@ from tests.helpers import (
     latest_events,
     latest_snapshot,
     make_dataset,
+    observed,
     record_path_calls,
     result_outputs,
     result_run_root,
@@ -419,6 +420,43 @@ def test_a_widening_run_parses_each_input_footer_once(
     assert result.failed_entries == (make_entry_key("g", _EMPTY),)
     assert parsed
     assert len(parsed) == len(set(parsed)), sorted(parsed)
+
+
+@pytest.mark.parametrize(
+    ("feature_class", "overlap_frames", "loaded_by_the_task"),
+    [(_Echo, 0, True), (_EchoWithOverlap, 1, False)],
+    ids=["widening", "overlap"],
+)
+def test_a_widening_entry_is_loaded_by_its_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_class: type[_Echo],
+    overlap_frames: int,
+    loaded_by_the_task: bool,
+) -> None:
+    """A run with overlap loads in the parent, so its tasks load nothing."""
+    ds, pairs, individuals = _results(tmp_path, "s1", "s2")
+    widened: list[object] = []
+
+    def on_load(*_: object, **keywords: object) -> None:
+        widened.append(keywords["expands_individuals"])
+
+    monkeypatch.setattr(
+        entry_task,
+        "load_entry_data",
+        observed(entry_task.load_entry_data, on_load),
+    )
+
+    _ = run_feature(
+        ds,
+        feature_class(feature_class.Inputs((pairs, individuals))),
+        parallel_workers=2,
+        parallel_mode="thread",
+        overlap_frames=overlap_frames,
+    )
+
+    assert len(latest_events(ds, "entry_end")) == 2
+    assert widened == ([True, True] if loaded_by_the_task else [])
 
 
 def test_a_fit_skips_an_entry_without_pair_rows_and_apply_reports_it(

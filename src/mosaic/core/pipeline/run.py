@@ -3582,9 +3582,9 @@ def _run_feature_impl(
             Entries with a valid output on disk are recorded without loading their
             input. The rest are computed through a pool built from the settings of
             *state*, and their measures go to *state*. Each computed entry's task
-            loads its input, unless overlap, widening, a pair filter or the cross
-            join has the run load it, and writes its output, and the run records
-            the row from the task's report. A load of no rows leaves the entry
+            loads its input, unless overlap, a pair filter or the cross join has
+            the run load it, and writes its output, and the run records the row
+            from the task's report. A load of no rows leaves the entry
             without a row. Each process worker builds the feature from
             ``worker_build()``. Rows are flushed periodically.
             When the apply stops early they are flushed, the entries in flight are
@@ -4042,16 +4042,11 @@ def _run_feature_impl(
             # pool's ``on_computed`` and the recording of a result.
             in_processes = settings.entry_mode == "process"
             # The shapes whose input the run loads in its own process and hands to
-            # the task as a table. Every other entry's task loads its own input.
-            # Widening needs an individual input after input 0: with one input the
-            # flag only marks input 0 as missing its pair rows, which no later
-            # input turns into a raise, so the task's load without the flag reads
-            # the same table.
+            # the task as a table: overlap, the pair filter and the cross join.
+            # Every other entry's task loads its own input, a widening one
+            # included.
             parent_loads = (
-                apply_overlap is not None
-                or (widens_individuals and len(feature.inputs.root) > 1)
-                or pair_filter_spec is not None
-                or cross_join
+                apply_overlap is not None or pair_filter_spec is not None or cross_join
             )
             # The garbage collection of the run's own process, which computes the
             # entries in serial and thread mode. A process worker keeps its own.
@@ -4340,7 +4335,12 @@ def _run_feature_impl(
                 return after_apply
 
             def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
-                """Record an entry with no pair rows to widen onto as lost."""
+                """Record an entry whose input 0 holds no pair rows as lost.
+
+                Only an entry that the run loads itself, under overlap or a pair
+                filter, reaches here. The task raises the error for every other
+                widening entry, and the pool records it.
+                """
                 group, sequence = resolve_sequence_identity(entry_key, entry_map)
                 _entry_failed(group, sequence, exc)
 
@@ -4411,6 +4411,7 @@ def _run_feature_impl(
                     entry_key=entry_key,
                     file_specs=tuple(entry.file_specs),
                     projection=entry.projection,
+                    expands_individuals=widens_individuals,
                     frame_start=frame_start,
                     frame_end=frame_end,
                     time_window=time_window,

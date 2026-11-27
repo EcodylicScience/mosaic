@@ -42,6 +42,7 @@ from mosaic.core.pipeline.entry_task import (
 )
 from mosaic.core.pipeline.loading import (
     ColumnProjection,
+    MultiInputAlignmentError,
     PairRowsMissing,
     load_entry_data,
 )
@@ -53,6 +54,8 @@ from mosaic.core.timebase import IrregularNotice, uniform_grid_rate
 from tests.helpers import (
     ParallelFeature,
     dropped_frame_tracks,
+    make_pair_df,
+    make_sequence_df,
     observed,
     record_path_calls,
     report_of,
@@ -136,6 +139,7 @@ def _load_task(
     frame_end: int | None = None,
     time_window: TimeWindow = TimeWindow(),
     projection: ColumnProjection | None = None,
+    expands_individuals: bool = False,
     footers: tuple[FooterRecord, ...] = (),
 ) -> EntryTask:
     meta = FeatureMeta(group="g", sequence="s", out_path=run_root / "g__s.parquet")
@@ -143,6 +147,7 @@ def _load_task(
         entry_key=make_entry_key("g", "s"),
         file_specs=_specs(paths),
         projection=projection,
+        expands_individuals=expands_individuals,
         frame_start=frame_start,
         frame_end=frame_end,
         time_window=time_window,
@@ -512,6 +517,110 @@ def test_a_load_of_no_rows_reports_nothing_written_and_skips_after_apply(
     )
     assert calls == []
     assert list(run_root.iterdir()) == []
+
+
+# --- a task that widens individual rows onto pair rows -----------------------------------
+
+
+class _Echoes(ParallelFeature):
+    """Writes the table it is applied to."""
+
+    name = "test-echoes"
+
+
+def _widening_inputs(directory: Path, *, pair_frames: int) -> tuple[Path, Path]:
+    """A pair-level file of *pair_frames* frames and an individual-level file of three.
+
+    The individual file holds both individuals of the pair in every frame.
+    """
+    directory.mkdir(exist_ok=True)
+    pairs, individuals = directory / "pairs.parquet", directory / "individuals.parquet"
+    make_pair_df(pair_frames, 1).to_parquet(pairs)
+    one = make_sequence_df(3, 1)
+    pd.concat([one.assign(id=0), one.assign(id=1)], ignore_index=True).to_parquet(
+        individuals
+    )
+    return pairs, individuals
+
+
+def test_a_widening_load_gives_the_table_the_run_loads(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _widening_inputs(tmp_path / "inputs", pair_frames=3)
+    loaded = load_entry_data(list(_specs(paths)), expands_individuals=True)
+    assert loaded is not None
+    assert "id" not in loaded.columns
+    unwidened = tmp_path / "unwidened"
+    unwidened.mkdir()
+
+    task = _load_task(run_root, paths, expands_individuals=True)
+    report = report_of(run_entry(_Echoes(), task, None))
+    failure = _failure(run_entry(_Echoes(), _load_task(unwidened, paths), None))
+
+    pd.testing.assert_frame_equal(pd.read_parquet(task.meta.out_path), loaded)
+    assert report.rows == len(loaded)
+    assert isinstance(failure.error, MultiInputAlignmentError)
+    assert not isinstance(failure.error, PairRowsMissing)
+    assert list(unwidened.iterdir()) == []
+
+
+def test_a_widening_load_without_pair_rows_raises_as_the_entrys_error(
+    run_root: Path, tmp_path: Path
+) -> None:
+    paths = _widening_inputs(tmp_path / "inputs", pair_frames=0)
+    task = _load_task(run_root, paths, expands_individuals=True)
+
+    with pytest.raises(PairRowsMissing) as raised:
+        _ = run_entry(_Echoes(), task, None)
+
+    message = (
+        "input 0 holds no pair rows for this entry, so the individual rows of "
+        "input 1 have none to widen onto"
+    )
+    assert str(raised.value) == message
+    crossed = _crossed(raised.value)
+    assert type(crossed) is PairRowsMissing
+    assert str(crossed) == message
+    assert list(run_root.iterdir()) == []
+
+
+def test_a_task_handed_the_footers_parses_none_to_find_missing_pair_rows(
+    run_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _widening_inputs(tmp_path / "inputs", pair_frames=0)
+    records = _crossed_records(paths)
+    parsed = record_path_calls(monkeypatch, parquet_reader, "parse_footer")
+
+    handed = _load_task(run_root, paths, expands_individuals=True, footers=records)
+    with pytest.raises(PairRowsMissing):
+        _ = run_entry(_Echoes(), handed, None)
+    assert parsed == []
+
+    bare = _load_task(run_root, paths, expands_individuals=True)
+    with pytest.raises(PairRowsMissing):
+        _ = run_entry(_Echoes(), bare, None)
+    assert paths[0] in parsed
+
+
+@pytest.mark.parametrize("pair_frames", [3, 0], ids=["rows", "no-rows"])
+def test_a_one_input_load_reads_alike_with_and_without_the_flag(
+    tmp_path: Path, pair_frames: int
+) -> None:
+    pairs, _ = _widening_inputs(tmp_path / "inputs", pair_frames=pair_frames)
+    reports: list[EntryReport] = []
+    outputs: list[Path] = []
+    for expands in (True, False):
+        root = tmp_path / f"run-{expands}"
+        root.mkdir()
+        task = _load_task(root, (pairs,), expands_individuals=expands)
+        reports.append(report_of(run_entry(_Echoes(), task, None)))
+        outputs.append(task.meta.out_path)
+
+    assert [report.written for report in reports] == [pair_frames > 0] * 2
+    if pair_frames:
+        assert outputs[0].read_bytes() == outputs[1].read_bytes()
+    else:
+        assert not outputs[0].exists() and not outputs[1].exists()
 
 
 # --- footers handed to the task --------------------------------------------------------

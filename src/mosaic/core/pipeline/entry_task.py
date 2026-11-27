@@ -101,6 +101,10 @@ class EntryLoad:
         file_specs: The entry's input files and how each is read, in declared
             order.
         projection: The columns read from each input, ``None`` for every column.
+        expands_individuals: Whether the load widens individual-level inputs onto
+            the pair rows of input 0 and raises
+            :class:`~mosaic.core.pipeline.loading.PairRowsMissing` when input 0
+            holds none.
         frame_start: The first frame kept, ``None`` for no lower bound.
         frame_end: The frame after the last kept, ``None`` for no upper bound.
         time_window: The window of ``time`` kept.
@@ -112,6 +116,7 @@ class EntryLoad:
     entry_key: str
     file_specs: tuple[tuple[Path, LoadSpec], ...]
     projection: ColumnProjection | None
+    expands_individuals: bool
     frame_start: int | None
     frame_end: int | None
     time_window: TimeWindow
@@ -182,14 +187,19 @@ def _loaded(load: EntryLoad) -> pd.DataFrame | None:
     """The entry's merged and filtered input, ``None`` for one of no rows.
 
     The footers that *load* carries are known to the load's reads, so a footer
-    whose file did not move is not parsed again.
+    whose file did not move is not parsed again. That includes the footer of an
+    empty input 0, which the check of its level reads under
+    ``expands_individuals``: it comes from the records too.
     """
     filters = entry_bounds_filters(
         load.entry_key, load.frame_start, load.frame_end, load.time_window
     )
     with memoized_footers(ParquetFooterMemo.from_records(load.footers)):
         return load_entry_data(
-            list(load.file_specs), filters=filters, projection=load.projection
+            list(load.file_specs),
+            filters=filters,
+            expands_individuals=load.expands_individuals,
+            projection=load.projection,
         )
 
 
@@ -227,7 +237,8 @@ def run_entry(
         ``time``.
 
     Raises:
-        PairRowsMissing: The load found no pair rows to widen onto.
+        PairRowsMissing: A widening load found no pair rows in input 0 to widen
+            onto.
         MissingInputColumns: The input lacks a column the feature requires.
         ArenaBlindFeature: The feature is arena-blind and the input spans arenas.
         Exception: Whatever ``apply`` raises, or the error of a notice that does
