@@ -6,10 +6,10 @@ pipeline infrastructure they depend on.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -35,7 +35,7 @@ from .column_contract import (
     param_values,
     resolve_names,
 )
-from .parquet_reader import read_parquet_column_names
+from .parquet_reader import ParquetUnreadable, read_footer, read_parquet_column_names
 from .index import (
     feature_run_roots,
     feature_run_rows,
@@ -44,7 +44,13 @@ from .index import (
 )
 from .types import ArtifactSpec, NNResult
 from .types.labels import GroundTruthLabelsSource, LabelsSource
-from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, NON_PAYLOAD_COLS
+from .types.data_config import (
+    ALIGN_COLS,
+    COLUMNS,
+    ID_COLS,
+    NON_PAYLOAD_COLS,
+    SUMMARY_KEYS,
+)
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
@@ -126,12 +132,23 @@ class AlignmentVerdict:
 
     Exported so a caller composing a chain before running it uses the same rule the
     merge enforces, rather than learning at execution.
+
+    Attributes:
+        keys: The shared alignment columns.
+        levels: The entity level of each input.
+        compatible: Whether the inputs can be joined.
+        reason: The refusal's text, ``""`` when compatible.
+        cause: Why they cannot be joined. ``"levels"`` for inputs at different
+            concrete entity levels that share no identity column, ``"no_keys"``
+            for inputs that share no alignment column, ``""`` when compatible.
+            A caller branches on the cause and never on the reason's text.
     """
 
     keys: frozenset[str]
     levels: tuple[str, ...]
     compatible: bool
     reason: str
+    cause: Literal["", "levels", "no_keys"]
 
 
 def entity_level_of(columns: Iterable[str]) -> str:
@@ -155,6 +172,9 @@ def entity_level_of(columns: Iterable[str]) -> str:
     if "id1" in present and "id2" in present:
         return "pair"
     return "individual" if COLUMNS.id_col in present else "global"
+
+
+_NO_SHARED_ALIGNMENT = "no shared alignment columns"
 
 
 def alignment_keys(column_sets: Sequence[Iterable[str]]) -> frozenset[str]:
@@ -189,10 +209,11 @@ def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
             f"inputs are at different entity levels ({', '.join(levels)}) and share "
             f"no identity column, so joining on {sorted(keys) or 'nothing'} would "
             f"pair every row of one with every row of the other",
+            "levels",
         )
     if not keys:
-        return AlignmentVerdict(keys, levels, False, "no shared alignment columns")
-    return AlignmentVerdict(keys, levels, True, "")
+        return AlignmentVerdict(keys, levels, False, _NO_SHARED_ALIGNMENT, "no_keys")
+    return AlignmentVerdict(keys, levels, True, "", "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +308,7 @@ def merge_naming(
     position: int,
     *,
     widen: bool = False,
+    keys: Collection[str] | None = None,
 ) -> MergeNaming:
     """The column names after merging *incoming*, the input at *position*.
 
@@ -316,13 +338,16 @@ def merge_naming(
         incoming: The next input's columns.
         position: The next input's declared position among the step's inputs.
         widen: Whether the merge widens *incoming* onto pair rows.
+        keys: The columns joined on, in place of the shared ``ALIGN_COLS``. A
+            collided column in *keys* is a key and is neither dropped nor
+            renamed. Ignored for a widening merge.
     """
     left = frozenset(merged)
     right = frozenset(incoming)
     if widen:
         return _widened_naming(left, right, position)
-    keys = alignment_keys([left, right])
-    collided = sorted((right - keys) & left)
+    joined = alignment_keys([left, right]) if keys is None else frozenset(keys)
+    collided = sorted((right - joined) & left)
     dropped = tuple(column for column in collided if column in NON_PAYLOAD_COLS)
     renamed = {
         column: f"{column}__{position}"
@@ -333,10 +358,183 @@ def merge_naming(
         renamed.values()
     )
     return MergeNaming(
-        keys=tuple(sorted(keys)),
+        keys=tuple(sorted(joined)),
         dropped=dropped,
         renamed=renamed,
         columns=left | kept,
+    )
+
+
+MergeKind = Literal["shared", "widen"]
+"""How a merge position joins: on shared keys (step 1), or by widening."""
+
+
+@dataclass(frozen=True, slots=True)
+class MergeStep:
+    """The column-level decision of one merge position.
+
+    Attributes:
+        kind: ``"shared"`` for a join on the shared alignment columns and the
+            summary keys both sides have, ``"widen"`` for individual rows
+            widened onto pair rows.
+        keys: The columns joined on, sorted for a shared join.
+        naming: What the merge does to the column names.
+        summary_keys: The summary keys a shared join uses as keys, sorted. Empty
+            for any other kind.
+        refusal: The refusal's text, ``""`` when the position merges.
+    """
+
+    kind: MergeKind
+    keys: tuple[str, ...]
+    naming: MergeNaming
+    summary_keys: tuple[str, ...]
+    refusal: str
+
+
+def merge_step(
+    merged: Iterable[str],
+    incoming: Iterable[str],
+    position: int,
+    *,
+    cross_join: bool,
+    expands_individuals: bool,
+) -> MergeStep:
+    """How merging *incoming*, the input at *position*, into *merged* joins.
+
+    A pure function of the two column sets: the one decision a merge position
+    makes from column names. The merge folds it over the columns of the loaded
+    frames and applies each decision to the data, adding only the checks that
+    read rows.
+
+    Under *expands_individuals* an individual-level input after pair rows
+    widens onto them. Otherwise :func:`alignment_verdict` decides, and a
+    *cross_join* consumer joins on the shared alignment columns it finds. A
+    join on shared keys uses the shared ``ALIGN_COLS`` and every
+    ``SUMMARY_KEYS`` column that both sides have, except for a *cross_join*
+    consumer, which uses the alignment columns alone.
+
+    Args:
+        merged: The columns merged so far.
+        incoming: The next input's columns.
+        position: The next input's declared position among the step's inputs.
+        cross_join: Whether the consumer declares a frame-only merge.
+        expands_individuals: Whether the consumer widens individual inputs onto
+            pair rows.
+    """
+    left = frozenset(merged)
+    right = frozenset(incoming)
+    prefix = f"cannot merge input {position}: "
+    if expands_individuals and widens(left, right):
+        naming = merge_naming(left, right, position, widen=True)
+        refusal = (
+            ""
+            if naming.keys
+            else f"{prefix}it shares no order column "
+            f"({COLUMNS.frame_col} or {COLUMNS.time_col}) with the pair rows"
+        )
+        return MergeStep("widen", naming.keys, naming, (), refusal)
+    verdict = alignment_verdict([left, right])
+    summary_keys = (
+        ()
+        if cross_join or not verdict.keys
+        else tuple(sorted(SUMMARY_KEYS & left & right))
+    )
+    naming = merge_naming(left, right, position, keys=verdict.keys.union(summary_keys))
+    refusal = ""
+    if not verdict.compatible and not cross_join:
+        hint = (
+            widening_hint(verdict.levels)
+            if expands_individuals and verdict.cause == "levels"
+            else ""
+        )
+        refusal = f"{prefix}{verdict.reason}{hint}"
+    elif not naming.keys:
+        refusal = f"{prefix}{_NO_SHARED_ALIGNMENT}"
+    return MergeStep("shared", naming.keys, naming, summary_keys, refusal)
+
+
+def summary_join_cell(
+    column_sets: Sequence[Iterable[str] | None],
+    *,
+    cross_join: bool,
+    expands_individuals: bool,
+) -> str:
+    """The summary keys that step 1 of the merge joins, as an entry's recorded cell.
+
+    Folds :func:`merge_step` over *column_sets* as the merge folds it over the
+    loaded frames, and returns the sorted union of each position's
+    ``summary_keys`` joined with ``,``. A refusal ends the fold, since the
+    entry's merge fails there. A cross-join consumer, a widening position and a
+    position that shares no summary key add none.
+
+    Args:
+        column_sets: The columns of each input, by declared position. ``None``
+            for an input that is left out of the merge because it loads no rows.
+        cross_join: Whether the consumer declares a frame-only merge.
+        expands_individuals: Whether the consumer widens individual inputs onto
+            pair rows.
+
+    Returns:
+        The keys, and ``""`` when none is joined.
+    """
+    merged: frozenset[str] | None = None
+    joined: set[str] = set()
+    for position, columns in enumerate(column_sets):
+        if columns is None:
+            continue
+        if merged is None:
+            merged = frozenset(columns)
+            continue
+        step = merge_step(
+            merged,
+            columns,
+            position,
+            cross_join=cross_join,
+            expands_individuals=expands_individuals,
+        )
+        if step.refusal:
+            break
+        joined.update(step.summary_keys)
+        merged = step.naming.columns
+    return ",".join(sorted(joined))
+
+
+def entry_summary_join(
+    file_specs: Sequence[tuple[Path, LoadSpec]],
+    *,
+    cross_join: bool,
+    expands_individuals: bool,
+) -> str:
+    """The summary keys step 1 joins for one entry, read from its inputs' footers.
+
+    Each input's column names and row count come from one
+    :func:`~.parquet_reader.read_footer`, which a footer memo answers without a
+    second parse. An input is left out as :func:`load_entry_data` leaves it out:
+    a spec that is not a parquet, a footer that records no rows, and a file whose
+    footer cannot be read.
+
+    Args:
+        file_specs: The entry's input files, in declared order.
+        cross_join: Whether the consumer declares a frame-only merge.
+        expands_individuals: Whether the consumer widens individual inputs onto
+            pair rows.
+
+    Returns:
+        What :func:`summary_join_cell` returns for those columns.
+    """
+    column_sets: list[tuple[str, ...] | None] = []
+    for path, load_spec in file_specs:
+        names: tuple[str, ...] | None = None
+        if isinstance(load_spec, ParquetLoadSpec):
+            try:
+                footer = read_footer(path)
+            except ParquetUnreadable:
+                footer = None
+            if footer is not None and footer.n_rows > 0:
+                names = tuple(column.name for column in footer.columns)
+        column_sets.append(names)
+    return summary_join_cell(
+        column_sets, cross_join=cross_join, expands_individuals=expands_individuals
     )
 
 
@@ -496,11 +694,6 @@ def _widen_onto_pairs(
     merged: pd.DataFrame, individuals: pd.DataFrame, naming: MergeNaming, declared: int
 ) -> pd.DataFrame:
     """Join *individuals* onto the pair rows of *merged*, as ``id1`` and as ``id2``."""
-    if not naming.keys:
-        raise MultiInputAlignmentError(
-            f"cannot merge input {declared}: it shares no order column "
-            f"({COLUMNS.frame_col} or {COLUMNS.time_col}) with the pair rows"
-        )
     order = naming.keys[0]
     keyed = [order, COLUMNS.id_col]
     if individuals.duplicated(keyed).any():
@@ -514,6 +707,57 @@ def _widen_onto_pairs(
         part = side.rename(columns={COLUMNS.id_col: slot, **names})
         merged = merged.merge(part, how="inner", on=[order, slot])
     return merged
+
+
+def _refuse_missing_summary_keys(
+    merged: pd.DataFrame, incoming: pd.DataFrame, step: MergeStep, declared: int
+) -> None:
+    """Refuse a join on a summary key that is ``NaN`` in some row of either side.
+
+    pandas matches a ``NaN`` key to a ``NaN`` key, so such a row would join
+    rows that name no bin or arena.
+    """
+    for key in step.summary_keys:
+        for side, table in (
+            ("the inputs before it", merged),
+            (f"input {declared}", incoming),
+        ):
+            missing = int(table[key].isna().sum())
+            if missing:
+                raise MultiInputAlignmentError(
+                    f"cannot merge input {declared}: {key} is missing in {missing} "
+                    f"rows of {side}, and a summary key names a bin or an arena"
+                )
+
+
+def _merge_on_shared_keys(
+    merged: pd.DataFrame,
+    incoming: pd.DataFrame,
+    step: MergeStep,
+    declared: int,
+    *,
+    cross_join: bool,
+) -> pd.DataFrame:
+    """Inner-join *incoming* onto *merged* on the keys of *step*.
+
+    Applies the naming of :func:`merge_step` and adds the checks that read rows:
+    a ``NaN`` summary key, and a key set that is not unique on either side.
+    """
+    on_cols = list(step.keys)
+    _refuse_missing_summary_keys(merged, incoming, step, declared)
+    if not cross_join and (
+        merged.duplicated(on_cols).any() and incoming.duplicated(on_cols).any()
+    ):
+        raise MultiInputAlignmentError(
+            f"cannot merge input {declared}: {on_cols} is not unique on either "
+            "side, so the join would multiply rows"
+        )
+    naming = step.naming
+    if naming.dropped:
+        incoming = incoming.drop(columns=list(naming.dropped))
+    if naming.renamed:
+        incoming = incoming.rename(columns=dict(naming.renamed))
+    return merged.merge(incoming, how="inner", on=on_cols)
 
 
 def _merge_parquet_inputs(
@@ -538,7 +782,9 @@ def _merge_parquet_inputs(
     individual-level input after pair rows is widened onto them instead of
     refused.
 
-    Collided columns are named by :func:`merge_naming`.
+    Each position folds :func:`merge_step` over the columns of the frames, which
+    decides the keys, the names and the refusals that columns alone settle. The
+    merge applies that decision and checks the rows.
     """
     it = iter(dfs)
     first = next(it, None)
@@ -547,36 +793,21 @@ def _merge_parquet_inputs(
     merged = first[1]
 
     for declared, df_next in it:
-        merged_columns = _column_names(merged)
-        next_columns = _column_names(df_next)
-        if expands_individuals and widens(merged_columns, next_columns):
-            naming = merge_naming(merged_columns, next_columns, declared, widen=True)
-            merged = _widen_onto_pairs(merged, df_next, naming, declared)
-            continue
-        verdict = alignment_verdict([merged_columns, next_columns])
-        if not verdict.compatible and not cross_join:
-            hint = widening_hint(verdict.levels) if expands_individuals else ""
-            raise MultiInputAlignmentError(
-                f"cannot merge input {declared}: {verdict.reason}{hint}"
+        step = merge_step(
+            _column_names(merged),
+            _column_names(df_next),
+            declared,
+            cross_join=cross_join,
+            expands_individuals=expands_individuals,
+        )
+        if step.refusal:
+            raise MultiInputAlignmentError(step.refusal)
+        if step.kind == "widen":
+            merged = _widen_onto_pairs(merged, df_next, step.naming, declared)
+        else:
+            merged = _merge_on_shared_keys(
+                merged, df_next, step, declared, cross_join=cross_join
             )
-        naming = merge_naming(merged_columns, next_columns, declared)
-        on_cols = list(naming.keys)
-        if not on_cols:
-            raise MultiInputAlignmentError(
-                f"cannot merge input {declared}: no shared alignment columns"
-            )
-        if not cross_join and (
-            merged.duplicated(on_cols).any() and df_next.duplicated(on_cols).any()
-        ):
-            raise MultiInputAlignmentError(
-                f"cannot merge input {declared}: {on_cols} is not unique on either "
-                "side, so the join would multiply rows"
-            )
-        if naming.dropped:
-            df_next = df_next.drop(columns=list(naming.dropped))
-        if naming.renamed:
-            df_next = df_next.rename(columns=dict(naming.renamed))
-        merged = merged.merge(df_next, how="inner", on=on_cols)
 
     if merged.empty:
         return None

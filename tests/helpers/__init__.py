@@ -21,8 +21,9 @@ What lives where:
 - ``cleanup``: the policy a cleanup is planned under, the retired recipe's runs and
   retirement, the reasons a judging gave, and the observers of a judging and of a
   removal.
-- ``catalogs``: the declaration catalogs a graph test validates or plans against, and
-  eight of the steps that read only results and so compute in every track space.
+- ``catalogs``: the declaration catalogs a graph test validates or plans against,
+  eight of the steps that read only results and so compute in every track space, and
+  the registration of stand-in features for a block.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
 - ``dropped_frames`` -- a tracks table that dropped frames, with individuals on an
@@ -186,7 +187,11 @@ from tests.helpers.annotations import (
     pose_set,
     revision_file,
 )
-from tests.helpers.catalogs import RESULT_READING_FEATURES, catalog_without_contract
+from tests.helpers.catalogs import (
+    RESULT_READING_FEATURES,
+    catalog_without_contract,
+    registered_features,
+)
 from tests.helpers.cleanup import (
     HEADING_STORAGE,
     LOOSE,
@@ -1175,6 +1180,7 @@ __all__ = [
     "read_stub_labels",
     "record_variant_recipe",
     "regenerate_command",
+    "registered_features",
     "register_sleap_model",
     "register_trained_model",
     "require_ffmpeg",

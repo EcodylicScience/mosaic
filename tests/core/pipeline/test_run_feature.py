@@ -15,8 +15,10 @@ import pytest
 from mosaic.core.pipeline import entry_task as entry_task_module
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
+    adopt_feature_columns,
     feature_index,
     feature_index_path,
+    recorded_tracks_reads,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.index_lock import IndexLockTimeout
@@ -1510,3 +1512,342 @@ def test_a_failed_flush_on_the_way_out_leaves_the_original_error_raised(
     assert snapshot is not None
     assert snapshot["status"] == "failed"
     assert json.loads(snapshot["error_json"])["type"] == "OSError"
+
+
+# --- The summary keys a step joined ---------------------------------------------
+
+
+class _ArenaEcho:
+    """Writes one payload column per ``(frame, id)``, and an ``arena`` when told to."""
+
+    name = "test-echo"
+    version = "0.1"
+    parallelizable = True
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+    column = "value"
+    with_arena = True
+
+    class Inputs(TrackInputs):
+        pass
+
+    class Params(Params):
+        pass
+
+    def __init__(self, inputs: _ArenaEcho.Inputs | None = None) -> None:
+        self._inputs = inputs or self.Inputs(("tracks",))
+        self._params = self.Params()
+
+    @property
+    def inputs(self) -> _ArenaEcho.Inputs:
+        return self._inputs
+
+    @property
+    def params(self) -> _ArenaEcho.Params:
+        return self._params
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        _ = run_root, artifact_paths, dependency_lookups
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        _ = inputs
+
+    def save_state(self, run_root: Path) -> None:
+        _ = run_root
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        table = pd.DataFrame(
+            {"frame": df["frame"], "id": df["id"], self.column: df["feat_a"]}
+        )
+        if self.with_arena:
+            table["arena"] = "a"
+        return table
+
+
+class _EchoAlpha(_ArenaEcho):
+    name = "test-echo-alpha"
+    column = "alpha"
+
+
+class _EchoBeta(_ArenaEcho):
+    name = "test-echo-beta"
+    column = "beta"
+
+
+class _PlainAlpha(_EchoAlpha):
+    name = "test-plain-alpha"
+    with_arena = False
+
+
+class _PlainBeta(_EchoBeta):
+    name = "test-plain-beta"
+    with_arena = False
+
+
+class _JoinsTwo:
+    """Reads two inputs that merge on their shared alignment columns."""
+
+    name = "test-joins-two"
+    version = "0.1"
+    parallelizable = True
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+
+    class Inputs(Inputs[Result]):
+        pass
+
+    class Params(Params):
+        pass
+
+    def __init__(self, inputs: _JoinsTwo.Inputs) -> None:
+        self._inputs = inputs
+        self._params = self.Params()
+        self.apply_calls = 0
+        self.columns_seen: list[list[str]] = []
+
+    @property
+    def inputs(self) -> _JoinsTwo.Inputs:
+        return self._inputs
+
+    @property
+    def params(self) -> _JoinsTwo.Params:
+        return self._params
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        _ = run_root, artifact_paths, dependency_lookups
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        _ = inputs
+
+    def save_state(self, run_root: Path) -> None:
+        _ = run_root
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.apply_calls += 1
+        self.columns_seen.append(sorted(str(column) for column in df.columns))
+        return pd.DataFrame(
+            {"frame": df["frame"], "id": df["id"], "total": df["alpha"] + df["beta"]}
+        )
+
+
+def _joining(ds: Dataset, *, arena: bool) -> _JoinsTwo:
+    """A consumer of two upstream runs, which share ``arena`` when *arena* is set."""
+    first = _EchoAlpha() if arena else _PlainAlpha()
+    second = _EchoBeta() if arena else _PlainBeta()
+    inputs = _JoinsTwo.Inputs((run_feature(ds, first), run_feature(ds, second)))
+    return _JoinsTwo(inputs)
+
+
+def _two_entry_dataset(tmp_path: Path) -> Dataset:
+    ds = make_dataset(tmp_path / "ds")
+    for sequence in ("s1", "s2"):
+        add_tracks_table(ds, "convert.v1", track_table("g", sequence, n_rows=10))
+    return ds
+
+
+def _summary_cells(ds: Dataset, result: Result) -> dict[str, str]:
+    index = feature_index(feature_index_path(ds, result.feature)).read(
+        run_id=result.run_id
+    )
+    return dict(zip(index["sequence"], index["consumed_summary_join"], strict=True))
+
+
+def _blank_the_cells(ds: Dataset, result: Result) -> None:
+    assert result.run_id is not None
+    _ = feature_index(feature_index_path(ds, result.feature)).update_cells(
+        result.run_id, {"consumed_summary_join": ""}
+    )
+
+
+def _output_bytes(ds: Dataset, result: Result) -> dict[str, bytes]:
+    return {
+        path.name: path.read_bytes()
+        for path in sorted(result_run_root(ds, result).glob("*.parquet"))
+    }
+
+
+def test_a_run_records_the_summary_keys_its_inputs_joined(tmp_path: Path) -> None:
+    ds = _two_entry_dataset(tmp_path)
+
+    result = run_feature(ds, _joining(ds, arena=True))
+
+    assert _summary_cells(ds, result) == {"s1": "arena", "s2": "arena"}
+
+
+def test_a_run_whose_inputs_share_no_summary_key_records_a_blank_cell(
+    tmp_path: Path,
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+
+    result = run_feature(ds, _joining(ds, arena=False))
+
+    assert _summary_cells(ds, result) == {"s1": "", "s2": ""}
+
+
+def test_the_joined_arena_is_one_column_of_the_merged_input(tmp_path: Path) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    consumer = _joining(ds, arena=True)
+
+    _ = run_feature(ds, consumer)
+
+    assert consumer.columns_seen
+    assert all(
+        "arena" in columns and "arena__1" not in columns
+        for columns in consumer.columns_seen
+    )
+
+
+def test_a_row_with_a_blank_cell_whose_entry_joins_nothing_is_served_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    first = run_feature(ds, _joining(ds, arena=False))
+    before = _output_bytes(ds, first)
+    consumer = _joining(ds, arena=False)
+    _ = capsys.readouterr()
+
+    second = run_feature(ds, consumer)
+
+    assert second.run_id == first.run_id
+    assert consumer.apply_calls == 0
+    assert _output_bytes(ds, second) == before
+    assert _summary_cells(ds, second) == {"s1": "", "s2": ""}
+    stderr = capsys.readouterr().err
+    assert "summary" not in stderr
+    assert "cannot serve" not in stderr
+
+
+def test_a_row_with_a_blank_cell_whose_entry_now_joins_arena_recomputes_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    first = run_feature(ds, _joining(ds, arena=True))
+    _blank_the_cells(ds, first)
+    _ = capsys.readouterr()
+
+    recomputing = _joining(ds, arena=True)
+    second = run_feature(ds, recomputing)
+
+    assert second.run_id == first.run_id
+    assert recomputing.apply_calls == 2
+    assert "the summary keys its inputs join on changed" in capsys.readouterr().err
+    assert _summary_cells(ds, second) == {"s1": "arena", "s2": "arena"}
+
+    serving = _joining(ds, arena=True)
+    third = run_feature(ds, serving)
+
+    assert third.run_id == first.run_id
+    assert serving.apply_calls == 0
+    assert _summary_cells(ds, third) == {"s1": "arena", "s2": "arena"}
+
+
+def test_a_row_recorded_with_other_keys_recomputes(tmp_path: Path) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    first = run_feature(ds, _joining(ds, arena=True))
+    assert first.run_id is not None
+    _ = feature_index(feature_index_path(ds, first.feature)).update_cells(
+        first.run_id, {"consumed_summary_join": "legacy:arena"}
+    )
+    consumer = _joining(ds, arena=True)
+
+    second = run_feature(ds, consumer)
+
+    assert consumer.apply_calls == 2
+    assert _summary_cells(ds, second) == {"s1": "arena", "s2": "arena"}
+
+
+class _FooterCount:
+    """The parquet footers parsed for the files of the runs that it watches."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mosaic.core.pipeline import parquet_reader
+
+        self.watched: set[Path] = set()
+        self.parsed: list[Path] = []
+        real = parquet_reader.parse_footer
+
+        def counting(path: Path) -> parquet_reader.ParquetFooter:
+            if path in self.watched:
+                self.parsed.append(path)
+            return real(path)
+
+        monkeypatch.setattr(parquet_reader, "parse_footer", counting)
+
+    def watch(self, ds: Dataset, results: tuple[Result, ...]) -> None:
+        for result in results:
+            self.watched.update(result_run_root(ds, result).glob("*.parquet"))
+
+
+def test_the_cache_check_reads_one_footer_per_input_file_of_each_cached_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    consumer = _joining(ds, arena=True)
+    _ = run_feature(ds, consumer)
+    counter = _FooterCount(monkeypatch)
+    counter.watch(ds, consumer.inputs.feature_inputs)
+
+    _ = run_feature(ds, _JoinsTwo(consumer.inputs))
+
+    assert len(counter.parsed) == 4
+    assert len(set(counter.parsed)) == 4
+
+
+def _no_summary_key(feature: object) -> bool:
+    _ = feature
+    return False
+
+
+def test_the_cache_check_reads_no_input_footer_where_no_summary_key_can_be_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline.graph import columns as graph_columns
+
+    ds = _two_entry_dataset(tmp_path)
+    consumer = _joining(ds, arena=False)
+    first = run_feature(ds, consumer)
+    counter = _FooterCount(monkeypatch)
+    counter.watch(ds, consumer.inputs.feature_inputs)
+    monkeypatch.setattr(graph_columns, "may_share_summary_key", _no_summary_key)
+    serving = _JoinsTwo(consumer.inputs)
+
+    second = run_feature(ds, serving)
+
+    assert second.run_id == first.run_id
+    assert serving.apply_calls == 0
+    assert counter.parsed == []
+    assert _summary_cells(ds, second) == {"s1": "", "s2": ""}
+
+
+def test_a_row_written_before_the_summary_cell_existed_reads_blank(
+    tmp_path: Path,
+) -> None:
+    ds = _two_entry_dataset(tmp_path)
+    result = run_feature(ds, _joining(ds, arena=True))
+    assert result.run_id is not None
+    path = feature_index_path(ds, result.feature)
+    stored = pd.read_csv(path, dtype=str, keep_default_na=False)
+    older = stored.drop(columns=["consumed_summary_join"])
+    older.to_csv(path, index=False)
+
+    adopted = adopt_feature_columns(older)
+    reads = recorded_tracks_reads(ds, result.feature, result.run_id)
+
+    assert set(adopted["consumed_summary_join"]) == {""}
+    assert {read.summary_join for read in reads.values()} == {""}

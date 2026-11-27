@@ -1,0 +1,823 @@
+{
+  "a_cross_join_consumer_beside_a_global_input": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "order",
+      "id",
+      "speed"
+    ],
+    "digest": "98a0295e608559ecca8b481596d5dd59",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "int64",
+      "float64"
+    ]
+  },
+  "a_cross_join_consumer_joins_on_frame_alone": {
+    "columns": [
+      "frame",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "id1",
+      "id2",
+      "perspective",
+      "ego"
+    ],
+    "digest": "a8e3a70dc1c9093c7bdc8c820d8982cf",
+    "dtypes": [
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "float64"
+    ]
+  },
+  "a_cross_join_consumer_numbers_a_collided_payload": {
+    "columns": [
+      "frame",
+      "id",
+      "group",
+      "sequence",
+      "v",
+      "id1",
+      "id2",
+      "perspective",
+      "v__1"
+    ],
+    "digest": "170f1682431e3d0c53b51a39b6126a6e",
+    "dtypes": [
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "float64"
+    ]
+  },
+  "a_cross_join_consumer_with_no_shared_key": "refused",
+  "a_key_set_duplicated_on_both_sides": "refused",
+  "a_key_set_duplicated_on_both_sides_under_a_cross_join": {
+    "columns": [
+      "frame",
+      "time",
+      "group",
+      "sequence",
+      "a",
+      "b"
+    ],
+    "digest": "8d2bbcd16bd79fd47a3b56ab03756919",
+    "dtypes": [
+      "int64",
+      "float64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "a_key_set_duplicated_on_one_side": {
+    "columns": [
+      "frame",
+      "time",
+      "group",
+      "sequence",
+      "a",
+      "b"
+    ],
+    "digest": "5227add5c69cd6ca09868cd677a3497e",
+    "dtypes": [
+      "int64",
+      "float64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "an_arena_on_one_pair_input_alone": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "arena",
+      "social"
+    ],
+    "digest": "96567859ad2b81d249a0a217573cdd40",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "int64",
+      "float64"
+    ]
+  },
+  "an_arena_on_the_collective_side_alone": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "order",
+      "arena"
+    ],
+    "digest": "47d0381ae4cdb6873eb4690714d02614",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "int64"
+    ]
+  },
+  "an_arena_on_the_individual_side_alone": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "arena",
+      "order"
+    ],
+    "digest": "cdcb6229be377ec817e4b3860ecc29ca",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "int64",
+      "float64"
+    ]
+  },
+  "an_empty_first_input_is_left_out": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "v",
+      "order"
+    ],
+    "digest": "bcb3d033b76f63612f985f74e3daf22d",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "an_empty_middle_input_beside_a_widening_consumer": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "91f3318bcc42cfc4daa0a6647abf14c3",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "an_empty_middle_input_numbers_by_declared_position": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "v",
+      "v__2"
+    ],
+    "digest": "43fc7831623ab051e07f1c71c6eeb25d",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "bin_columns_on_the_collective_side_alone": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "order",
+      "bin_start",
+      "bin_end"
+    ],
+    "digest": "97648f15ffa7f566426f7c2774cc21d6",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "global_and_global_collided_payload": {
+    "columns": [
+      "frame",
+      "time",
+      "group",
+      "sequence",
+      "fps",
+      "order",
+      "spread",
+      "order__1"
+    ],
+    "digest": "a8c54543d52a2d51730826d9c9074279",
+    "dtypes": [
+      "int64",
+      "float64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "global_individual_individual": {
+    "columns": [
+      "frame",
+      "time",
+      "group",
+      "sequence",
+      "order",
+      "id",
+      "speed",
+      "turn"
+    ],
+    "digest": "4ce8182de277557bc906a8aa8577c147",
+    "dtypes": [
+      "int64",
+      "float64",
+      "str",
+      "str",
+      "float64",
+      "int64",
+      "float64",
+      "float64"
+    ]
+  },
+  "global_on_frame_and_global_on_time": "refused",
+  "global_then_individual_then_pair": "refused",
+  "individual_and_global_on_frame_and_time": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "order"
+    ],
+    "digest": "6aded4be765f8179329d16bc8d7e9186",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_and_global_sharing_no_order_column": "refused",
+  "individual_and_individual_collided_bookkeeping": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "fps",
+      "nn_id",
+      "speed",
+      "turn"
+    ],
+    "digest": "4aa27a73e4396edc89cc95e7a2e767b3",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_and_individual_collided_payload": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "turn",
+      "speed__1"
+    ],
+    "digest": "fcbca88992c762a4e2c46d81d3347b11",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_and_individual_on_id": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "turn"
+    ],
+    "digest": "bc4206e87101f61bde86d4a68949ec4f",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_and_individual_with_perspective": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "perspective",
+      "speed",
+      "turn"
+    ],
+    "digest": "2f9ddd6abaefb3e3db86a607ce4e96ad",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "int64",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_and_pair_levels": "refused",
+  "individual_and_pair_with_the_time_column": "refused",
+  "individual_global_global": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "order",
+      "spread"
+    ],
+    "digest": "0f427325d38169eed82248503c90d5e5",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_global_global_collided": {
+    "columns": [
+      "frame",
+      "time",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "order",
+      "order__2"
+    ],
+    "digest": "3a839b245c04070bf958193472a7d5cb",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "individual_with_perspective_and_pair": "refused",
+  "individual_without_time_and_global_with_time": {
+    "columns": [
+      "frame",
+      "id",
+      "group",
+      "sequence",
+      "speed",
+      "time",
+      "order"
+    ],
+    "digest": "cc78c939933f08b45782a2d7764709c6",
+    "dtypes": [
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_and_global_on_frame": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "order"
+    ],
+    "digest": "f8c55131b75882d03ac106bb6d1fa1b6",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_and_global_on_frame_and_time": {
+    "columns": [
+      "frame",
+      "time",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "order"
+    ],
+    "digest": "24b589965aec17eabdf04924b2efc111",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_and_pair_swapped": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "a",
+      "b"
+    ],
+    "digest": "b4251fa19bd6eef87a574957d41331bb",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_and_pair_unswapped": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "a",
+      "b"
+    ],
+    "digest": "f1a84b5659b5f938e883f10f85993d07",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_global_pair": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "order",
+      "social"
+    ],
+    "digest": "d02dc720b71691fe3ed3a8b97977edac",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "pair_swapped_and_pair_unswapped": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "a",
+      "b"
+    ],
+    "digest": "b4d3af58995b3ceb66f178de5ca4eb80",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_a_repeated_individual_row": "refused",
+  "widening_leaves_a_global_input_to_broadcast": {
+    "columns": [
+      "frame",
+      "time",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "order",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "ec8301d0eb7402f431fc217d30979f29",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_leaves_a_pair_input_to_merge": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "social",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "4cf95c11dc4145e054b01b9d11744ab2",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_on_frame_when_both_have_time": {
+    "columns": [
+      "frame",
+      "time",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "40e55ebc71d47d84671d6261bf6e86e4",
+    "dtypes": [
+      "int64",
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_on_time": {
+    "columns": [
+      "time",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "5f4106c8bdb2db4ba00ceddf2e52de8c",
+    "dtypes": [
+      "float64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_onto_pair_rows": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "ego",
+      "speed__id1",
+      "speed__id2"
+    ],
+    "digest": "91f3318bcc42cfc4daa0a6647abf14c3",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_two_individual_inputs": {
+    "columns": [
+      "frame",
+      "id1",
+      "id2",
+      "perspective",
+      "group",
+      "sequence",
+      "fps",
+      "ego",
+      "speed__id1",
+      "speed__id2",
+      "speed__2__id1",
+      "speed__2__id2"
+    ],
+    "digest": "3420cee6238d3c1da3b33502129b33e8",
+    "dtypes": [
+      "int64",
+      "int64",
+      "int64",
+      "int64",
+      "str",
+      "str",
+      "float64",
+      "float64",
+      "float64",
+      "float64",
+      "float64",
+      "float64"
+    ]
+  },
+  "widening_with_no_shared_order_column": "refused",
+  "widening_with_the_individual_input_first": "refused"
+}

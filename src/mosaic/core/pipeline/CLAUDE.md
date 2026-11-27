@@ -239,6 +239,18 @@ are in `graph/CLAUDE.md`.
   neighbor again recomputes the entries whose neighbors changed, and a row written
   without the cell recomputes once. It is empty at `overlap_frames=0`
   (`tests/core/pipeline/test_run_feature.py`).
+- A step whose inputs may both hold a summary key (`may_share_summary_key`,
+  `graph/columns.py`: two inputs whose producers' declarations admit `bin_start`,
+  `bin_end` or `arena`, and an undeclared producer admits any) records in
+  `consumed_summary_join` the keys that step 1 of the merge joined for the entry:
+  `summary_join_cell` (`loading.py`) folds `merge_step` over the footers' column
+  names, which `entry_summary_join` reads under the run's footer memo, leaving out an
+  input that records no rows. The cell is sorted keys joined with `,`, and blank for
+  none. `_servable` compares it through `cached_entry_disposition` after the other
+  channels, so a row that recorded another cell recomputes once, and a cell blank on
+  both sides is served, without a warning. Any other step records `""` and reads no
+  input footer. The cell stays out of `run_id`
+  (`tests/core/pipeline/test_run_feature.py`).
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).

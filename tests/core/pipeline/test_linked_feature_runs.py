@@ -679,6 +679,25 @@ def test_a_merged_row_of_a_linked_run_keeps_its_model_state_cell(
     }
 
 
+def test_a_merged_row_of_a_linked_run_keeps_its_summary_join_cell(
+    source: Dataset, copy: Dataset
+) -> None:
+    path = feature_index_path(source, STORAGE)
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows["consumed_summary_join"] = "arena," + rows["sequence"]
+    rows.to_csv(path, index=False)
+
+    merged = feature_rows(copy, STORAGE, run_id=RUN)
+
+    assert dict(
+        zip(merged["sequence"], merged["consumed_summary_join"], strict=True)
+    ) == {sequence: f"arena,{sequence}" for _group, sequence in SOURCE_ENTRIES}
+    reads = recorded_tracks_reads(copy, STORAGE, RUN)
+    assert {entry: read.summary_join for entry, read in reads.items()} == {
+        entry: f"arena,{entry[1]}" for entry in SOURCE_ENTRIES
+    }
+
+
 def test_a_change_reaches_the_sources_feature_rows(
     source: Dataset, copy: Dataset
 ) -> None:

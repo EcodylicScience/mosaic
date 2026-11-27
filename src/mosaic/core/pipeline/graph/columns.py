@@ -29,7 +29,7 @@ from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal
 
-from mosaic.core.schema import STANDARD_COLUMNS, TRACK_SCHEMAS
+from mosaic.core.schema import ARENA_COLUMN, STANDARD_COLUMNS, TRACK_SCHEMAS
 
 from ..column_contract import (
     Column,
@@ -48,8 +48,10 @@ from ..column_contract import (
     needs_of,
     resolve_names,
 )
-from ..loading import merge_naming, widens
-from ..types.data_config import NON_PAYLOAD_COLS
+from ..loading import CROSS_JOIN_FEATURES, merge_naming, widens
+from ..storage_names import feature_slug_of
+from ..types import Feature, Result
+from ..types.data_config import NON_PAYLOAD_COLS, SUMMARY_KEYS
 from .compatibility import (
     TRACKS_DECLARATION,
     Declaration,
@@ -69,6 +71,7 @@ __all__ = [
     "ColumnSet",
     "UNKNOWN_COLUMNS",
     "declared_vocabulary",
+    "may_share_summary_key",
     "measured_columns",
     "merged_input",
     "names_wire",
@@ -675,6 +678,56 @@ def tracks_provides() -> Provides:
             *(Conditional(Column(name)) for name in possible),
             *(Conditional(Prefix(family)) for family in sorted(families)),
         ),
+    )
+
+
+def _producer_columns(item: str | Result, catalog: DeclarationCatalog) -> ColumnSet:
+    """The columns an input's producer may write, from its declaration alone.
+
+    The dataset's tracks as the registered schemas describe them, a feature as
+    the declaration it was registered with, and :data:`UNKNOWN_COLUMNS` for a
+    producer the catalog does not know or that declares no output. The tracks
+    may also hold ``arena``, which the ``assign-arenas`` op writes and no
+    schema lists. Each condition of a declared output reads as undecided,
+    because the producer's own input is not known here, so a column it keeps
+    from its input is possible.
+    """
+    if isinstance(item, str):
+        columns = tracks_columns(catalog)
+        return replace(columns, possible=columns.possible | {ARENA_COLUMN})
+    declared = catalog.get(feature_slug_of(item.feature))
+    if declared is None or declared.provides is None:
+        return UNKNOWN_COLUMNS
+    return output_columns(declared.provides, UNKNOWN_COLUMNS, {})
+
+
+def may_share_summary_key(feature: Feature) -> bool:
+    """Whether two inputs of a step may both have a summary key.
+
+    The merge joins a summary key at a step-1 position only where both sides
+    have it, so a step whose inputs cannot both hold one joins none, and a run
+    records a blank ``consumed_summary_join`` for every entry without reading an
+    input footer. Each input's columns come from its producer's declaration: the
+    tracks through :func:`tracks_columns` and a feature through the catalog's
+    ``Declaration.provides``, under the definition scope in force. A producer
+    that declares no output may provide any column, so the answer is yes.
+
+    A step of one input and a consumer in ``CROSS_JOIN_FEATURES``, which merges
+    on its alignment columns alone, answer no.
+
+    Args:
+        feature: The step, whose ``inputs`` name the producers.
+    """
+    from .resolve import declaration_catalog
+
+    items = feature.inputs.root
+    if len(items) < 2 or feature.name in CROSS_JOIN_FEATURES:
+        return False
+    catalog = declaration_catalog()
+    produced = [_producer_columns(item, catalog) for item in items]
+    return any(
+        sum(columns.admits(key) for columns in produced) >= 2
+        for key in sorted(SUMMARY_KEYS)
     )
 
 

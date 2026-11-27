@@ -212,6 +212,18 @@ class FeatureIndexRow(RunIndexRowBase):
     # cell and not a path, so ``merge_linked_rows`` leaves it as stored. Out of
     # the run id, like the cells above.
     consumed_model_state: str = ""
+    # The summary keys that step 1 of the merge joined for this entry, sorted and
+    # joined with ``,`` (``summary_join_cell`` in ``loading.py``). ``""`` when it
+    # joined none, and for a row written before the column existed. A row that
+    # ``mosaic reconcile`` found merged under the earlier rule reads
+    # ``legacy:<keys>``, which ``reconcile`` alone writes. Recorded and compared
+    # against the cell the entry has now, never hashed. A text cell and not a
+    # path, so ``merge_linked_rows`` leaves it as stored.
+    consumed_summary_join: str = ""
+
+
+LEGACY_SUMMARY_JOIN: Final = "legacy:"
+"""The prefix of a ``consumed_summary_join`` cell that marks an earlier merge."""
 
 
 def adopt_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -561,6 +573,8 @@ class RecordedTracksReads:
         neighbors: Its ``consumed_neighbors``, empty without overlap.
         model_state: Its ``consumed_model_state``, empty for a row that read no
             fit state.
+        summary_join: Its ``consumed_summary_join``, empty when step 1 joined no
+            summary key.
         inputs: Its ``consumed_input_composition``, empty without a feature
             input whose upstream records a declared root.
     """
@@ -568,13 +582,14 @@ class RecordedTracksReads:
     composition: str = ""
     neighbors: str = ""
     model_state: str = ""
+    summary_join: str = ""
     inputs: str = ""
 
 
 def recorded_tracks_reads(
     ds: Dataset, feature_name: str, run_id: str
 ) -> dict[tuple[str, str], RecordedTracksReads]:
-    """Per entry, the tracks, neighbors, model state and input cells each row recorded.
+    """Per entry, the cells each row recorded of what it read.
 
     Its own reader rather than a third element on :func:`recorded_consumption`,
     which drops every row whose ``consumed_roots`` is empty -- and that is the forty
@@ -589,12 +604,13 @@ def _run_rows(ds: Dataset, feature_name: str, run_id: str) -> pd.DataFrame:
 
 
 def _tracks_reads_of(rows: pd.DataFrame) -> dict[Entry, RecordedTracksReads]:
-    """Per entry, the tracks, neighbors, model state and input cells of *rows*."""
+    """Per entry, the cells that *rows* recorded of what they read."""
     return {
         (str(row["group"]), str(row["sequence"])): RecordedTracksReads(
             composition=str(row.get("consumed_tracks_composition", "")),
             neighbors=str(row.get("consumed_neighbors", "")),
             model_state=str(row.get("consumed_model_state", "")),
+            summary_join=str(row.get("consumed_summary_join", "")),
             inputs=str(row.get("consumed_input_composition", "")),
         )
         for _, row in rows.iterrows()

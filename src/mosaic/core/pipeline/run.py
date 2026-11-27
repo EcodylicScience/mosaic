@@ -116,6 +116,7 @@ from .loading import (
     CROSS_JOIN_FEATURES,
     EntryRowsMissing,
     entry_bounds_filters,
+    entry_summary_join,
     expands_individuals,
     input_projection,
     stacks_inputs,
@@ -1157,6 +1158,10 @@ def _model_state_blind_warning(
         f"fit-state digest ({named}): a fit written again under its run id goes "
         "undetected. Remove each run and fit it again to record one"
     )
+
+
+_SUMMARY_JOIN_REASON: Final = "the summary keys its inputs join on changed"
+"""Why a cached entry whose summary-join cell moved is recomputed."""
 
 
 def _neighbors_reason(recorded: str) -> str:
@@ -2460,6 +2465,7 @@ class _CachedOutput:
         input_composition: The upstream roots' composition its row recorded.
         neighbors: The neighbors its row recorded.
         model_state: The fit-state cell its row recorded.
+        summary_join: The summary-join cell its row recorded.
     """
 
     n_rows: int
@@ -2468,6 +2474,7 @@ class _CachedOutput:
     input_composition: str
     neighbors: str
     model_state: str
+    summary_join: str
 
 
 @dataclass
@@ -3521,6 +3528,32 @@ def _run_feature_impl(
             else {**fit_states_now, OWN_STATE_PART: own_state}
         )
 
+        # The summary keys each entry's merge joins, read from the footers of its
+        # input files. A step whose inputs cannot both hold a summary key joins
+        # none, and reads no footer.
+        from .graph.columns import may_share_summary_key
+
+        reads_summary_keys = may_share_summary_key(feature)
+        input_files = {
+            (entry.group, entry.sequence): entry.file_specs
+            for entry in manifest.values()
+        }
+        summary_cells: dict[Entry, str] = {}
+
+        def summary_join_now(entry: Entry) -> str:
+            """The cell of *entry*, read once from its inputs' footers."""
+            if not reads_summary_keys:
+                return ""
+            cell = summary_cells.get(entry)
+            if cell is None:
+                cell = entry_summary_join(
+                    input_files.get(entry, []),
+                    cross_join=cross_join,
+                    expands_individuals=widens_individuals,
+                )
+                summary_cells[entry] = cell
+            return cell
+
         # The run's own memory before the first entry loads: the interpreter, the
         # imports and the feature's state.
         base = watch.sample()
@@ -3801,6 +3834,10 @@ def _run_feature_impl(
                 model_disposition = cached_entry_disposition(
                     model_state_was, model_state_now
                 )
+                summary_was = recorded_reads.summary_join
+                summary_disposition = cached_entry_disposition(
+                    summary_was, summary_join_now(entry)
+                )
                 disposition = cached_entry_disposition(was_made_from, now_made_of)
                 tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
                 refusal: str | None = None
@@ -3819,6 +3856,8 @@ def _run_feature_impl(
                     refusal = _neighbors_reason(neighbors_was)
                 elif model_disposition == "recompute":
                     refusal = _model_state_reason(model_state_was, model_state_now)
+                elif summary_disposition == "recompute":
+                    refusal = _SUMMARY_JOIN_REASON
                 if refusal is None and blind_arena_rows is not None:
                     arena_count = entry_arena_count(
                         ds, group, sequence, blind_arena_rows
@@ -3853,6 +3892,7 @@ def _run_feature_impl(
                     input_composition=inputs_was,
                     neighbors=neighbors_was,
                     model_state=model_state_was,
+                    summary_join=summary_was,
                 )
 
             if state_ready and not overwrite:
@@ -3887,6 +3927,7 @@ def _run_feature_impl(
                             consumed_input_composition=cached.input_composition,
                             consumed_neighbors=cached.neighbors,
                             consumed_model_state=cached.model_state,
+                            consumed_summary_join=cached.summary_join,
                             n_rows=cached.n_rows,
                             params_hash=params_hash,
                             identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -4113,6 +4154,9 @@ def _run_feature_impl(
                             (meta.group, meta.sequence), ""
                         ),
                         consumed_model_state=model_state_now,
+                        consumed_summary_join=summary_join_now(
+                            (meta.group, meta.sequence)
+                        ),
                         n_rows=outcome.rows,
                         params_hash=params_hash,
                         identity_scheme=FEATURE_IDENTITY_SCHEME,

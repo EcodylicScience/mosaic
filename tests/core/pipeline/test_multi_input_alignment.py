@@ -32,6 +32,8 @@ is no such caller in-tree yet; the seam is the point.
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -44,8 +46,18 @@ from mosaic.core.pipeline.loading import (
     MultiInputAlignmentError,
     PairRowsMissing,
     _merge_parquet_inputs,
+    entry_summary_join,
     load_entry_data,
     merge_naming,
+    merge_step,
+    summary_join_cell,
+)
+from tests.helpers import (
+    UPDATE_GOLDEN_ENV,
+    read_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
 )
 
 _INDIVIDUAL = ["frame", "time", "id", "group", "sequence", "speed"]
@@ -387,3 +399,847 @@ def test_an_empty_pair_input_beside_individual_rows_is_refused(tmp_path: Path) -
     assert isinstance(raised.value, EntryRowsMissing)
 
     assert load_entry_data(_specs(tmp_path, tables)) is not None
+
+
+# --- the merge where no summary key is shared ------------------------------------
+
+_MERGE_GOLDEN = "merge_without_summary_keys.json"
+
+
+@dataclass(frozen=True)
+class _MergeCase:
+    """The loaded inputs of one entry, as ``(declared position, frame)``, and the flags."""
+
+    inputs: tuple[tuple[int, pd.DataFrame], ...]
+    cross_join: bool = False
+    expands_individuals: bool = False
+
+
+def _values(name: str, frames: list[int], ids: list[int], salt: float) -> list[float]:
+    """One value per row, set by the column name, the row's frame and id, and *salt*."""
+    scale = float(sum(ord(letter) for letter in name))
+    return [
+        scale + salt + 10.0 * frame + identity for frame, identity in zip(frames, ids)
+    ]
+
+
+def _per_id(
+    payload: list[str],
+    *,
+    time: bool = True,
+    salt: float = 1.0,
+    ids: tuple[int, ...] = (0, 1),
+    frames: tuple[int, ...] = (0, 1, 2),
+    bookkeeping: bool = False,
+    perspective: bool = False,
+) -> pd.DataFrame:
+    """Individual rows: every ``(frame, id)``, with the group and sequence columns."""
+    rows = [(frame, identity) for frame in frames for identity in ids]
+    row_frames = [frame for frame, _ in rows]
+    row_ids = [identity for _, identity in rows]
+    data: dict[str, list[object]] = {"frame": list(row_frames)}
+    if time:
+        data["time"] = [frame / 30 for frame in row_frames]
+    data["id"] = list(row_ids)
+    data["group"] = ["g"] * len(rows)
+    data["sequence"] = ["s"] * len(rows)
+    if perspective:
+        data["perspective"] = [identity % 2 for identity in row_ids]
+    if bookkeeping:
+        data["fps"] = [30.0] * len(rows)
+        data["nn_id"] = [
+            float(1 - identity) if frame else float("nan") for frame, identity in rows
+        ]
+    for name in payload:
+        data[name] = list(_values(name, row_frames, row_ids, salt))
+    return pd.DataFrame(data)
+
+
+def _per_pair(
+    payload: list[str],
+    *,
+    time: bool = False,
+    salt: float = 1.0,
+    frames: tuple[int, ...] = (0, 1, 2),
+    swap: bool = True,
+    bookkeeping: bool = False,
+) -> pd.DataFrame:
+    """Pair rows: both perspectives of the pair of individuals 0 and 1 per frame."""
+    rows = [(frame, perspective) for frame in frames for perspective in (0, 1)]
+    row_frames = [frame for frame, _ in rows]
+    perspectives = [perspective for _, perspective in rows]
+    data: dict[str, list[object]] = {"frame": list(row_frames)}
+    if time:
+        data["time"] = [frame / 30 for frame in row_frames]
+    data["id1"] = [perspective if swap else 0 for perspective in perspectives]
+    data["id2"] = [1 - perspective if swap else 1 for perspective in perspectives]
+    data["perspective"] = list(perspectives)
+    data["group"] = ["g"] * len(rows)
+    data["sequence"] = ["s"] * len(rows)
+    if bookkeeping:
+        data["fps"] = [30.0] * len(rows)
+    for name in payload:
+        data[name] = list(_values(name, row_frames, perspectives, salt))
+    return pd.DataFrame(data)
+
+
+def _per_frame(
+    payload: list[str],
+    *,
+    frame: bool = True,
+    time: bool = True,
+    salt: float = 1.0,
+    frames: tuple[int, ...] = (0, 1, 2),
+    bookkeeping: bool = False,
+    extra: dict[str, list[object]] | None = None,
+) -> pd.DataFrame:
+    """Collective rows: one per frame, naming nobody."""
+    data: dict[str, list[object]] = {}
+    if frame:
+        data["frame"] = list(frames)
+    if time:
+        data["time"] = [step / 30 for step in frames]
+    data["group"] = ["g"] * len(frames)
+    data["sequence"] = ["s"] * len(frames)
+    if bookkeeping:
+        data["fps"] = [30.0] * len(frames)
+    for name in payload:
+        data[name] = list(_values(name, list(frames), [0] * len(frames), salt))
+    data.update(extra or {})
+    return pd.DataFrame(data)
+
+
+def _merge_corpus() -> dict[str, _MergeCase]:
+    """Pairs and triples of inputs that share no summary key, each a fresh set of frames."""
+    cases: dict[str, _MergeCase] = {}
+
+    def add(
+        name: str,
+        *tables: pd.DataFrame,
+        positions: tuple[int, ...] | None = None,
+        cross_join: bool = False,
+        expands_individuals: bool = False,
+    ) -> None:
+        declared = positions if positions is not None else tuple(range(len(tables)))
+        cases[name] = _MergeCase(
+            tuple(zip(declared, tables)), cross_join, expands_individuals
+        )
+
+    add(
+        "individual_and_global_on_frame_and_time",
+        _per_id(["speed"]),
+        _per_frame(["order"]),
+    )
+    add(
+        "individual_without_time_and_global_with_time",
+        _per_id(["speed"], time=False),
+        _per_frame(["order"]),
+    )
+    add(
+        "individual_and_global_sharing_no_order_column",
+        _per_id(["speed"], time=False),
+        _per_frame(["order"], frame=False),
+    )
+    add(
+        "pair_and_global_on_frame",
+        _per_pair(["ego"]),
+        _per_frame(["order"], time=False),
+    )
+    add(
+        "pair_and_global_on_frame_and_time",
+        _per_pair(["ego"], time=True),
+        _per_frame(["order"]),
+    )
+    add("pair_and_pair_swapped", _per_pair(["a"]), _per_pair(["b"], salt=2.0))
+    add(
+        "pair_and_pair_unswapped",
+        _per_pair(["a"], swap=False),
+        _per_pair(["b"], swap=False),
+    )
+    add(
+        "pair_swapped_and_pair_unswapped",
+        _per_pair(["a"]),
+        _per_pair(["b"], swap=False),
+    )
+    add(
+        "individual_and_individual_on_id",
+        _per_id(["speed"]),
+        _per_id(["turn"], salt=2.0),
+    )
+    add(
+        "individual_and_individual_collided_payload",
+        _per_id(["speed", "turn"]),
+        _per_id(["speed"], salt=2.0),
+    )
+    add(
+        "individual_and_individual_collided_bookkeeping",
+        _per_id(["speed"], bookkeeping=True),
+        _per_id(["turn"], salt=2.0, bookkeeping=True),
+    )
+    add(
+        "individual_and_individual_with_perspective",
+        _per_id(["speed"], perspective=True),
+        _per_id(["turn"], salt=2.0, perspective=True),
+    )
+    add(
+        "global_and_global_collided_payload",
+        _per_frame(["order", "spread"], bookkeeping=True),
+        _per_frame(["order"], salt=2.0, bookkeeping=True),
+    )
+    add(
+        "global_on_frame_and_global_on_time",
+        _per_frame(["order"], time=False),
+        _per_frame(["spread"], frame=False),
+    )
+    add("individual_and_pair_levels", _per_id(["speed"]), _per_pair(["ego"]))
+    add(
+        "individual_with_perspective_and_pair",
+        _per_id(["speed"], perspective=True),
+        _per_pair(["ego"]),
+    )
+    add(
+        "individual_and_pair_with_the_time_column",
+        _per_id(["speed"]),
+        _per_pair(["ego"], time=True),
+    )
+    add(
+        "individual_global_global",
+        _per_id(["speed"]),
+        _per_frame(["order"]),
+        _per_frame(["spread"], salt=2.0),
+    )
+    add(
+        "individual_global_global_collided",
+        _per_id(["speed"]),
+        _per_frame(["order"]),
+        _per_frame(["order"], salt=2.0),
+    )
+    add(
+        "global_individual_individual",
+        _per_frame(["order"]),
+        _per_id(["speed"]),
+        _per_id(["turn"], salt=2.0),
+    )
+    add(
+        "pair_global_pair",
+        _per_pair(["ego"]),
+        _per_frame(["order"], time=False),
+        _per_pair(["social"], salt=2.0),
+    )
+    add(
+        "global_then_individual_then_pair",
+        _per_frame(["order"]),
+        _per_id(["speed"]),
+        _per_pair(["ego"]),
+    )
+    add(
+        "an_empty_middle_input_numbers_by_declared_position",
+        _per_id(["v"]),
+        _per_id(["v"], salt=3.0),
+        positions=(0, 2),
+    )
+    add(
+        "an_empty_first_input_is_left_out",
+        _per_id(["v"]),
+        _per_frame(["order"]),
+        positions=(1, 2),
+    )
+    add(
+        "an_empty_middle_input_beside_a_widening_consumer",
+        _per_pair(["ego"]),
+        _per_id(["speed"]),
+        positions=(0, 2),
+        expands_individuals=True,
+    )
+    add(
+        "widening_onto_pair_rows",
+        _per_pair(["ego"]),
+        _per_id(["speed"]),
+        expands_individuals=True,
+    )
+    add(
+        "widening_two_individual_inputs",
+        _per_pair(["ego"], bookkeeping=True),
+        _per_id(["speed"], bookkeeping=True),
+        _per_id(["speed"], salt=2.0, bookkeeping=True),
+        expands_individuals=True,
+    )
+    add(
+        "widening_on_time",
+        _per_pair(["ego"], time=True).drop(columns=["frame"]),
+        _per_id(["speed"]).drop(columns=["frame"]),
+        expands_individuals=True,
+    )
+    add(
+        "widening_on_frame_when_both_have_time",
+        _per_pair(["ego"], time=True),
+        _per_id(["speed"]),
+        expands_individuals=True,
+    )
+    add(
+        "widening_with_no_shared_order_column",
+        _per_pair(["ego"]),
+        _per_id(["speed"], time=False).rename(columns={"frame": "step"}),
+        expands_individuals=True,
+    )
+    add(
+        "widening_with_the_individual_input_first",
+        _per_id(["speed"]),
+        _per_pair(["ego"]),
+        expands_individuals=True,
+    )
+    add(
+        "widening_a_repeated_individual_row",
+        _per_pair(["ego"]),
+        pd.concat([_per_id(["speed"]), _per_id(["speed"]).iloc[:1]], ignore_index=True),
+        expands_individuals=True,
+    )
+    add(
+        "widening_leaves_a_global_input_to_broadcast",
+        _per_pair(["ego"], time=True),
+        _per_frame(["order"]),
+        _per_id(["speed"]),
+        expands_individuals=True,
+    )
+    add(
+        "widening_leaves_a_pair_input_to_merge",
+        _per_pair(["ego"]),
+        _per_pair(["social"], salt=2.0),
+        _per_id(["speed"]),
+        expands_individuals=True,
+    )
+    add(
+        "a_cross_join_consumer_joins_on_frame_alone",
+        _per_id(["speed"], time=False),
+        _per_pair(["ego"]),
+        cross_join=True,
+    )
+    add(
+        "a_cross_join_consumer_numbers_a_collided_payload",
+        _per_id(["v"], time=False),
+        _per_pair(["v"], salt=2.0),
+        cross_join=True,
+    )
+    add(
+        "a_cross_join_consumer_with_no_shared_key",
+        _per_id(["speed"], time=False),
+        _per_frame(["order"], frame=False),
+        cross_join=True,
+    )
+    add(
+        "a_cross_join_consumer_beside_a_global_input",
+        _per_pair(["ego"]),
+        _per_frame(["order"], time=False),
+        _per_id(["speed"], time=False),
+        cross_join=True,
+    )
+    duplicated = pd.concat(
+        [_per_frame(["a"]), _per_frame(["a"], salt=5.0)], ignore_index=True
+    )
+    add(
+        "a_key_set_duplicated_on_both_sides",
+        duplicated,
+        duplicated.rename(columns={"a": "b"}),
+    )
+    add(
+        "a_key_set_duplicated_on_both_sides_under_a_cross_join",
+        duplicated,
+        duplicated.rename(columns={"a": "b"}),
+        cross_join=True,
+    )
+    add(
+        "a_key_set_duplicated_on_one_side",
+        duplicated,
+        _per_frame(["b"], salt=2.0),
+    )
+    add(
+        "an_arena_on_the_individual_side_alone",
+        _per_id(["speed"]).assign(arena=[0, 0, 1, 1, 0, 0]),
+        _per_frame(["order"]),
+    )
+    add(
+        "an_arena_on_the_collective_side_alone",
+        _per_id(["speed"]),
+        _per_frame(["order"], extra={"arena": [0, 1, 0]}),
+    )
+    add(
+        "bin_columns_on_the_collective_side_alone",
+        _per_id(["speed"]),
+        _per_frame(
+            ["order"], extra={"bin_start": [0.0, 0.0, 1.0], "bin_end": [1.0, 1.0, 2.0]}
+        ),
+    )
+    add(
+        "an_arena_on_one_pair_input_alone",
+        _per_pair(["ego"]).assign(arena=[0, 0, 0, 0, 0, 0]),
+        _per_pair(["social"], salt=2.0),
+    )
+    return cases
+
+
+def _merge_record(case: _MergeCase) -> str | dict[str, object]:
+    """``"refused"``, or the merged frame's column names, dtypes and values digest.
+
+    The digest reads the values and the index alone, so the names and the dtypes
+    are recorded beside it.
+    """
+    try:
+        merged = _merge_parquet_inputs(
+            iter(case.inputs),
+            cross_join=case.cross_join,
+            expands_individuals=case.expands_individuals,
+        )
+    except MultiInputAlignmentError:
+        return "refused"
+    assert merged is not None
+    hashed = pd.util.hash_pandas_object(merged, index=True)
+    digest = hashlib.blake2b(hashed.to_numpy().tobytes(), digest_size=16)
+    return {
+        "columns": [str(column) for column in merged.columns],
+        "dtypes": [str(dtype) for dtype in merged.dtypes],
+        "digest": digest.hexdigest(),
+    }
+
+
+def test_the_merge_is_today_s_where_no_summary_key_is_shared() -> None:
+    """Where two inputs share no summary key, the merge is the one before summary keys.
+
+    ``merge_without_summary_keys.json`` records, per case, ``refused`` or the
+    merged frame as it was before a shared summary key joined: its column names
+    in order, its dtypes, and a digest of its values and index. A case recorded
+    as a refusal may now merge, since a later step joins what it refused.
+    """
+    corpus = _merge_corpus()
+    if updating_golden():
+        write_golden(
+            _MERGE_GOLDEN, {name: _merge_record(case) for name, case in corpus.items()}
+        )
+        return
+    recorded = read_golden(_MERGE_GOLDEN)
+    assert not recorded.keys() - corpus.keys(), (
+        "the golden file has a case the corpus lacks"
+    )
+    for name, case in corpus.items():
+        assert name in recorded, (
+            f"no recorded merge for {name!r}; run `{regenerate_command(__name__)}`"
+        )
+        if recorded[name] == "refused":
+            continue
+        assert _merge_record(case) == recorded[name], (
+            f"the merge of {name!r} differs from the recorded one; "
+            f"{UPDATE_GOLDEN_ENV}=1 rewrites it only for a deliberate change"
+        )
+
+
+# --- shared summary keys ---------------------------------------------------------
+
+
+def _binned_per_id(payload: str, *, bins: int = 2, salt: float = 0.0) -> pd.DataFrame:
+    """A per-id summary: one row per ``(id, bin)``, with its bin's start and end."""
+    rows = [(identity, bin_index) for identity in (0, 1) for bin_index in range(bins)]
+    return pd.DataFrame(
+        {
+            "id": [identity for identity, _ in rows],
+            "group": "g",
+            "sequence": "s",
+            "bin_start": [10.0 * bin_index for _, bin_index in rows],
+            "bin_end": [10.0 * (bin_index + 1) for _, bin_index in rows],
+            payload: [
+                salt + 100.0 * identity + bin_index for identity, bin_index in rows
+            ],
+        }
+    )
+
+
+def test_two_binned_per_id_summaries_join_on_the_id_and_the_bin() -> None:
+    """The bin is a key beside ``id``, so no copy of it is numbered."""
+    left = _binned_per_id("speed")
+    right = _binned_per_id("turn", salt=0.5)
+
+    merged = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    assert merged is not None
+    assert len(merged) == 4
+    assert [c for c in merged.columns if "__" in c] == []
+    assert list(merged["turn"]) == [value + 0.5 for value in merged["speed"]]
+
+
+def test_binned_rows_whose_bins_differ_between_the_sides_do_not_match() -> None:
+    left = _binned_per_id("speed")
+    right = _binned_per_id("turn", salt=0.5)
+    right.loc[right["bin_start"] == 10.0, ["bin_start", "bin_end"]] = [5.0, 15.0]
+
+    merged = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    assert merged is not None
+    assert list(merged["bin_start"]) == [0.0, 0.0]
+
+
+def test_per_frame_rows_with_arena_join_per_frame_per_arena_rows_on_the_arena() -> None:
+    """``arena`` joins beside ``frame`` and ``time``, and is not numbered ``arena__1``."""
+    individuals = _per_id(["speed"]).assign(arena=[0, 1] * 3)
+    per_arena = pd.DataFrame(
+        {
+            "frame": [0, 0, 1, 1, 2, 2],
+            "time": [0.0, 0.0, 1 / 30, 1 / 30, 2 / 30, 2 / 30],
+            "arena": [0, 1] * 3,
+            "group": "g",
+            "sequence": "s",
+            "count": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0],
+        }
+    )
+
+    merged = _merge_parquet_inputs(iter([(0, individuals), (1, per_arena)]))
+
+    assert merged is not None
+    assert "arena__1" not in merged.columns
+    assert len(merged) == 6
+    assert list(merged["count"]) == [10.0, 20.0, 11.0, 21.0, 12.0, 22.0]
+
+
+def test_a_per_frame_collective_joins_individual_rows_on_frame_and_time() -> None:
+    """A per-frame collective names nobody and has no summary key: the keys are today's."""
+    individuals = _per_id(["speed"])
+    collective = _per_frame(["order"])
+
+    merged = _merge_parquet_inputs(iter([(0, individuals), (1, collective)]))
+
+    assert merged is not None
+    assert len(merged) == len(individuals)
+    assert merge_naming(individuals.columns, collective.columns, 1).keys == (
+        "frame",
+        "time",
+    )
+    assert list(merged["order"]) == [
+        float(sum(ord(letter) for letter in "order")) + 1.0 + 10.0 * frame
+        for frame in individuals["frame"]
+    ]
+
+
+def test_a_nan_summary_key_refuses_before_the_join() -> None:
+    """pandas matches ``NaN`` to ``NaN``, so a blank bin would join a blank bin."""
+    left = _binned_per_id("speed")
+    right = _binned_per_id("turn", salt=0.5)
+    left["bin_start"] = left["bin_start"].astype(float)
+    left.loc[left.index[0], "bin_start"] = float("nan")
+
+    with pytest.raises(
+        MultiInputAlignmentError,
+        match=(
+            "cannot merge input 1: bin_start is missing in 1 rows of the inputs "
+            "before it, and a summary key names a bin or an arena"
+        ),
+    ):
+        _ = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    with pytest.raises(
+        MultiInputAlignmentError,
+        match=(
+            "cannot merge input 1: bin_end is missing in 2 rows of input 1, and a "
+            "summary key names a bin or an arena"
+        ),
+    ):
+        right.loc[right.index[:2], "bin_end"] = float("nan")
+        _ = _merge_parquet_inputs(iter([(0, _binned_per_id("speed")), (1, right)]))
+
+
+def test_a_cross_join_consumer_keeps_the_numbered_arena() -> None:
+    """A consumer in ``CROSS_JOIN_FEATURES`` keeps today's keys, without summary keys."""
+    individuals = _per_id(["speed"], time=False).assign(arena=[0, 1] * 3)
+    pairs = _per_pair(["ego"]).assign(arena=[1] * 6)
+
+    merged = _merge_parquet_inputs(
+        iter([(0, individuals), (1, pairs)]), cross_join=True
+    )
+
+    assert merged is not None
+    assert {"arena", "arena__1"} <= set(merged.columns)
+
+
+def test_a_shared_summary_key_join_keeps_the_merged_sides_row_order() -> None:
+    left = _binned_per_id("speed").iloc[[3, 0, 2, 1]].reset_index(drop=True)
+    right = _binned_per_id("turn", salt=0.5)
+
+    merged = _merge_parquet_inputs(iter([(0, left), (1, right)]))
+
+    assert merged is not None
+    assert list(merged["speed"]) == list(left["speed"])
+
+
+# --- the column-level decision of a merge position -------------------------------
+
+_BINNED = ["id", "group", "sequence", "bin_start", "bin_end", "speed"]
+
+
+def test_merge_step_joins_the_summary_keys_that_both_sides_have() -> None:
+    step = merge_step(
+        _BINNED,
+        [*_BINNED[:-1], "turn"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.kind == "shared"
+    assert step.keys == ("bin_end", "bin_start", "id")
+    assert step.summary_keys == ("bin_end", "bin_start")
+    assert step.refusal == ""
+    assert dict(step.naming.renamed) == {}
+    assert set(step.naming.dropped) == {"group", "sequence"}
+    assert step.naming.columns == frozenset([*_BINNED, "turn"])
+
+
+def test_merge_step_keeps_a_collided_payload_column_numbered() -> None:
+    step = merge_step(_BINNED, _BINNED, 2, cross_join=False, expands_individuals=False)
+
+    assert dict(step.naming.renamed) == {"speed": "speed__2"}
+
+
+def test_merge_step_joins_no_summary_key_where_only_one_side_has_it() -> None:
+    step = merge_step(
+        [*_INDIVIDUAL, "arena"],
+        ["frame", "time", "order"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.keys == ("frame", "time")
+    assert step.summary_keys == ()
+    assert "arena" in step.naming.columns
+
+
+def test_merge_step_for_a_cross_join_consumer_keeps_todays_keys() -> None:
+    columns = ["frame", "id", "arena", "speed"]
+    step = merge_step(
+        columns,
+        ["frame", "arena", "count"],
+        1,
+        cross_join=True,
+        expands_individuals=False,
+    )
+
+    assert step.keys == ("frame",)
+    assert step.summary_keys == ()
+    assert dict(step.naming.renamed) == {"arena": "arena__1"}
+
+
+def test_merge_step_widens_on_the_shared_order_column_without_summary_keys() -> None:
+    pair_summary = [*_PAIR, "arena", "bin_start", "bin_end"]
+    individual = [*_INDIVIDUAL, "arena", "bin_start", "bin_end"]
+
+    step = merge_step(
+        pair_summary, individual, 1, cross_join=False, expands_individuals=True
+    )
+
+    assert step.kind == "widen"
+    assert step.keys == ("frame",)
+    assert step.summary_keys == ()
+    assert step.refusal == ""
+    assert "arena__id1" in step.naming.columns
+
+
+def test_merge_step_refuses_a_widening_that_shares_no_order_column() -> None:
+    step = merge_step(
+        _PAIR,
+        ["step", "id", "speed"],
+        3,
+        cross_join=False,
+        expands_individuals=True,
+    )
+
+    assert step.kind == "widen"
+    assert step.refusal == (
+        "cannot merge input 3: it shares no order column (frame or time) with "
+        "the pair rows"
+    )
+
+
+def test_merge_step_refuses_levels_with_the_widening_hint() -> None:
+    plain = merge_step(
+        _INDIVIDUAL, _PAIR, 1, cross_join=False, expands_individuals=False
+    )
+    widening = merge_step(
+        _INDIVIDUAL, _PAIR, 1, cross_join=False, expands_individuals=True
+    )
+
+    assert plain.refusal.startswith("cannot merge input 1: inputs are at different")
+    assert not plain.refusal.endswith("pair-level input first")
+    assert widening.refusal == (
+        f"{plain.refusal}; widening individual rows onto pair rows needs the "
+        "pair-level input first"
+    )
+
+
+def test_merge_step_refuses_inputs_that_share_no_alignment_column() -> None:
+    columns = ["bin_start", "bin_end", "speed"]
+    for cross_join in (False, True):
+        step = merge_step(
+            columns,
+            ["bin_start", "bin_end", "turn"],
+            1,
+            cross_join=cross_join,
+            expands_individuals=False,
+        )
+        assert step.refusal == ("cannot merge input 1: no shared alignment columns")
+        assert step.summary_keys == ()
+
+
+def test_an_alignment_verdict_names_its_cause() -> None:
+    assert alignment_verdict([_INDIVIDUAL, _PAIR]).cause == "levels"
+    assert alignment_verdict([["frame", "a"], ["time", "b"]]).cause == "no_keys"
+    assert alignment_verdict([_PAIR, _PAIR]).cause == ""
+
+
+def test_a_collided_column_among_the_given_keys_is_neither_dropped_nor_renamed() -> (
+    None
+):
+    naming = merge_naming(
+        ["frame", "arena", "group", "speed"],
+        ["frame", "arena", "group", "count"],
+        1,
+        keys=["frame", "arena"],
+    )
+
+    assert naming.keys == ("arena", "frame")
+    assert naming.dropped == ("group",)
+    assert dict(naming.renamed) == {}
+    assert naming.columns == frozenset(["frame", "arena", "group", "speed", "count"])
+
+
+# --- the summary keys a step joins ------------------------------------------------
+
+_ARENA_FRAMES = ["frame", "id", "arena", "speed"]
+
+
+def test_the_cell_names_the_summary_keys_that_both_inputs_have() -> None:
+    cell = summary_join_cell(
+        [_ARENA_FRAMES, ["frame", "id", "arena", "count"]],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "arena"
+
+
+def test_the_cell_is_the_sorted_union_over_the_positions() -> None:
+    binned = ["id", "bin_start", "bin_end", "mean"]
+    cell = summary_join_cell(
+        [
+            [*binned, "arena"],
+            [*binned[:3], "arena", "max"],
+            [*binned[:3], "min"],
+        ],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "arena,bin_end,bin_start"
+
+
+def test_the_cell_is_blank_where_no_summary_key_is_shared() -> None:
+    assert (
+        summary_join_cell(
+            [_ARENA_FRAMES, ["frame", "id", "count"]],
+            cross_join=False,
+            expands_individuals=False,
+        )
+        == ""
+    )
+
+
+def test_a_cross_join_consumer_joins_no_summary_key() -> None:
+    assert (
+        summary_join_cell(
+            [_ARENA_FRAMES, ["frame", "id", "arena", "count"]],
+            cross_join=True,
+            expands_individuals=False,
+        )
+        == ""
+    )
+
+
+def test_a_widening_position_joins_no_summary_key() -> None:
+    pairs = ["frame", "perspective", "id1", "id2", "arena", "ego_x"]
+
+    cell = summary_join_cell(
+        [pairs, ["frame", "id", "arena", "speed"]],
+        cross_join=False,
+        expands_individuals=True,
+    )
+
+    assert cell == ""
+
+
+def test_a_refused_position_ends_the_fold() -> None:
+    cell = summary_join_cell(
+        [_ARENA_FRAMES, ["bin_start", "total"], ["frame", "id", "arena", "count"]],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == ""
+
+
+def test_an_input_that_is_left_out_takes_no_part_in_the_fold() -> None:
+    cell = summary_join_cell(
+        [_ARENA_FRAMES, None, ["frame", "id", "arena", "count"]],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "arena"
+
+
+def test_the_cell_of_one_input_is_blank() -> None:
+    assert (
+        summary_join_cell([_ARENA_FRAMES], cross_join=False, expands_individuals=False)
+        == ""
+    )
+
+
+def _arena_table(payload: str, rows: int = 3) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "frame": list(range(rows)),
+            "id": [0] * rows,
+            "arena": ["a"] * rows,
+            payload: [float(i) for i in range(rows)],
+        }
+    )
+
+
+def test_the_entry_cell_is_read_from_the_footers_of_the_files(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, [_arena_table("speed"), _arena_table("count")])
+
+    cell = entry_summary_join(specs, cross_join=False, expands_individuals=False)
+
+    assert cell == "arena"
+
+
+def test_an_input_whose_footer_records_no_rows_is_left_out(tmp_path: Path) -> None:
+    empty = _arena_table("count").iloc[0:0]
+    specs = _specs(tmp_path, [_arena_table("speed"), empty])
+
+    cell = entry_summary_join(specs, cross_join=False, expands_individuals=False)
+
+    assert cell == ""
+    assert load_entry_data(specs) is not None
+
+
+def test_an_empty_input_leaves_the_others_to_join(tmp_path: Path) -> None:
+    empty = _arena_table("count").iloc[0:0]
+    specs = _specs(tmp_path, [_arena_table("speed"), empty, _arena_table("share")])
+
+    cell = entry_summary_join(specs, cross_join=False, expands_individuals=False)
+
+    assert cell == "arena"
+
+
+def test_an_unreadable_input_is_left_out(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, [_arena_table("speed"), _arena_table("count")])
+    _ = specs[1][0].write_bytes(b"not a parquet")
+
+    cell = entry_summary_join(specs, cross_join=False, expands_individuals=False)
+
+    assert cell == ""
