@@ -1750,6 +1750,24 @@ class ConversionOutcome:
         return self.failed > 0 and self.converted == 0
 
 
+def _frames_read_and_note(
+    converter: TrackConverter[TrackConvertParams], path: Path
+) -> tuple[int | None, str]:
+    """The frame count a converter reads from a source file, and the note it needs.
+
+    The count is provenance, so a file the hook cannot read gives ``None`` and
+    a line for standard error, never a failure of the conversion.
+
+    Returns:
+        The count and an empty note, or ``None`` and the line that says why the
+        count was not recorded.
+    """
+    counted = converter.try_frames_read(path)
+    if isinstance(counted, Exception):
+        return None, f"[WARN] frames_read of {path} not recorded: {counted}"
+    return counted, ""
+
+
 @dataclass(slots=True)
 class TrackFileOutcome:
     """What converting one raw file, or one sequence's files, produced.
@@ -1768,6 +1786,8 @@ class TrackFileOutcome:
             describe them. The process that owns the index publishes them.
         failure: Why the file failed, when it did.
         warning: The line that reports the failure on standard error.
+        notes: The lines a conversion that succeeded reports on standard error,
+            such as a source frame count that could not be read.
         entry_failures: The sequences of a file that holds several that failed,
             each with the ``(group, sequence)`` it belongs to, in file order. The
             file's other sequences converted. A file that fails as a whole has
@@ -1781,6 +1801,7 @@ class TrackFileOutcome:
     tables: list[StagedTrackTable] = field(default_factory=list)
     failure: EntryFailure | None = None
     warning: str = ""
+    notes: list[str] = field(default_factory=list)
     entry_failures: list[tuple[tuple[str, str], EntryFailure]] = field(
         default_factory=list
     )
@@ -2907,10 +2928,13 @@ class Dataset:
 
         The tool's side of the comparison that :meth:`frame_axis_mismatches`
         makes, from what each run left on disk (:func:`backfill_frames_read`). A
+        conversion's count is read from its source by its converter, so its cell
+        is filled when blank and rewritten when the source now holds another
+        count. A converter that records none has its cell cleared. A
         row whose run left nothing that tells keeps its value, and so does a
-        tracker row in a process that has not called
-        ``mosaic.tracking.register_ops``, which the result reports in
-        ``unregistered``.
+        conversion whose source is missing. So does a tracker row in a process
+        that has not called ``mosaic.tracking.register_ops``, which the result
+        reports in ``unregistered``.
         """
         return backfill_frames_read(self, dry_run=dry_run)
 
@@ -10458,6 +10482,8 @@ class Dataset:
         try:
             self._convert_track_file_into(raw_row, params or {}, overwrite, outcome)
         finally:
+            for note in outcome.notes:
+                print(note, file=sys.stderr)
             committer = TableCommitter(self, overwrite=overwrite)
             lost = [
                 *self._commit_track_outcome(outcome, covered, variants, committer),
@@ -10592,6 +10618,10 @@ class Dataset:
                 raise ValueError(
                     f"No (group, sequence) pairs enumerated for {src_path}"
                 )
+            # The file's frame count, asked when the first table is staged and
+            # shared by every sequence after it.
+            frames_asked = False
+            file_frames_read: int | None = None
             for g, s in pairs:
                 # canonical (with '/')
                 canon_seq = s
@@ -10667,6 +10697,13 @@ class Dataset:
                         source=f"{src_path}::{canon_seq}",
                     )
                     staged = stage_table(df_std, out_path)
+                    if not frames_asked:
+                        file_frames_read, note = _frames_read_and_note(
+                            converter, src_path
+                        )
+                        frames_asked = True
+                        if note:
+                            outcome.notes.append(note)
 
                     # The file-level grouping hint the old row kept as 'collection'
                     # is not recorded: it had no reader anywhere, and it stays
@@ -10687,6 +10724,7 @@ class Dataset:
                                 consumed_source_roots=("tracks_raw",),
                                 carries_tracklets=converter.tracklets(conv_params),
                                 converter_origin=track_converter_origin(src_format),
+                                frames_read=file_frames_read,
                             ),
                         )
                     )
@@ -10755,6 +10793,9 @@ class Dataset:
         )
 
         staged = stage_table(df_std, out_path)
+        frames_read, note = _frames_read_and_note(converter, src_path)
+        if note:
+            outcome.notes.append(note)
 
         # The same two values the filename above was built from. Reading the row
         # a second time here is what let the table and its index row disagree:
@@ -10775,6 +10816,7 @@ class Dataset:
                     consumed_source_roots=("tracks_raw",),
                     carries_tracklets=converter.tracklets(conv_params),
                     converter_origin=track_converter_origin(src_format),
+                    frames_read=frames_read,
                 ),
             )
         )
@@ -11082,6 +11124,8 @@ class Dataset:
                 result, covered, minted, committer, current, written
             ):
                 report_lost(lost)
+            for note in result.notes:
+                print(note, file=sys.stderr)
             for entry, failure in result.entry_failures:
                 print(
                     f"[WARN] convert failed for {work.path}, entry "
@@ -11487,6 +11531,10 @@ class Dataset:
         )
 
         staged = stage_table(merged_df, out_path)
+        first_source = self.resolve_path(first_row["abs_path"])
+        frames_read, note = _frames_read_and_note(converter, first_source)
+        if note:
+            outcome.notes.append(note)
 
         # source_abs_path names only the first of the N per-id files merged
         # here; the full set stays recoverable from tracks_raw/index.csv by
@@ -11502,11 +11550,12 @@ class Dataset:
                     producer=converter_op(src_format),
                     std_format=converter.output_schema,
                     n_rows=int(len(merged_df)),
-                    source=self.resolve_path(first_row["abs_path"]),
+                    source=first_source,
                     source_md5=text_cell(first_row.get("md5", "")),
                     consumed_source_roots=("tracks_raw",),
                     carries_tracklets=converter.tracklets(conv_params),
                     converter_origin=track_converter_origin(src_format),
+                    frames_read=frames_read,
                 ),
             )
         )

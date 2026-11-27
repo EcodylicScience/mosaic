@@ -688,6 +688,27 @@ def write_sleap_analysis_h5(
             handle["track_names"] = np.array([n.encode() for n in track_names], "S")
 
 
+def converted_sleap_dataset(root: Path, frames: int = 4) -> tuple[Dataset, Path]:
+    """A dataset holding one converted SLEAP analysis file of *frames* frames.
+
+    Returns:
+        The dataset, whose one tracks row records the file's frame count, and
+        the raw file, which a test may rewrite or remove.
+    """
+    from tests.helpers.datasets import make_dataset
+
+    raw_file = root.resolve() / "raw" / "myseq.h5"
+    tracks = np.zeros((frames, 1, 2, 2))
+    write_sleap_analysis_h5(raw_file, tracks, np.full((frames, 1, 2), 0.9))
+    dataset = make_dataset(root.resolve(), roots=("tracks_raw", "tracks"))
+    dataset.meta["fps_default"] = 30.0
+    dataset.index_tracks_raw(
+        [raw_file.parent], patterns=["*.h5"], src_format="sleap_analysis_h5"
+    )
+    _ = dataset.convert_all_tracks()
+    return dataset, raw_file
+
+
 def write_calms21_npy(
     path: Path,
     pairs: Mapping[str, Mapping[str, int]],
@@ -1168,6 +1189,45 @@ def add_tracks_variant(
             appearance_dim=appearance_dim,
             carries_tracklets=carries_tracklets,
         )
+
+
+def add_counted_row(
+    dataset: Dataset,
+    producer: str,
+    *,
+    media_frames: int | None = None,
+    frames_read: int | None = None,
+    source: Path | str = "",
+) -> str:
+    """Write the one row of entry ``vid1`` that *producer* made, holding counts.
+
+    The row's variant is ``<producer>.0.1-0123456789`` and has a record. The
+    table is two frames of one individual.
+
+    Returns:
+        The row's variant.
+    """
+    from mosaic.core.pipeline.tracks_identity import write_tracks_variant
+
+    variant = f"{producer or 'legacy'}.0.1-0123456789"
+    _ = write_tracks_variant(dataset.get_root("tracks"), variant, producer, "0.1", {})
+    out = dataset.get_root("tracks") / variant / "vid1.parquet"
+    pd.DataFrame({"frame": [0, 1], "id": [0, 0]}).to_parquet(out)
+    write_tracks_row(
+        dataset,
+        run_id=variant,
+        group="",
+        sequence="vid1",
+        out_path=out,
+        producer=producer,
+        std_format="mosaic_v1",
+        n_rows=2,
+        media_frames=media_frames,
+        frames_read=frames_read,
+        source=source,
+        carries_tracklets=None,
+    )
+    return variant
 
 
 def add_tracks_variant_in_bulk(

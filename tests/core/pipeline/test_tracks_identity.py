@@ -23,6 +23,7 @@ from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
     convert_variant_payload,
+    converted_format,
     converter_op,
     infer_variant_payload,
     observed_models,
@@ -108,6 +109,15 @@ def test_an_absent_upstream_is_omitted_rather_than_hashed_empty() -> None:
 def test_the_producer_segment_says_a_conversion_is_a_conversion() -> None:
     """So a converted variant cannot collide with an op of the same name."""
     assert converter_op("trex_npz") == "convert-trex_npz"
+
+
+def test_a_conversion_producer_names_its_format() -> None:
+    """The inverse of ``converter_op``, and ``None`` for any other producer."""
+    for src_format in ("trex_npz", "sleap_analysis_h5", "acme__rows"):
+        assert converted_format(converter_op(src_format)) == src_format
+    assert converted_format("sleap") is None
+    assert converted_format("resample-tracks") is None
+    assert converted_format("") is None
 
 
 # --- The record beside the tables ---------------------------------------------

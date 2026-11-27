@@ -4,8 +4,9 @@ The count is the tool's, not the table's. A table has rows only where the tool
 reported something, and a recording that ends with no animal in view ends its
 table early however many frames the tool read. So each producer passes what its
 tool read: the frames of TREx's ``.pv``, the frames a runner decoded, the frames
-Lightning Pose predicted. SLEAP's analysis export cannot say, so its cell stays
-blank.
+Lightning Pose predicted. The SLEAP tracker's run leaves no count, so its cell
+stays blank, and a conversion records the count its converter reads from its
+source.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from mosaic.tracking.ultralytics_track.run import TRACK_RESPONSE_NAME
 from tests.helpers import (
     MediaClip,
+    add_counted_row,
     install_fake_litpose,
     install_fake_pose_inference,
     install_fake_sleap,
@@ -388,23 +390,12 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
         assert len(done.written) == 1
 
     def test_a_table_made_from_another_table_is_cleared(self, tmp_path: Path) -> None:
-        """No tool read media to make it, so no count of frames read applies."""
+        """No tool read media to make it, so no count of frames read applies.
+
+        The converter keeps the base hook, so its source cannot confirm a count.
+        """
         ds = _dataset(tmp_path)
-        out = ds.get_root("tracks") / "convert-x.0.1-0123456789" / "vid1.parquet"
-        out.parent.mkdir(parents=True)
-        pd.DataFrame({"frame": [0, 1], "id": [0, 0]}).to_parquet(out)
-        write_tracks_row(
-            ds,
-            run_id="convert-x.0.1-0123456789",
-            group="",
-            sequence="vid1",
-            out_path=out,
-            producer="convert-x",
-            std_format="mosaic_v1",
-            n_rows=2,
-            frames_read=_FRAMES,
-            carries_tracklets=None,
-        )
+        _ = add_counted_row(ds, "convert-trex_npz", frames_read=_FRAMES)
 
         would = backfill_frames_read(ds, dry_run=True)
         assert len(would.cleared) == 1
@@ -412,6 +403,19 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
 
         assert len(backfill_frames_read(ds).cleared) == 1
         assert _recorded(ds) is None
+
+    def test_a_conversion_no_converter_holds_keeps_its_cell(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing in this process says what such a converter reads."""
+        ds = _dataset(tmp_path)
+        _ = add_counted_row(ds, "convert-x", frames_read=_FRAMES)
+
+        done = backfill_frames_read(ds)
+
+        assert _recorded(ds) == _FRAMES
+        assert (len(done.written), len(done.cleared)) == (0, 0)
+        assert list(done.unregistered["producer"]) == ["convert-x"]
 
     def test_lightning_pose_from_its_table(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

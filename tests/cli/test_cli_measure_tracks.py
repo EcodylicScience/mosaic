@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from tests.helpers import invoke_json
+from tests.helpers import converted_sleap_dataset, invoke_json, set_tracks_cell
 
 runner = CliRunner()
 
@@ -123,6 +123,40 @@ def test_measure_tracks_apply_writes_each_count_cell(
 
     _ = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
     assert cells() == (None, None, None)
+
+
+def test_measure_tracks_apply_keeps_a_conversion_s_count_its_source_holds(
+    tmp_path: Path,
+) -> None:
+    from mosaic.core.pipeline.tracks_index import read_frames_read, read_tracks_index
+
+    ds, _raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+
+    payload = invoke_json(
+        ["measure-tracks", "-m", str(ds.manifest_path), "--apply", "--json"]
+    )
+
+    assert payload["frames_read_measured"] == 0
+    assert read_frames_read(read_tracks_index(ds).iloc[0]) == 4
+
+
+def test_measure_tracks_apply_fills_a_conversion_s_blank_count(
+    tmp_path: Path,
+) -> None:
+    """A dry run counts the fill and writes nothing, and ``--apply`` writes it."""
+    from mosaic.core.pipeline.tracks_index import read_frames_read, read_tracks_index
+
+    ds, _raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    set_tracks_cell(ds, "frames_read", "")
+    manifest = str(ds.manifest_path)
+
+    payload = invoke_json(["measure-tracks", "-m", manifest, "--json"])
+    assert payload["frames_read_measured"] == 1
+    assert read_frames_read(read_tracks_index(ds).iloc[0]) is None
+
+    payload = invoke_json(["measure-tracks", "-m", manifest, "--apply", "--json"])
+    assert payload["frames_read_measured"] == 1
+    assert read_frames_read(read_tracks_index(ds).iloc[0]) == 4
 
 
 def test_measure_tracks_apply_records_the_extents(

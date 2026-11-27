@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, get_args, override
@@ -48,7 +48,11 @@ from mosaic.core.track_library.sleap import (
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.placement import place_converted
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import (
+    frame_axis_mismatches,
+    read_frames_read,
+    read_tracks_index,
+)
 from mosaic.core.root_lookup import RootLookup
 from mosaic.core.track_library.trex import TrexNpzConverter
 
@@ -1705,3 +1709,155 @@ def test_a_converter_that_keeps_the_base_hook_records_no_frame_count(
 
     assert type(converter).frames_read is TrackConverter.frames_read
     assert converter.frames_read(tmp_path / "unread.npy") is None
+
+
+def test_a_frame_count_that_cannot_be_read_is_returned_as_its_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    converter = SleapAnalysisH5Converter()
+    path = tmp_path / "file.h5"
+
+    def raising(error: Exception) -> Callable[[SleapAnalysisH5Converter, Path], int]:
+        def hook(_self: SleapAnalysisH5Converter, _path: Path) -> int:
+            raise error
+
+        return hook
+
+    monkeypatch.setattr(SleapAnalysisH5Converter, "frames_read", raising(OSError("a")))
+    assert isinstance(converter.try_frames_read(path), OSError)
+    monkeypatch.setattr(
+        SleapAnalysisH5Converter, "frames_read", raising(ValueError("b"))
+    )
+    assert isinstance(converter.try_frames_read(path), ValueError)
+    monkeypatch.setattr(SleapAnalysisH5Converter, "frames_read", raising(KeyError("c")))
+    with pytest.raises(KeyError):
+        _ = converter.try_frames_read(path)
+
+
+def test_a_frame_count_that_can_be_read_is_returned(tmp_path: Path) -> None:
+    ds_root = tmp_path / "ds"
+    tracks, scores = _two_track_fixture()
+    raw = ds_root / "raw" / "myseq.h5"
+    write_sleap_analysis_h5(raw, tracks, scores)
+
+    assert SleapAnalysisH5Converter().try_frames_read(raw) == 4
+    assert get_track_converter("calms21_npy").try_frames_read(raw) is None
+
+
+# --- the frame count a conversion records ------------------------------------
+
+
+@pytest.mark.parametrize("params", [{}, {"keep_empty_frames": True}])
+def test_a_sleap_conversion_records_the_frames_of_its_file(
+    tmp_path: Path, params: dict[str, object]
+) -> None:
+    ds = _sleap_dataset(tmp_path)
+
+    _ = ds.convert_all_tracks(params=params)
+
+    (row,) = (r for _, r in read_tracks_index(ds).iterrows())
+    assert read_frames_read(row) == 4
+
+
+def test_a_merging_conversion_records_no_frame_count(tmp_path: Path) -> None:
+    ds = _trex_dataset(tmp_path)
+
+    _ = ds.convert_all_tracks()
+
+    index = read_tracks_index(ds)
+    assert len(index) == 1
+    assert read_frames_read(index.iloc[0]) is None
+
+
+def test_an_enumerable_conversion_that_keeps_the_base_hook_records_no_count(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+
+    _ = ds.convert_all_tracks()
+
+    index = read_tracks_index(ds)
+    assert len(index) == 1
+    assert read_frames_read(index.iloc[0]) is None
+
+
+_frames_read_calls: list[Path] = []
+
+
+class _CountedSequences(_SequencesFromCsv):
+    """A file of several sequences whose hook counts its calls."""
+
+    src_format = "counted_sequences_csv_test"
+
+    @override
+    def frames_read(self, path: Path) -> int | None:
+        _frames_read_calls.append(path)
+        return 17
+
+
+@pytest.fixture
+def counted_sequences() -> Iterator[None]:
+    _frames_read_calls.clear()
+    _ = register_track_converter(_CountedSequences)
+    try:
+        yield
+    finally:
+        _ = TRACK_CONVERTERS.pop(_CountedSequences.src_format, None)
+
+
+@pytest.mark.usefixtures("counted_sequences")
+def test_an_enumerated_file_is_counted_once_for_all_its_sequences(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _redirected_dataset(
+        tmp_path,
+        _CountedSequences.src_format,
+        {"all.csv": (_rows("a", 2) + _rows("b", 2) + _rows("c", 2), [])},
+        multi_sequences_per_file=True,
+    )
+
+    assert _failures(ds, _CountedSequences.src_format) == []
+
+    index = read_tracks_index(ds)
+    assert len(index) == 3
+    assert [read_frames_read(row) for _, row in index.iterrows()] == [17, 17, 17]
+    assert _frames_read_calls == [(tmp_path / "raw" / "all.csv").resolve()]
+
+    _ = capsys.readouterr()
+    _frames_read_calls.clear()
+    assert _failures(ds, _CountedSequences.src_format) == []
+
+    assert _frames_read_calls == []
+    assert capsys.readouterr().err == ""
+
+
+def test_a_count_that_cannot_be_read_leaves_a_blank_cell_and_one_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(self: SleapAnalysisH5Converter, path: Path) -> int | None:
+        raise OSError(f"cannot open {path.name}")
+
+    monkeypatch.setattr(SleapAnalysisH5Converter, "frames_read", unreadable)
+    ds = _sleap_dataset(tmp_path)
+    raw = (tmp_path / "ds" / "raw" / "myseq.h5").resolve()
+
+    outcome = ds.convert_all_tracks()
+
+    assert outcome.ok
+    assert outcome.converted == 1
+    index = read_tracks_index(ds)
+    assert len(index) == 1
+    assert read_frames_read(index.iloc[0]) is None
+    assert len(ds.load_tracks(group="", sequence="myseq")) > 0
+    lines = capsys.readouterr().err.splitlines()
+    assert lines == [f"[WARN] frames_read of {raw} not recorded: cannot open myseq.h5"]
+
+
+def test_a_sleap_conversion_leaves_no_frame_axis_mismatch(tmp_path: Path) -> None:
+    ds = _sleap_dataset(tmp_path)
+
+    _ = ds.convert_all_tracks()
+
+    assert frame_axis_mismatches(ds) == ()

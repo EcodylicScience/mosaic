@@ -159,6 +159,7 @@ from .resolve import resolution_payload, resolve_references
 from .sequence_index import SourceRoot, encode_entry_composition
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
 from .tag_reads import ResolvedTagTable, feature_tag_read
+from .tracks_identity import converted_format
 from .tracks_index import tracklets_by_entry, tracks_compositions
 from .types.data_config import META_COLS
 from .ops import IdentityDeferred
@@ -1269,8 +1270,8 @@ def _blind_tracks_warning(
     or worse mint a second variant for an entry that already has one.
     """
     kinds = sorted({_variant_producer(variant) for variant in variants})
-    converted = [kind for kind in kinds if kind.startswith("convert-")]
-    bridged = [kind for kind in kinds if not kind.startswith("convert-")]
+    converted = [kind for kind in kinds if converted_format(kind) is not None]
+    bridged = [kind for kind in kinds if converted_format(kind) is None]
     parts = [
         f"[feature:{feature_name}] served {count} cached entry(ies) whose tracks "
         f"tables record no source composition, so a change under the tracks "

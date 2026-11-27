@@ -44,6 +44,7 @@ __all__ = [
     "TRACKS_IDENTITY_SCHEME",
     "VariantSidecar",
     "convert_variant_payload",
+    "converted_format",
     "converter_op",
     "infer_variant_payload",
     "names_model_by_path",
@@ -206,6 +207,10 @@ def chained_variant_payload(
     return {"params": dict(params_identity)}
 
 
+_CONVERT_PREFIX: Final = "convert-"
+"""What a conversion's producer segment starts with, before its ``src_format``."""
+
+
 def converter_op(src_format: str) -> str:
     """The ``op`` segment naming a conversion from *src_format*.
 
@@ -213,7 +218,17 @@ def converter_op(src_format: str) -> str:
     upload cannot collide with one produced by an op that happens to share the
     format's name, and so the directory says what kind of thing made it.
     """
-    return f"convert-{src_format}"
+    return f"{_CONVERT_PREFIX}{src_format}"
+
+
+def converted_format(producer: str) -> str | None:
+    """The ``src_format`` that the conversion producer *producer* names, or ``None``.
+
+    The inverse of :func:`converter_op`: ``None`` for a producer that is no
+    conversion, such as a tracker, an inference op or ``resample-tracks``.
+    """
+    src_format = producer.removeprefix(_CONVERT_PREFIX)
+    return None if src_format == producer else src_format
 
 
 def tracks_variant_root(tracks_root: Path, run_id: str) -> Path:

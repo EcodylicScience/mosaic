@@ -52,7 +52,10 @@ def measure_tracks_command(
       from what the run left on disk. That is the ``.pv`` of a TRex
       conversion, the response the Ultralytics runner wrote beside its
       predictions, or a Lightning Pose table, which has a row at every frame
-      read. A table that no tool made from media is given a blank cell.
+      read. A conversion whose converter counts the frames of its file (SLEAP)
+      is read from its source file, so its blank cell is filled and a count its
+      source no longer holds is rewritten. A table that no tool made from media
+      is given a blank cell, as is a conversion whose converter records no count.
     * the **known tail loss** (``known_tail_loss``): how many frames short of the
       end of the file it read the tool is known to stop, from the header of the
       file the run recorded reading. Only TRex has one, and its ``.pv`` names
@@ -64,7 +67,8 @@ def measure_tracks_command(
     earlier pass filled. A row whose run cannot be established keeps its value
     and is counted as not established: its variant record, media or files are
     missing or have changed, or its producer leaves no file the pass can read,
-    as SLEAP and ``infer-localizer`` do.
+    as the SLEAP tracker and ``infer-localizer`` do. So does a conversion whose
+    source file is missing or unreadable.
 
     Then it reports every table whose tool read a different number of frames
     than its media holds (``frames_read`` against ``media_frames``), naming its
@@ -195,7 +199,7 @@ def measure_tracks_command(
             f"{len(media.unregistered)} media length(s), "
             f"{len(read.unregistered)} frame count(s) read and "
             f"{len(tail.unregistered)} known tail loss(es) were not checked: "
-            "their producer is not a registered op",
+            "their producer is not a registered op or converter",
             err=True,
         )
     for row in rows:

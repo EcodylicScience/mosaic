@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from importlib.metadata import EntryPoint
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Final, Generic, TypeVar, override
+from typing import Annotated, Any, ClassVar, Final, Generic, TypeVar, final, override
 
 import pandas as pd
 from pydantic import Field
@@ -384,6 +384,23 @@ class TrackConverter(Generic[P]):
         """
         _ = path
         return None
+
+    @final
+    def try_frames_read(self, path: Path) -> int | None | OSError | ValueError:
+        """Return :meth:`frames_read` of *path*, or the error it raised.
+
+        The one place that decides which errors mean "the file cannot be read":
+        ``OSError`` and ``ValueError``. A caller that records the count as
+        provenance maps the returned error to a note or to an unanswered cell,
+        and any other exception still propagates.
+
+        Args:
+            path: The raw tracks file.
+        """
+        try:
+            return self.frames_read(path)
+        except (OSError, ValueError) as error:
+            return error
 
     def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
         """The ``(group, sequence)`` pairs *path* contains.

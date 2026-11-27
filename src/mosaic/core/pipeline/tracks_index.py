@@ -274,7 +274,8 @@ class TracksIndexRow(RunIndexRowBase):
     :func:`read_frames_read`. It is passed by the producer, because only the tool
     knows it, and it is not the table's extent: a table with rows only where an
     animal was seen ends at the last sighting, however many frames the tool read
-    after it.
+    after it. A conversion passes its converter's count of the source file's
+    frames, blank for a converter that keeps no count.
 
     **The two come apart where a tool loses frames.** TRex under-counts every
     file it opens and reads only as many frames as it counted, which was two
@@ -2177,14 +2178,18 @@ def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
     after the fact (:func:`~mosaic.core.pipeline.tracks_axis.recorded_frames_read`):
     the ``.pv`` a TRex conversion wrote, the response a runner wrote beside its
     predictions, or a Lightning Pose table, which has a row at every frame read.
-    A count is written over a blank or a different value, and a converted,
-    resampled or upgraded table's cell is cleared, since no tool read media for
-    it. A row keeps its value, and is reported in ``not_established``, when its
-    producer leaves nothing that tells, as SLEAP and the localizer do, and when
-    what it left is gone. A missing file never clears a cell. A tracker row
-    whose op this process has not registered keeps its value, and is reported
-    in ``unregistered``. ``mosaic.tracking.register_ops`` registers every
-    tracking op and its reader.
+    A conversion's count is read from its source by its converter, so its cell is
+    filled when blank and rewritten when the source now holds another count. A
+    count is written over a blank or a different value, and a resampled or
+    upgraded table's cell is cleared, since no tool read media for it, as is a
+    converted table's whose converter records no count. A row keeps its value,
+    and is reported in ``not_established``, when its producer leaves nothing that
+    tells, as SLEAP's tracker and the localizer do, when what it left is gone,
+    and when a conversion's source is missing or unreadable. A missing file never
+    clears a cell. A tracker row whose op this process has not registered, and a
+    conversion whose converter it has not registered, keep their values and are
+    reported in ``unregistered``. ``mosaic.tracking.register_ops`` registers
+    every tracking op and its reader.
 
     A separate pass, as :func:`backfill_media_frames` is, because it reads
     another source of truth.
@@ -2343,6 +2348,7 @@ def write_tracks_row(
     :func:`frame_axis_mismatches` compares it with ``frames_read``.
     ``frames_read`` is how many frames the producer's tool read, passed for the
     same reason, and ``None`` records a blank for a producer that cannot know it.
+    A conversion passes its converter's count of the source file's frames.
     ``known_tail_loss`` is how many frames short of the end of the file it read
     the tool is known to stop, and ``None`` records a blank where no loss is
     declared or the file's header was not read. ``first_frame`` is the

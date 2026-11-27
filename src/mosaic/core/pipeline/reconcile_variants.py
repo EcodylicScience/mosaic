@@ -56,6 +56,7 @@ from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
     VariantSidecar,
     convert_variant_payload,
+    converted_format,
     read_variant_sidecar,
     write_tracks_variant,
 )
@@ -349,7 +350,7 @@ def _tracks_terms(sidecar: VariantSidecar) -> dict[str, object]:
     the payload already assembled, so the sidecar params are it. See the mint sites
     in ``tracks_identity``'s callers.
     """
-    if sidecar.op.startswith("convert-"):
+    if converted_format(sidecar.op) is not None:
         return convert_variant_payload(sidecar.params)
     return dict(sidecar.params)
 

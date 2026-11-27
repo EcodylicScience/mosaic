@@ -24,6 +24,7 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -34,7 +35,6 @@ import mosaic.tracking.ultralytics_track.dataset_runs as ultralytics_runs
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.tracks_identity import write_tracks_variant
 from mosaic.core.pipeline.tracks_index import (
     backfill_frames_read,
     backfill_known_tail_loss,
@@ -48,6 +48,7 @@ from mosaic.core.pipeline.tracks_index import (
     write_tracks_row,
 )
 from mosaic.core.scope import Scope
+from mosaic.core.track_library.sleap import SleapAnalysisH5Converter
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.params import TrexParams
@@ -55,7 +56,9 @@ from mosaic.tracking.trex.pv import PvHeader
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
     MediaClip,
+    add_counted_row,
     add_track_sequences,
+    converted_sleap_dataset,
     count_index_reads,
     install_fake_litpose,
     install_fake_pose_inference,
@@ -68,6 +71,7 @@ from tests.helpers import (
     stub_join,
     write_litpose_model,
     write_media_index,
+    write_sleap_analysis_h5,
     write_sleap_model,
 )
 
@@ -232,22 +236,7 @@ def test_a_table_made_from_another_table_is_cleared(
     is no tool's either: every bridge records the tracking root that published.
     """
     ds = _dataset(tmp_path)
-    variant = f"{producer or 'legacy'}.0.1-0123456789"
-    _ = write_tracks_variant(ds.get_root("tracks"), variant, producer, "0.1", {})
-    out = ds.get_root("tracks") / variant / "vid1.parquet"
-    pd.DataFrame({"frame": [0, 1], "id": [0, 0]}).to_parquet(out)
-    write_tracks_row(
-        ds,
-        run_id=variant,
-        group="",
-        sequence="vid1",
-        out_path=out,
-        producer=producer,
-        std_format="mosaic_v1",
-        n_rows=2,
-        media_frames=_FRAMES,
-        carries_tracklets=None,
-    )
+    _ = add_counted_row(ds, producer, media_frames=_FRAMES)
 
     would = backfill_media_frames(ds, dry_run=True)
     assert len(would.cleared) == 1
@@ -261,6 +250,141 @@ def test_a_table_made_from_another_table_is_cleared(
     assert len(done.written) == 0
     assert _recorded(ds) is None
     assert len(backfill_media_frames(ds).cleared) == 0, "not idempotent"
+
+
+def _frames_read(ds: Dataset) -> int | None:
+    rows = read_tracks_index(ds)
+    assert len(rows) == 1
+    return read_frames_read(rows.iloc[0])
+
+
+def test_a_converter_that_keeps_the_base_hook_has_its_count_cleared(
+    tmp_path: Path,
+) -> None:
+    """It records no count, so a filled cell is not one its source can confirm."""
+    ds = _dataset(tmp_path)
+    _ = add_counted_row(ds, "convert-trex_npz", frames_read=18)
+
+    would = backfill_frames_read(ds, dry_run=True)
+    assert len(would.cleared) == 1
+    assert _frames_read(ds) == 18, "a dry run must not write"
+
+    done = backfill_frames_read(ds)
+    assert len(done.cleared) == 1
+    assert (len(done.written), len(done.not_established)) == (0, 0)
+    assert _frames_read(ds) is None
+    assert len(backfill_frames_read(ds).cleared) == 0, "not idempotent"
+
+
+# --- the frames_read pass over a conversion ------------------------------------
+
+
+def test_a_conversion_s_filled_count_is_kept_while_its_source_holds_it(
+    tmp_path: Path,
+) -> None:
+    ds, _raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    before = tracks_index_path(ds).read_bytes()
+
+    done = backfill_frames_read(ds)
+
+    assert _frames_read(ds) == 4
+    assert [len(f) for f in (done.written, done.cleared, done.not_established)] == [
+        0,
+        0,
+        0,
+    ]
+    assert tracks_index_path(ds).read_bytes() == before, "the pass wrote nothing"
+
+
+def test_a_conversion_s_blank_count_is_filled_from_its_source(tmp_path: Path) -> None:
+    ds, _raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    set_tracks_cell(ds, "frames_read", "")
+
+    would = backfill_frames_read(ds, dry_run=True)
+    assert len(would.written) == 1
+    assert _frames_read(ds) is None, "a dry run must not write"
+
+    assert len(backfill_frames_read(ds).written) == 1
+    assert _frames_read(ds) == 4
+    assert len(backfill_frames_read(ds).written) == 0, "not idempotent"
+
+
+def test_a_conversion_s_count_that_its_source_no_longer_holds_is_rewritten(
+    tmp_path: Path,
+) -> None:
+    ds, raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    set_tracks_cell(ds, "frames_read", "9")
+
+    done = backfill_frames_read(ds)
+
+    assert len(done.written) == 1
+    assert _frames_read(ds) == 4
+
+    write_sleap_analysis_h5(raw, np.zeros((6, 1, 2, 2)))
+    assert len(backfill_frames_read(ds).written) == 1
+    assert _frames_read(ds) == 6
+
+
+def test_a_conversion_whose_source_is_missing_keeps_its_count(tmp_path: Path) -> None:
+    ds, raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    raw.unlink()
+
+    done = backfill_frames_read(ds)
+
+    assert _frames_read(ds) == 4
+    assert (len(done.written), len(done.cleared)) == (0, 0)
+    assert len(done.not_established) == 1
+    assert done.not_established.iloc[0]["frames_read"] == "4"
+
+
+def test_a_conversion_whose_source_the_hook_rejects_keeps_its_count(
+    tmp_path: Path,
+) -> None:
+    """A file that is no HDF5 raises ``OSError`` from the hook."""
+    ds, raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+    _ = raw.write_bytes(b"not an hdf5 file")
+
+    done = backfill_frames_read(ds)
+
+    assert _frames_read(ds) == 4
+    assert (len(done.written), len(done.cleared)) == (0, 0)
+    assert len(done.not_established) == 1
+
+
+def test_a_conversion_whose_hook_raises_a_value_error_keeps_its_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, _raw = converted_sleap_dataset(tmp_path / "ds", frames=4)
+
+    def rejected(self: SleapAnalysisH5Converter, path: Path) -> int | None:
+        raise ValueError(f"no frame axis in {path.name}")
+
+    monkeypatch.setattr(SleapAnalysisH5Converter, "frames_read", rejected)
+
+    done = backfill_frames_read(ds)
+
+    assert _frames_read(ds) == 4
+    assert len(done.not_established) == 1
+
+
+def test_a_conversion_no_converter_holds_is_reported_apart_and_kept(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    source = tmp_path / "ds" / "raw" / "vid1.rows"
+    source.parent.mkdir(parents=True)
+    _ = source.write_text("rows")
+    _ = add_counted_row(ds, "convert-acme__rows", frames_read=18, source=source)
+
+    done = backfill_frames_read(ds)
+
+    assert _frames_read(ds) == 18
+    assert (len(done.written), len(done.cleared), len(done.not_established)) == (
+        0,
+        0,
+        0,
+    )
+    assert list(done.unregistered["producer"]) == ["convert-acme__rows"]
 
 
 def _trex_one_clip(

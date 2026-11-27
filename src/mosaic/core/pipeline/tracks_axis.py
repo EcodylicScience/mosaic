@@ -13,7 +13,8 @@ only its records.
 - ``frames_read`` is the tool's own count, which only something the run left on
   disk can tell: TRex's ``.pv``, a runner's response. Each producer that leaves
   such a thing registers a reader (:func:`register_frames_read_reader`), because
-  ``core`` does not import ``tracking``.
+  ``core`` does not import ``tracking``. A conversion's count is the one its
+  converter reads from the row's source file (``TrackConverter.frames_read``).
 - ``known_tail_loss`` is what the producer's rule (``TrackingRoot.tail_loss``)
   gives the header of the file its tool read. Only the run knows which file that
   was, so the producer registers a reader of it too
@@ -21,15 +22,18 @@ only its records.
 
 Each answers in one of four ways, and a caller rewriting a cell needs all four
 apart. A :class:`RuleValue` with a count is the cell's value. A :class:`RuleValue`
-with none is a cell the rule leaves blank. Every cell of a converted, resampled or
-upgraded table is blank, because its producer is no tracking root and it was made
-from another table without reading media. ``media_frames`` is blank for a run
-that read less on purpose, and ``known_tail_loss`` for a producer that declares no
-loss. The two :data:`Unanswered` values leave the cell as it is.
+with none is a cell the rule leaves blank. Every ``media_frames`` and
+``known_tail_loss`` cell of a converted, resampled or upgraded table is blank, as
+is its ``frames_read`` unless its converter counts the frames of its file. Its
+producer is no tracking root and it was made from another table without reading
+media. ``media_frames`` is blank for a run that read less on purpose, and
+``known_tail_loss`` for a producer that declares no loss. The two
+:data:`Unanswered` values leave the cell as it is.
 ``"not-established"`` is a run that cannot be established from what is on disk
 now, because its record, its media or its files are missing or have changed.
-``"unregistered"`` is a producer whose op this process has not registered, so
-none of its run's records can be read here.
+``"unregistered"`` is a producer whose op, or a conversion whose format's
+converter, this process has not registered, so none of its records can be read
+here.
 """
 
 from __future__ import annotations
@@ -57,11 +61,17 @@ from mosaic.core.pipeline.sequence_index import media_compositions_for
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_identity import (
     VariantSidecar,
+    converted_format,
     read_tracks_variant,
     recorded_media,
     recorded_op_params,
 )
 from mosaic.core.pipeline.variant_source import VariantLookup
+from mosaic.core.track_converter import (
+    TRACK_CONVERTERS,
+    TrackConverter,
+    ensure_track_converters_registered,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -294,15 +304,25 @@ def recorded_frames_read(
 ) -> RuleValue | Unanswered:
     """Return the ``frames_read`` that what *producer*'s run left gives *table*.
 
+    A conversion's count comes from its converter, which reads it from the
+    row's source file. Every other count is what the run of a tracking op left
+    on disk.
+
     Returns:
-        How many frames the tool read. :data:`BLANK` for a producer that is no
-        tracking root, whose table no tool made from media. ``"unregistered"``
-        when *producer*'s op is not registered in this process, which has then
+        How many frames the tool read, or the file records. :data:`BLANK` for a
+        producer that is no tracking root and no conversion, whose table no tool
+        made from media, and for a conversion whose converter records no count.
+        ``"unregistered"`` when *producer*'s op, or the converter of a
+        conversion's format, is not registered in this process, which has then
         not imported its reader either. ``"not-established"`` when the
         registered *producer* has no reader, because its run leaves nothing
         that tells, or its reader finds nothing: a missing file establishes
-        nothing.
+        nothing. So is a conversion whose source file is missing, or whose
+        converter cannot read it.
     """
+    src_format = converted_format(producer)
+    if src_format is not None:
+        return _frames_read_of_conversion(src_format, source)
     if producer not in TRACKING_ROOTS:
         return BLANK
     if producer not in OPS:
@@ -310,6 +330,24 @@ def recorded_frames_read(
     reader = _FRAMES_READ_READERS.get(producer)
     count = None if reader is None else reader(ds, table, source)
     return "not-established" if count is None else RuleValue(count)
+
+
+def _frames_read_of_conversion(
+    src_format: str, source: Path | None
+) -> RuleValue | Unanswered:
+    """Return the ``frames_read`` of a conversion from *src_format*, from its *source*."""
+    ensure_track_converters_registered()
+    converter_class = TRACK_CONVERTERS.get(src_format)
+    if converter_class is None:
+        return "unregistered"
+    if converter_class.frames_read is TrackConverter.frames_read:
+        return BLANK
+    if source is None or not source.exists():
+        return "not-established"
+    count = converter_class().try_frames_read(source)
+    if not isinstance(count, int):
+        return "not-established"
+    return RuleValue(count)
 
 
 def tail_loss_of_files(producer: str, files: Sequence[str]) -> int | None:
