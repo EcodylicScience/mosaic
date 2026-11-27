@@ -1,8 +1,8 @@
 """The columns of each step of a recipe, propagated from declarations.
 
 A step's output columns follow from its declared ``provides``, its params and its
-merged input. Its merged input follows from its inputs' outputs by the naming rule
-of the merge (:func:`~mosaic.core.pipeline.loading.merge_naming`). A topological
+merged input. Its merged input follows from its inputs' outputs by the decision of
+the merge (:func:`~mosaic.core.pipeline.loading.merge_step`). A topological
 walk of the recipe therefore states, for every step and with no dataset, the
 columns its input is guaranteed to contain and the columns it may contain.
 
@@ -29,7 +29,7 @@ from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal
 
-from mosaic.core.schema import ARENA_COLUMN, STANDARD_COLUMNS, TRACK_SCHEMAS
+from mosaic.core.schema import STANDARD_COLUMNS, TRACK_SCHEMAS
 
 from ..column_contract import (
     Column,
@@ -48,7 +48,7 @@ from ..column_contract import (
     needs_of,
     resolve_names,
 )
-from ..loading import CROSS_JOIN_FEATURES, merge_naming, widens
+from ..loading import CROSS_JOIN_FEATURES, merge_naming, merge_step
 from ..storage_names import feature_slug_of
 from ..types import Feature, Result
 from ..types.data_config import NON_PAYLOAD_COLS, SUMMARY_KEYS
@@ -250,7 +250,11 @@ def _shared(sets: Iterable[frozenset[str]]) -> frozenset[str]:
 
 
 def merged_input(
-    inputs: Sequence[ColumnSet], *, stack: bool = False, widen: bool = False
+    inputs: Sequence[ColumnSet],
+    *,
+    stack: bool = False,
+    widen: bool = False,
+    cross_join: bool = False,
 ) -> ColumnSet:
     """The columns of a step's merged input, from the columns of each input.
 
@@ -258,12 +262,20 @@ def merged_input(
     entries, no column is renamed: a column is guaranteed when every input
     guarantees it, and possible when any input may contain it.
 
-    Applies the naming rule of the merge once to the guaranteed sets and once to
-    the possible ones. A column of the first input keeps its name. A colliding
-    payload column of a later input is numbered ``<column>__<position>``, and a
-    colliding identity or bookkeeping column is dropped. Over the guaranteed sets
-    the rule gives the columns of every merge. Over the possible sets it gives the
-    columns that some merge may contain.
+    Applies the decision of the merge
+    (:func:`~mosaic.core.pipeline.loading.merge_step`) once to the guaranteed sets
+    and once to the possible ones. A column of the first input keeps its name. A
+    colliding payload column of a later input is numbered
+    ``<column>__<position>``, and a colliding identity or bookkeeping column is
+    dropped. A summary key that both sides have is a key of the join and is neither
+    dropped nor numbered, as the merge joins it. Over the guaranteed sets the rule
+    gives the columns of every merge. Over the possible sets it gives the columns
+    that some merge may contain, and a summary key that both sides may have and that
+    is not guaranteed on both enters under both names, ``<key>`` and
+    ``<key>__<position>``, because the data decides whether the merge joins it.
+
+    A *cross_join* consumer joins on the alignment columns alone, so it numbers a
+    collided summary key.
 
     With *widen*, for a step that expands individuals, an individual-level
     input after a pair-level input 0 is named as the widening merge names it,
@@ -302,12 +314,36 @@ def merged_input(
     symmetric = set(first.symmetric)
     symmetric_prefixes = set(first.symmetric_prefixes)
     for position, incoming in enumerate(rest, start=1):
-        widened = widen and widens(guaranteed, incoming.guaranteed)
-        guaranteed = merge_naming(
-            guaranteed, incoming.guaranteed, position, widen=widened
-        ).columns
-        naming = merge_naming(possible, incoming.possible, position, widen=widened)
-        possible = naming.columns
+        sure = merge_step(
+            guaranteed,
+            incoming.guaranteed,
+            position,
+            cross_join=cross_join,
+            expands_individuals=widen,
+        )
+        widened = sure.kind == "widen"
+        if widened:
+            naming = merge_naming(possible, incoming.possible, position, widen=True)
+            numbered: frozenset[str] = _NO_NAMES
+        else:
+            naming = merge_step(
+                possible,
+                incoming.possible,
+                position,
+                cross_join=cross_join,
+                expands_individuals=False,
+            ).naming
+            numbered = (
+                _NO_NAMES
+                if cross_join
+                else _undecided_summary_keys(
+                    (guaranteed, incoming.guaranteed),
+                    (possible, incoming.possible),
+                    position,
+                )
+            )
+        guaranteed = sure.naming.columns
+        possible = naming.columns | numbered
         if widened:
             continue
         symmetric_prefixes.update(incoming.symmetric_prefixes)
@@ -332,6 +368,27 @@ def merged_input(
             ),
             mirrored=bool(pair_inputs) and all(one.mirrored for one in pair_inputs),
         ),
+    )
+
+
+def _undecided_summary_keys(
+    guaranteed: tuple[frozenset[str], frozenset[str]],
+    possible: tuple[frozenset[str], frozenset[str]],
+    position: int,
+) -> frozenset[str]:
+    """The numbered names of the summary keys that the data decides the merge joins.
+
+    A summary key that both sides may have and that not both guarantee is joined
+    where both tables hold it, and kept under its own name where only one does.
+    The merge that does not join it numbers the incoming copy, and
+    :func:`~mosaic.core.pipeline.loading.merge_naming` gives that name.
+    """
+    sure_left, sure_right = guaranteed
+    unjoined = merge_naming(*possible, position).renamed
+    return frozenset(
+        numbered
+        for key, numbered in unjoined.items()
+        if key in SUMMARY_KEYS and not (key in sure_left and key in sure_right)
     )
 
 
@@ -660,15 +717,19 @@ def tracks_provides() -> Provides:
     a feature requiring one refuses an entry whose table lacks it
     (:func:`~mosaic.core.pipeline.column_contract.check_input_columns`). Each
     other column that a registered schema requires, recommends or allows as a
-    measured quantity is possible. So is each column family that a schema
-    requires a member of, and each ``pose`` family of a schema's ``pose_axes``,
-    which a 3D schema carries without requiring. The registry is read at each
-    call, and a schema registered later is included.
+    measured quantity is possible, and so is each optional text column of a
+    schema, ``arena`` among them, which the ``assign-arenas`` op writes. So is
+    each column family that a schema requires a member of, and each ``pose``
+    family of a schema's ``pose_axes``, which a 3D schema carries without
+    requiring. The registry is read at each call, and a schema registered later
+    is included.
     """
     known: set[str] = set()
     families: set[str] = set()
     for schema in TRACK_SCHEMAS.values():
-        known.update(schema.required, schema.recommended, schema.allows)
+        known.update(
+            schema.required, schema.recommended, schema.allows, schema.optional_text
+        )
         families.update(schema.required_prefixes)
         families.update(f"pose{axis}" for axis in schema.pose_axes)
     possible = sorted(known - STANDARD_COLUMNS)
@@ -684,17 +745,16 @@ def tracks_provides() -> Provides:
 def _producer_columns(item: str | Result, catalog: DeclarationCatalog) -> ColumnSet:
     """The columns an input's producer may write, from its declaration alone.
 
-    The dataset's tracks as the registered schemas describe them, a feature as
-    the declaration it was registered with, and :data:`UNKNOWN_COLUMNS` for a
-    producer the catalog does not know or that declares no output. The tracks
-    may also hold ``arena``, which the ``assign-arenas`` op writes and no
-    schema lists. Each condition of a declared output reads as undecided,
-    because the producer's own input is not known here, so a column it keeps
-    from its input is possible.
+    The dataset's tracks as the registered schemas describe them
+    (:func:`tracks_columns`, the set that validation reads, so the answer here and
+    the plan agree on which summary keys the tracks may hold), a feature as the
+    declaration it was registered with, and :data:`UNKNOWN_COLUMNS` for a
+    producer the catalog does not know or that declares no output. Each condition
+    of a declared output reads as undecided, because the producer's own input is
+    not known here, so a column it keeps from its input is possible.
     """
     if isinstance(item, str):
-        columns = tracks_columns(catalog)
-        return replace(columns, possible=columns.possible | {ARENA_COLUMN})
+        return tracks_columns(catalog)
     declared = catalog.get(feature_slug_of(item.feature))
     if declared is None or declared.provides is None:
         return UNKNOWN_COLUMNS

@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Collection
 
 import pytest
 
+from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.graph import (
+    UNKNOWN_COLUMNS,
+    ColumnSet,
     TRACKS_DECLARATION,
     ConsumerDecl,
     Declaration,
@@ -31,6 +36,13 @@ from mosaic.core.pipeline.graph import (
     editor_catalog,
     possible_connections,
     resolve_emits,
+)
+from mosaic.core.pipeline.graph.columns import tracks_columns
+from mosaic.core.pipeline.graph.validate import (
+    JoinInput,
+    join_problem,
+    level_caution,
+    subgroup_cautions,
 )
 from tests.helpers import run_child
 
@@ -672,3 +684,327 @@ def test_every_declaration_resolves_to_a_lane() -> None:
         declared = catalog.get(name)
         assert declared is not None
         assert lane_for(declared)
+
+
+# --- the join, read from the columns each input declares ----------------------
+
+
+def _columns(*guaranteed: str, possible: Collection[str] = ()) -> ColumnSet:
+    """A declared set: the *guaranteed* columns, and the *possible* ones beside them."""
+    sure = frozenset(guaranteed)
+    return ColumnSet(guaranteed=sure, possible=sure | frozenset(possible))
+
+
+PER_FRAME_ROWS = _columns("group", "sequence", "frame", "time", "id", "speed")
+PER_BIN = _columns("group", "sequence", "bin_start", "bin_end", "speed_mean")
+PER_ARENA = _columns("group", "sequence", "arena", "n_frames")
+ONE_ROW = _columns("group", "sequence", "density")
+"""The outputs of a step that names nobody, with and without a summary key."""
+
+
+def _declaration(
+    consumes: ConsumerDecl = JOINER, emits: EmitsLevel = "individual"
+) -> Declaration:
+    return Declaration(
+        produces=ProducerDecl(name=consumes.name, kind="feature", level="individual"),
+        consumes=consumes,
+        emits=emits,
+    )
+
+
+def _joined(
+    first: ColumnSet,
+    second: ColumnSet,
+    *,
+    consumer: ConsumerDecl = JOINER,
+    first_values: dict[str, JsonValue] | None = None,
+    second_values: dict[str, JsonValue] | None = None,
+) -> str | None:
+    return join_problem(
+        "step",
+        [
+            JoinInput("first", first, first_values),
+            JoinInput("second", second, second_values),
+        ],
+        _declaration(consumer),
+    )
+
+
+def _subgroup_cautions(
+    first: ColumnSet,
+    second: ColumnSet,
+    *,
+    consumer: ConsumerDecl = JOINER,
+    first_values: dict[str, JsonValue] | None = None,
+    second_values: dict[str, JsonValue] | None = None,
+) -> list[str]:
+    return subgroup_cautions(
+        "step",
+        [
+            JoinInput("first", first, first_values),
+            JoinInput("second", second, second_values),
+        ],
+        _declaration(consumer),
+    )
+
+
+def test_an_unidentified_summary_key_that_the_rows_cannot_have_is_refused() -> None:
+    expected = (
+        "step cannot read second beside first: second's output names nobody and "
+        "has bin_start, which first cannot have"
+    )
+
+    assert _joined(PER_FRAME_ROWS, PER_BIN) == expected
+
+
+def test_the_unidentified_side_may_be_the_one_merged_first() -> None:
+    expected = (
+        "step cannot read first beside second: first's output names nobody and "
+        "has bin_start, which second cannot have"
+    )
+
+    assert _joined(PER_BIN, PER_FRAME_ROWS) == expected
+
+
+def test_a_refusal_names_the_inputs_merged_before_the_one_that_is_read() -> None:
+    other_rows = _columns("group", "sequence", "frame", "id", "heading")
+
+    message = join_problem(
+        "step",
+        [
+            JoinInput("first", PER_FRAME_ROWS),
+            JoinInput("second", other_rows),
+            JoinInput("third", PER_BIN),
+        ],
+        _declaration(),
+    )
+
+    assert message == (
+        "step cannot read third beside the merge of first and second: third's "
+        "output names nobody and has bin_start, which the merge of first and "
+        "second cannot have"
+    )
+
+
+def test_every_unshared_key_is_checked_and_the_refusal_names_the_one_that_cannot_be_had() -> (
+    None
+):
+    """The rows may have ``bin_start``, so the key the refusal names is ``arena``."""
+    unidentified = _columns("group", "sequence", "bin_start", "arena", "n")
+    rows = _columns("group", "sequence", "frame", "id", possible={"bin_start"})
+
+    message = _joined(rows, unidentified)
+
+    assert message is not None
+    assert "and has arena, which first cannot have" in message
+
+
+def test_a_key_the_other_side_may_have_is_left_to_the_run() -> None:
+    rows = _columns(
+        "group", "sequence", "frame", "id", possible={"bin_start", "bin_end"}
+    )
+
+    assert _joined(rows, PER_BIN) is None
+
+
+def test_an_eligible_pair_is_not_refused() -> None:
+    """A per-arena collective beside a one-row collective without summary keys."""
+    assert _joined(PER_ARENA, ONE_ROW) is None
+    assert _joined(ONE_ROW, PER_ARENA) is None
+
+
+def test_a_side_that_only_may_be_ineligible_is_left_to_the_run() -> None:
+    may_name_individuals = _columns("group", "sequence", "density", possible={"id"})
+    may_be_identified = _columns("group", "sequence", "arena", possible={"id"})
+
+    assert _joined(PER_ARENA, may_name_individuals) is None
+    assert _joined(may_be_identified, PER_FRAME_ROWS) is None
+
+
+def test_a_subgroup_table_joined_by_the_entry_is_cautioned_and_not_refused() -> None:
+    """The run accepts the join where the other side has one row."""
+    expected = (
+        "step reads first beside second by the entry, and first sets subgroup_col to "
+        "size, with one row per subgroup. The run refuses the join where both have "
+        "more than one row. A subgroup does not join"
+    )
+    values: dict[str, JsonValue] = {"subgroup_col": "size"}
+
+    assert _joined(ONE_ROW, PER_FRAME_ROWS, first_values=values) is None
+    assert _subgroup_cautions(ONE_ROW, PER_FRAME_ROWS, first_values=values) == [
+        expected
+    ]
+
+
+def test_a_subgroup_producer_is_named_wherever_it_stands_and_a_list_is_spelled_out() -> (
+    None
+):
+    values: dict[str, JsonValue] = {"subgroup_col": ["size", "event"]}
+
+    assert _subgroup_cautions(PER_FRAME_ROWS, ONE_ROW, second_values=values) == [
+        "step reads second beside first by the entry, and second sets subgroup_col "
+        "to size, event, with one row per subgroup. The run refuses the join where "
+        "both have more than one row. A subgroup does not join"
+    ]
+
+
+def test_a_subgroup_table_on_a_position_handed_to_the_entry_join_is_cautioned() -> None:
+    values: dict[str, JsonValue] = {"subgroup_col": "size"}
+
+    (message,) = _subgroup_cautions(PER_ARENA, ONE_ROW, first_values=values)
+
+    assert "first sets subgroup_col to size" in message
+    assert _joined(PER_ARENA, ONE_ROW, first_values=values) is None
+
+
+def test_every_subgroup_producer_of_the_inputs_is_cautioned() -> None:
+    inputs = [
+        JoinInput("first", ONE_ROW, {"subgroup_col": "size"}),
+        JoinInput("second", PER_FRAME_ROWS),
+        JoinInput("third", _columns("group", "sequence", "n"), {"subgroup_col": "x"}),
+    ]
+
+    messages = subgroup_cautions("step", inputs, _declaration())
+
+    assert [message.split(" by the entry")[0] for message in messages] == [
+        "step reads first beside second",
+        "step reads first beside third",
+        "step reads third beside the merge of first and second",
+    ]
+
+
+@pytest.mark.parametrize("unset", [None, "", [], False])
+def test_an_unset_subgroup_column_is_no_caution(unset: JsonValue) -> None:
+    assert not _subgroup_cautions(
+        ONE_ROW, PER_FRAME_ROWS, first_values={"subgroup_col": unset}
+    )
+    assert not _subgroup_cautions(ONE_ROW, PER_FRAME_ROWS, first_values={})
+
+
+def test_a_subgroup_table_that_names_individuals_is_no_caution() -> None:
+    """Its rows are per individual, and the entry's one row repeats onto each."""
+    per_individual = _columns("group", "sequence", "id", "speed_mean")
+
+    assert not _subgroup_cautions(
+        per_individual, ONE_ROW, first_values={"subgroup_col": "size"}
+    )
+
+
+def test_an_unbounded_input_is_never_refused() -> None:
+    assert _joined(PER_FRAME_ROWS, UNKNOWN_COLUMNS) is None
+    assert _joined(UNKNOWN_COLUMNS, PER_BIN) is None
+    values: dict[str, JsonValue] = {"subgroup_col": "a"}
+    assert _joined(UNKNOWN_COLUMNS, ONE_ROW, second_values=values) is None
+    assert not _subgroup_cautions(UNKNOWN_COLUMNS, ONE_ROW, second_values=values)
+    assert not _subgroup_cautions(ONE_ROW, UNKNOWN_COLUMNS, first_values=values)
+
+
+def test_a_shared_alignment_column_leaves_the_join_to_the_run() -> None:
+    """A per-frame collective with ``subgroup_col`` beside rows on ``frame`` plans as today."""
+    per_frame = _columns("group", "sequence", "frame", "time", "n")
+
+    values: dict[str, JsonValue] = {"subgroup_col": "a"}
+    assert _joined(PER_FRAME_ROWS, per_frame, second_values=values) is None
+    assert not _subgroup_cautions(PER_FRAME_ROWS, per_frame, second_values=values)
+    assert _joined(PER_FRAME_ROWS, PER_BIN) is not None
+
+
+def test_a_possible_shared_alignment_column_leaves_the_join_to_the_run() -> None:
+    """A ``kept(frame)`` behind an undecided condition may be the join key."""
+    maybe_per_frame = _columns("group", "sequence", "n", possible={"frame"})
+
+    values: dict[str, JsonValue] = {"subgroup_col": "a"}
+
+    assert _joined(PER_FRAME_ROWS, maybe_per_frame, second_values=values) is None
+    assert not _subgroup_cautions(PER_FRAME_ROWS, maybe_per_frame, second_values=values)
+    assert (
+        _joined(PER_FRAME_ROWS, _columns("bin_start", "n", possible={"frame"})) is None
+    )
+
+
+def test_a_possible_summary_key_leaves_the_join_to_the_run() -> None:
+    maybe_arena = _columns("group", "sequence", "n", possible={"arena"})
+
+    values: dict[str, JsonValue] = {"subgroup_col": "a"}
+
+    assert _joined(maybe_arena, PER_ARENA, first_values=values) is None
+    assert not _subgroup_cautions(maybe_arena, PER_ARENA, first_values=values)
+
+
+def test_a_join_on_summary_keys_that_both_guarantee_is_not_refused() -> None:
+    per_id_bins = _columns("group", "sequence", "id", "bin_start", "bin_end", "speed")
+
+    values: dict[str, JsonValue] = {"subgroup_col": "a"}
+
+    assert _joined(per_id_bins, PER_BIN, second_values=values) is None
+    assert not _subgroup_cautions(per_id_bins, PER_BIN, second_values=values)
+
+
+@pytest.mark.parametrize("consumer", [CROSS, STACKS])
+def test_a_consumer_that_cross_joins_or_stacks_is_not_checked(
+    consumer: ConsumerDecl,
+) -> None:
+    assert _joined(PER_FRAME_ROWS, PER_BIN, consumer=consumer) is None
+
+
+def test_a_position_that_widens_is_not_checked() -> None:
+    pairs = _columns("group", "sequence", "frame", "id1", "id2", "dist")
+    individuals = _columns("group", "sequence", "id", "arena", "n")
+
+    assert _joined(pairs, individuals, consumer=WIDENING) is None
+
+
+def test_one_input_is_no_join() -> None:
+    assert join_problem("step", [JoinInput("first", PER_BIN)], _declaration()) is None
+
+
+def test_the_tracks_may_hold_an_arena_and_no_bin() -> None:
+    """An arena summary reads the tracks like any other input that may carry it."""
+    tracks = tracks_columns(declaration_catalog())
+
+    assert _joined(tracks, PER_ARENA) is None
+    refusal = _joined(tracks, PER_BIN)
+    assert refusal is not None
+    assert "and has bin_start, which first cannot have" in refusal
+
+
+# --- the caution ------------------------------------------------------------
+
+
+def _level_caution(
+    first: ColumnSet, *later: ColumnSet, emits: EmitsLevel = "as-input"
+) -> str | None:
+    inputs = [JoinInput("first", first)]
+    inputs.extend(JoinInput(f"later{n}", one) for n, one in enumerate(later, start=1))
+    return level_caution("step", inputs, _declaration(emits=emits))
+
+
+def test_an_as_input_consumer_whose_first_input_names_nobody_is_cautioned() -> None:
+    expected = (
+        "step emits as-input and takes its level from input 0, first, which names "
+        "nobody. Put the input with the finest rows first"
+    )
+
+    assert _level_caution(ONE_ROW, PER_FRAME_ROWS) == expected
+    assert _level_caution(PER_BIN, ONE_ROW, PER_FRAME_ROWS) == expected
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        (PER_FRAME_ROWS, ONE_ROW),
+        (ONE_ROW,),
+        (ONE_ROW, PER_ARENA),
+        (ONE_ROW, _columns("group", "sequence", "n", possible={"id"})),
+        (ONE_ROW, UNKNOWN_COLUMNS),
+        (UNKNOWN_COLUMNS, PER_FRAME_ROWS),
+    ],
+)
+def test_no_other_order_of_inputs_is_cautioned(inputs: tuple[ColumnSet, ...]) -> None:
+    assert _level_caution(*inputs) is None
+
+
+def test_a_consumer_that_does_not_take_its_level_from_input_zero_is_not_cautioned() -> (
+    None
+):
+    assert _level_caution(ONE_ROW, PER_FRAME_ROWS, emits="individual") is None

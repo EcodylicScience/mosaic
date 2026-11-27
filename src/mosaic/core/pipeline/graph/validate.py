@@ -36,6 +36,16 @@ the columns again, with the columns of the tracks tables that each step reads
 (``check_recipe(tracks=...)``). A column that the schemas allow and every table
 lacks is then a problem.
 
+**Inputs that share no alignment column are checked as the merge decides them.**
+:func:`join_problem` folds the inputs' declared columns left to right and reads
+:func:`~mosaic.core.pipeline.loading.fallback_join`, the function the merge reads,
+where no alignment column may be in both sides. It refuses a join that the run
+refuses for certain and says nothing where the run decides by rows or by columns
+that the recipe leaves open. :func:`level_caution` warns of an ``as-input`` step
+whose first input names nobody, and :func:`subgroup_cautions` of a subgroup table
+that the merge joins by the entry, which the run refuses unless the other side has
+one row.
+
 **A feature that this installation cannot run is a problem at the step's
 ``feature``.** The problem's message is the sentence of the feature's unmet
 prerequisites, :attr:`~.compatibility.Declaration.unavailable`, which the editor
@@ -46,7 +56,7 @@ still checked.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final
 
@@ -64,10 +74,12 @@ from ..column_contract import (
     PairRule,
     ParamValues,
     contract_fields,
+    is_set,
     needs_of,
     param_values,
 )
 from ..error_kind import ClassifiedError, ErrorKind
+from ..loading import FallbackJoin, fallback_join, widens
 from ..run import (
     MissingConsumedRootsDeclaration,
     MissingScopeDeclaration,
@@ -148,7 +160,12 @@ from ..definitions.store import (
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
 from mosaic.core.pipeline.types import ArtifactSpec, DefinitionModel
-from mosaic.core.pipeline.types.data_config import COLUMNS
+from mosaic.core.pipeline.types.data_config import (
+    ALIGN_COLS,
+    COLUMNS,
+    ID_COLS,
+    SUMMARY_KEYS,
+)
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
@@ -159,12 +176,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EXCLUDED_KINDS",
+    "JoinInput",
     "OVERWRITE_PARAM",
     "RecipeInvalid",
     "attach_candidates",
     "check_recipe",
     "input_candidates",
     "insert_candidates",
+    "join_problem",
+    "level_caution",
     "merge_cautions",
     "one_run_problems",
     "patch_validation_report",
@@ -174,6 +194,7 @@ __all__ = [
     "reject_unless_valid",
     "resolved_columns",
     "resolved_levels",
+    "subgroup_cautions",
     "validation_report",
 ]
 
@@ -377,6 +398,7 @@ class _Walk:
             ],
             stack=declared is not None and declared.consumes.stacks_inputs,
             widen=declared is not None and declared.consumes.expands_individuals,
+            cross_join=declared is not None and declared.consumes.cross_joins,
         )
 
     def level_behind(self, step_id: str) -> EntityLevel:
@@ -1256,8 +1278,11 @@ def _edge_problem(step: Step, declared: Declaration, walk: _Walk) -> Problem | N
 
     ``can_join`` rather than a loop of ``can_connect``: the refusal that matters
     is about the *set*, because two inputs at different entity levels share no
-    identity column and merging them on ``frame`` alone is a per-frame cartesian
-    product -- a plausible table nothing raises about.
+    identity column, and merging them on ``frame`` alone is a per-frame cartesian
+    product -- a plausible table nothing raises about. Where ``can_join`` allows
+    the join, :func:`join_problem` reads the columns that the inputs declare, and
+    :func:`level_caution` and :func:`subgroup_cautions` add cautions that do not
+    refuse the step.
     """
     producers: list[ProducerDecl] = []
     for item in _inputs_of(step):
@@ -1266,7 +1291,234 @@ def _edge_problem(step: Step, declared: Declaration, walk: _Walk) -> Problem | N
             return None
         producers.append(producer)
     verdict = can_join(producers, declared.consumes)
-    return None if verdict else Problem(step.id, "inputs", verdict.reason)
+    if not verdict:
+        return Problem(step.id, "inputs", verdict.reason)
+    joining = [
+        _join_input(
+            item,
+            walk.tracks_of(step.id)
+            if isinstance(item, str)
+            else walk.input_columns(item),
+            walk,
+        )
+        for item in _inputs_of(step)
+    ]
+    refusal = join_problem(step.id, joining, declared)
+    if refusal is not None:
+        return Problem(step.id, "inputs", refusal)
+    caution = level_caution(step.id, joining, declared)
+    if caution is not None:
+        walk.cautions.append(Problem(step.id, "inputs", caution))
+    walk.cautions.extend(
+        Problem(step.id, "inputs", text)
+        for text in subgroup_cautions(step.id, joining, declared)
+    )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class JoinInput:
+    """One input of a step, as the join check reads it.
+
+    Attributes:
+        label: How a message names the input: ``tracks`` or its step's id.
+        columns: The columns that the input declares.
+        values: The built params of the step behind the input, ``None`` for the
+            tracks and for a step that did not check out.
+    """
+
+    label: str
+    columns: ColumnSet
+    values: ParamValues | None = None
+
+
+def _join_input(item: str | StepRef, columns: ColumnSet, walk: _Walk) -> JoinInput:
+    """*item* with its *columns*, and the params of the step behind it."""
+    values = None if isinstance(item, str) else walk.values.get(item.step)
+    return JoinInput(_input_label(item), columns, values)
+
+
+def _merged_label(before: Sequence[JoinInput]) -> str:
+    """The inputs merged so far, as a message names them."""
+    labels = [one.label for one in before]
+    return labels[0] if len(labels) == 1 else f"the merge of {' and '.join(labels)}"
+
+
+def _names_nobody(columns: ColumnSet) -> bool:
+    """Whether the input has none of ``ID_COLS`` and may not have one."""
+    return not any(columns.admits(column) for column in ID_COLS)
+
+
+def _subgroup_text(values: ParamValues | None) -> str | None:
+    """The ``subgroup_col`` that *values* set, as a message spells it, else ``None``."""
+    if values is None:
+        return None
+    value = values.get("subgroup_col")
+    if value is None or not is_set(value):
+        return None
+    if isinstance(value, list):
+        return ", ".join(str(one) for one in value)
+    return str(value)
+
+
+def _fallback_positions(
+    inputs: Sequence[JoinInput], consumer: Declaration
+) -> Iterator[tuple[Sequence[JoinInput], ColumnSet, JoinInput, FallbackJoin]]:
+    """The merge positions that ``fallback_join`` decides.
+
+    Folds the inputs left to right as :func:`~.columns.merged_input` does and
+    yields, for each position where no ``ALIGN_COLS`` column may be in both
+    sides, the inputs before it, their merged columns, the input read there and
+    the decision of :func:`~mosaic.core.pipeline.loading.fallback_join` over the
+    guaranteed columns, which takes a summary key only where both sides guarantee
+    it. It yields nothing for a consumer that stacks or
+    cross-joins, and skips a position that widens, one with an unbounded side and
+    one where a shared alignment column is possible: the run decides those by rows
+    or by columns that the recipe leaves open.
+    """
+    consumes = consumer.consumes
+    if consumes.stacks_inputs or consumes.cross_joins:
+        return
+    widen = consumes.expands_individuals
+    for position in range(1, len(inputs)):
+        before = inputs[:position]
+        merged = merged_input([one.columns for one in before], widen=widen)
+        incoming = inputs[position]
+        right = incoming.columns
+        if merged.unbounded or right.unbounded:
+            continue
+        if widen and widens(merged.possible, right.possible):
+            continue
+        if any(merged.admits(column) and right.admits(column) for column in ALIGN_COLS):
+            continue
+        yield (
+            before,
+            merged,
+            incoming,
+            fallback_join(merged.guaranteed, right.guaranteed),
+        )
+
+
+def join_problem(
+    step_id: str, inputs: Sequence[JoinInput], consumer: Declaration
+) -> str | None:
+    """Why the inputs of a step cannot join, from the columns they declare.
+
+    At each position that :func:`_fallback_positions` yields, the check refuses
+    where the run would refuse for certain, and is silent wherever the run decides
+    by rows or by columns that the recipe leaves open: an unidentified side that
+    guarantees a summary key which the other side cannot have, where the other side
+    guarantees an ``ID_COLS`` column or a summary key. The key is repeated onto no
+    row that it describes.
+
+    It says nothing for a consumer that stacks, cross-joins or widens at the
+    position, for an unbounded input, or where a shared alignment column is
+    possible on both sides.
+
+    Args:
+        step_id: The step, for the message.
+        inputs: Its inputs in declared order.
+        consumer: The step's declaration.
+
+    Returns:
+        The refusal's text, ``None`` when the check says nothing.
+    """
+    for before, merged, incoming, fallback in _fallback_positions(inputs, consumer):
+        if fallback.kind is not None or not fallback.unshared:
+            continue
+        right = incoming.columns
+        holder, other = (
+            (merged, right) if fallback.side == "merged" else (right, merged)
+        )
+        keys = [key for key in fallback.unshared if not other.admits(key)]
+        if keys and _names_nobody(holder):
+            merged_label = _merged_label(before)
+            side, beside = (
+                (merged_label, incoming.label)
+                if fallback.side == "merged"
+                else (incoming.label, merged_label)
+            )
+            return (
+                f"{step_id} cannot read {side} beside {beside}: {side}'s output "
+                f"names nobody and has {keys[0]}, which {beside} cannot have"
+            )
+    return None
+
+
+def subgroup_cautions(
+    step_id: str, inputs: Sequence[JoinInput], consumer: Declaration
+) -> list[str]:
+    """The cautions for a subgroup table that the merge joins by the entry.
+
+    A producer that names nobody and sets ``subgroup_col`` has one row per
+    subgroup. At a position that :func:`_fallback_positions` yields, where the
+    merge joins by the entry and no summary key may be in both sides, each row of
+    the other side would match several. The run refuses the join where both sides
+    have more than one row and accepts it otherwise, by rows, so this is a caution
+    and not a refusal.
+
+    Args:
+        step_id: The step, for the message.
+        inputs: Its inputs in declared order.
+        consumer: The step's declaration.
+
+    Returns:
+        One text for each producer at each such position, in input order.
+    """
+    cautions: list[str] = []
+    for before, merged, incoming, fallback in _fallback_positions(inputs, consumer):
+        if fallback.kind != "entry" or any(
+            merged.admits(key) and incoming.columns.admits(key) for key in SUMMARY_KEYS
+        ):
+            continue
+        for producer, others in (
+            *((one, incoming.label) for one in before),
+            (incoming, _merged_label(before)),
+        ):
+            subgroup = _subgroup_text(producer.values)
+            if subgroup is not None and _names_nobody(producer.columns):
+                cautions.append(
+                    f"{step_id} reads {producer.label} beside {others} by the entry, "
+                    f"and {producer.label} sets subgroup_col to {subgroup}, with one "
+                    "row per subgroup. The run refuses the join where both have more "
+                    "than one row. A subgroup does not join"
+                )
+    return cautions
+
+
+def level_caution(
+    step_id: str, inputs: Sequence[JoinInput], consumer: Declaration
+) -> str | None:
+    """The caution for an ``as-input`` step whose first input names nobody.
+
+    A step that emits ``as-input`` takes its level from input 0
+    (:func:`~.compatibility.resolve_emits`). Where input 0 has no ``ID_COLS``
+    column among its guaranteed columns and a later input guarantees one, the
+    step's rows are keyed by the collective and not by the individuals. The
+    check says nothing for an unbounded input, which may hold any column.
+
+    Args:
+        step_id: The step, for the message.
+        inputs: Its inputs in declared order.
+        consumer: The step's declaration.
+
+    Returns:
+        The caution's text, ``None`` when there is none.
+    """
+    if consumer.emits != "as-input" or len(inputs) < 2:
+        return None
+    if any(one.columns.unbounded for one in inputs):
+        return None
+    first, *later = inputs
+    if first.columns.guaranteed & ID_COLS:
+        return None
+    if not any(one.columns.guaranteed & ID_COLS for one in later):
+        return None
+    return (
+        f"{step_id} emits as-input and takes its level from input 0, "
+        f"{first.label}, which names nobody. Put the input with the finest rows "
+        "first"
+    )
 
 
 def reject_unless_valid(
@@ -1631,6 +1883,7 @@ def insert_candidates(
             columns=output_columns(
                 declared.provides, merged_input([source]), declared.param_defaults
             ),
+            values=declared.param_defaults,
         )
         reason = next(
             (
@@ -1662,11 +1915,13 @@ class _Inserted:
         name: Its feature slug or op kind.
         producer: The producer that its children read, at its resolved level.
         columns: The columns of its output under its default params.
+        values: The default params that its contract reads.
     """
 
     name: str
     producer: ProducerDecl
     columns: ColumnSet
+    values: ParamValues
 
 
 _STEP: Final[TypeAdapter[Step]] = TypeAdapter(Step)
@@ -1768,6 +2023,7 @@ def _insert_refusal(
     producers: list[ProducerDecl] = []
     now: list[ColumnSet] = []
     then: list[ColumnSet] = []
+    joining: list[JoinInput] = []
     for position, item in enumerate(child.inputs):
         columns = (
             walk.tracks_of(child.id)
@@ -1778,22 +2034,28 @@ def _insert_refusal(
         if position == 0:
             producers.append(inserted.producer)
             then.append(inserted.columns)
+            joining.append(JoinInput(inserted.name, inserted.columns, inserted.values))
             continue
         producer = _producer_of(item, walk)
         if producer is None:
             return ""
         producers.append(producer)
         then.append(columns)
+        joining.append(_join_input(item, columns, walk))
     verdict = can_join(producers, declared.consumes)
     if not verdict:
         return f"{child.id!r} cannot read {inserted.name}: {verdict.reason}"
+    joined = join_problem(child.id, joining, declared)
+    if joined is not None:
+        return joined
     values = walk.values.get(child.id)
     if values is None:
         values = {**declared.param_defaults, **child.params}
     stack = declared.consumes.stacks_inputs
     widen = declared.consumes.expands_individuals
-    merged_now = merged_input(now, stack=stack, widen=widen)
-    merged_then = merged_input(then, stack=stack, widen=widen)
+    cross_join = declared.consumes.cross_joins
+    merged_now = merged_input(now, stack=stack, widen=widen, cross_join=cross_join)
+    merged_then = merged_input(then, stack=stack, widen=widen, cross_join=cross_join)
     lost = [
         need.label
         for need in needs_of(declared.requires or (), values)
@@ -1865,7 +2127,8 @@ def input_candidates(
     current = [walk.input_columns(item) for item in target.inputs]
     stack = declared.consumes.stacks_inputs
     widen = declared.consumes.expands_individuals
-    merged_now = merged_input(current, stack=stack, widen=widen)
+    cross_join = declared.consumes.cross_joins
+    merged_now = merged_input(current, stack=stack, widen=widen, cross_join=cross_join)
     still: list[tuple[NamedColumns, UnmetStatus]] = []
     for need in needs_of(declared.requires or (), values):
         status = need_status(need, merged_now)
@@ -1905,7 +2168,9 @@ def input_candidates(
     candidates: dict[str, InputCandidate] = {}
     for key, verdict in join_verdicts(declared.consumes, offered, existing).items():
         item, columns = supplied[key]
-        grown = merged_input([*current, columns], stack=stack, widen=widen)
+        grown = merged_input(
+            [*current, columns], stack=stack, widen=widen, cross_join=cross_join
+        )
         allowed, reason = verdict.allowed, verdict.reason
         run = None if key == TRACKS_INPUT else walk.run_of(StepRef(step=key))
         same = None if run is None else reading.get(run)

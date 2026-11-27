@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Collection
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -65,12 +67,14 @@ from mosaic.core.pipeline.graph import (
     declaration_catalog,
     editor_catalog,
     input_candidates,
+    insert_candidates,
     read_recipe,
     resolved_columns,
     validation_report,
 )
 from mosaic.core.pipeline.graph.validate import pair_rules
 from mosaic.core.pipeline.graph.columns import (
+    measured_columns,
     merged_input,
     need_status,
     needs_of,
@@ -84,6 +88,8 @@ from mosaic.core.pipeline.graph.columns import (
 )
 from mosaic.core.pipeline.graph.validate import merge_cautions
 from mosaic.core.pipeline.graph.wire import NeedStatus
+from mosaic.core.pipeline.loading import load_entry_data
+from mosaic.core.pipeline.types import LoadSpec, ParquetLoadSpec
 from mosaic.core.regions import CircleShape, Roi
 from tests.helpers import (
     assert_writes_declared_columns,
@@ -2454,3 +2460,378 @@ def test_a_symmetric_column_bin_keeps_auto_at_once_other_bins_read_all_rows() ->
     )
     assert written == "once"
     assert pair_rule_read(merged, ["dist"], ["mean"], "auto", None) is None
+
+
+# --- the merge's summary keys, as validation names the merged input ------------
+
+
+def _run_columns(tmp_path: Path, *tables: Collection[str]) -> frozenset[str]:
+    """The columns that the merge writes for one row per table of these columns."""
+    specs: list[tuple[Path, LoadSpec]] = []
+    for position, names in enumerate(tables):
+        path = tmp_path / f"{position}.parquet"
+        pd.DataFrame({name: ["a"] for name in sorted(names)}).to_parquet(path)
+        specs.append((path, ParquetLoadSpec()))
+    merged = load_entry_data(specs)
+    assert merged is not None
+    return frozenset(merged.columns)
+
+
+def _outputs(*steps: dict[str, JsonValue]) -> dict[str, ColumnSet]:
+    return resolved_columns(read_recipe({"steps": [_SPEED, *steps]}))
+
+
+def _binned(step_id: str, feature: str) -> dict[str, JsonValue]:
+    return {
+        "id": step_id,
+        "type": "feature",
+        "feature": feature,
+        "inputs": [{"step": "speed"}],
+        "params": {"columns": ["speed"], "aggs": ["mean"], "bin_s": 10},
+    }
+
+
+def test_a_collided_summary_key_is_one_column_of_the_merged_input() -> None:
+    per_id = _columns_of("bin_start", "bin_end", "id", "speed")
+    collective = _columns_of("bin_start", "bin_end", "n")
+
+    merged = merged_input([per_id, collective])
+
+    assert merged.guaranteed == {"bin_start", "bin_end", "id", "speed", "n"}
+
+
+def _columns_of(*names: str, possible: Collection[str] = ()) -> ColumnSet:
+    return ColumnSet(
+        guaranteed=frozenset(names), possible=frozenset(names) | frozenset(possible)
+    )
+
+
+def test_a_summary_key_that_a_cross_join_consumer_does_not_join_is_numbered() -> None:
+    rows = _columns_of("frame", "id", "arena")
+    other = _columns_of("frame", "id", "arena", "speed")
+
+    merged = merged_input([rows, other], cross_join=True)
+
+    assert merged.guaranteed == {"frame", "id", "arena", "arena__1", "speed"}
+
+
+def test_a_summary_key_that_a_widening_merge_names_per_individual_is_not_a_key() -> (
+    None
+):
+    pairs = _columns_of("frame", "id1", "id2", "arena")
+    individuals = _columns_of("frame", "id", "arena", "speed")
+
+    merged = merged_input([pairs, individuals], widen=True)
+
+    assert {"arena__id1", "arena__id2"} <= merged.guaranteed
+
+
+def test_a_summary_key_possible_on_both_sides_enters_under_both_names() -> None:
+    """The run joins ``arena`` where both tables have it, and the plan cannot tell."""
+    first = _columns_of("frame", "id", "x", possible={"arena"})
+    second = _columns_of("frame", "y", possible={"arena"})
+
+    merged = merged_input([first, second])
+
+    assert merged.guaranteed == {"frame", "id", "x", "y"}
+    assert {"arena", "arena__1"} <= merged.possible
+
+
+def test_a_summary_key_guaranteed_on_one_side_alone_is_guaranteed_once() -> None:
+    first = _columns_of("frame", "id", "arena")
+    second = _columns_of("frame", "y", possible={"arena"})
+
+    merged = merged_input([first, second])
+
+    assert merged.guaranteed == {"frame", "id", "arena", "y"}
+    assert "arena__1" in merged.possible
+
+
+def test_a_summary_key_that_neither_side_may_have_is_not_numbered() -> None:
+    merged = merged_input(
+        [_columns_of("frame", "id", "x"), _columns_of("frame", "y", "arena")]
+    )
+
+    assert merged.guaranteed == {"frame", "id", "x", "y", "arena"}
+    assert "arena__1" not in merged.possible
+
+
+def test_the_merged_columns_equal_the_runs_for_two_binned_summaries(
+    tmp_path: Path,
+) -> None:
+    """``individual-aggregate`` beside ``sequence-aggregate`` joins on the bins."""
+    columns = _outputs(
+        _binned("per_id", "individual-aggregate"),
+        _binned("collective", "sequence-aggregate"),
+    )
+    per_id, collective = columns["per_id"], columns["collective"]
+
+    merged = merged_input([per_id, collective])
+
+    assert merged.guaranteed == _run_columns(
+        tmp_path, per_id.guaranteed, collective.guaranteed
+    )
+    assert {"bin_start", "bin_end"} <= merged.guaranteed
+    assert not {"bin_start__1", "bin_end__1"} & merged.possible
+
+
+def _frame_aggregate(tracks: ColumnSet) -> ColumnSet:
+    declared = declaration_catalog().get("frame-aggregate")
+    assert declared is not None
+    values: dict[str, JsonValue] = {
+        **declared.param_defaults,
+        "columns": ["X"],
+        "aggs": ["mean"],
+    }
+    return output_columns(declared.provides, tracks, values)
+
+
+_TRACK_TABLE = frozenset({"frame", "time", "id", "group", "sequence", "X", "Y"})
+
+
+def test_the_merged_columns_equal_the_runs_for_tracks_with_an_arena(
+    tmp_path: Path,
+) -> None:
+    """Every table has ``arena``, and ``frame-aggregate`` keeps it from its input."""
+    tracks = measured_columns([_TRACK_TABLE | {"arena"}, _TRACK_TABLE | {"arena"}])
+    assert tracks is not None
+    summary = _frame_aggregate(tracks)
+
+    merged = merged_input([tracks, summary])
+
+    assert "arena" in tracks.guaranteed
+    assert "arena" in summary.guaranteed
+    assert merged.guaranteed == _run_columns(
+        tmp_path, tracks.guaranteed, summary.guaranteed
+    )
+    assert "arena__1" not in merged.possible
+
+
+def test_the_possible_columns_hold_the_runs_over_tables_where_some_have_an_arena(
+    tmp_path: Path,
+) -> None:
+    with_arena = _TRACK_TABLE | {"arena"}
+    tracks = measured_columns([with_arena, _TRACK_TABLE])
+    assert tracks is not None
+    summary = _frame_aggregate(tracks)
+
+    merged = merged_input([tracks, summary])
+
+    assert "arena" not in merged.guaranteed
+    assert _run_columns(tmp_path, with_arena, summary.possible) <= merged.possible
+    assert _run_columns(tmp_path, _TRACK_TABLE, summary.guaranteed) <= merged.possible
+
+
+def test_the_tracks_of_a_recipe_may_hold_an_arena_that_no_table_guarantees() -> None:
+    """``assign-arenas`` writes it, and a schema lists it as an optional text column."""
+    tracks = tracks_columns(declaration_catalog())
+
+    assert "arena" in tracks.possible
+    assert "arena" not in tracks.guaranteed
+    assert tracks.admits("arena")
+    assert not tracks.admits("bin_start")
+    columns = {
+        c.column.name
+        for c in tracks_provides().conditional
+        if isinstance(c.column, Column)
+    }
+    assert "arena" in columns
+
+
+# --- the join check over a recipe --------------------------------------------
+
+
+def _reads(
+    step_id: str, feature: str, inputs: list[JsonValue], **params: JsonValue
+) -> dict[str, JsonValue]:
+    return {
+        "id": step_id,
+        "type": "feature",
+        "feature": feature,
+        "inputs": inputs,
+        "params": dict(params),
+    }
+
+
+def _speed_summary(
+    step_id: str, feature: str, **params: JsonValue
+) -> dict[str, JsonValue]:
+    return _reads(
+        step_id,
+        feature,
+        [{"step": "speed"}],
+        columns=["speed"],
+        aggs=["mean"],
+        **params,
+    )
+
+
+def _join_problems(report_problems: tuple[Problem, ...]) -> list[Problem]:
+    return [problem for problem in report_problems if "cannot read" in problem.message]
+
+
+def test_a_binned_summary_beside_the_rows_it_cannot_describe_is_refused_at_the_step() -> (
+    None
+):
+    steps = [
+        _SPEED,
+        _speed_summary("seq", "sequence-aggregate", bin_s=10),
+        _reads(
+            "join",
+            "individual-aggregate",
+            [{"step": "speed"}, {"step": "seq"}],
+            columns=["speed"],
+            aggs=["mean"],
+        ),
+    ]
+    expected = (
+        "join cannot read seq beside speed: seq's output names nobody and has "
+        "bin_start, which speed cannot have"
+    )
+
+    report = validation_report({"steps": steps})
+
+    assert _join_problems(report.problems) == [Problem("join", "inputs", expected)]
+    assert not report.valid
+
+
+def test_a_binned_summary_beside_the_tracks_is_refused_and_an_arena_summary_is_not() -> (
+    None
+):
+    binned = _reads(
+        "seq",
+        "sequence-aggregate",
+        [TRACKS_INPUT],
+        columns=["X"],
+        aggs=["mean"],
+        bin_s=10,
+    )
+    arenas = _reads("arenas", "track-coverage", [TRACKS_INPUT])
+
+    def join(summary: str) -> dict[str, JsonValue]:
+        return _reads(
+            "join",
+            "individual-aggregate",
+            [TRACKS_INPUT, {"step": summary}],
+            columns=["X"],
+            aggs=["mean"],
+        )
+
+    refused = validation_report({"steps": [binned, join("seq")]})
+    plain = validation_report({"steps": [arenas, join("arenas")]})
+
+    assert [p.message for p in _join_problems(refused.problems)] == [
+        "join cannot read seq beside tracks: seq's output names nobody and has "
+        "bin_start, which tracks cannot have"
+    ]
+    assert _join_problems(plain.problems) == []
+
+
+def test_two_binned_summaries_plan_clean_and_join_on_their_bins() -> None:
+    steps = [
+        _SPEED,
+        _speed_summary("per_id", "individual-aggregate", bin_s=10),
+        _speed_summary("collective", "sequence-aggregate", bin_s=10),
+        _reads(
+            "join",
+            "individual-aggregate",
+            [{"step": "per_id"}, {"step": "collective"}],
+            columns=["speed_mean"],
+            aggs=["mean"],
+        ),
+    ]
+
+    report = validation_report({"steps": steps})
+
+    assert report.problems == ()
+
+
+def test_a_summary_with_a_subgroup_column_joined_by_the_entry_is_cautioned() -> None:
+    """The run refuses it unless the other side has one row, so the plan only warns."""
+    steps = [
+        _SPEED,
+        _speed_summary("seq", "sequence-aggregate", subgroup_col="vx"),
+        _reads(
+            "join",
+            "individual-aggregate",
+            [{"step": "speed"}, {"step": "seq"}],
+            columns=["speed"],
+            aggs=["mean"],
+        ),
+    ]
+    expected = (
+        "join reads seq beside speed by the entry, and seq sets subgroup_col to vx, "
+        "with one row per subgroup. The run refuses the join where both have more "
+        "than one row. A subgroup does not join"
+    )
+
+    report = validation_report({"steps": steps})
+
+    assert Problem("join", "inputs", expected) in report.cautions
+    assert report.problems == ()
+
+
+def test_a_summary_without_a_subgroup_joins_by_the_entry_without_a_problem() -> None:
+    steps = [
+        _SPEED,
+        _speed_summary("seq", "sequence-aggregate"),
+        _reads(
+            "join",
+            "individual-aggregate",
+            [{"step": "speed"}, {"step": "seq"}],
+            columns=["speed"],
+            aggs=["mean"],
+        ),
+    ]
+
+    assert _join_problems(validation_report({"steps": steps}).problems) == []
+
+
+def test_an_as_input_step_that_reads_a_collective_first_is_cautioned() -> None:
+    steps = [
+        _SPEED,
+        _speed_summary("seq", "sequence-aggregate"),
+        _reads("stack", "temporal-stack", [{"step": "seq"}, {"step": "speed"}]),
+    ]
+    expected = (
+        "stack emits as-input and takes its level from input 0, seq, which names "
+        "nobody. Put the input with the finest rows first"
+    )
+
+    report = validation_report({"steps": steps})
+
+    assert Problem("stack", "inputs", expected) in report.cautions
+    assert _join_problems(report.problems) == []
+
+
+def test_an_insert_that_would_leave_a_child_unable_to_join_is_refused_by_name() -> None:
+    """``frame-aggregate``, declared as rows of individuals without bins, in place of ``per_id``."""
+    steps = [
+        _SPEED,
+        _speed_summary("per_id", "individual-aggregate", bin_s=10),
+        _speed_summary("collective", "sequence-aggregate", bin_s=10),
+        _reads(
+            "join",
+            "individual-aggregate",
+            [{"step": "per_id"}, {"step": "collective"}],
+            columns=["speed_mean"],
+            aggs=["mean"],
+        ),
+    ]
+    entries = dict(declaration_catalog().entries)
+    entries["frame-aggregate"] = replace(
+        entries["frame-aggregate"],
+        provides=Provides(
+            adds=(Column("group"), Column("sequence"), Column("id"), Column("speed"))
+        ),
+    )
+    catalog = DeclarationCatalog(entries=entries)
+
+    report = insert_candidates(read_recipe({"steps": steps}), "per_id", catalog)
+
+    refusal = report.candidates["frame-aggregate"]
+    assert not refusal.allowed
+    assert refusal.reason == (
+        "join cannot read collective beside frame-aggregate: collective's output "
+        "names nobody and has bin_start, which frame-aggregate cannot have"
+    )

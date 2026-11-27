@@ -27,6 +27,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, recipe_digest
 from tests.helpers import (
     UPDATE_GOLDEN_ENV,
+    WORKED_RECIPE,
     add_tracks_variant,
     golden_path,
     make_dataset,
@@ -41,60 +42,6 @@ GOLDEN = "pipeline_plan_golden.json"
 
 VARIANT = "convert-trex.0.2-1111111111"
 """The tracks recipe the fixture's tables answer to."""
-
-WORKED_RECIPE: dict[str, object] = {
-    "schema_version": 1,
-    "name": "trex to global tsne",
-    "steps": [
-        {
-            "id": "transcode",
-            "type": "op",
-            "kind": "transcode",
-            "params": {"target": "analysis"},
-        },
-        {
-            "id": "trex",
-            "type": "op",
-            "kind": "trex",
-            "params": {"track_max_individuals": 4, "cm_per_pixel": 0.05},
-            "after": ["transcode"],
-        },
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-            "tracks": {"step": "trex"},
-        },
-        {
-            "id": "templates",
-            "type": "feature",
-            "feature": "extract-templates",
-            "inputs": [{"step": "speed"}],
-            "params": {"n_templates": 8},
-        },
-        {
-            "id": "tsne",
-            "type": "feature",
-            "feature": "global-tsne",
-            "inputs": [{"step": "speed"}],
-            "params": {
-                "templates": {"step": "templates", "pattern": "templates.parquet"},
-                "perplexity": 5,
-            },
-        },
-        # The one step kind that computes no entry. Every other step here takes
-        # a scope. Without this one the recorded ``entries`` cells agree with
-        # the plan scope whatever the planner decides for an op declaring
-        # ``scope_takes = "none"``.
-        {
-            "id": "train",
-            "type": "op",
-            "kind": "train-pose",
-            "params": {"data": "training/data.yaml", "epochs": 10},
-        },
-    ],
-}
 
 TRAINING_DATA_YAML = """\
 train: images/train

@@ -625,6 +625,27 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`), or expands
   individuals and reads a pair-level input 0 (`ConsumerDecl.expands_individuals`).
   `merged_input(widen=...)` then names the widened columns as the merge does.
+- Where `can_join` allows a join, `join_problem`, `level_caution` and
+  `subgroup_cautions` (`validate.py`) read the columns that the inputs declare.
+  `_edge_problem` and the child check of `insert_candidates` call them. They fold the
+  inputs left to right as `merged_input` does. At a position where no `ALIGN_COLS`
+  column may be in both sides they read `fallback_join` over the guaranteed columns, the
+  function the merge reads. `join_problem` refuses only what the run refuses for
+  certain: an unidentified side that guarantees a summary key the other side cannot
+  have, where the other side guarantees an `ID_COLS` column or a summary key. It is
+  silent for an unbounded input, a shared alignment column or summary key that is only
+  possible, and a side that only may be ineligible, and the run decides by rows.
+  `level_caution` is the caution for an `as-input` step whose input 0 names nobody
+  while a later input names individuals. `subgroup_cautions` is the caution for a
+  producer that names nobody and sets `subgroup_col` where the merge joins by the
+  entry: the run refuses the join where both sides have more than one row, so the plan
+  only warns (`test_pipeline_compatibility.py`).
+- `merged_input` names the merged columns by `merge_step`, the merge's own decision. A
+  summary key that both sides have is one column, and over the possible sets a key that
+  both sides may have and not both guarantee also enters as `<key>__<position>`. A
+  cross-join consumer numbers it (`cross_join=`). The tracks may hold `arena`, which
+  `tracks_provides` lists from each schema's `optional_text`, so validation, the plan
+  and `may_share_summary_key` read one answer (`test_pipeline_columns.py`).
 - A feature declares `requires` and `provides` with the references of
   `core/pipeline/column_contract.py`. Validation checks them with no dataset
   (`columns.py`), the plan against the tracks parquet footers, and `run_feature` per

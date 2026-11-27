@@ -59,6 +59,66 @@ CHAIN_RECIPE: dict[str, object] = {
 }
 """A ``speed-angvel`` step and an ``extract-templates`` step that reads it."""
 
+WORKED_RECIPE: dict[str, object] = {
+    "schema_version": 1,
+    "name": "trex to global tsne",
+    "steps": [
+        {
+            "id": "transcode",
+            "type": "op",
+            "kind": "transcode",
+            "params": {"target": "analysis"},
+        },
+        {
+            "id": "trex",
+            "type": "op",
+            "kind": "trex",
+            "params": {"track_max_individuals": 4, "cm_per_pixel": 0.05},
+            "after": ["transcode"],
+        },
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "tracks": {"step": "trex"},
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_templates": 8},
+        },
+        {
+            "id": "tsne",
+            "type": "feature",
+            "feature": "global-tsne",
+            "inputs": [{"step": "speed"}],
+            "params": {
+                "templates": {"step": "templates", "pattern": "templates.parquet"},
+                "perplexity": 5,
+            },
+        },
+        # The one step kind that computes no entry. Every other step here takes
+        # a scope. Without this one the recorded ``entries`` cells agree with
+        # the plan scope whatever the planner decides for an op declaring
+        # ``scope_takes = "none"``.
+        {
+            "id": "train",
+            "type": "op",
+            "kind": "train-pose",
+            "params": {"data": "training/data.yaml", "epochs": 10},
+        },
+    ],
+}
+"""The recipe of the plan golden.
+
+A transcode and a tracker, a speed step, templates and a t-SNE embedding of them, and
+a pose training. It validates with no problem and no caution.
+"""
+
+
 GUPPIES_RECIPE = "guppies_pipeline_v5.recipe.json"
 """The guppies recipe's file under ``tests/data/``."""
 
