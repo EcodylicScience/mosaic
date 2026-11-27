@@ -49,6 +49,7 @@ from .types.data_config import (
     COLUMNS,
     ID_COLS,
     NON_PAYLOAD_COLS,
+    SUMMARY_KEY_ORDER,
     SUMMARY_KEYS,
 )
 
@@ -123,6 +124,14 @@ class PairRowsMissing(EntryRowsMissing):
     Dropping the empty input would leave the individual rows of a later input
     as the entry's merged frame, under a consumer whose output is keyed by pair
     rows.
+    """
+
+
+class BroadcastRowsMissing(EntryRowsMissing):
+    """An input that joins by the entry or by its summary keys holds no rows.
+
+    Leaving it out would give the entry a merged frame without its columns,
+    which differs from the run's other entries.
     """
 
 
@@ -282,7 +291,11 @@ _PAIR_SLOTS: tuple[str, str] = ("id1", "id2")
 def _widened_naming(
     left: frozenset[str], right: frozenset[str], position: int
 ) -> MergeNaming:
-    """The naming of a widening merge: payload twice, identity and bookkeeping dropped."""
+    """The naming of a widening merge: payload twice, identity and bookkeeping dropped.
+
+    The keys are the shared order column alone, or, where the sides share none,
+    ``id`` followed by the summary keys both sides have in ``SUMMARY_KEY_ORDER``.
+    """
     order = _shared_order_column(left, right)
     payload = sorted(right - NON_PAYLOAD_COLS)
     widened: dict[str, tuple[str, str]] = {}
@@ -293,8 +306,15 @@ def _widened_naming(
         widened[column] = (names[0], names[1])
     dropped = tuple(sorted((right & NON_PAYLOAD_COLS) - {order, COLUMNS.id_col}))
     added = frozenset(name for names in widened.values() for name in names)
+    if order is not None:
+        keys = (order,)
+    else:
+        keys = (
+            COLUMNS.id_col,
+            *(key for key in SUMMARY_KEY_ORDER if key in left and key in right),
+        )
     return MergeNaming(
-        keys=(order,) if order is not None else (),
+        keys=keys,
         dropped=dropped,
         renamed={},
         columns=left | added,
@@ -326,8 +346,9 @@ def merge_naming(
     ``__<position>`` suffix.
 
     A widening merge (*widen*, see :func:`widens`) joins an individual-level
-    input onto pair rows on the order column, once on ``id1`` and once on
-    ``id2``. Each of its payload columns appears twice, as ``<column>__id1``
+    input onto pair rows, once on ``id1`` and once on ``id2``, with the order
+    column, or with the summary keys that both sides have where they share no
+    order column. Each of its payload columns appears twice, as ``<column>__id1``
     for the focal and ``<column>__id2`` for the other, or as
     ``<column>__<position>__id1`` and ``<column>__<position>__id2`` when the
     merged side already holds one of those names. Its identity and bookkeeping
@@ -365,8 +386,107 @@ def merge_naming(
     )
 
 
-MergeKind = Literal["shared", "widen"]
-"""How a merge position joins: on shared keys (step 1), or by widening."""
+FallbackKind = Literal["summary", "entry"]
+"""How inputs that share no alignment column join: on summary keys, or by the entry."""
+
+
+FallbackSide = Literal["merged", "incoming"]
+"""Which side of a merge position: the inputs merged so far, or the next input."""
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackJoin:
+    """How two inputs that share no alignment column join, decided from names.
+
+    Attributes:
+        keys: The summary keys joined on, sorted. Empty for a join by the entry
+            and where no join is decided.
+        kind: ``"summary"`` for a join on the summary keys both sides have,
+            ``"entry"`` for a join by the entry (a cross join within it), and
+            ``None`` where neither applies and the merge's own refusal stands.
+        side: The unidentified side that has a summary key the other side
+            lacks, ``None`` when no side does. With *kind* ``None`` the
+            position refuses.
+        unshared: That side's summary keys that the other side lacks, in
+            ``SUMMARY_KEY_ORDER``. Empty exactly when *side* is ``None``.
+        single: For a join by the entry that carries *side*'s summary keys
+            onto the other side's rows, the other side, which must then have
+            one row. ``None`` elsewhere.
+    """
+
+    keys: tuple[str, ...]
+    kind: FallbackKind | None
+    side: FallbackSide | None = None
+    unshared: tuple[str, ...] = ()
+    single: FallbackSide | None = None
+
+
+def fallback_join(merged: Iterable[str], incoming: Iterable[str]) -> FallbackJoin:
+    """How *incoming* joins *merged* where they share no alignment column.
+
+    A pure function of two column sets, which the merge and the plan-time check
+    both read. A side is unidentified when it has none of ``ID_COLS``.
+
+    An unidentified side that has a summary key the other side lacks refuses,
+    because its value cannot be repeated onto rows it does not describe: the
+    result names the side and every such key. The exception is a join by the
+    entry where the other side is unidentified and has none of
+    ``SUMMARY_KEYS``: the result keeps the side and the keys, and names the
+    other side as *single*, the one that must have one row. Else the sides join
+    on the ``SUMMARY_KEYS`` that both have. Else a join by the entry applies
+    where one side is unidentified. With neither side unidentified and no
+    shared key nothing is decided.
+
+    Args:
+        merged: The columns merged so far.
+        incoming: The next input's columns.
+    """
+    left = frozenset(merged)
+    right = frozenset(incoming)
+    sides: tuple[tuple[FallbackSide, frozenset[str], frozenset[str]], ...] = (
+        ("merged", left, right),
+        ("incoming", right, left),
+    )
+    for side, columns, other in sides:
+        if columns & ID_COLS:
+            continue
+        unshared = tuple(
+            key for key in SUMMARY_KEY_ORDER if key in columns and key not in other
+        )
+        if not unshared:
+            continue
+        if other & ID_COLS or other & SUMMARY_KEYS:
+            return FallbackJoin((), None, side, unshared)
+        single: FallbackSide = "incoming" if side == "merged" else "merged"
+        return FallbackJoin((), "entry", side, unshared, single)
+    shared = tuple(sorted(SUMMARY_KEYS & left & right))
+    if shared:
+        return FallbackJoin(shared, "summary")
+    if not left & ID_COLS or not right & ID_COLS:
+        return FallbackJoin((), "entry")
+    return FallbackJoin((), None)
+
+
+def _unshared_refusal(fallback: FallbackJoin, position: int) -> str:
+    """The merge's refusal of a *fallback* that names an unshared summary key."""
+    merged_side, incoming_side = "the inputs before it", f"input {position}"
+    if fallback.side == "merged":
+        side, other = merged_side, incoming_side
+    else:
+        side, other = incoming_side, merged_side
+    key = fallback.unshared[0]
+    return (
+        f"cannot merge input {position}: {side} names nobody and has {key}, "
+        f"which {other} lacks. Its {key} cannot be repeated onto rows it does "
+        "not describe"
+    )
+
+
+MergeKind = Literal["shared", "widen", "summary", "entry"]
+"""How a merge position joins.
+
+On shared keys, by widening, on summary keys alone, or by the entry.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,12 +496,21 @@ class MergeStep:
     Attributes:
         kind: ``"shared"`` for a join on the shared alignment columns and the
             summary keys both sides have, ``"widen"`` for individual rows
-            widened onto pair rows.
-        keys: The columns joined on, sorted for a shared join.
+            widened onto pair rows, ``"summary"`` for a join on the summary
+            keys alone, ``"entry"`` for a join by the entry (a cross join).
+        keys: The columns joined on, sorted for a shared or summary join. For
+            a widening join the shared order column, or ``id`` followed by the
+            shared summary keys in ``SUMMARY_KEY_ORDER``, so that the join also
+            takes ``id1`` and ``id2`` as the pair rows' slots. Empty for a join
+            by the entry.
         naming: What the merge does to the column names.
         summary_keys: The summary keys a shared join uses as keys, sorted. Empty
             for any other kind.
         refusal: The refusal's text, ``""`` when the position merges.
+        single: For a join by the entry that carries an unidentified side's
+            summary keys, the side that must have one row, else ``None``.
+        single_refusal: The text with which a merge refuses when the *single*
+            side has more than one row, ``""`` when *single* is ``None``.
     """
 
     kind: MergeKind
@@ -389,6 +518,8 @@ class MergeStep:
     naming: MergeNaming
     summary_keys: tuple[str, ...]
     refusal: str
+    single: FallbackSide | None = None
+    single_refusal: str = ""
 
 
 def merge_step(
@@ -407,11 +538,18 @@ def merge_step(
     read rows.
 
     Under *expands_individuals* an individual-level input after pair rows
-    widens onto them. Otherwise :func:`alignment_verdict` decides, and a
+    widens onto them, on the shared order column or else on ``id`` and the
+    summary keys both sides have, and joins no summary key in step 1 either
+    way. Otherwise :func:`alignment_verdict` decides, and a
     *cross_join* consumer joins on the shared alignment columns it finds. A
     join on shared keys uses the shared ``ALIGN_COLS`` and every
     ``SUMMARY_KEYS`` column that both sides have, except for a *cross_join*
-    consumer, which uses the alignment columns alone.
+    consumer, which uses the alignment columns alone. Where the sides share no
+    alignment column and the consumer is not a *cross_join* one,
+    :func:`fallback_join` decides: a join on the summary keys, a join by the
+    entry, or its refusal. Neither adds to ``summary_keys``. A join by the entry
+    that carries an unidentified side's summary keys also names the side that
+    must have one row and the text that refuses otherwise.
 
     Args:
         merged: The columns merged so far.
@@ -426,14 +564,27 @@ def merge_step(
     prefix = f"cannot merge input {position}: "
     if expands_individuals and widens(left, right):
         naming = merge_naming(left, right, position, widen=True)
-        refusal = (
-            ""
-            if naming.keys
-            else f"{prefix}it shares no order column "
-            f"({COLUMNS.frame_col} or {COLUMNS.time_col}) with the pair rows"
-        )
-        return MergeStep("widen", naming.keys, naming, (), refusal)
+        return MergeStep("widen", naming.keys, naming, (), "")
     verdict = alignment_verdict([left, right])
+    if verdict.cause == "no_keys" and not cross_join:
+        fallback = fallback_join(left, right)
+        naming = merge_naming(left, right, position, keys=fallback.keys)
+        if fallback.kind is None and fallback.unshared:
+            refusal = _unshared_refusal(fallback, position)
+            return MergeStep("shared", (), naming, (), refusal)
+        if fallback.kind is not None:
+            single_refusal = (
+                _unshared_refusal(fallback, position) if fallback.single else ""
+            )
+            return MergeStep(
+                fallback.kind,
+                fallback.keys,
+                naming,
+                (),
+                "",
+                fallback.single,
+                single_refusal,
+            )
     summary_keys = (
         ()
         if cross_join or not verdict.keys
@@ -691,21 +842,28 @@ def _column_names(df: pd.DataFrame) -> list[str]:
 
 
 def _widen_onto_pairs(
-    merged: pd.DataFrame, individuals: pd.DataFrame, naming: MergeNaming, declared: int
+    merged: pd.DataFrame, individuals: pd.DataFrame, step: MergeStep, declared: int
 ) -> pd.DataFrame:
-    """Join *individuals* onto the pair rows of *merged*, as ``id1`` and as ``id2``."""
-    order = naming.keys[0]
-    keyed = [order, COLUMNS.id_col]
+    """Join *individuals* onto the pair rows of *merged*, as ``id1`` and as ``id2``.
+
+    The keys of *step* are the order column alone, which joins with ``id``, or
+    ``id`` and the summary keys both sides have.
+    """
+    keyed = list(step.keys)
+    if COLUMNS.id_col not in keyed:
+        keyed.append(COLUMNS.id_col)
+    _refuse_missing_summary_keys(merged, individuals, step, declared)
     if individuals.duplicated(keyed).any():
         raise MultiInputAlignmentError(
-            f"cannot merge input {declared}: it repeats a ({order}, "
-            f"{COLUMNS.id_col}) row, so a pair row would match more than one"
+            f"cannot merge input {declared}: it repeats a ({', '.join(keyed)}) "
+            "row, so a pair row would match more than one"
         )
-    side = individuals[[*keyed, *naming.widened]]
+    others = [key for key in keyed if key != COLUMNS.id_col]
     for slot_index, slot in enumerate(_PAIR_SLOTS):
-        names = {column: pair[slot_index] for column, pair in naming.widened.items()}
-        part = side.rename(columns={COLUMNS.id_col: slot, **names})
-        merged = merged.merge(part, how="inner", on=[order, slot])
+        part = individuals[keyed].rename(columns={COLUMNS.id_col: slot})
+        for column, pair in step.naming.widened.items():
+            part[pair[slot_index]] = individuals[column]
+        merged = merged.merge(part, how="inner", on=[*others, slot])
     return merged
 
 
@@ -717,7 +875,7 @@ def _refuse_missing_summary_keys(
     pandas matches a ``NaN`` key to a ``NaN`` key, so such a row would join
     rows that name no bin or arena.
     """
-    for key in step.summary_keys:
+    for key in (key for key in step.keys if key in SUMMARY_KEYS):
         for side, table in (
             ("the inputs before it", merged),
             (f"input {declared}", incoming),
@@ -728,6 +886,45 @@ def _refuse_missing_summary_keys(
                     f"cannot merge input {declared}: {key} is missing in {missing} "
                     f"rows of {side}, and a summary key names a bin or an arena"
                 )
+
+
+def _refuse_uncovered(
+    merged: pd.DataFrame, incoming: pd.DataFrame, keys: list[str], declared: int
+) -> None:
+    """Refuse a row of the covered side that matches no row of the broadcast side.
+
+    The broadcast side is the one unique on *keys*, the incoming side when both
+    are. A row of the broadcast side that matches nothing is not refused, and
+    the inner join drops it.
+    """
+    if incoming.duplicated(keys).any():
+        broadcast, covered = merged, incoming
+        broadcast_side, covered_side = "the inputs before it", f"input {declared}"
+    else:
+        broadcast, covered = incoming, merged
+        broadcast_side, covered_side = f"input {declared}", "the inputs before it"
+    probe = covered[keys].merge(
+        broadcast[keys].drop_duplicates(), how="left", on=keys, indicator=True
+    )
+    unmatched = probe[probe["_merge"] == "left_only"]
+    if unmatched.empty:
+        return
+    first = unmatched.iloc[0]
+    values = ", ".join(f"{key}={first[key]}" for key in keys)
+    raise MultiInputAlignmentError(
+        f"cannot merge input {declared}: {len(unmatched)} rows of {covered_side} "
+        f"have no row with the same {', '.join(keys)} in {broadcast_side}, the "
+        f"first at {values}"
+    )
+
+
+def _named(incoming: pd.DataFrame, naming: MergeNaming) -> pd.DataFrame:
+    """*incoming* with the columns that *naming* drops removed and its renames applied."""
+    if naming.dropped:
+        incoming = incoming.drop(columns=list(naming.dropped))
+    if naming.renamed:
+        incoming = incoming.rename(columns=dict(naming.renamed))
+    return incoming
 
 
 def _merge_on_shared_keys(
@@ -741,7 +938,9 @@ def _merge_on_shared_keys(
     """Inner-join *incoming* onto *merged* on the keys of *step*.
 
     Applies the naming of :func:`merge_step` and adds the checks that read rows:
-    a ``NaN`` summary key, and a key set that is not unique on either side.
+    a ``NaN`` summary key, a key set that is not unique on either side, and, for
+    a join on summary keys alone, a row of one side that the other does not
+    cover.
     """
     on_cols = list(step.keys)
     _refuse_missing_summary_keys(merged, incoming, step, declared)
@@ -752,12 +951,32 @@ def _merge_on_shared_keys(
             f"cannot merge input {declared}: {on_cols} is not unique on either "
             "side, so the join would multiply rows"
         )
-    naming = step.naming
-    if naming.dropped:
-        incoming = incoming.drop(columns=list(naming.dropped))
-    if naming.renamed:
-        incoming = incoming.rename(columns=dict(naming.renamed))
-    return merged.merge(incoming, how="inner", on=on_cols)
+    if step.kind == "summary":
+        _refuse_uncovered(merged, incoming, on_cols, declared)
+    return merged.merge(_named(incoming, step.naming), how="inner", on=on_cols)
+
+
+def _merge_by_entry(
+    merged: pd.DataFrame, incoming: pd.DataFrame, step: MergeStep, declared: int
+) -> pd.DataFrame:
+    """Join every row of one side to the row of the other, which holds the entry's value.
+
+    A *step* that names a ``single`` side refuses unless that side has one row.
+    The side's value is the entry's, and the other side carries summary keys that
+    describe its own rows. Otherwise one side must have one row.
+    """
+    if step.single is not None:
+        holder = merged if step.single == "merged" else incoming
+        if len(holder) > 1:
+            raise MultiInputAlignmentError(step.single_refusal)
+    if len(merged) > 1 and len(incoming) > 1:
+        raise MultiInputAlignmentError(
+            f"cannot merge input {declared}: it shares no key with the inputs "
+            "before it and joins by the entry, and both sides have more than one "
+            "row. An input joined by the entry has one row per entry, or one per "
+            "bin or arena when both sides have bin_start and bin_end or arena"
+        )
+    return merged.merge(_named(incoming, step.naming), how="cross")
 
 
 def _merge_parquet_inputs(
@@ -765,6 +984,7 @@ def _merge_parquet_inputs(
     *,
     cross_join: bool = False,
     expands_individuals: bool = False,
+    empty_inputs: Sequence[tuple[int, tuple[str, ...]]] = (),
 ) -> pd.DataFrame | None:
     """Merge parquet inputs on the identity columns they share.
 
@@ -780,11 +1000,22 @@ def _merge_parquet_inputs(
 
     With *expands_individuals* (see :func:`expands_individuals`), an
     individual-level input after pair rows is widened onto them instead of
-    refused.
+    refused. Inputs that share no alignment column join on their summary keys,
+    or by the entry (see :func:`fallback_join`), each row of one side taking the
+    row of the other that it matches.
 
     Each position folds :func:`merge_step` over the columns of the frames, which
     decides the keys, the names and the refusals that columns alone settle. The
     merge applies that decision and checks the rows.
+
+    *empty_inputs* holds the declared position and footer names of each input that
+    loaded no rows. It is read once *dfs* is exhausted, so a caller that fills it
+    while *dfs* loads passes the list itself.
+
+    Raises:
+        BroadcastRowsMissing: Another input loaded rows, and an empty input names
+            no identity column and shares no alignment column with the merged
+            inputs (see :func:`_unplaceable_empty_input`).
     """
     it = iter(dfs)
     first = next(it, None)
@@ -803,12 +1034,21 @@ def _merge_parquet_inputs(
         if step.refusal:
             raise MultiInputAlignmentError(step.refusal)
         if step.kind == "widen":
-            merged = _widen_onto_pairs(merged, df_next, step.naming, declared)
+            merged = _widen_onto_pairs(merged, df_next, step, declared)
+        elif step.kind == "entry":
+            merged = _merge_by_entry(merged, df_next, step, declared)
         else:
             merged = _merge_on_shared_keys(
                 merged, df_next, step, declared, cross_join=cross_join
             )
 
+    lost = _unplaceable_empty_input(merged, empty_inputs)
+    if lost is not None:
+        raise BroadcastRowsMissing(
+            f"input {lost} has no rows for this entry, and the other inputs "
+            "join it by the entry or by its summary keys. Their rows cannot be "
+            "written without its columns"
+        )
     if merged.empty:
         return None
     return merged
@@ -865,12 +1105,27 @@ def entry_bounds_filters(
     return filters
 
 
-def _holds_pair_rows(path: Path, load_spec: LoadSpec) -> bool:
-    """Whether the parquet input at *path* is pair-level, read from its schema."""
-    if not isinstance(load_spec, ParquetLoadSpec):
-        return False
-    names = read_parquet_column_names(path)
-    return names is not None and entity_level_of(names) == "pair"
+def _unplaceable_empty_input(
+    merged: pd.DataFrame, empty: Sequence[tuple[int, tuple[str, ...]]]
+) -> int | None:
+    """The first empty input whose columns the merged frame would lose, else ``None``.
+
+    An empty input is lost when its footer names none of ``ID_COLS`` and shares
+    none of ``ALIGN_COLS`` with the columns of the merged inputs. Such an input
+    joins by the entry or by its summary keys, so it adds its columns to every
+    row of the entry.
+
+    Args:
+        merged: The merge of the inputs that loaded rows, named as step 1 names
+            them.
+        empty: Each empty input's declared position and footer names.
+    """
+    merged_columns = frozenset(_column_names(merged))
+    for position, names in empty:
+        columns = frozenset(names)
+        if not columns & ID_COLS and not columns & merged_columns & _ALIGN_COLS:
+            return position
+    return None
 
 
 def load_entry_data(
@@ -886,25 +1141,39 @@ def load_entry_data(
     All manifest entries are parquet. Multiple inputs are merged via
     inner join on shared alignment columns. DataFrames are loaded
     lazily and merged incrementally to minimize peak memory. An input that
-    loads no rows is left out of the merge. *projection* selects the columns
-    each table is read for, and ``None`` reads every column.
+    loads no rows is left out of the merge, unless the merge would then lose its
+    columns. *projection* selects the columns each table is read for, and ``None``
+    reads every column.
 
     Raises:
         PairRowsMissing: Under *expands_individuals*, input 0 is pair-level and
             holds no rows, and a later individual-level input does. Leaving
             input 0 out would merge individual rows for a consumer keyed by
             pair rows.
+        BroadcastRowsMissing: Another input loaded rows, and an input that loaded
+            none names no identity column and shares no alignment column with the
+            merged inputs. Leaving it out would give the entry a frame without the
+            columns that the run's other entries have.
     """
+    empty: list[tuple[int, tuple[str, ...]]] = []
 
     def _load_dfs() -> Iterator[tuple[int, pd.DataFrame]]:
         pair_input_empty = False
         for declared, (path, load_spec) in enumerate(file_specs):
             df = load_parquet_dataframe(path, load_spec, projection=projection)
             if df is None:
+                names = (
+                    read_parquet_column_names(path)
+                    if isinstance(load_spec, ParquetLoadSpec)
+                    else None
+                )
+                if names is not None:
+                    empty.append((declared, names))
                 pair_input_empty = pair_input_empty or (
                     declared == 0
                     and expands_individuals
-                    and _holds_pair_rows(path, load_spec)
+                    and names is not None
+                    and entity_level_of(names) == "pair"
                 )
                 continue
             if pair_input_empty and entity_level_of(_column_names(df)) == "individual":
@@ -915,9 +1184,12 @@ def load_entry_data(
             yield declared, df
 
     merged = _merge_parquet_inputs(
-        _load_dfs(), cross_join=cross_join, expands_individuals=expands_individuals
+        _load_dfs(),
+        cross_join=cross_join,
+        expands_individuals=expands_individuals,
+        empty_inputs=empty,
     )
-    if merged is None or merged.empty:
+    if merged is None:
         return None
     for fn in filters:
         merged = fn(merged)

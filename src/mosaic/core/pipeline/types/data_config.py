@@ -262,7 +262,9 @@ META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)
 
 BIN_START: Final = "bin_start"
 BIN_END: Final = "bin_end"
-SUMMARY_KEYS: frozenset[str] = frozenset({BIN_START, BIN_END, ARENA_COLUMN})
+SUMMARY_KEY_ORDER: Final = (BIN_START, BIN_END, ARENA_COLUMN)
+"""The summary keys in the order a message names them."""
+SUMMARY_KEYS: frozenset[str] = frozenset(SUMMARY_KEY_ORDER)
 """The columns that name a bin or an arena.
 
 A summary names the bin or the arena that its row aggregates, and not an

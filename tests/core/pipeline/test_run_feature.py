@@ -565,7 +565,7 @@ def _setup_continuous(
 
 
 def _written_by_entry(
-    ds: MockDataset, result: Result
+    ds: Dataset | MockDataset, result: Result
 ) -> dict[tuple[str, str], pd.DataFrame]:
     """Each entry's written output for *result*, read through the feature index."""
     index = feature_index(feature_index_path(ds, result.feature)).read()
@@ -1593,7 +1593,7 @@ class _PlainBeta(_EchoBeta):
 
 
 class _JoinsTwo:
-    """Reads two inputs that merge on their shared alignment columns."""
+    """Reads several inputs that merge, and writes ``total``, the sum of two columns."""
 
     name = "test-joins-two"
     version = "0.1"
@@ -1603,7 +1603,7 @@ class _JoinsTwo:
     emits: EmitsLevel = "individual"
     consumed_roots: tuple[str, ...] = ()
 
-    class Inputs(Inputs[Result]):
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
@@ -1641,6 +1641,9 @@ class _JoinsTwo:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         self.apply_calls += 1
         self.columns_seen.append(sorted(str(column) for column in df.columns))
+        return self.combine(df)
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(
             {"frame": df["frame"], "id": df["id"], "total": df["alpha"] + df["beta"]}
         )
@@ -1851,3 +1854,207 @@ def test_a_row_written_before_the_summary_cell_existed_reads_blank(
 
     assert set(adopted["consumed_summary_join"]) == {""}
     assert {read.summary_join for read in reads.values()} == {""}
+
+
+# --- inputs joined by the entry or by a summary key ------------------------------
+
+
+class _EntryValue(_ArenaEcho):
+    """One row per entry, naming nobody: the entry's first frame."""
+
+    name = "test-entry-value"
+    emits: EmitsLevel = "unidentified"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame({"first_frame": [int(df["frame"].min())]})
+
+
+class _ArenaCount(_ArenaEcho):
+    """One row per arena, naming nobody: the rows the arena holds."""
+
+    name = "test-arena-count"
+    emits: EmitsLevel = "unidentified"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df.groupby("arena").size().reset_index(name="count")
+
+
+class _FrameArenaMean(_ArenaEcho):
+    """One row per frame and arena, naming nobody."""
+
+    name = "test-frame-arena-mean"
+    emits: EmitsLevel = "unidentified"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        grouped = df.groupby(["frame", "time", "arena"])["feat_a"]
+        return grouped.mean().reset_index(name="mean")
+
+
+class _ReadsEntryValue(_JoinsTwo):
+    name = "test-reads-entry-value"
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df[["frame", "id", "alpha", "first_frame"]]
+
+
+class _ReadsArenaSummaries(_JoinsTwo):
+    name = "test-reads-arena-summaries"
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"frame": df["frame"], "id": df["id"], "total": df["count"] + df["mean"]}
+        )
+
+
+def test_an_entry_of_a_continuous_group_joins_the_value_of_its_own_sequence(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    for index, sequence in enumerate(("s1", "s2", "s3")):
+        table = track_table("g", sequence, n_rows=10, start_frame=10 * index)
+        add_tracks_table(ds, "convert.v1", table)
+    ds.set_continuous_groups(["g"])
+    alpha = run_feature(ds, _EchoAlpha())
+    first_frames = run_feature(ds, _EntryValue())
+
+    result = run_feature(ds, _ReadsEntryValue(_JoinsTwo.Inputs((alpha, first_frames))))
+
+    written = _written_by_entry(ds, result)
+    assert {key: set(table["first_frame"]) for key, table in written.items()} == {
+        ("g", "s1"): {0},
+        ("g", "s2"): {10},
+        ("g", "s3"): {20},
+    }
+    assert {key: len(table) for key, table in written.items()} == {
+        ("g", "s1"): 10,
+        ("g", "s2"): 10,
+        ("g", "s3"): 10,
+    }
+
+
+def test_the_cell_follows_a_per_arena_summary_joined_by_the_arena(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    for sequence in ("s1", "s2"):
+        table = track_table("g", sequence, n_rows=10).assign(arena="a")
+        add_tracks_table(ds, "convert.v1", table)
+    counts = run_feature(ds, _ArenaCount())
+    means = run_feature(ds, _FrameArenaMean())
+    consumer = _ReadsArenaSummaries(_JoinsTwo.Inputs(("tracks", counts, means)))
+
+    result = run_feature(ds, consumer)
+
+    assert _summary_cells(ds, result) == {"s1": "arena", "s2": "arena"}
+    assert consumer.apply_calls == 2
+    assert all(
+        {"arena", "count", "mean"} <= set(columns)
+        and not {"arena__1", "arena__2"} & set(columns)
+        for columns in consumer.columns_seen
+    )
+
+
+# --- the cell of a position that widens by id ------------------------------------
+
+
+class _PairBins(_ArenaEcho):
+    """Pair summaries per bin and arena, naming both individuals."""
+
+    name = "test-pair-bins"
+    emits: EmitsLevel = "pair"
+    column = "pair_value"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        table = pd.DataFrame(
+            {
+                "id1": [0, 1],
+                "id2": [1, 0],
+                "bin_start": 0,
+                "bin_end": 10,
+                self.column: [1.0, 2.0],
+            }
+        )
+        if self.with_arena:
+            table["arena"] = "a"
+        return table
+
+
+class _PairBinsWithoutArena(_PairBins):
+    name = "test-pair-bins-plain"
+    column = "pair_other"
+    with_arena = False
+
+
+class _IdBins(_ArenaEcho):
+    """One summary row per individual, bin and arena."""
+
+    name = "test-id-bins"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "id": [0, 1],
+                "bin_start": 0,
+                "bin_end": 10,
+                "arena": "a",
+                "id_value": [3.0, 5.0],
+            }
+        )
+
+
+class _WidensBins(_JoinsTwo):
+    name = "test-widens-bins"
+    emits: EmitsLevel = "pair"
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df[["id1", "id2", "pair_value", "id_value__id1", "pair_other"]]
+
+
+def test_the_cell_holds_the_keys_of_the_step_one_join_after_a_widening_by_id(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_table(ds, "convert.v1", track_table("g", "s1", n_rows=10, n_ids=2))
+    consumer = _WidensBins(
+        _JoinsTwo.Inputs(
+            (
+                run_feature(ds, _PairBins()),
+                run_feature(ds, _IdBins()),
+                run_feature(ds, _PairBinsWithoutArena()),
+            )
+        )
+    )
+
+    result = run_feature(ds, consumer)
+
+    assert consumer.apply_calls == 1
+    assert _summary_cells(ds, result) == {"s1": "bin_end,bin_start"}
+    assert {"arena", "arena__id1", "arena__id2"} <= set(consumer.columns_seen[0])
+
+
+class _ReadsArenaCountsAndEntryValue(_JoinsTwo):
+    name = "test-reads-arena-counts-and-entry-value"
+    emits: EmitsLevel = "unidentified"
+
+    def combine(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df[["arena", "count", "first_frame"]]
+
+
+def test_a_step_joins_a_per_arena_collective_with_a_per_entry_collective_by_the_entry(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    table = track_table("g", "s1", n_rows=10, n_ids=2)
+    add_tracks_table(
+        ds, "convert.v1", table.assign(arena=["a", "b"] * (len(table) // 2))
+    )
+    counts = run_feature(ds, _ArenaCount())
+    first_frames = run_feature(ds, _EntryValue())
+    consumer = _ReadsArenaCountsAndEntryValue(_JoinsTwo.Inputs((counts, first_frames)))
+
+    result = run_feature(ds, consumer)
+
+    written = _written_by_entry(ds, result)[("g", "s1")]
+    assert sorted(written["arena"]) == ["a", "b"]
+    assert set(written["first_frame"]) == {0}
+    assert _summary_cells(ds, result) == {"s1": ""}

@@ -221,9 +221,10 @@ def _loaded(load: EntryLoad) -> pd.DataFrame | None:
 
     The footers that *load* carries are known to the load's reads, so a footer
     whose file did not move is not parsed again. That includes the footer of an
-    empty input 0, which the check of its level reads under
-    ``expands_individuals``: it comes from the records too. The neighbor table is
-    no input of the entry, and its footer is read once per entry.
+    empty input at any position, which the loader reads to check its level under
+    ``expands_individuals`` and to place its columns in the merge: it comes from
+    the records too. The neighbor table is no input of the entry, and its footer is
+    read once per entry.
     """
     with memoized_footers(ParquetFooterMemo.from_records(load.footers)):
         filters: list[Callable[[pd.DataFrame], pd.DataFrame]] = []

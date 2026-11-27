@@ -1227,8 +1227,9 @@ def _load_neighbor(
     """Load a neighbor segment with its own filters applied.
 
     A neighbor with an input that holds no rows its merge needs
-    (:class:`~mosaic.core.pipeline.loading.EntryRowsMissing`) gives no context,
-    as an empty neighbor does.
+    (:class:`~mosaic.core.pipeline.loading.EntryRowsMissing`, such as pair rows
+    or the per-entry rows of a broadcast input) gives no context, as an empty
+    neighbor does.
     """
     if file_specs is None:
         return None
@@ -1355,8 +1356,8 @@ def iter_manifest(
     rows down to the loader, for both the entry and its neighbors
     (``loading.expands_individuals``). An entry that loses rows its merge needs
     (:class:`~mosaic.core.pipeline.loading.EntryRowsMissing`, as when input 0
-    then holds no pair rows) is handed to *on_rows_missing* and skipped, and
-    raises without it.
+    then holds no pair rows, or an input that joins by the entry holds none) is
+    handed to *on_rows_missing* and skipped, and raises without it.
     *before_load* is called with each entry's key before its table is read.
     """
     n_entries = len(manifest)

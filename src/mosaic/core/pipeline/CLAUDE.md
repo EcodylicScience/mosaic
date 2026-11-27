@@ -341,6 +341,14 @@ are in `graph/CLAUDE.md`.
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
   output with no shared identity column is refused. `CROSS_JOIN_FEATURES` is the
   closed escape (`tests/core/pipeline/test_multi_input_alignment.py`).
+- Inputs that share no alignment column (`cause == "no_keys"`) join through
+  `fallback_join` (`loading.py`), a pure function of two column sets that `merge_step`
+  calls: on the summary keys both sides have, else by the entry (a cross join, where
+  one side has one row) when a side has none of `ID_COLS`. An unidentified side with a
+  summary key the other lacks refuses, unless the other is unidentified and has none of
+  `SUMMARY_KEYS`: the sides then join by the entry (`FallbackJoin.single`), and the other
+  must have one row, which `_merge_by_entry` checks. A join on summary keys refuses a row
+  that the broadcast side does not cover. A cross-join consumer keeps its refusal.
 - `expands_individuals` (`loading.py`) is the one gate for widening an individual-level
   input onto the pair rows of a pair-level input 0, as `<col>__id1` and `<col>__id2`:
   `emits` of `as-input` or `pair`, outside `CROSS_JOIN_FEATURES`. `run_feature`,

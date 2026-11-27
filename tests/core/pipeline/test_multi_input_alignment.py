@@ -39,14 +39,16 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline import alignment_verdict, entity_level_of
-from mosaic.core.pipeline.types import LoadSpec, ParquetLoadSpec
+from mosaic.core.pipeline import alignment_verdict, entity_level_of, loading
+from mosaic.core.pipeline.types import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline.loading import (
+    BroadcastRowsMissing,
     EntryRowsMissing,
     MultiInputAlignmentError,
     PairRowsMissing,
     _merge_parquet_inputs,
     entry_summary_join,
+    fallback_join,
     load_entry_data,
     merge_naming,
     merge_step,
@@ -399,6 +401,139 @@ def test_an_empty_pair_input_beside_individual_rows_is_refused(tmp_path: Path) -
     assert isinstance(raised.value, EntryRowsMissing)
 
     assert load_entry_data(_specs(tmp_path, tables)) is not None
+
+
+# --- an input that loads no rows for the entry -----------------------------------
+
+
+def _collective(rows: int = 1) -> pd.DataFrame:
+    """A per-entry table: no identity column and no alignment column."""
+    return pd.DataFrame({"total": [float(i) for i in range(rows)]})
+
+
+def _the_broadcast_message(position: int) -> str:
+    return (
+        f"input {position} has no rows for this entry, and the other inputs "
+        "join it by the entry or by its summary keys. Their rows cannot be "
+        "written without its columns"
+    )
+
+
+@pytest.mark.parametrize("position", [0, 1, 2], ids=lambda p: f"input-{p}")
+def test_an_empty_input_without_identity_or_alignment_columns_is_refused(
+    tmp_path: Path, position: int
+) -> None:
+    """Without its columns the entry's frame differs from the other entries'."""
+    per_frame = pd.DataFrame({"frame": [0], "order": [0.5]})
+    tables = [_individuals([(0, 0), (0, 1)]), per_frame]
+    tables.insert(position, _collective().iloc[0:0])
+
+    with pytest.raises(BroadcastRowsMissing) as raised:
+        _ = load_entry_data(_specs(tmp_path, tables))
+
+    assert str(raised.value) == _the_broadcast_message(position)
+    assert isinstance(raised.value, EntryRowsMissing)
+    assert not isinstance(raised.value, PairRowsMissing)
+
+
+def test_the_first_of_two_empty_broadcast_inputs_is_named(tmp_path: Path) -> None:
+    tables = [
+        _individuals([(0, 0)]),
+        _collective().iloc[0:0],
+        pd.DataFrame({"other": [1.0]}).iloc[0:0],
+    ]
+
+    with pytest.raises(BroadcastRowsMissing) as raised:
+        _ = load_entry_data(_specs(tmp_path, tables))
+
+    assert str(raised.value) == _the_broadcast_message(1)
+
+
+@pytest.mark.parametrize(
+    "empty",
+    [
+        pd.DataFrame({"frame": [0], "time": [0.0], "order": [0.5]}),
+        pd.DataFrame({"perspective": [0], "order": [0.5]}),
+        pd.DataFrame({"id": [0], "order": [0.5]}),
+        pd.DataFrame({"id1": [0], "id2": [1], "order": [0.5]}),
+    ],
+    ids=["frame-and-time", "perspective", "id", "pair-id"],
+)
+def test_an_empty_input_that_shares_an_alignment_column_or_names_nobody_else_is_left_out(
+    tmp_path: Path, empty: pd.DataFrame
+) -> None:
+    """The input has an identity or joins on a key, so the rows stay as they were."""
+    present = _frame(["frame", "time", "id", "perspective", "speed"])
+    tables = [present, empty.iloc[0:0]]
+
+    merged = load_entry_data(_specs(tmp_path, tables))
+
+    assert merged is not None
+    assert list(merged.columns) == list(present.columns)
+
+
+def test_the_alignment_columns_are_those_of_the_merged_inputs(tmp_path: Path) -> None:
+    """A key that only an earlier input names is shared with the union."""
+    keyed = pd.DataFrame({"frame": [0, 1], "order": [0.5, 0.7]})
+    scalar = pd.DataFrame({"total": [1.0]})
+    empty = pd.DataFrame({"frame": [0], "spread": [1.0]}).iloc[0:0]
+
+    merged = load_entry_data(_specs(tmp_path, [keyed, scalar, empty]))
+
+    assert merged is not None
+    assert {"order", "total"} <= set(merged.columns)
+
+    again = tmp_path / "again"
+    again.mkdir()
+    with pytest.raises(BroadcastRowsMissing):
+        _ = load_entry_data(_specs(again, [scalar, pd.DataFrame({"x": [1.0]}), empty]))
+
+
+def test_an_empty_broadcast_input_beside_no_loaded_rows_is_left_out(
+    tmp_path: Path,
+) -> None:
+    """With no other input loaded the entry has no rows at all, as before."""
+    tables = [_individuals([(0, 0)]).iloc[0:0], _collective().iloc[0:0]]
+
+    assert load_entry_data(_specs(tmp_path, tables)) is None
+
+
+def test_an_empty_broadcast_input_is_refused_when_the_loaded_inputs_join_to_no_rows(
+    tmp_path: Path,
+) -> None:
+    """The loaded inputs hold rows, though their join is empty, so the loss counts."""
+    first = pd.DataFrame({"frame": [0, 1], "speed": [1.0, 2.0]})
+    second = pd.DataFrame({"frame": [5, 6], "order": [0.5, 0.7]})
+    tables = [first, second, _collective().iloc[0:0]]
+
+    with pytest.raises(BroadcastRowsMissing) as raised:
+        _ = load_entry_data(_specs(tmp_path, tables))
+
+    assert str(raised.value) == _the_broadcast_message(2)
+
+
+def test_an_empty_input_whose_footer_cannot_be_read_is_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    present = _individuals([(0, 0)])
+    specs = _specs(tmp_path, [present, _collective().iloc[0:0]])
+
+    def unknown(_path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(loading, "read_parquet_column_names", unknown)
+
+    merged = load_entry_data(specs)
+
+    assert merged is not None
+    assert list(merged.columns) == list(present.columns)
+
+
+def test_an_input_that_is_not_a_parquet_is_left_out(tmp_path: Path) -> None:
+    specs = _specs(tmp_path, [_individuals([(0, 0)])])
+    specs.append((tmp_path / "model.joblib", JoblibLoadSpec()))
+
+    assert load_entry_data(specs) is not None
 
 
 # --- the merge where no summary key is shared ------------------------------------
@@ -1039,7 +1174,7 @@ def test_merge_step_widens_on_the_shared_order_column_without_summary_keys() -> 
     assert "arena__id1" in step.naming.columns
 
 
-def test_merge_step_refuses_a_widening_that_shares_no_order_column() -> None:
+def test_merge_step_widens_by_id_where_no_order_column_is_shared() -> None:
     step = merge_step(
         _PAIR,
         ["step", "id", "speed"],
@@ -1049,10 +1184,36 @@ def test_merge_step_refuses_a_widening_that_shares_no_order_column() -> None:
     )
 
     assert step.kind == "widen"
-    assert step.refusal == (
-        "cannot merge input 3: it shares no order column (frame or time) with "
-        "the pair rows"
+    assert step.keys == ("id",)
+    assert step.summary_keys == ()
+    assert step.refusal == ""
+    assert {"speed__id1", "speed__id2", "step__id1"} <= step.naming.columns
+
+
+def test_merge_step_widens_by_id_and_the_summary_keys_both_sides_have() -> None:
+    pair_summary = ["id1", "id2", "arena", "bin_start", "bin_end", "dist"]
+    individual = ["id", "arena", "bin_start", "bin_end", "speed"]
+
+    step = merge_step(
+        pair_summary, individual, 1, cross_join=False, expands_individuals=True
     )
+
+    assert step.kind == "widen"
+    assert step.keys == ("id", "bin_start", "bin_end", "arena")
+    assert step.summary_keys == ()
+    assert {"arena__id1", "bin_start__id2", "speed__id1"} <= step.naming.columns
+
+
+def test_merge_step_widens_by_id_on_the_summary_keys_that_both_sides_have() -> None:
+    step = merge_step(
+        ["id1", "id2", "bin_start", "bin_end", "arena"],
+        ["id", "arena", "speed"],
+        1,
+        cross_join=False,
+        expands_individuals=True,
+    )
+
+    assert step.keys == ("id", "arena")
 
 
 def test_merge_step_refuses_levels_with_the_widening_hint() -> None:
@@ -1071,18 +1232,17 @@ def test_merge_step_refuses_levels_with_the_widening_hint() -> None:
     )
 
 
-def test_merge_step_refuses_inputs_that_share_no_alignment_column() -> None:
+def test_a_cross_join_consumer_refuses_inputs_that_share_no_alignment_column() -> None:
     columns = ["bin_start", "bin_end", "speed"]
-    for cross_join in (False, True):
-        step = merge_step(
-            columns,
-            ["bin_start", "bin_end", "turn"],
-            1,
-            cross_join=cross_join,
-            expands_individuals=False,
-        )
-        assert step.refusal == ("cannot merge input 1: no shared alignment columns")
-        assert step.summary_keys == ()
+    step = merge_step(
+        columns,
+        ["bin_start", "bin_end", "turn"],
+        1,
+        cross_join=True,
+        expands_individuals=False,
+    )
+    assert step.refusal == ("cannot merge input 1: no shared alignment columns")
+    assert step.summary_keys == ()
 
 
 def test_an_alignment_verdict_names_its_cause() -> None:
@@ -1243,3 +1403,761 @@ def test_an_unreadable_input_is_left_out(tmp_path: Path) -> None:
     cell = entry_summary_join(specs, cross_join=False, expands_individuals=False)
 
     assert cell == ""
+
+
+# --- inputs that share no alignment column ---------------------------------------
+
+
+def _per_entry(payload: str, value: float = 7.0) -> pd.DataFrame:
+    """A collective with one row for the entry, naming nobody."""
+    return pd.DataFrame({"group": ["g"], "sequence": ["s"], payload: [value]})
+
+
+def _binned_per_entry(
+    payload: str, *, edges: tuple[float, ...] = (0.0, 10.0, 20.0)
+) -> pd.DataFrame:
+    """A collective with one row per bin, naming nobody."""
+    starts, ends = edges[:-1], edges[1:]
+    return pd.DataFrame(
+        {
+            "group": "g",
+            "sequence": "s",
+            "bin_start": list(starts),
+            "bin_end": list(ends),
+            payload: [100.0 + index for index in range(len(starts))],
+        }
+    )
+
+
+def _per_arena(payload: str) -> pd.DataFrame:
+    """A summary with one row per arena, naming nobody."""
+    return pd.DataFrame(
+        {
+            "group": "g",
+            "sequence": "s",
+            "arena": [0, 1],
+            payload: [500.0, 600.0],
+        }
+    )
+
+
+def _merged(*tables: pd.DataFrame) -> pd.DataFrame:
+    merged = _merge_parquet_inputs(iter(enumerate(tables)))
+    assert merged is not None
+    return merged
+
+
+def _refusal(*tables: pd.DataFrame) -> str:
+    with pytest.raises(MultiInputAlignmentError) as raised:
+        _ = _merge_parquet_inputs(iter(enumerate(tables)))
+    return str(raised.value)
+
+
+_JOINED_BY_THE_ENTRY = (
+    "cannot merge input 1: it shares no key with the inputs before it and joins "
+    "by the entry, and both sides have more than one row. An input joined by the "
+    "entry has one row per entry, or one per bin or arena when both sides have "
+    "bin_start and bin_end or arena"
+)
+
+
+def test_per_frame_rows_take_the_value_of_a_per_entry_collective() -> None:
+    individuals = _per_id(["speed"])
+
+    merged = _merged(individuals, _per_entry("pooled"))
+
+    assert list(merged["frame"]) == list(individuals["frame"])
+    assert list(merged["id"]) == list(individuals["id"])
+    assert list(merged["speed"]) == list(individuals["speed"])
+    assert set(merged["pooled"]) == {7.0}
+    assert not {column for column in merged.columns if "__" in column}
+
+
+def test_pair_rows_take_the_value_of_a_per_entry_collective() -> None:
+    pairs = _per_pair(["ego"])
+
+    merged = _merged(pairs, _per_entry("pooled"))
+
+    assert len(merged) == len(pairs)
+    assert set(merged["pooled"]) == {7.0}
+
+
+def test_two_per_entry_collectives_number_a_clashing_payload_column() -> None:
+    merged = _merged(_per_entry("total", 1.0), _per_entry("total", 2.0))
+
+    assert list(merged.columns) == ["group", "sequence", "total", "total__1"]
+    assert list(merged["total"]) == [1.0]
+    assert list(merged["total__1"]) == [2.0]
+
+
+def test_a_per_entry_collective_joins_a_per_frame_collective_from_either_side() -> None:
+    collective = _per_frame(["order"])
+
+    after = _merged(collective, _per_entry("pooled"))
+    before = _merged(_per_entry("pooled"), collective)
+
+    assert list(after["frame"]) == [0, 1, 2]
+    assert list(before["frame"]) == [0, 1, 2]
+    assert set(after["pooled"]) == {7.0}
+    assert set(before["pooled"]) == {7.0}
+
+
+def test_a_per_id_summary_takes_the_value_of_a_per_entry_collective() -> None:
+    summary = _binned_per_id("speed").drop(columns=["bin_start", "bin_end"])
+    summary = summary.drop_duplicates("id")
+
+    merged = _merged(summary, _per_entry("pooled"))
+
+    assert list(merged["id"]) == [0, 1]
+    assert set(merged["pooled"]) == {7.0}
+
+
+def test_a_binned_individual_summary_joins_a_binned_sequence_summary_on_the_bin() -> (
+    None
+):
+    individuals = _binned_per_id("speed")
+
+    merged = _merged(individuals, _binned_per_entry("total"))
+
+    assert len(merged) == 4
+    assert list(merged["speed"]) == list(individuals["speed"])
+    assert list(merged["total"]) == [100.0, 101.0, 100.0, 101.0]
+    assert not {column for column in merged.columns if "__" in column}
+
+
+def test_a_sequence_summary_row_that_matches_no_bin_drops() -> None:
+    wider = _binned_per_entry("total", edges=(0.0, 10.0, 20.0, 30.0))
+
+    merged = _merged(_binned_per_id("speed"), wider)
+
+    assert len(merged) == 4
+    assert set(merged["bin_end"]) == {10.0, 20.0}
+
+
+def test_summaries_of_different_bin_widths_refuse_on_coverage() -> None:
+    message = _refusal(
+        _binned_per_id("speed"), _binned_per_entry("total", edges=(0.0, 15.0, 30.0))
+    )
+
+    assert message == (
+        "cannot merge input 1: 4 rows of the inputs before it have no row with the "
+        "same bin_end, bin_start in input 1, the first at bin_end=10.0, bin_start=0.0"
+    )
+
+
+def test_a_row_that_matches_no_summary_row_refuses_and_is_not_dropped() -> None:
+    message = _refusal(
+        _binned_per_id("speed"),
+        _binned_per_entry("total", edges=(0.0, 10.0)),
+    )
+
+    assert message == (
+        "cannot merge input 1: 2 rows of the inputs before it have no row with the "
+        "same bin_end, bin_start in input 1, the first at bin_end=20.0, bin_start=10.0"
+    )
+
+
+def test_the_broadcast_side_of_two_summaries_unique_on_the_keys_is_the_incoming_one() -> (
+    None
+):
+    message = _refusal(
+        _binned_per_entry("total", edges=(0.0, 10.0, 20.0)),
+        _binned_per_entry("mean", edges=(0.0, 10.0)).assign(sequence="s"),
+    )
+
+    assert message == (
+        "cannot merge input 1: 1 rows of the inputs before it have no row with the "
+        "same bin_end, bin_start in input 1, the first at bin_end=20.0, bin_start=10.0"
+    )
+
+
+def test_a_sequence_summary_with_a_blank_bin_refuses_before_the_join() -> None:
+    blank = _binned_per_entry("total")
+    blank.loc[len(blank)] = ["g", "s", float("nan"), float("nan"), 0.0]
+
+    message = _refusal(_binned_per_id("speed"), blank)
+
+    assert message == (
+        "cannot merge input 1: bin_end is missing in 1 rows of input 1, and a "
+        "summary key names a bin or an arena"
+    )
+
+
+def test_per_frame_rows_with_arena_join_a_per_arena_summary_on_the_arena() -> None:
+    individuals = _per_id(["speed"]).assign(arena=[0, 1] * 3)
+
+    merged = _merged(individuals, _per_arena("total"))
+
+    assert len(merged) == 6
+    assert list(merged["total"]) == [500.0, 600.0] * 3
+    assert "arena__1" not in merged.columns
+
+
+def test_per_frame_rows_without_arena_refuse_a_per_arena_summary() -> None:
+    message = _refusal(_per_id(["speed"]), _per_arena("total"))
+
+    assert message == (
+        "cannot merge input 1: input 1 names nobody and has arena, which the "
+        "inputs before it lacks. Its arena cannot be repeated onto rows it does "
+        "not describe"
+    )
+
+
+def test_a_per_bin_table_refuses_to_join_per_frame_rows() -> None:
+    message = _refusal(_per_id(["speed"]), _binned_per_entry("total"))
+
+    assert message == (
+        "cannot merge input 1: input 1 names nobody and has bin_start, which the "
+        "inputs before it lacks. Its bin_start cannot be repeated onto rows it "
+        "does not describe"
+    )
+
+
+def test_a_per_frame_table_without_the_bin_refuses_a_per_bin_collective_before_it() -> (
+    None
+):
+    message = _refusal(_binned_per_entry("total"), _per_id(["speed"]))
+
+    assert message == (
+        "cannot merge input 1: the inputs before it names nobody and has "
+        "bin_start, which input 1 lacks. Its bin_start cannot be repeated onto "
+        "rows it does not describe"
+    )
+
+
+def test_a_per_entry_collective_with_one_row_per_subgroup_refuses() -> None:
+    subgroups = pd.DataFrame(
+        {
+            "group": "g",
+            "sequence": "s",
+            "subgroup": ["left", "right"],
+            "total": [1.0, 2.0],
+        }
+    )
+
+    assert _refusal(_per_id(["speed"]), subgroups) == _JOINED_BY_THE_ENTRY
+
+
+def test_two_inputs_with_many_rows_that_share_no_key_refuse() -> None:
+    left = _per_frame(["order"], frame=False, time=False)
+    right = _per_frame(["count"], frame=False, time=False)
+
+    assert _refusal(left, right) == _JOINED_BY_THE_ENTRY
+
+
+def test_an_individual_summary_and_a_pair_summary_refuse_as_before() -> None:
+    pair_summary = _binned_per_entry("total").assign(id1=0, id2=1)
+
+    message = _refusal(_binned_per_id("speed"), pair_summary)
+
+    assert "different entity levels" in message
+
+
+def test_a_nan_arena_refuses_before_the_join() -> None:
+    individuals = _per_id(["speed"]).assign(arena=[0.0, float("nan")] * 3)
+
+    message = _refusal(individuals, _per_arena("total"))
+
+    assert message == (
+        "cannot merge input 1: arena is missing in 3 rows of the inputs before "
+        "it, and a summary key names a bin or an arena"
+    )
+
+
+def test_a_cross_join_consumer_does_not_join_by_the_entry() -> None:
+    with pytest.raises(MultiInputAlignmentError, match="no shared alignment columns"):
+        _ = _merge_parquet_inputs(
+            iter([(0, _per_id(["speed"])), (1, _per_entry("pooled"))]),
+            cross_join=True,
+        )
+
+
+def test_the_entry_join_keeps_the_merged_sides_row_order() -> None:
+    individuals = _per_id(["speed"]).iloc[[4, 1, 5, 0, 3, 2]].reset_index(drop=True)
+
+    merged = _merged(individuals, _per_entry("pooled"))
+
+    assert list(merged["speed"]) == list(individuals["speed"])
+
+
+# --- the decision of a fallback position ------------------------------------------
+
+
+def test_fallback_join_takes_the_summary_keys_that_both_sides_have() -> None:
+    join = fallback_join(
+        ["id", "bin_start", "bin_end", "speed"], ["bin_start", "bin_end", "total"]
+    )
+
+    assert join.kind == "summary"
+    assert join.keys == ("bin_end", "bin_start")
+    assert join.side is None
+    assert join.unshared == ()
+
+
+def test_fallback_join_joins_by_the_entry_where_one_side_names_nobody() -> None:
+    for merged, incoming in (
+        (["frame", "id", "speed"], ["group", "sequence", "pooled"]),
+        (["group", "sequence", "pooled"], ["frame", "id", "speed"]),
+        (["frame", "time", "order"], ["group", "sequence", "pooled"]),
+    ):
+        join = fallback_join(merged, incoming)
+        assert join.kind == "entry"
+        assert join.keys == ()
+        assert join.side is None
+        assert join.unshared == ()
+
+
+def test_fallback_join_has_no_kind_where_both_sides_name_somebody() -> None:
+    join = fallback_join(["id1", "speed"], ["id2", "turn"])
+
+    assert join.kind is None
+    assert join.keys == ()
+    assert join.side is None
+    assert join.unshared == ()
+
+
+def test_fallback_join_refuses_a_summary_key_that_the_other_side_lacks() -> None:
+    join = fallback_join(["frame", "id", "speed"], ["arena", "total"])
+
+    assert join.kind is None
+    assert join.keys == ()
+    assert join.side == "incoming"
+    assert join.unshared == ("arena",)
+
+
+def test_fallback_join_names_the_unidentified_side_of_a_refusal() -> None:
+    join = fallback_join(["arena", "total"], ["frame", "id", "speed"])
+
+    assert join.kind is None
+    assert join.side == "merged"
+    assert join.unshared == ("arena",)
+
+
+def test_fallback_join_refuses_before_it_joins_a_shared_summary_key() -> None:
+    join = fallback_join(
+        ["id", "arena", "speed"], ["arena", "bin_start", "bin_end", "total"]
+    )
+
+    assert join.kind is None
+    assert join.keys == ()
+    assert join.side == "incoming"
+    assert join.unshared == ("bin_start", "bin_end")
+
+
+def test_fallback_join_lists_every_summary_key_that_the_other_side_lacks() -> None:
+    join = fallback_join(
+        ["frame", "id", "speed"], ["arena", "bin_end", "bin_start", "total"]
+    )
+
+    assert join.side == "incoming"
+    assert join.unshared == ("bin_start", "bin_end", "arena")
+
+
+def test_fallback_join_reads_column_names_alone() -> None:
+    frame = _binned_per_id("speed")
+
+    from_names = fallback_join(
+        frozenset(frame.columns), iter(["bin_start", "bin_end", "total"])
+    )
+
+    assert from_names == fallback_join(list(frame.columns), ("bin_start", "bin_end"))
+
+
+def test_merge_step_joins_unequal_summaries_on_the_summary_keys() -> None:
+    step = merge_step(
+        _BINNED,
+        ["group", "sequence", "bin_start", "bin_end", "total"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.kind == "summary"
+    assert step.keys == ("bin_end", "bin_start")
+    assert step.summary_keys == ()
+    assert step.refusal == ""
+    assert dict(step.naming.renamed) == {}
+    assert set(step.naming.dropped) == {"group", "sequence"}
+    assert step.naming.columns == frozenset([*_BINNED, "total"])
+
+
+def test_merge_step_joins_by_the_entry_and_numbers_a_clashing_column() -> None:
+    step = merge_step(
+        ["frame", "id", "group", "total"],
+        ["group", "sequence", "total", "pooled"],
+        2,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.kind == "entry"
+    assert step.keys == ()
+    assert step.refusal == ""
+    assert dict(step.naming.renamed) == {"total": "total__2"}
+    assert step.naming.dropped == ("group",)
+    assert step.naming.columns == frozenset(
+        ["frame", "id", "group", "total", "sequence", "total__2", "pooled"]
+    )
+
+
+def test_merge_step_refuses_what_the_fallback_refuses() -> None:
+    step = merge_step(
+        ["frame", "id", "speed"],
+        ["arena", "total"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.refusal == (
+        "cannot merge input 1: input 1 names nobody and has arena, which the "
+        "inputs before it lacks. Its arena cannot be repeated onto rows it does "
+        "not describe"
+    )
+
+
+def test_merge_step_refuses_levels_before_any_fallback() -> None:
+    step = merge_step(
+        ["id", "bin_start", "bin_end", "speed"],
+        ["id1", "id2", "bin_start", "bin_end", "total"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert "different entity levels" in step.refusal
+
+
+def test_a_widening_consumer_joins_a_per_entry_collective_by_the_entry() -> None:
+    step = merge_step(
+        ["frame", "perspective", "id1", "id2", "ego"],
+        ["group", "sequence", "pooled"],
+        1,
+        cross_join=False,
+        expands_individuals=True,
+    )
+
+    assert step.kind == "entry"
+
+
+# --- the cell follows the fallback positions --------------------------------------
+
+
+def test_a_fallback_position_joins_no_summary_key_but_carries_its_columns() -> None:
+    cell = summary_join_cell(
+        [
+            ["frame", "id", "arena", "speed"],
+            ["arena", "total"],
+            ["frame", "time", "arena", "mean"],
+        ],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "arena"
+
+
+def test_a_fallback_position_alone_adds_no_summary_key() -> None:
+    cell = summary_join_cell(
+        [["frame", "id", "arena", "speed"], ["arena", "total"]],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == ""
+
+
+def test_a_per_entry_position_hands_its_columns_to_the_next_position() -> None:
+    cell = summary_join_cell(
+        [
+            ["frame", "id", "speed"],
+            ["group", "sequence", "pooled"],
+            ["frame", "id", "arena", "count"],
+            ["frame", "id", "arena", "share"],
+        ],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "arena"
+
+
+# --- two unidentified tables joined by the entry ---------------------------------
+
+
+def _per_frame_per_arena(payload: str, *, frames: int = 3) -> pd.DataFrame:
+    """A collective with one row per frame and arena, naming nobody."""
+    steps = [step for step in range(frames) for _ in (0, 1)]
+    return pd.DataFrame(
+        {
+            "frame": steps,
+            "time": [step / 30 for step in steps],
+            "group": "g",
+            "sequence": "s",
+            "arena": [0, 1] * frames,
+            payload: [float(index) for index in range(len(steps))],
+        }
+    )
+
+
+def _first_input_refusal(unshared: str, *, side: str, other: str) -> str:
+    return (
+        f"cannot merge input 1: {side} names nobody and has {unshared}, which "
+        f"{other} lacks. Its {unshared} cannot be repeated onto rows it does not "
+        "describe"
+    )
+
+
+_INPUT = "input 1"
+_BEFORE = "the inputs before it"
+
+
+def test_a_per_frame_per_arena_table_takes_the_value_of_a_one_row_collective() -> None:
+    arenas = _per_frame_per_arena("mean")
+
+    merged = _merged(arenas, _per_entry("pooled"))
+
+    assert list(merged["frame"]) == list(arenas["frame"])
+    assert list(merged["arena"]) == list(arenas["arena"])
+    assert list(merged["mean"]) == list(arenas["mean"])
+    assert set(merged["pooled"]) == {7.0}
+    assert not {column for column in merged.columns if "__" in column}
+
+
+def test_a_one_row_collective_beside_a_per_frame_per_arena_table_gives_it_the_value() -> (
+    None
+):
+    arenas = _per_frame_per_arena("mean")
+
+    merged = _merged(_per_entry("pooled"), arenas)
+
+    assert list(merged["frame"]) == list(arenas["frame"])
+    assert list(merged["arena"]) == list(arenas["arena"])
+    assert list(merged["mean"]) == list(arenas["mean"])
+    assert set(merged["pooled"]) == {7.0}
+    assert not {column for column in merged.columns if "__" in column}
+
+
+def test_a_binned_per_entry_table_takes_the_value_of_a_one_row_collective() -> None:
+    binned = _binned_per_entry("total")
+
+    merged = _merged(binned, _per_entry("pooled"))
+
+    assert list(merged["bin_start"]) == list(binned["bin_start"])
+    assert list(merged["total"]) == list(binned["total"])
+    assert set(merged["pooled"]) == {7.0}
+
+
+def test_a_one_row_collective_beside_a_binned_per_entry_table_gives_it_the_value() -> (
+    None
+):
+    binned = _binned_per_entry("total")
+
+    merged = _merged(_per_entry("pooled"), binned)
+
+    assert list(merged["bin_start"]) == list(binned["bin_start"])
+    assert list(merged["bin_end"]) == list(binned["bin_end"])
+    assert list(merged["total"]) == list(binned["total"])
+    assert set(merged["pooled"]) == {7.0}
+
+
+def test_a_two_row_keyless_table_beside_a_per_arena_collective_refuses() -> None:
+    keyless = _per_frame(["order"], frame=False, time=False, frames=(0, 1))
+
+    message = _refusal(keyless, _per_arena("total"))
+
+    assert message == _first_input_refusal("arena", side=_INPUT, other=_BEFORE)
+
+
+def test_a_per_arena_collective_beside_a_two_row_keyless_table_refuses() -> None:
+    keyless = _per_frame(["order"], frame=False, time=False, frames=(0, 1))
+
+    message = _refusal(_per_arena("total"), keyless)
+
+    assert message == _first_input_refusal("arena", side=_BEFORE, other=_INPUT)
+
+
+def test_a_one_bin_table_beside_a_many_row_collective_without_bins_refuses() -> None:
+    one_bin = _binned_per_entry("total", edges=(0.0, 10.0))
+    keyless = _per_frame(["order"], frame=False, time=False)
+    assert len(one_bin) == 1
+
+    message = _refusal(keyless, one_bin)
+
+    assert message == _first_input_refusal("bin_start", side=_INPUT, other=_BEFORE)
+
+
+def test_a_many_row_collective_without_bins_beside_a_one_bin_table_refuses() -> None:
+    one_bin = _binned_per_entry("total", edges=(0.0, 10.0))
+    keyless = _per_frame(["order"], frame=False, time=False)
+
+    message = _refusal(one_bin, keyless)
+
+    assert message == _first_input_refusal("bin_start", side=_BEFORE, other=_INPUT)
+
+
+def test_a_one_row_per_id_summary_beside_a_per_arena_collective_refuses() -> None:
+    per_id = pd.DataFrame(
+        {"group": ["g"], "sequence": ["s"], "id": [0], "speed": [1.0]}
+    )
+
+    message = _refusal(per_id, _per_arena("total"))
+
+    assert message == _first_input_refusal("arena", side=_INPUT, other=_BEFORE)
+
+
+def test_a_binned_collective_beside_a_per_arena_collective_refuses() -> None:
+    message = _refusal(_binned_per_entry("total"), _per_arena("count"))
+
+    assert message == _first_input_refusal("bin_start", side=_BEFORE, other=_INPUT)
+
+
+def test_a_one_bin_table_beside_a_one_arena_table_refuses_in_both_orders() -> None:
+    one_bin = _binned_per_entry("total", edges=(0.0, 10.0))
+    one_arena = _per_arena("count").iloc[:1].reset_index(drop=True)
+
+    before = _refusal(one_bin, one_arena)
+    after = _refusal(one_arena, one_bin)
+
+    assert before == _first_input_refusal("bin_start", side=_BEFORE, other=_INPUT)
+    assert after == _first_input_refusal("arena", side=_BEFORE, other=_INPUT)
+
+
+def test_a_per_arena_collective_beside_a_binned_collective_refuses() -> None:
+    message = _refusal(_per_arena("count"), _binned_per_entry("total"))
+
+    assert message == _first_input_refusal("arena", side=_BEFORE, other=_INPUT)
+
+
+def test_fallback_join_hands_an_unidentified_side_to_the_entry_beside_a_keyless_one() -> (
+    None
+):
+    for merged, incoming, side, single in (
+        (
+            ["frame", "time", "arena"],
+            ["group", "sequence", "pooled"],
+            "merged",
+            "incoming",
+        ),
+        (
+            ["group", "sequence", "pooled"],
+            ["frame", "time", "arena"],
+            "incoming",
+            "merged",
+        ),
+        (["bin_start", "bin_end", "total"], ["pooled"], "merged", "incoming"),
+        (["pooled"], ["bin_start", "bin_end", "total"], "incoming", "merged"),
+    ):
+        join = fallback_join(merged, incoming)
+        assert join.kind == "entry"
+        assert join.keys == ()
+        assert join.side == side
+        assert join.unshared
+        assert join.single == single
+
+
+def test_fallback_join_names_the_keys_of_the_side_that_the_entry_join_carries() -> None:
+    join = fallback_join(["arena", "bin_end", "bin_start", "total"], ["pooled"])
+
+    assert join.kind == "entry"
+    assert join.side == "merged"
+    assert join.unshared == ("bin_start", "bin_end", "arena")
+    assert join.single == "incoming"
+
+
+def test_fallback_join_keeps_the_refusal_where_the_other_side_is_identified() -> None:
+    join = fallback_join(["id", "speed"], ["arena", "total"])
+
+    assert join.kind is None
+    assert join.side == "incoming"
+    assert join.unshared == ("arena",)
+    assert join.single is None
+
+
+def test_fallback_join_keeps_the_refusal_where_the_other_side_has_a_summary_key() -> (
+    None
+):
+    join = fallback_join(["bin_start", "bin_end", "total"], ["arena", "count"])
+
+    assert join.kind is None
+    assert join.side == "merged"
+    assert join.unshared == ("bin_start", "bin_end")
+    assert join.single is None
+
+
+def test_fallback_join_names_no_single_side_where_it_has_no_unshared_key() -> None:
+    for merged, incoming in (
+        (["frame", "id", "speed"], ["group", "sequence", "pooled"]),
+        (["group", "sequence", "pooled"], ["group", "sequence", "count"]),
+        (["id", "bin_start", "bin_end"], ["bin_start", "bin_end", "total"]),
+        (["id1", "speed"], ["id2", "turn"]),
+    ):
+        assert fallback_join(merged, incoming).single is None
+
+
+def test_merge_step_carries_the_row_requirement_of_an_entry_join() -> None:
+    step = merge_step(
+        ["frame", "time", "arena", "mean"],
+        ["group", "sequence", "pooled"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.kind == "entry"
+    assert step.keys == ()
+    assert step.summary_keys == ()
+    assert step.refusal == ""
+    assert step.single == "incoming"
+    assert step.single_refusal == _first_input_refusal(
+        "arena", side=_BEFORE, other=_INPUT
+    )
+    assert step.naming.columns == frozenset(
+        ["frame", "time", "arena", "mean", "group", "sequence", "pooled"]
+    )
+
+
+def test_merge_step_names_the_incoming_side_of_an_entry_join_in_its_text() -> None:
+    step = merge_step(
+        ["group", "sequence", "pooled"],
+        ["bin_start", "bin_end", "total"],
+        2,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.single == "merged"
+    assert step.single_refusal == (
+        "cannot merge input 2: input 2 names nobody and has bin_start, which the "
+        "inputs before it lacks. Its bin_start cannot be repeated onto rows it "
+        "does not describe"
+    )
+
+
+def test_merge_step_has_no_row_requirement_elsewhere() -> None:
+    step = merge_step(
+        ["frame", "id", "speed"],
+        ["group", "sequence", "pooled"],
+        1,
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert step.kind == "entry"
+    assert step.single is None
+    assert step.single_refusal == ""
+
+
+def test_the_cell_records_nothing_for_a_position_joined_by_the_entry() -> None:
+    cell = summary_join_cell(
+        [
+            ["group", "sequence", "pooled"],
+            ["group", "sequence", "arena", "total"],
+            ["id", "bin_start", "bin_end", "arena", "speed"],
+            ["id", "bin_start", "bin_end", "mean"],
+        ],
+        cross_join=False,
+        expands_individuals=False,
+    )
+
+    assert cell == "bin_end,bin_start"

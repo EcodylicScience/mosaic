@@ -18,15 +18,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import entry_task, parquet_reader
-from mosaic.core.pipeline.loading import MultiInputAlignmentError
+from mosaic.core.pipeline.loading import MultiInputAlignmentError, load_entry_data
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
     InputStream,
+    LoadSpec,
+    ParquetLoadSpec,
     Result,
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel
@@ -291,3 +294,142 @@ def test_a_fit_skips_an_entry_without_pair_rows_and_apply_reports_it(
 
     assert feature.fitted_entries == [make_entry_key("g", "s1")]
     assert result.failed_entries == (make_entry_key("g", EMPTY_SEQUENCE),)
+
+
+# --- widening by id where no order column is shared -----------------------------
+
+_BINS: Final = ((0, 10), (10, 20))
+
+
+def _merged_by_entry(tmp_path: Path, *tables: pd.DataFrame) -> pd.DataFrame | None:
+    """What the loader merges of *tables*, written as one entry's inputs, when it widens."""
+    specs: list[tuple[Path, LoadSpec]] = []
+    for position, table in enumerate(tables):
+        path = tmp_path / f"{position}.parquet"
+        table.to_parquet(path)
+        specs.append((path, ParquetLoadSpec()))
+    return load_entry_data(specs, expands_individuals=True)
+
+
+def _pair_summary() -> pd.DataFrame:
+    """Both orderings of the pair of individuals 0 and 1, in each bin and an arena."""
+    return pd.DataFrame(
+        [
+            {
+                "id1": first,
+                "id2": second,
+                "bin_start": start,
+                "bin_end": end,
+                "arena": "a",
+                "dist": float(start + first),
+            }
+            for start, end in _BINS
+            for first, second in ((0, 1), (1, 0))
+        ]
+    )
+
+
+def _id_summary() -> pd.DataFrame:
+    """One row per individual in each bin and an arena, ``speed`` naming the cell."""
+    return pd.DataFrame(
+        [
+            {
+                "id": identity,
+                "bin_start": start,
+                "bin_end": end,
+                "arena": "a",
+                "speed": float(10 * start + identity),
+            }
+            for start, end in _BINS
+            for identity in (0, 1)
+        ]
+    )
+
+
+def test_a_per_id_summary_widens_onto_pair_rows_by_id(tmp_path: Path) -> None:
+    pairs = pd.DataFrame(
+        {
+            "frame": [0, 0, 1, 1],
+            "id1": [0, 1, 0, 1],
+            "id2": [1, 0, 1, 0],
+            "perspective": [0, 1, 0, 1],
+            "dist": 1.0,
+        }
+    )
+    per_id = pd.DataFrame({"id": [0, 1], "speed": [3.0, 5.0]})
+
+    merged = _merged_by_entry(tmp_path, pairs, per_id)
+
+    assert merged is not None
+    assert len(merged) == 4
+    assert list(merged["speed__id1"]) == [3.0, 5.0, 3.0, 5.0]
+    assert list(merged["speed__id2"]) == [5.0, 3.0, 5.0, 3.0]
+    assert "id" not in merged.columns
+
+
+def test_a_per_id_summary_widens_onto_pair_summaries_by_id(tmp_path: Path) -> None:
+    merged = _merged_by_entry(
+        tmp_path,
+        _pair_summary().drop(columns=["bin_start", "bin_end", "arena"]),
+        pd.DataFrame({"id": [0, 1], "speed": [3.0, 5.0]}),
+    )
+
+    assert merged is not None
+    assert list(merged["speed__id1"]) == [3.0, 5.0, 3.0, 5.0]
+
+
+def test_a_binned_per_id_summary_widens_onto_binned_pair_summaries(
+    tmp_path: Path,
+) -> None:
+    merged = _merged_by_entry(tmp_path, _pair_summary(), _id_summary())
+
+    assert merged is not None
+    assert len(merged) == 4
+    for slot in ("id1", "id2"):
+        expected = 10 * merged["bin_start"] + merged[slot]
+        assert list(merged[f"speed__{slot}"]) == list(expected.astype(float))
+    assert {"arena", "arena__id1", "arena__id2"} <= set(merged.columns)
+    assert {"bin_start", "bin_end", "bin_start__id1", "bin_end__id2"} <= set(
+        merged.columns
+    )
+
+
+def test_a_summary_key_that_is_missing_refuses_the_widening(tmp_path: Path) -> None:
+    per_id = _id_summary().astype({"bin_start": float})
+    per_id.loc[1, "bin_start"] = float("nan")
+
+    with pytest.raises(
+        MultiInputAlignmentError,
+        match=(
+            "cannot merge input 1: bin_start is missing in 1 rows of input 1, "
+            "and a summary key names a bin or an arena"
+        ),
+    ):
+        _ = _merged_by_entry(tmp_path, _pair_summary(), per_id)
+
+
+def test_a_repeated_key_row_refuses_the_widening_by_id(tmp_path: Path) -> None:
+    per_id = pd.concat([_id_summary(), _id_summary().iloc[:1]], ignore_index=True)
+
+    with pytest.raises(
+        MultiInputAlignmentError,
+        match=(
+            r"cannot merge input 1: it repeats a \(id, bin_start, bin_end, arena\) "
+            "row, so a pair row would match more than one"
+        ),
+    ):
+        _ = _merged_by_entry(tmp_path, _pair_summary(), per_id)
+
+
+def test_a_repeated_id_refuses_a_widening_that_shares_no_key(tmp_path: Path) -> None:
+    per_id = pd.DataFrame({"id": [0, 0, 1], "speed": [1.0, 2.0, 3.0]})
+
+    with pytest.raises(MultiInputAlignmentError, match=r"it repeats a \(id\) row"):
+        _ = _merged_by_entry(tmp_path, _pair_summary().drop(columns=["arena"]), per_id)
+
+
+def test_a_per_id_summary_before_pair_rows_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(
+        MultiInputAlignmentError, match="needs the pair-level input first"
+    ):
+        _ = _merged_by_entry(tmp_path, _id_summary(), _pair_summary())
