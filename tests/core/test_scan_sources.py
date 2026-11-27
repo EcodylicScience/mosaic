@@ -25,6 +25,7 @@ from mosaic.core.manifest import (
 )
 from mosaic.core.pipeline.scan_claim import ScanClaim
 from mosaic.core.pipeline.promotion import promote_correction
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import (
     RawEntryNamedTwice,
     read_tracks_raw_index,
@@ -1669,6 +1670,12 @@ class TestTwoFilesNamingOneEntry:
             Path(str(each["abs_path"])).name for each in raw_rows(dataset, "tracks")
         )
         assert names == sorted([recording.tsv.name, "corrected.rev1.tsv"])
+        _ = dataset.convert_all_tracks()
+        variants = [
+            each for each in dataset.get_root("tracks").iterdir() if each.is_dir()
+        ]
+        assert len(variants) == 2
+        assert len(read_tracks_index(dataset)) == 2
 
     def test_a_merging_format_and_a_multi_sequence_source_are_not_checked(
         self, tmp_path: Path

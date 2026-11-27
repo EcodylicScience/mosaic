@@ -35,6 +35,21 @@ their path. Formats that merge several files into a sequence, formats that hold
 several sequences per file, a promoted correction and a row with no sequence
 are exempt.
 
+A promoted correction of a format that converts one file at a time, such as
+Tracktor or SLEAP, now converts into a variant of its own. Before, it and its
+upload wrote one variant and one of them was lost. After a promotion and a
+conversion, an entry then has two variants, and a run that names no tracks
+variant refuses it (`AmbiguousTracksVariant`) until the run names one. A
+dataset whose corrections of such a format were converted with `--overwrite`
+may hold a corrected table in the upload's variant. Run
+`mosaic convert-tracks --overwrite` once, with the `--params` that conversion
+used, to restore the upload's tables. Then recompute each feature above those
+entries, chained features included, with
+`mosaic run --feature <slug> --tracks-run-id <variant> --overwrite`
+(`mosaic pipeline run` reuses cached runs). The restored tables keep their
+compositions, so the features computed from the corrected tables would
+otherwise stay current.
+
 `mosaic scan --checksum-workers N` reads the checksums of tracks and labels
 files, and of the files beside them, in N threads. It defaults to 1 and changes
 no row, digest or output.

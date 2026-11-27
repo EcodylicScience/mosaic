@@ -27,6 +27,7 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_label_path,
     sequence_labels,
 )
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
 from tests.helpers import (
@@ -37,6 +38,8 @@ from tests.helpers import (
     latest_snapshot,
     make_dataset,
     write_media_index,
+    write_sleap_analysis_h5,
+    write_tracktor_recording,
     write_trex_npz,
 )
 
@@ -478,6 +481,145 @@ def test_only_the_newest_correction_converts(tmp_path: Path) -> None:
     }
     values = {float(t["X"].iloc[0]) for t in tables.values()}
     assert values == {1.0, 99.0}, "rev1 should not have converted; rev2 should"
+
+
+def _tracktor_file(directory: Path, value: float) -> Path:
+    """A corrected Tracktor table whose positions follow *value*."""
+    return write_tracktor_recording(
+        directory, frames=6, flies=2, first_frame=int(value), write_csv=False
+    ).tsv
+
+
+def _sleap_file(directory: Path, value: float) -> Path:
+    """A SLEAP analysis file whose every point sits at *value*."""
+    path = directory / "myseq.h5"
+    write_sleap_analysis_h5(path, np.full((5, 1, 2, 2), value), np.full((5, 1, 2), 0.9))
+    return path
+
+
+ONE_FILE_AT_A_TIME = {
+    "tracktor_corrected_tsv": (_tracktor_file, "*.tsv"),
+    "sleap_analysis_h5": (_sleap_file, "*.h5"),
+}
+"""Formats that convert each raw file into a table of its own, by source format."""
+
+
+def _upload_dataset(tmp_path: Path, src_format: str) -> Dataset:
+    """A dataset whose one upload of *src_format* is indexed and converted."""
+    write, pattern = ONE_FILE_AT_A_TIME[src_format]
+    ds = make_dataset(tmp_path / "ds", name="promote")
+    ds.meta["fps_default"] = 30.0
+    raw = ds.get_root("tracks_raw")
+    _ = write(raw, 3.0)
+    _ = ds.index_tracks_raw([raw], patterns=pattern, src_format=src_format)
+    _ = ds.convert_all_tracks()
+    return ds
+
+
+def _variant_tables(ds: Dataset) -> dict[str, pd.DataFrame]:
+    """Each tracks variant's one table, by variant."""
+    root = ds.get_root("tracks")
+    return {
+        variant.name: pd.read_parquet(table)
+        for variant in sorted(root.iterdir())
+        if variant.is_dir()
+        for table in variant.glob("*.parquet")
+    }
+
+
+def _converted_alone(tmp_path: Path, src_format: str, value: float) -> pd.DataFrame:
+    """The table that a file of *value* converts to as an upload."""
+    write, pattern = ONE_FILE_AT_A_TIME[src_format]
+    ds = make_dataset(tmp_path / "alone", name="alone")
+    ds.meta["fps_default"] = 30.0
+    raw = ds.get_root("tracks_raw")
+    _ = write(raw, value)
+    _ = ds.index_tracks_raw([raw], patterns=pattern, src_format=src_format)
+    _ = ds.convert_all_tracks()
+    ((_, table),) = _variant_tables(ds).items()
+    return table
+
+
+def _promote_values(
+    ds: Dataset, tmp_path: Path, src_format: str, values: tuple[float, ...]
+) -> None:
+    """Promote one correction of the dataset's entry for each of *values*."""
+    write, _ = ONE_FILE_AT_A_TIME[src_format]
+    ((group, sequence),) = {
+        (row["group"], row["sequence"]) for row in ds.read_tracks_raw_index()
+    }
+    for number, value in enumerate(values):
+        _ = promote_correction(
+            ds,
+            group,
+            sequence,
+            write(tmp_path / f"corr{number}", value),
+            src_format=src_format,
+            apply=True,
+            force=True,
+        )
+
+
+@pytest.mark.parametrize("src_format", sorted(ONE_FILE_AT_A_TIME))
+def test_a_correction_of_a_one_file_format_converts_as_its_own_variant(
+    tmp_path: Path, src_format: str
+) -> None:
+    """A format that converts a file at a time separates a correction too.
+
+    The correction and its upload name one entry. Written into one variant, one
+    table would replace the other without a word.
+    """
+    ds = _upload_dataset(tmp_path, src_format)
+    ((upload, before),) = _variant_tables(ds).items()
+
+    _promote_values(ds, tmp_path, src_format, (10.0,))
+    _ = ds.convert_all_tracks()
+
+    tables = _variant_tables(ds)
+    assert len(tables) == 2, sorted(tables)
+    pd.testing.assert_frame_equal(tables[upload], before)
+    (correction,) = (name for name in tables if name != upload)
+    pd.testing.assert_frame_equal(
+        tables[correction], _converted_alone(tmp_path, src_format, 10.0)
+    )
+    assert len(read_tracks_index(ds)) == 2
+
+
+@pytest.mark.parametrize("src_format", sorted(ONE_FILE_AT_A_TIME))
+def test_a_second_promotion_of_a_one_file_format_converts_the_newest_only(
+    tmp_path: Path, src_format: str
+) -> None:
+    ds = _upload_dataset(tmp_path, src_format)
+    ((upload, before),) = _variant_tables(ds).items()
+
+    _promote_values(ds, tmp_path, src_format, (10.0, 20.0))
+    _ = ds.convert_all_tracks()
+
+    tables = _variant_tables(ds)
+    assert len(tables) == 2, sorted(tables)
+    pd.testing.assert_frame_equal(tables[upload], before)
+    (correction,) = (name for name in tables if name != upload)
+    pd.testing.assert_frame_equal(
+        tables[correction], _converted_alone(tmp_path, src_format, 20.0)
+    )
+
+
+@pytest.mark.parametrize("src_format", sorted(ONE_FILE_AT_A_TIME))
+def test_progress_counts_only_the_files_that_convert(
+    tmp_path: Path, src_format: str
+) -> None:
+    """A superseded revision is no file of the run, so progress reaches its total."""
+    ds = _upload_dataset(tmp_path, src_format)
+    _promote_values(ds, tmp_path, src_format, (10.0, 20.0))
+    reports: list[tuple[int, int]] = []
+
+    _ = ds.convert_all_tracks(
+        progress=lambda done, total: reports.append((done, total))
+    )
+
+    assert reports
+    done, total = reports[-1]
+    assert (done, total) == (2, 2)
 
 
 def test_a_correction_revision_is_read_from_the_name() -> None:

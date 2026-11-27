@@ -217,7 +217,7 @@ importing `mosaic.tracking` registers neither.
   `line`.
 - A file that a declared `group_pattern` or `group_path_pattern` misses is not indexed.
   `group_for_path` (`core/pipeline/tracks_raw_index.py`) decides each file's group and
-  returns `None` for a miss, and `_index_raw` skips it and reports one
+  returns `None` for a miss, and `_plan_raw_rows` skips it and reports one
   `group_pattern_missed` finding per source with a `count` and up to `MISSED_SAMPLE`
   paths. A pattern that misses every file reports `group_pattern_unmatched` or
   `group_path_pattern_unmatched` alone. A file's sequence comes from one
@@ -254,7 +254,7 @@ importing `mosaic.tracking` registers neither.
   companions, never media. It is a throughput setting: it enters no manifest field and
   no identifier, and the rows are the same for any count.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
-  `_index_raw`. Series rows are not pruned as unsourced.
+  `_plan_raw_rows`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for
   imgstores it cannot group: a synchronized set of two or more stores with divergent
   base names or a store without `camera_serial`, two recordings that derive one entry,

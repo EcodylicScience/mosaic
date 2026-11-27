@@ -682,6 +682,43 @@ def _track_variant_id(
     return tracks_run_id(converter_op(cls.src_format), cls.version, payload)
 
 
+_RAW_ENTRY_COLUMNS: Final = ["group", "sequence", "src_format"]
+"""The raw-index columns that name one entry of one format."""
+
+
+def _converting_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows of *df* that convert: each upload and each entry's newest correction.
+
+    A promoted correction and the upload it corrects are the same format for the
+    same entry. Converted together they would write one table holding both
+    readings of every frame, or one table that replaced the other, under one
+    identifier. The revision (:func:`correction_revision` of the row's path)
+    therefore separates them: a correction reaches the variant identity, so each
+    side converts into a variant of its own. Only the newest correction converts,
+    because the series is append-only history, and converting every revision would
+    mint a variant per revision forever, the older ones being already on disk under
+    their own.
+
+    ``convert_all_tracks`` takes its rows through here, once, so the per-file and
+    the merging paths share the rule and its progress total counts the rows that
+    convert. The group, sequence and format cells are trimmed to text here, because
+    they key the grouping and name the merged table: an untrimmed cell would split
+    one sequence's files into two groups.
+
+    Returns:
+        A copy of *df* less the superseded corrections, with each row's revision in
+        ``_CORRECTION_COL``. The rows keep their order.
+    """
+    df = df.copy()
+    for col in _RAW_ENTRY_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = [text_cell(value) for value in df[col]]
+    df[_CORRECTION_COL] = [correction_revision(str(value)) for value in df["abs_path"]]
+    newest = df.groupby(_RAW_ENTRY_COLUMNS)[_CORRECTION_COL].transform("max")
+    return df[(df[_CORRECTION_COL] == 0) | (df[_CORRECTION_COL] == newest)]
+
+
 class _EntryTracks:
     """Each entry's tracks clock for one label conversion, read from the index once.
 
@@ -11232,7 +11269,11 @@ class Dataset:
         # Minted and recorded once per recipe, not per entry, and carried onto
         # every row this call writes. Also names the directory the tables live in
         # and described in its params.json, so a variant is explicable from disk.
-        variant = self._tracks_variant(converter, conv_params)
+        variant = self._tracks_variant(
+            converter,
+            conv_params,
+            correction=correction_revision(str(raw_row["abs_path"])),
+        )
         outcome.variant = variant
         producer = converter_op(src_format)
 
@@ -11683,6 +11724,7 @@ class Dataset:
                 )
                 raise ValueError(msg)
 
+        df = _converting_rows(df)
         total = int(len(df))
         handled = 0
 
@@ -11968,11 +12010,12 @@ class Dataset:
     ) -> Iterator[_TrackWork]:
         """Yield the calls that convert the raw rows of *df*, in the order they run.
 
-        One call per raw file, except that the files of a format that merges per
-        sequence are one call per ``(group, sequence)``. A generator, so that the
-        planning of a sequence happens as the pool takes it. Each call carries the
-        *facts* of the entry its raw row names, or all of them for a row that names
-        no sequence, which a converter expands into entries of its own.
+        *df* holds the rows that convert (:func:`_converting_rows`). One call per
+        raw file, except that the files of a format that merges per sequence are one
+        call per ``(group, sequence)``. A generator, so that the planning of a
+        sequence happens as the pool takes it. Each call carries the *facts* of the
+        entry its raw row names, or all of them for a row that names no sequence,
+        which a converter expands into entries of its own.
         """
 
         def file_work(row: pd.Series) -> _TrackWork:
@@ -12003,34 +12046,9 @@ class Dataset:
         # label one converter's tables with another's schema. It is read from
         # each group's own converter, beside the variant it mints.
 
-        # Merge per (group, sequence, src_format). The same rule the single-file
-        # path applies per cell, applied here per column: these three both key
-        # the groupby and name the merged table, so an untrimmed group would
-        # split one sequence's files into two half-merges, and an untrimmed one
-        # reaching make_entry_key below would name a file the index row for it
-        # does not.
-        groupby_cols = ["group", "sequence", "src_format"]
-        df = df.copy()
-        for col in groupby_cols:
-            if col not in df.columns:
-                df[col] = ""
-            df[col] = [text_cell(value) for value in df[col]]
-
-        # A promoted correction and the upload it corrects are the same format
-        # for the same entry, so the three keys above put them in one group and
-        # the merge below concatenated them -- one table holding both readings of
-        # every frame, under one identifier. The revision joins the key so each
-        # side converts separately, and reaches the variant identity so the two
-        # tables are distinguishable rather than in conflict.
-        df[_CORRECTION_COL] = [
-            correction_revision(str(value)) for value in df["abs_path"]
-        ]
-        # Only the newest correction converts. The series is append-only history;
-        # re-converting every revision would mint a variant per revision forever,
-        # and the older ones are already on disk under their own.
-        newest = df.groupby(groupby_cols)[_CORRECTION_COL].transform("max")
-        df = df[(df[_CORRECTION_COL] == 0) | (df[_CORRECTION_COL] == newest)]
-        groupby_cols = [*groupby_cols, _CORRECTION_COL]
+        # Merge per (group, sequence, src_format, revision), so that a correction
+        # and its upload are two groups.
+        groupby_cols = [*_RAW_ENTRY_COLUMNS, _CORRECTION_COL]
         # Read once for every entry a merge may write, under either group cell.
         divisions = self.division_facts(
             {(text_cell(g), text_cell(q)) for g, q in zip(df["group"], df["sequence"])}
