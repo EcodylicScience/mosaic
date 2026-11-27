@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, ClassVar, override
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -22,6 +23,11 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
 )
 from mosaic.core.track_library.conformance import converter_problems
+from mosaic.core.track_library.sleap import (
+    SleapAnalysisH5Converter,
+    SleapConvertParams,
+)
+from tests.helpers import write_sleap_analysis_h5
 
 FORMAT = "conformance_probe"
 
@@ -287,3 +293,101 @@ def test_a_sample_is_not_converted_when_none_is_given() -> None:
             raise AssertionError("converted without a sample")
 
     assert converter_problems(Never) == []
+
+
+class _CountsFrames(_Conforming):
+    """Converts to a two-frame table and reports a frame count of its own."""
+
+    count: ClassVar[int | None] = None
+
+    @override
+    def frames_read(self, path: Path) -> int | None:
+        _ = path
+        return self.count
+
+
+def _counting(count: int | None) -> type[_CountsFrames]:
+    class Counting(_CountsFrames):
+        pass
+
+    Counting.count = count
+    return Counting
+
+
+def _sample(tmp_path: Path) -> Path:
+    sample = tmp_path / "sample.csv"
+    _ = sample.write_text("frame\n0\n")
+    return sample
+
+
+@pytest.mark.parametrize("count", [None, 2, 3], ids=["none", "equal", "larger"])
+def test_a_frame_count_that_covers_the_table_conforms(
+    tmp_path: Path, count: int | None
+) -> None:
+    assert converter_problems(_counting(count), _sample(tmp_path)) == []
+
+
+def test_a_frame_count_below_the_table_is_reported_with_both_numbers(
+    tmp_path: Path,
+) -> None:
+    problems = converter_problems(_counting(1), _sample(tmp_path))
+
+    assert len(problems) == 1
+    assert "Counting" in problems[0]
+    assert "frames_read" in problems[0]
+    assert "1" in problems[0]
+    assert "2 distinct frames" in problems[0]
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError, RuntimeError])
+def test_a_frames_read_that_raises_is_reported_naming_the_exception(
+    tmp_path: Path, error: type[Exception]
+) -> None:
+    class Raising(_Conforming):
+        @override
+        def frames_read(self, path: Path) -> int | None:
+            raise error("the header is unreadable")
+
+    problems = converter_problems(Raising, _sample(tmp_path))
+
+    assert len(problems) == 1
+    assert "frames_read" in problems[0]
+    assert error.__name__ in problems[0]
+    assert "the header is unreadable" in problems[0]
+
+
+def test_a_frame_count_is_not_read_without_a_sample() -> None:
+    class Never(_Conforming):
+        @override
+        def frames_read(self, path: Path) -> int | None:
+            raise AssertionError("read a count without a sample")
+
+    assert converter_problems(Never) == []
+
+
+def test_a_conversion_that_fails_reports_no_frame_count_problem(
+    tmp_path: Path,
+) -> None:
+    class Both(_Raises):
+        @override
+        def frames_read(self, path: Path) -> int | None:
+            return 0
+
+    problems = converter_problems(Both, _sample(tmp_path))
+
+    assert len(problems) == 1
+    assert "RuntimeError" in problems[0]
+
+
+def test_sleap_on_its_sample_has_no_problems(tmp_path: Path) -> None:
+    tracks = np.full((3, 2, 2, 2), np.nan)
+    tracks[:, 0] = 1.0
+    tracks[1, 1] = 2.0
+    sample = tmp_path / "vid.analysis.h5"
+    write_sleap_analysis_h5(sample, tracks)
+
+    problems = converter_problems(
+        SleapAnalysisH5Converter, sample, SleapConvertParams(fps=30.0)
+    )
+
+    assert problems == []

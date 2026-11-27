@@ -189,8 +189,10 @@ the registry, when it holds a class under its `src_format`, holds this one,
 that a merging format overrides `sequence_from_stem`, that no format is both
 `enumerable` and `merges_per_sequence`, and that `Params` does not hash a
 `group`, a `sequence` or a `group_from`. Given a sample file it also converts
-it and validates the table against `output_schema`. A package tests its own
-converter with one call:
+it, validates the table against `output_schema`, and checks the frame count:
+`frames_read` of the sample must be `None` or no smaller than the number of
+distinct `frame` values in the table, and must not raise. A package tests its
+own converter with one call:
 
 ```python
 from pathlib import Path

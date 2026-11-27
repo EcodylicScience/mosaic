@@ -19,9 +19,14 @@ Without a sample file it checks that:
 - ``Params`` names none of ``group``, ``sequence`` and ``group_from`` in the
   payload that a tracks variant hashes.
 
-Given a sample file it also converts it with ``EntryHints()`` and checks that
-the table passes ``ensure_track_schema(..., strict=True)`` against
-``output_schema``. A conversion that raises is a problem that names the
+Given a sample file it also converts it with ``EntryHints()`` and checks that:
+
+- the table passes ``ensure_track_schema(..., strict=True)`` against
+  ``output_schema``;
+- ``frames_read`` of the sample is ``None`` or a count no smaller than the number
+  of distinct ``frame`` values in the table.
+
+A conversion or a ``frames_read`` that raises is a problem that names the
 exception.
 """
 
@@ -29,6 +34,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Final
+
+import pandas as pd
 
 from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import (
@@ -67,7 +74,8 @@ def converter_problems(
     Args:
         cls: The converter class to check.
         sample: A raw file of the converter's format. Given one, the converter
-            converts it and the table is validated against ``output_schema``.
+            converts it, the table is validated against ``output_schema`` and
+            ``frames_read`` of the file is compared with the table's frames.
         params: The conversion params for the sample. Defaults to
             ``cls.Params()``.
 
@@ -157,5 +165,32 @@ def _sample_problems(
         return [
             f"{name} converted {sample.name} to a table that fails the "
             f"{cls.output_schema} schema: {exc}"
+        ]
+    return _frame_count_problems(cls, sample, table)
+
+
+def _frame_count_problems(
+    cls: type[TrackConverter[Any]], sample: Path, table: pd.DataFrame
+) -> list[str]:
+    """Compare ``frames_read`` of *sample* with the frames of its *table*.
+
+    The hook is called directly, not through ``try_frames_read``: that method
+    returns ``OSError`` and ``ValueError`` and lets any other exception
+    propagate, which suits a caller recording provenance and not a check that
+    reports a converter's defects. Any exception here is a problem, and the
+    sample is one the converter just converted, so even an ``OSError`` is one.
+    """
+    name = cls.__name__
+    try:
+        count = cls().frames_read(sample)
+    except Exception as exc:
+        return [
+            f"{name} raised {type(exc).__name__} in frames_read of {sample.name}: {exc}"
+        ]
+    frames = int(table["frame"].nunique())
+    if count is not None and count < frames:
+        return [
+            f"{name}.frames_read returns {count} for {sample.name}, fewer than "
+            f"the {frames} distinct frames of the table it converts to."
         ]
     return []

@@ -227,10 +227,33 @@ def test_no_converter_can_hash_an_entry_name(src_format: str) -> None:
     assert not [problem for problem in problems if entry_identity in problem]
 
 
+def _write_sleap_sample(directory: Path) -> Path:
+    """Write the two-track SLEAP fixture as an analysis file under *directory*."""
+    tracks, scores = _two_track_fixture()
+    path = directory / "sample.analysis.h5"
+    write_sleap_analysis_h5(path, tracks, scores)
+    return path
+
+
+CONFORMANCE_SAMPLES: dict[str, tuple[Callable[[Path], Path], TrackConvertParams]] = {
+    "sleap_analysis_h5": (_write_sleap_sample, SleapConvertParams(fps=30.0)),
+}
+"""A format's sample factory and the params to convert the sample with.
+
+The factory writes a raw file under the directory it is given and returns its
+path. A format that the mapping omits is checked without a sample."""
+
+
 @pytest.mark.parametrize("src_format", BUILT_IN_FORMATS)
-def test_every_built_in_converter_conforms(src_format: str) -> None:
+def test_every_built_in_converter_conforms(src_format: str, tmp_path: Path) -> None:
     """Each built-in meets the contract that a package's own tests check."""
-    assert converter_problems(TRACK_CONVERTERS[src_format]) == []
+    cls = TRACK_CONVERTERS[src_format]
+    if src_format not in CONFORMANCE_SAMPLES:
+        assert converter_problems(cls) == []
+        return
+    write_sample, params = CONFORMANCE_SAMPLES[src_format]
+
+    assert converter_problems(cls, write_sample(tmp_path), params) == []
 
 
 def test_validation_strictness_is_not_part_of_the_recipe() -> None:
