@@ -1,0 +1,68 @@
+{
+ "schema_version": 1,
+ "name": "step-cost pair filter",
+ "steps": [
+  {
+   "id": "convert",
+   "type": "op",
+   "kind": "convert-tracks",
+   "params": {
+    "source_format": "synthetic"
+   }
+  },
+  {
+   "id": "heading",
+   "type": "feature",
+   "feature": "heading",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "pairs",
+   "type": "feature",
+   "feature": "pair-position",
+   "inputs": [
+    "tracks",
+    {
+     "step": "heading"
+    }
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "nn",
+   "type": "feature",
+   "feature": "nearest-neighbor",
+   "inputs": [
+    "tracks"
+   ],
+   "tracks": {
+    "step": "convert"
+   }
+  },
+  {
+   "id": "stack",
+   "type": "feature",
+   "feature": "temporal-stack",
+   "inputs": [
+    {
+     "step": "pairs"
+    }
+   ],
+   "params": {
+    "half": 2,
+    "skip": 1,
+    "add_pool": false,
+    "pair_filter": {
+     "step": "nn"
+    }
+   }
+  }
+ ]
+}

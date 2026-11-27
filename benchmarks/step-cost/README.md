@@ -13,20 +13,20 @@ results. Run it on an idle machine, under `heavy` where installed. The
 sections and the environment variables (`PY`, `ENTRIES`, `WORKERS`) are listed
 at the top of `run.sh`.
 
-| File             | Role                                                                                                                                                                       |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run.sh`         | builds the dataset and runs each section                                                                                                                                   |
-| `make_raw.py`    | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry                                                                          |
-| `recipes/`       | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60); widening (`temporal-stack` over `pair-position` and `speed-angvel`)      |
-| `timed.py`       | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv`                                                                                    |
-| `summary.py`     | prints `results.tsv`, the target figures, the CPU of the process workers, their build and apply seconds, the pipe bytes per entry and the spawn bytes per worker           |
-| `pipes.py`       | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, and the bytes each worker is sent at its spawn, in `OUT/pipes.tsv` |
-| `builds.py`      | the build seconds and apply seconds of a dataset's feature runs, from their run-logs                                                                                       |
-| `micro.py`       | per-entry operations timed alone                                                                                                                                           |
-| `stacksample.py` | wall-clock stack samples of every thread of one `mosaic` command                                                                                                           |
-| `cli_run.py`     | runs the `mosaic` CLI in-process for `pipes.py` and `stacksample.py`, with its exit status and wall                                                                        |
-| `pstat.py`       | the costliest functions of a cProfile file                                                                                                                                 |
-| `fingerprint.py` | hashes of a dataset's outputs and index rows                                                                                                                               |
+| File             | Role                                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run.sh`         | builds the dataset and runs each section                                                                                                                                                                                                                 |
+| `make_raw.py`    | writes the synthetic track files: 9,000 frames, 4 individuals, 5 keypoints, 36,000 rows per entry                                                                                                                                                        |
+| `recipes/`       | convert; convert and `speed-angvel`; six steps; 61 steps (`speed-angvel` at `step_size` 1 to 60); widening (`temporal-stack` over `pair-position` and `speed-angvel`); pair filter (the same over `pair-position` alone, filtered by `nearest-neighbor`) |
+| `timed.py`       | runs one command, samples its process tree's CPU, appends its wall to `OUT/results.tsv`                                                                                                                                                                  |
+| `summary.py`     | prints `results.tsv`, the target figures, the CPU of the process workers, their build and apply seconds, the pipe bytes per entry and the spawn bytes per worker                                                                                         |
+| `pipes.py`       | runs one `mosaic` command and counts the bytes it sends to its worker processes and receives from them, and the bytes each worker is sent at its spawn, in `OUT/pipes.tsv`                                                                               |
+| `builds.py`      | the build seconds and apply seconds of a dataset's feature runs, from their run-logs                                                                                                                                                                     |
+| `micro.py`       | per-entry operations timed alone                                                                                                                                                                                                                         |
+| `stacksample.py` | wall-clock stack samples of every thread of one `mosaic` command                                                                                                                                                                                         |
+| `cli_run.py`     | runs the `mosaic` CLI in-process for `pipes.py` and `stacksample.py`, with its exit status and wall                                                                                                                                                      |
+| `pstat.py`       | the costliest functions of a cProfile file                                                                                                                                                                                                               |
+| `fingerprint.py` | hashes of a dataset's outputs and index rows                                                                                                                                                                                                             |
 
 A change that must keep run ids and outputs runs the bench before and after over
 the same `WORK` path and compares the `fingerprint-*.txt` files.
@@ -500,3 +500,88 @@ lock would also serialize the merges of every multi-input feature that loads in
 its task. Thread mode gives a feature whose `apply` holds the GIL no speed over
 serial before or after the change, and process mode runs it 2.5 times faster
 than either, so run such a feature with `--parallel-mode process`.
+
+### Pair-filter loads in the workers, before and after
+
+A `temporal-stack` step over the pair rows of `pair-position`, with
+`pair_filter` the run of `nearest-neighbor`, reads only the pairs where one
+individual is the other's nearest neighbor. Its worker now builds the neighbor
+lookup, reads the entry's pair rows and filters them, where the parent did
+before. A process worker opens the run's dataset for the lookup at its first
+such entry. The recipe (`recipes/pairfilter.json`) is `convert`, `heading`,
+`pair-position`, `nearest-neighbor` and `temporal-stack`. The stack step has one
+input, so the pair filter is the only load the change reaches. The first four
+steps run once, in thread mode at 8 workers (`pairfilter` section of `run.sh`),
+and each cold run of the stack step starts from a fresh copy of that dataset.
+Measured before (at `1a9e636f`) and after (at the commit that adds this section)
+on the host of the multi-input section, in containers of the image
+`mosaic-agent:gpu-cu130-main-2c40cfa6` with `--cpuset-cpus 16-25`, over one
+`WORK` path, 160 entries, 8 workers, in two pairs: before then after, then after
+then before.
+
+The first run of each pair, before in the first and after in the second, took
+about 100 s longer for the four steps before the stack: 706.92 and 718.96 s,
+against 617.40 and 605.50 s for the second run. The first cached thread-8 run of
+each run of the first pair, 11.42 s before and 9.01 s after, is out of line with
+the other fourteen cached runs, 8.49 to 8.62 s. The serial cold walls of the
+before runs, 69.63 and 70.22 s, are above those of the after runs, 65.99 and
+63.97 s, in both pairs, so the thread-8 speed over serial falls from 2.81 and
+2.82 to 2.56 and 2.59 with the serial wall and not the thread-8 wall.
+
+The host (28 logical CPUs, the containers pinned to the ten of 16 to 25) ran
+533 to 544 processes and was otherwise idle. Its load average was 1.32 at the
+start of the first before run, which followed a four-entry run of the section,
+and 4.18 at the start of the first after run, and 5.42 and 3.44 at the starts
+of the second pair, whose figures are in brackets. The load averages trail the
+bench's own runs and show no other work.
+
+| Figure                                                | Before                      | After                       |
+| ----------------------------------------------------- | --------------------------- | --------------------------- |
+| the four steps before the stack, thread 8 (s)         | 706.92 (605.50)             | 617.40 (718.96)             |
+| stack step cold, serial (s)                           | 69.63 (70.22)               | 65.99 (63.97)               |
+| stack step cold, thread 8 (s)                         | 24.78 (24.94)               | 25.74 (24.66)               |
+| stack step cold, process 8 (s)                        | 24.39 (25.98)               | 22.93 (23.44)               |
+| stack step cold, process 8, counting its pipes (s)    | 23.00 (26.77)               | 21.56 (21.33)               |
+| the same recipe cached, thread 8, shorter of two (s)  | 8.58 (8.57)                 | 8.49 (8.50)                 |
+| the same recipe cached, process 8, shorter of two (s) | 8.54 (8.59)                 | 8.51 (8.53)                 |
+| parent cost per entry, cold thread 8 (ms)             | 101.3 (102.3)               | 107.8 (101.0)               |
+| parent cost per entry, cold process 8 (ms)            | 99.1 (108.7)                | 90.1 (93.2)                 |
+| cold thread 8, speed over serial                      | 2.81 (2.82)                 | 2.56 (2.59)                 |
+| bytes per entry to the workers, process 8             | 5,901,990 (5,901,990)       | 2,301 (2,301)               |
+| bytes per entry from the workers, process 8           | 386 (386)                   | 389 (389)                   |
+| bytes sent to a worker at its spawn, process 8        | 25,006 (25,006)             | 25,000 (25,000)             |
+| process 8, mean CPU of a worker                       | 87.4% (83.6%)               | 103.0% (102.0%)             |
+| process 8, CPU seconds of the parent / the workers    | 26.2 / 105.6 (27.1 / 111.7) | 11.9 / 117.9 (11.6 / 120.4) |
+
+The bytes to the workers fall from the filtered table to the load's
+description: 5,901,990 bytes per entry before the change and 2,301 after it,
+over the same 168 messages of the call queue's feeder thread. The result grows
+by 3 bytes, to 389, and the spawn of each worker carries 6 bytes fewer. In the
+process run the parent spends 14 to 16 s less CPU and the workers 9 to 12 s
+more, and a worker's mean CPU rises from 87.4% and 83.6% to 103.0% and 102.0%.
+The parent's cost per entry falls by 9.0 and 15.5 ms, the wall of the process
+run by 1.46 and 2.54 s, and the wall of the run under `pipes.py` by 1.44 and
+5.44 s.
+
+Thread 8 is 0.96 s slower after the change in the first pair, 25.74 s against
+24.78 s, and 0.28 s faster in the second, 24.66 s against 24.94 s, where the
+after run went first. The run's process uses 82.9 and 80.5 CPU seconds where
+it used 76.0 and 77.2, and the parent's cost per entry is 6.5 ms higher in the
+first pair and 1.3 ms lower in the second. Up to eight pool threads now build
+a lookup and filter an entry's pair rows at once, as they merge the inputs of a
+multi-input feature in "Multi-input loads in pool threads", where thread 8 is
+12 s slower after the change. Here the cost is at most 1 s, within the spread
+of the run order, and the code takes no lock, for the reason that section
+gives. Thread 8 and process 8 run the stack step 2.6 to 2.9 times faster than
+serial, before and after the change.
+
+The `fingerprint-*.txt` files of the six bench datasets that the section leaves
+(the converted base, the dataset of the first four steps, and the four stack
+datasets of serial, thread 8, process 8 and process 8 under `pipes.py`) are
+byte-identical in all four runs, and the four stack datasets of each run are
+byte-identical to one another. So are the fingerprints of the 27 datasets that
+`tests/core/pipeline/test_output_byte_identity.py` leaves under one fixed
+`--basetemp` (nine cases, each in serial, thread 3 and process 3, the
+`pair-filter` case among them), run on a second Linux machine at `1a9e636f` with
+the test of the commit that adds this section, and at that commit: 396 lines,
+every one equal.

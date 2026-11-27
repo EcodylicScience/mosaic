@@ -18,6 +18,9 @@
 #                serial, thread and process mode from fresh copies and cached
 #                in thread and process mode, and the process run again
 #                counting the bytes sent to the workers
+#   pairfilter   convert, heading, pair-position, nearest-neighbor and a
+#                temporal-stack step over the pair rows, read through the
+#                nearest-neighbor pair filter, timed as in widening
 #   request      the six-step recipe cold and cached, one process per step,
 #                and the start-up and import times
 #   settle       one `pipeline settle` process per cached step (after request)
@@ -34,7 +37,7 @@
 set -u
 
 if [ $# -lt 2 ]; then
-    sed -n '2,33p' "$0"
+    sed -n '2,36p' "$0"
     exit 2
 fi
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +51,8 @@ ENTRIES="${ENTRIES:-160}"
 WORKERS="${WORKERS:-8}"
 RECIPES="$here/recipes"
 if [ $# -eq 0 ]; then
-    set -- build cold pipes widening request settle wide micro fingerprint
+    set -- build cold pipes widening pairfilter request settle wide micro \
+        fingerprint
 fi
 
 timed() {
@@ -120,42 +124,52 @@ section_pipes() {
     return "$status"
 }
 
-section_widening() {
-    local name workers mode setting status prefix
+# Run every step of RECIPES/NAME.json but the last once, then time the last cold
+# in serial, thread and process mode, each from a fresh copy, cached in thread
+# and process mode, and cold in process mode again counting its pipes.
+measure_last_step() {
+    local recipe="$RECIPES/$1.json" label="$1" name workers mode setting status prefix
     prefix="$("$PY" -c 'import json, pathlib, sys
 recipe = json.loads(pathlib.Path(sys.argv[1]).read_text())
-recipe["steps"] = recipe["steps"][:4]
-print(json.dumps(recipe))' "$RECIPES/widening.json")"
-    fresh widening_base
-    timed "widening base, steps before stack, thread $WORKERS" "$PY" -m mosaic pipeline run \
-        -m "$WORK/widening_base/dataset.yaml" --recipe "$prefix" \
+recipe["steps"] = recipe["steps"][:-1]
+print(json.dumps(recipe))' "$recipe")"
+    fresh "${label}_base"
+    timed "$label base, steps before stack, thread $WORKERS" "$PY" -m mosaic pipeline run \
+        -m "$WORK/${label}_base/dataset.yaml" --recipe "$prefix" \
         --workers "$WORKERS" --parallel-mode thread
-    fresh_from widening_base widening_serial
-    timed "widening cold, serial" "$PY" -m mosaic pipeline run \
-        -m "$WORK/widening_serial/dataset.yaml" --recipe "@$RECIPES/widening.json" --workers 1
+    fresh_from "${label}_base" "${label}_serial"
+    timed "$label cold, serial" "$PY" -m mosaic pipeline run \
+        -m "$WORK/${label}_serial/dataset.yaml" --recipe "@$recipe" --workers 1
     for setting in "thread$WORKERS $WORKERS thread" "process$WORKERS $WORKERS process"; do
         read -r name workers mode <<< "$setting"
-        fresh_from widening_base "widening_$name"
-        timed "widening cold, $name" "$PY" -m mosaic pipeline run \
-            -m "$WORK/widening_$name/dataset.yaml" --recipe "@$RECIPES/widening.json" \
+        fresh_from "${label}_base" "${label}_$name"
+        timed "$label cold, $name" "$PY" -m mosaic pipeline run \
+            -m "$WORK/${label}_$name/dataset.yaml" --recipe "@$recipe" \
             --workers "$workers" --parallel-mode "$mode"
     done
     for setting in "thread$WORKERS $WORKERS thread" "process$WORKERS $WORKERS process"; do
         read -r name workers mode <<< "$setting"
         for attempt in 1 2; do
-            timed "widening cached, $name, $attempt" "$PY" -m mosaic pipeline run \
-                -m "$WORK/widening_$name/dataset.yaml" --recipe "@$RECIPES/widening.json" \
+            timed "$label cached, $name, $attempt" "$PY" -m mosaic pipeline run \
+                -m "$WORK/${label}_$name/dataset.yaml" --recipe "@$recipe" \
                 --workers "$workers" --parallel-mode "$mode"
         done
     done
-    fresh_from widening_base "widening_pipes_process$WORKERS"
-    "$PY" "$here/pipes.py" "$OUT" "widening cold, pipes process$WORKERS" -- pipeline run \
-        -m "$WORK/widening_pipes_process$WORKERS/dataset.yaml" \
-        --recipe "@$RECIPES/widening.json" \
+    fresh_from "${label}_base" "${label}_pipes_process$WORKERS"
+    "$PY" "$here/pipes.py" "$OUT" "$label cold, pipes process$WORKERS" -- pipeline run \
+        -m "$WORK/${label}_pipes_process$WORKERS/dataset.yaml" --recipe "@$recipe" \
         --workers "$WORKERS" --parallel-mode process > /dev/null 2>&1
     status=$?
     tail -1 "$OUT/pipes.tsv"
     return "$status"
+}
+
+section_widening() {
+    measure_last_step widening
+}
+
+section_pairfilter() {
+    measure_last_step pairfilter
 }
 
 section_request() {

@@ -6,13 +6,13 @@ Reads OUT/results.tsv, which timed.py appends to, and prints each run's wall
 time. It then prints the target figures: the wall of one cached step process
 (``mosaic run --graph-request`` and ``pipeline settle``), the 61-step recipe
 cached in one process, and the parent's cost per entry of the cold speed-angvel
-step and of the widening recipe's stack step in thread and in process mode at
-WORKERS (default 8). That cost is the cold run's wall less the shorter of the
-cached runs of the same mode, over ENTRIES (default 160). It prints the serial
-cold wall over the thread-mode cold wall at WORKERS, and for each cold
-process-mode run the mean CPU of its WORKERS busiest child processes and the CPU
-seconds of the parent and of those workers, from its ``.cpu.txt``, and for the
-speed-angvel run the build and apply seconds of its entries from its
+step and of the widening and pair-filter recipes' stack steps in thread and in
+process mode at WORKERS (default 8). That cost is the cold run's wall less the
+shorter of the cached runs of the same mode, over ENTRIES (default 160). It
+prints the serial cold wall over the thread-mode cold wall at WORKERS, and for
+each cold process-mode run the mean CPU of its WORKERS busiest child processes
+and the CPU seconds of the parent and of those workers, from its ``.cpu.txt``,
+and for the speed-angvel run the build and apply seconds of its entries from its
 ``.builds.txt``. Last it prints the bytes per entry that the process-mode runs
 of pipes.py sent to its workers and received from them, and the mean bytes each
 worker was sent at its spawn, from OUT/pipes.tsv. A run that is missing leaves
@@ -56,11 +56,14 @@ def main() -> None:
             "speed-angvel recipe cached, ",
             {"thread": "one process", "process": "process"},
         ),
-        (
-            "widening stack",
-            "widening cold, ",
-            "widening cached, ",
-            {"thread": f"thread{workers}", "process": f"process{workers}"},
+        *(
+            (
+                f"{recipe} stack",
+                f"{recipe} cold, ",
+                f"{recipe} cached, ",
+                {"thread": f"thread{workers}", "process": f"process{workers}"},
+            )
+            for recipe in ("widening", "pairfilter")
         ),
     ):
         for mode, cached_suffix in cached_suffixes.items():
@@ -81,6 +84,7 @@ def main() -> None:
     for step, cold_prefix in (
         ("speed-angvel", "speed-angvel cold, "),
         ("widening stack", "widening cold, "),
+        ("pairfilter stack", "pairfilter cold, "),
     ):
         cpu = out / f"{cold_prefix}process{workers}.cpu.txt"
         if not cpu.is_file():
